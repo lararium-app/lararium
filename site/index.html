@@ -148,7 +148,7 @@
     color: var(--ink-faint);
     margin-bottom: 34px;
   }
-  .meaning p {
+  .meaning p, .pocket p {
     font-family: var(--serif);
     font-weight: 300;
     font-size: clamp(21px, 3vw, 27px);
@@ -156,8 +156,8 @@
     color: var(--ink);
     max-width: 34em;
   }
-  .meaning p + p { margin-top: 26px; color: var(--ink-mute); }
-  .meaning em { color: var(--ember-soft); font-style: italic; }
+  .meaning p + p, .pocket p + p { margin-top: 26px; color: var(--ink-mute); }
+  .meaning em, .pocket em { color: var(--ember-soft); font-style: italic; }
 
   /* the covenant: typographic ledger lines, no icon cards */
   .covenant dl { border-top: 1px solid var(--line); }
@@ -224,7 +224,7 @@
     <p class="kicker">Open source · Self-hosted</p>
     <h1>Lararium</h1>
     <p class="latin">/ lārārium / — the household shrine where the protective spirits were kept</p>
-    <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth. It remembers everything, works while you sleep, and never leaves your house — your machine, your models, your keys.</p>
+    <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth and rides in <strong>your</strong> pocket. It remembers everything, works while you sleep, and answers on any screen you carry — your machine, your models, your keys.</p>
     <div class="cta">
       <a class="mail" href="mailto:hello@lararium.io?subject=Light%20the%20fire">Tell me when the fire is lit &rarr;</a>
       <span>Coming soon · AGPL-licensed</span>
@@ -239,6 +239,14 @@
     <p class="section-label">What the name means</p>
     <p>Two thousand years ago, every Roman house had a <em>lararium</em> — a small shrine by the door where the family kept its penates, the spirits that guarded the home, its memories, and its continuities. When Troy burned, Aeneas carried his penates out on his back. A home is where its penates are.</p>
     <p>Your digital life now needs the same. One place that holds your agent's memory, its credentials, its voice and habits — portable, guarded, and unmistakably yours. The commercial clouds are burning. Carry yours out.</p>
+  </div>
+</section>
+
+<section class="pocket">
+  <div class="wrap">
+    <p class="section-label">At home. And in your pocket.</p>
+    <p>The hearth burns on your own hardware — a box under the stairs, a NAS, a used mini-PC. But you don't live there. Lararium reaches you wherever you already are: a tap from your home screen, a thread in <em>WhatsApp, Telegram, or Signal</em>, plain <em>SMS</em> when that's all there is.</p>
+    <p>One agent, one memory, every device. Ask it something on your phone at the store and the answer is waiting in the same conversation at your desk. When it needs your blessing — spend, send, delete — the approval card lands on the screen you're holding. Android builds go further: your phone's own contacts, calls, and texts, gated door by door.</p>
   </div>
 </section>
 
