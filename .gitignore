@@ -3,3 +3,5 @@ package.json
 package-lock.json
 shot*.js
 shot-*.png
+# Secrets & tokens never enter git
+config/

@@ -121,18 +121,43 @@
     align-items: center;
     flex-wrap: wrap;
   }
-  .cta a.mail {
+  form.waitlist { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  form.waitlist input[type="email"] {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--ink);
+    font: inherit;
+    font-size: 15px;
+    padding: 13px 16px;
+    min-width: 240px;
+    max-width: 320px;
+    transition: border-color .18s ease;
+  }
+  form.waitlist input[type="email"]:focus {
+    outline: none;
+    border-color: var(--ember);
+  }
+  form.waitlist input::placeholder { color: var(--ink-faint); }
+  .wl-note { font-size: 13px; color: var(--ink-faint); max-width: 22em; }
+  .wl-note.ok { color: var(--ember-soft); }
+  .wl-note.err { color: #d97a6a; }
+  .cta a.mail, .cta button.mail, a.mail, button.mail {
     display: inline-block;
     padding: 14px 26px;
     border: 1px solid var(--ember);
     border-radius: 3px;
+    background: transparent;
     color: var(--ember-soft);
     text-decoration: none;
+    font: inherit;
     font-size: 15px;
     letter-spacing: .02em;
+    cursor: pointer;
     transition: background .18s ease, color .18s ease;
   }
-  .cta a.mail:hover, .cta a.mail:focus-visible {
+  .cta a.mail:hover, .cta a.mail:focus-visible,
+  button.mail:hover, button.mail:focus-visible {
     background: var(--ember);
     color: #1a0f07;
     outline: none;
@@ -226,8 +251,11 @@
     <p class="latin">/ lārārium / — the household shrine where the protective spirits were kept</p>
     <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth and rides in <strong>your</strong> pocket. It remembers everything, works while you sleep, and answers on any screen you carry — your machine, your models, your keys.</p>
     <div class="cta">
-      <a class="mail" href="mailto:hello@lararium.io?subject=Light%20the%20fire">Tell me when the fire is lit &rarr;</a>
-      <span>Coming soon · AGPL-licensed</span>
+      <form class="waitlist" id="wl-hero" novalidate>
+        <input type="email" name="email" placeholder="you@example.com" aria-label="Email address" required autocomplete="email">
+        <button class="mail" type="submit">Tell me when the fire is lit</button>
+      </form>
+      <span class="wl-note" id="wl-hero-note">Coming soon · AGPL-licensed</span>
     </div>
   </div>
 </header>
@@ -281,11 +309,61 @@
 <section class="closing">
   <div class="wrap">
     <p class="big">The shrine keeps the penates. Lararium keeps your agent.</p>
-    <a class="mail" style="display:inline-block;padding:14px 26px;border:1px solid var(--ember);border-radius:3px;color:var(--ember-soft);text-decoration:none;font-size:15px;" href="mailto:hello@lararium.io?subject=Light%20the%20fire">Tell me when the fire is lit &rarr;</a>
+    <form class="waitlist" id="wl-closing" novalidate>
+      <input type="email" name="email" placeholder="you@example.com" aria-label="Email address" required autocomplete="email">
+      <button class="mail" type="submit">Tell me when the fire is lit</button>
+    </form>
+    <p class="wl-note" id="wl-closing-note" style="margin-top:14px">One email when we launch. No newsletters, no noise.</p>
   </div>
 </section>
 
 </main>
+
+<script>
+(() => {
+  const API = "https://lararium-waitlist.<subdomain>.workers.dev";
+  document.querySelectorAll("form.waitlist").forEach((form) => {
+    const note = document.getElementById(form.id + "-note");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = form.email.value.trim();
+      if (!/^[^@\s@]+@[^@\s.]+(\.[^@\s.]+)+$/.test(email)) {
+        note.textContent = "That address doesn't look right.";
+        note.className = "wl-note err";
+        return;
+      }
+      const btn = form.querySelector("button");
+      btn.disabled = true;
+      try {
+        const r = await fetch(API + "/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d.ok) {
+          note.textContent = d.already
+            ? "You're already on the list — the fire remembers."
+            : "Written on the wall of the shrine. We'll send word.";
+          note.className = "wl-note ok";
+          form.reset();
+        } else if (r.status === 429) {
+          note.textContent = "Slow down a moment and try again.";
+          note.className = "wl-note err";
+        } else {
+          note.textContent = "Something went wrong — email hello@lararium.io instead.";
+          note.className = "wl-note err";
+        }
+      } catch {
+        note.textContent = "Couldn't reach the shrine — try again shortly.";
+        note.className = "wl-note err";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+})();
+</script>
 
 <footer>
   <div class="wrap" style="display:flex;justify-content:space-between;width:100%;gap:16px;flex-wrap:wrap;">

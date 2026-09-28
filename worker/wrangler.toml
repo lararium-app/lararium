@@ -1,0 +1,8 @@
+name = "lararium-waitlist"
+main = "worker.mjs"
+compatibility_date = "2026-09-28"
+
+[[kv_namespaces]]
+binding = "WAITLIST"
+# id filled in after namespace creation:
+# id = "<namespace-id>"
