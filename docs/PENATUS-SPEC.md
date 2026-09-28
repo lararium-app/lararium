@@ -4,7 +4,9 @@
 > that every Lararium component — hearthd, the PWA, importers, nuntius, the Android app —
 > read and write. Anything not in this spec is not part of the contract.
 
-Status: **DRAFT — awaiting Gate G1 (Owner).**
+Status: **APPROVED — Gate G1 cleared 2026-09-28 (Owner: draft picks on all four
+open questions).** §6 records the resolved decisions; this document is now the
+frozen contract. Changes require a version bump discussion.
 Format version: `penatus/1`. Every bundle, file header, and event carries this tag.
 
 Design rules (from ARCHITECTURE.md §1, restated as format law):
@@ -254,18 +256,18 @@ Not frozen here — only the constraints the file layer imposes on it:
 
 ---
 
-## 6. Open questions for G1
+## 6. Decisions (RESOLVED at G1, 2026-09-28)
 
-1. **File split:** five persona files (SOUL/IDENTITY/USER/MEMORY/HEARTBEAT) — right
-   count? Muse-ish parity, but `SOUL` vs `IDENTITY` could merge if you'd rather
-   users think in "persona" vs "memory" than five buckets.
-2. **MEMORY.md line format** (`- [p:high] …` inline tags vs YAML list): inline tags
-   are nano-friendly but parsing-ambiguous; YAML list is strict but uglier. Draft
-   picks inline tags + lenient parser.
-3. **Retention:** should `archive/` tombstone sweeps be automatic (N days) or
-   manual-only in v1? Draft: manual-only, flag in UI.
-4. **Token budget enforcement:** refuse-to-start on over-budget persona files (draft)
-   vs auto-truncate-with-warning. Draft refuses; silent context loss is the worse
-   failure.
+1. **File split: five persona files** (SOUL/IDENTITY/USER/MEMORY/HEARTBEAT). Muse
+   parity; SOUL (values/boundaries) stays separate from IDENTITY (name/self-facts)
+   because boundaries are policy-referenced and identity is cosmetic.
+2. **MEMORY.md line format: inline tags** (`- [p:high] …`) with a lenient parser.
+   Nano-friendliness wins; ambiguous lines degrade to `p:med` + verbatim text, never
+   a parse failure.
+3. **Retention: manual-only in v1.** Tombstone sweeps and `archive/` pruning are
+   user-initiated (UI flag shows how much is tombstoned). No automatic deletion of
+   a user's history ever, until a spec revision says otherwise.
+4. **Token budget: refuse-to-start** on over-budget persona files, with an editor
+   link in the error. Silent context loss is the worse failure mode.
 
 *The shrine keeps the penates. This file is what "yours" means, byte-for-byte.*
