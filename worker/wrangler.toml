@@ -4,5 +4,4 @@ compatibility_date = "2026-09-28"
 
 [[kv_namespaces]]
 binding = "WAITLIST"
-# id filled in after namespace creation:
-# id = "<namespace-id>"
+id = "3773afde55fa49b9834223443d140cb5"

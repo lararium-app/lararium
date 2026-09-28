@@ -49,7 +49,7 @@ export default {
       const ip = request.headers.get("CF-Connecting-IP") || "unknown";
       const rlKey = `_rl:${ip}`;
       if (await env.WAITLIST.get(rlKey)) return json({ ok: false, error: "slow_down" }, 429);
-      await env.WAITLIST.put(rlKey, "1", { expirationTtl: 10 });
+      await env.WAITLIST.put(rlKey, "1", { expirationTtl: 60 });
 
       const existing = await env.WAITLIST.get(email);
       if (!existing) {
