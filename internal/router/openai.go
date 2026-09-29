@@ -50,6 +50,13 @@ type openAIRequest struct {
 	Temperature float64         `json:"temperature,omitempty"`
 	Tools       []openAITool    `json:"tools,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
+	// Ask for a final usage chunk on streams (OpenAI-compatible; llama.cpp
+	// supports it). Without it, streaming turns report 0 tokens.
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openAIMessage struct {

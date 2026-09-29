@@ -22,8 +22,11 @@ type runtime struct {
 	rt     *router.Router
 	sess   *loop.Session
 	home   string
+	tools  []loop.Tool
 	closer []io.Closer
 }
+
+const currentNick = "lararium-user"
 
 func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 	// Build provider instances by name. defaultModel per provider = the
@@ -91,10 +94,23 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 	}
 
 	return &runtime{
-		cfg:  cfg,
-		rt:   rt,
-		home: cfg.Hearth.Home,
+		cfg:   cfg,
+		rt:    rt,
+		home:  cfg.Hearth.Home,
+		tools: buildTools(cfg.Hearth.Home),
 		sess: &loop.Session{
+			MaxTokens: cfg.Hearth.MaxTokens,
+			OnTool: func(phase, name, approval string, ok bool) {
+				if phase == "start" {
+					fmt.Printf("\n  ⚙ calling %s (%s)…\n", name, approval)
+				} else {
+					status := "ok"
+					if !ok {
+						status = "FAILED"
+					}
+					fmt.Printf("  ⚙ %s → %s\n", name, status)
+				}
+			},
 			Log:            log,
 			Sys:            sys,
 			Router:         rt,
@@ -152,7 +168,18 @@ func repl(rt *runtime) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		t0 := time.Now()
 		fmt.Print("\nlararium> ")
-		text, err := rt.sess.RunTurn(ctx, line, func(d string) { fmt.Print(d) })
+		approver := func(name, args string) (bool, string) {
+			fmt.Printf("\n  ⚙ %s wants to run %s(%s) — allow? [y/N] ", currentNick, name, args)
+			if !sc.Scan() {
+				return false, ""
+			}
+			ans := strings.ToLower(strings.TrimSpace(sc.Text()))
+			if ans == "y" || ans == "yes" {
+				return true, currentNick
+			}
+			return false, ""
+		}
+		text, err := rt.sess.RunTurnTools(ctx, line, func(d string) { fmt.Print(d) }, rt.tools, approver)
 		stop()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "\nerror:", err)

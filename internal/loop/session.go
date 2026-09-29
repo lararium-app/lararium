@@ -4,14 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/lararium-app/lararium/internal/penatus"
 	"github.com/lararium-app/lararium/internal/router"
 )
 
+// OnTool, if set, is called as each tool call is dispatched ("start") and
+// finishes ("done"). The REPL uses it for a live status line.
+type OnToolFunc func(phase, name, approval string, ok bool)
+
 // Session is one live chat bound to its event log.
 type Session struct {
+	// MaxTokens caps each generation (0 = provider default). Slow local
+	// hardware needs a bound: an unbounded completion can idle for minutes.
+	MaxTokens int
+	// OnTool is optional tool-activity feedback (nil-safe).
+	OnTool OnToolFunc
 	Log    *penatus.Log
 	Sys    string // assembled system prompt
 	Router *router.Router
@@ -54,7 +65,8 @@ func (s *Session) messages() []router.Message {
 	}
 	msgs = append(msgs, summaries...)
 	for _, ev := range live {
-		if ev.T == "msg" {
+		switch ev.T {
+		case "msg":
 			var f struct {
 				Role string `json:"role"`
 				Text string `json:"text"`
@@ -73,9 +85,62 @@ func (s *Session) messages() []router.Message {
 				continue
 			}
 			msgs = append(msgs, router.Message{Role: role, Content: f.Text})
+		case "tool_call":
+			// Rebuild the assistant turn that carried this call (OpenAI
+			// wire requires the tool_calls field on the assistant msg).
+			var f struct {
+				CallID string          `json:"call_id"`
+				Name   string          `json:"name"`
+				Args   json.RawMessage `json:"args"`
+			}
+			decodeInto(ev, &f)
+			if f.CallID == "" {
+				continue
+			}
+			msgs = append(msgs, router.Message{
+				Role:      router.RoleAssistant,
+				ToolCalls: []router.ToolCall{{ID: f.CallID, Name: f.Name, ArgsJSON: string(f.Args)}},
+			})
+		case "tool_result":
+			var f struct {
+				CallID string `json:"call_id"`
+				OK     bool   `json:"ok"`
+				Ref    string `json:"result_ref"`
+			}
+			decodeInto(ev, &f)
+			if f.CallID == "" {
+				continue
+			}
+			text := f.Ref // inline results store their text under "text"
+			var tf struct {
+				Text string `json:"text"`
+			}
+			decodeInto(ev, &tf)
+			if tf.Text != "" {
+				text = tf.Text
+			} else if f.Ref != "" {
+				// Blob-spilled result: read it back for the model.
+				if b, err := os.ReadFile(s.resolveRef(f.Ref)); err == nil {
+					text = string(b)
+				} else {
+					text = "[result blob missing: " + f.Ref + "]"
+				}
+			}
+			if !f.OK && text == "" {
+				text = "[tool failed]"
+			}
+			msgs = append(msgs, router.Message{Role: router.RoleTool, Content: text, ToolCallID: f.CallID})
 		}
 	}
 	return msgs
+}
+
+// resolveRef maps a result_ref (relative to the session dir) to a path.
+func (s *Session) resolveRef(ref string) string {
+	if filepath.IsAbs(ref) {
+		return ref
+	}
+	return filepath.Join(s.Log.Dir(), ref)
 }
 
 // decodeInto unmarshals an event's flattened fields into dst.
@@ -87,54 +152,117 @@ func decodeInto(ev penatus.Event, dst any) {
 	_ = json.Unmarshal(b, dst)
 }
 
-// RunTurn appends the user message, streams the assistant completion, and
-// appends it. Returns the full assistant text.
+// RunTurn appends the user message and drives the agent loop: completion →
+// tool dispatch (each dispatch logged BEFORE execution) → follow-up
+// completions until the model answers without calling tools (or maxSteps).
+// Returns the final assistant text.
 func (s *Session) RunTurn(ctx context.Context, userText string, onDelta func(string)) (string, error) {
+	return s.runTurn(ctx, userText, onDelta, nil)
+}
+
+// RunTurnTools is RunTurn with a tool registry + approval hook.
+func (s *Session) RunTurnTools(ctx context.Context, userText string, onDelta func(string), tools []Tool, ap Approver) (string, error) {
+	return s.runTurn(ctx, userText, onDelta, newToolEngine(tools, s.Log.Dir(), ap))
+}
+
+// maxSteps bounds one user turn's model round-trips (no infinite tool loops).
+const maxSteps = 12
+
+func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
 	src, _ := json.Marshal(map[string]any{"channel": "api", "device": nil})
-	if err := s.Log.Append(penatus.Event{
-		T:  "msg",
-		TS: time.Now().UTC().Format(time.RFC3339),
-		Fields: map[string]json.RawMessage{
-			"role": raw("user"),
-			"text": raw(userText),
-			"src":  src,
-		},
+	if err := s.appendEvent("msg", map[string]json.RawMessage{
+		"role": raw("user"), "text": raw(userText), "src": src,
 	}); err != nil {
 		return "", fmt.Errorf("log user msg: %w", err)
 	}
 
-	msgs := s.messages()
-	var full string
-	comp, err := s.Router.CompleteStream(ctx, "chat", msgs, router.Options{},
-		func(delta string) error {
+	var final string
+	for step := 0; step < maxSteps; step++ {
+		msgs := s.messages()
+		opts := router.Options{MaxTokens: s.MaxTokens}
+		if eng != nil {
+			opts.Tools = eng.specs()
+		}
+		var streamed string
+		comp, err := s.Router.CompleteStream(ctx, "chat", msgs, opts, func(d string) error {
+			// Stream everything: we can't know mid-stream whether this
+			// round ends in a tool call; visible preambles are fine.
 			if onDelta != nil {
-				onDelta(delta)
+				onDelta(d)
 			}
-			full += delta
+			streamed += d
 			return nil
 		})
-	if err != nil {
-		return full, fmt.Errorf("complete: %w", err)
-	}
-	text := comp.Text
-	if text == "" {
-		text = full
-	}
+		if err != nil {
+			return final, fmt.Errorf("complete: %w", err)
+		}
+		s.lastIn, s.lastOut = comp.InTokens, comp.OutTokens
 
-	if err := s.Log.Append(penatus.Event{
-		T:  "msg",
-		TS: time.Now().UTC().Format(time.RFC3339),
-		Fields: map[string]json.RawMessage{
-			"role":  raw("assistant"),
-			"text":  raw(text),
-			"model": raw(comp.Model),
-			"usage": mustJSON(map[string]int{"in": comp.InTokens, "out": comp.OutTokens}),
-		},
-	}); err != nil {
-		return text, fmt.Errorf("log assistant msg: %w", err)
+		text := comp.Text
+		if text == "" {
+			text = streamed
+		}
+
+		if len(comp.ToolCalls) == 0 {
+			// Final answer for this user turn.
+			if err := s.appendEvent("msg", map[string]json.RawMessage{
+				"role": raw("assistant"), "text": raw(text), "model": raw(comp.Model),
+				"usage": mustJSON(map[string]int{"in": comp.InTokens, "out": comp.OutTokens}),
+			}); err != nil {
+				return text, fmt.Errorf("log assistant msg: %w", err)
+			}
+			return text, nil
+		}
+
+		// Tool round: log the assistant's call turn, then dispatch each.
+		// The messages() projection rebuilds wire shape from these events,
+		// so the log stays the single source of truth.
+		for _, tc := range comp.ToolCalls {
+			args := json.RawMessage(tc.ArgsJSON)
+			if !json.Valid(args) {
+				args = raw(tc.ArgsJSON)
+			}
+			approval, tool, denyText := eng.Gate(tc)
+			if err := s.appendEvent("tool_call", map[string]json.RawMessage{
+				"call_id": raw(tc.ID), "name": raw(tc.Name), "args": args,
+				"approval": raw(approval),
+			}); err != nil {
+				return final, fmt.Errorf("log tool_call: %w", err)
+			}
+			if s.OnTool != nil {
+				s.OnTool("start", tc.Name, approval, false)
+			}
+
+			var out ToolOutcome
+			if tool != nil {
+				out = eng.Execute(ctx, tc, tool, approval)
+			} else {
+				out = ToolOutcome{Approval: approval, OK: false, Text: denyText, Digest: digest(tc.ArgsJSON)}
+			}
+			if s.OnTool != nil {
+				s.OnTool("done", tc.Name, approval, out.OK)
+			}
+			resFields := map[string]json.RawMessage{
+				"call_id": raw(tc.ID), "ok": mustJSON(out.OK),
+				"result_digest": raw(out.Digest),
+			}
+			if out.ResultRef != "" {
+				resFields["result_ref"] = raw(out.ResultRef)
+			} else {
+				resFields["text"] = raw(out.Text)
+			}
+			if err := s.appendEvent("tool_result", resFields); err != nil {
+				return final, fmt.Errorf("log tool_result: %w", err)
+			}
+		}
+		// Loop: messages() now includes the tool results; model continues.
+		final = text
 	}
-	s.lastIn, s.lastOut = comp.InTokens, comp.OutTokens
-	return text, nil
+	return final, fmt.Errorf("tool loop exceeded %d steps", maxSteps)
+}
+
+func (s *Session) appendEvent(t string, fields map[string]json.RawMessage) error {
+	return s.Log.Append(penatus.Event{T: t, TS: time.Now().UTC().Format(time.RFC3339), Fields: fields})
 }
 
 // MaybeCompact checks the post-turn trigger and, if over, summarizes the

@@ -91,6 +91,9 @@ type Log struct {
 // OpenLog reads and validates the events.jsonl in the given session directory.
 // Seq must increase by 1 starting from 1. A gap or duplicate opens the log
 // read-only and returns a CorruptError.
+// Dir returns the session directory this log lives in.
+func (l *Log) Dir() string { return l.dir }
+
 func OpenLog(dir string) (*Log, error) {
 	path := filepath.Join(dir, "events.jsonl")
 
