@@ -37,7 +37,7 @@ type ModelsConfig struct {
 }
 
 type ProviderConf struct {
-	// Ref format used by chains: "<name>/<model>" e.g. "p40/qwen3.6-27b".
+	// Ref format used by chains: "<name>/<model>" e.g. "local/llama-model".
 	Name      string `yaml:"name"`
 	BaseURL   string `yaml:"base_url"`
 	APIKey    string `yaml:"api_key"`     // literal or env:VAR
