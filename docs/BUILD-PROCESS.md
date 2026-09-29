@@ -1,6 +1,6 @@
 # Lararium Build Process — v1 draft
 
-Status: FOR REVIEW. Every phase gate below is a checkpoint where Owner approves, questions, or redirects before work continues. This document is the contract for how Lararium gets built, by whom, with what verification, in what order.
+Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Owner approves, questions, or redirects before work continues. This document is the contract for how Lararium gets built, by whom, with what verification, in what order.
 
 ---
 
@@ -10,9 +10,9 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where Owner approves,
 
 | Actor | Job |
 |---|---|
-| Owner | Product owner. Approves specs, reviews demos at phase gates, owns all launch/announcement decisions. |
+| Product Owner | Approves specs, reviews demos at phase gates, owns all launch/announcement decisions. |
 | Hermes | Architect, reviewer, release engineer. Writes specs and test suites, delegates drafting, verifies every diff against the spec, owns CI/CD and security review. |
-| OpenCode (Qwen3.6-27B, local on bench-gpu's P40) | Code drafter. Never merges anything. Known failure mode: fabricates APIs and module bodies — every file it writes is verified against claims before merge. |
+| OpenCode (Qwen3.6-27B, local GPU drafter box) | Code drafter. Never merges anything. Known failure mode: fabricates APIs and module bodies — every file it writes is verified against claims before merge. |
 | GitHub Actions CI | Independent truth. Tests run on clean runners; local-green-but-CI-red counts as red. |
 
 **Every change follows the same pipeline:**
@@ -164,7 +164,7 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where Owner approves,
 - Threat-model doc, security README, `SECURITY.md`.
 - Repo goes public (AGPLv3), landing page gets GitHub button, waitlist emailed in waves.
 
-**Milestone M8 — fire lit in public.** **Alpha gate (Owner's call):** core stable *and* Android app installable-and-pairable — public alpha is announced only when both hold.
+**Milestone M8 — fire lit in public.** **Alpha gate (Product Owner's call):** core stable *and* Android app installable-and-pairable — public alpha is announced only when both hold.
 
 ---
 
@@ -184,6 +184,6 @@ Full-time: ~5–6 months to M8. Evening/weekend pace: ~8–9. Phases 3+5 and 6+7
 
 **Still open:**
 
-- **4. Connector priority:** first-ten draft stands (Gmail, Google Calendar, Drive, GitHub, Notion, Home Assistant, Spotify, News/RSS, IMAP/SMTP, Brave) — revise with Owner's daily-driver list before Phase 7.
+- **4. Connector priority:** first-ten draft stands (Gmail, Google Calendar, Drive, GitHub, Notion, Home Assistant, Spotify, News/RSS, IMAP/SMTP, Brave) — revise with the Product Owner's daily-driver list before Phase 7.
 
 *Next action: Phase 1 — penatus spec (`docs/penatus-spec.md`) → Gate G1 review. Android pairing protocol sketch belongs in that spec's transport section so Phase 3 can start the client early.*

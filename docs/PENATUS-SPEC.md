@@ -4,7 +4,7 @@
 > that every Lararium component — hearthd, the PWA, importers, nuntius, the Android app —
 > read and write. Anything not in this spec is not part of the contract.
 
-Status: **APPROVED — Gate G1 cleared 2026-09-28 (Owner: draft picks on all four
+Status: **APPROVED — Gate G1 cleared 2026-09-28 (Product Owner: draft picks on all four
 open questions).** §6 records the resolved decisions; this document is now the
 frozen contract. Changes require a version bump discussion.
 Format version: `penatus/1`. Every bundle, file header, and event carries this tag.
@@ -99,7 +99,7 @@ treats user edits as ground truth). Structure is a flat list of **memory lines**
 
 ```markdown
 - [p:high] [since:2026-09-28] Owner's alpha gate = core stable AND Android pairable.
-- [p:med] bench-gpu runs the Qwen drafter on a P40.
+- [p:med] The drafter box runs Qwen on a P40 GPU.
 ```
 
 - `p:` priority ∈ `high|med|low` (default `med`). High survives every compaction
