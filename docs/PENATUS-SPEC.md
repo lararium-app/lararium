@@ -1,12 +1,11 @@
-# Penatus Specification — v0.1 (DRAFT, for Gate G1)
+# Penatus Specification — v0.1
 
 > The file layer is the product's memory. This document freezes the on-disk formats
 > that every Lararium component — hearthd, the PWA, importers, nuntius, the Android app —
 > read and write. Anything not in this spec is not part of the contract.
 
-Status: **APPROVED — Gate G1 cleared 2026-09-28 (Product Owner: draft picks on all four
-open questions).** §6 records the resolved decisions; this document is now the
-frozen contract. Changes require a version bump discussion.
+Status: **APPROVED — frozen 2026-09-28.** §6 records the resolved decisions;
+this document is the frozen contract. Changes require a version bump discussion.
 Format version: `penatus/1`. Every bundle, file header, and event carries this tag.
 
 Design rules (from ARCHITECTURE.md §1, restated as format law):
@@ -99,7 +98,6 @@ treats user edits as ground truth). Structure is a flat list of **memory lines**
 
 ```markdown
 - [p:high] [since:2026-09-28] Owner's alpha gate = core stable AND Android pairable.
-- [p:med] The drafter box runs Qwen on a P40 GPU.
 ```
 
 - `p:` priority ∈ `high|med|low` (default `med`). High survives every compaction

@@ -9,7 +9,7 @@ Working name lock: `lararium.io` (owned 2026-09-28, Cloudflare Registrar). "Pena
 
 ## 0. The founding decision: own the core
 
-**We do not build on Hermes (or any existing agent product).** Hermes served as a working prototype for feature discovery — useful, throwaway as a dependency.
+**We do not build on any existing agent product.** Early prototypes in generic agent runtimes served for feature discovery — useful, throwaway as a dependency.
 
 Why a clean core:
 
@@ -17,7 +17,7 @@ Why a clean core:
 - **The core is small.** The genuinely differentiated part — session engine, context/compaction policy, memory lifecycle, approval flow, credential surrogation — is ~10–20K lines of disciplined code, not a decade of research. Everyone else's "secret sauce" is that same loop plus good models.
 - **Borrow commodities, own decisions.** We build the *loop*; we consume *libraries*: Playwright/CDP (browser), MCP SDKs (tools), sqlite-vec (search), systemd-nspawn (isolation). Vendored, version-pinned, in-tree. "100% ours" = we own every decision path; library dependencies are pinned, audited, and replaceable.
 
-Hermes/OpenCode stay as internal dogfooding tools during development — never a runtime dependency.
+Prototyping tools stay outside the product — never a runtime dependency.
 
 ---
 

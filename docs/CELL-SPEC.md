@@ -1,8 +1,7 @@
 # CELL-SPEC — sandbox contract (`cell/1`)
 
-Status: **FROZEN — approved (G3a), 2026-09-29** (v1→v2.3 via 4 review
-rounds; see changelogs). Changes after freeze require a new gate.
-Scope: Phase 3 of BUILD-PROCESS.md. Defines the **cell**: the per-user sandbox
+Status: **FROZEN — approved 2026-09-29.** Changes require a version bump
+and re-approval. Defines the **cell**: the per-user sandbox
 container that executes tools. The daemon (hearthd) never executes tools in its
 own process space; it dispatches them into a running cell.
 
@@ -11,72 +10,6 @@ its cgroup. *Template* = the pristine cached rootfs that forms every cell's
 lower layer. *Egress proxy* = the dumb pass-through forwarder (Phase 3) that
 later becomes custos (Phase 4).
 
-Changelog v2.2→v2.3 (third agy round — 4 findings, all accepted):
-1. §4 — **coop-path hole (the serious one):** env-cooperating clients aim
-   directly at the proxy port and are never DNAT'd, so a `ct status dnat`-only
-   accept left the intended door itself dropped. Input chain now accepts: dnat
-   traffic, explicit `proxyport` tcp, established/related — then drops.
-2. §4/§6 — veth timing corrected: `--network-veth` creates the pair *at
-   spawn*; host-end addressing runs post-spawn against the interface nspawn
-   actually created (resolved via peer-symlink readlink, never a guessed
-   name), with bounded retry; C7 allows that settle window.
-3. §2/§4 — nat-table regeneration pinned to **start/stop** (not
-   create/destroy) since rules cover *booted* cells.
-4. §2/§4 — guest `.network` written into `upper/` **before** the overlay is
-   mounted (create order pinned: mkdir → seed upper → mount); mutating a
-   mounted upperdir from the host is undefined-behavior territory.
-
-Changelog v2.1→v2.2 (agy confirmation pass: all 7 prior fixes confirmed, then
-6 new findings, all real, all fixed):
-1. §6 — `--keep-unit` mandated: machined otherwise migrates the payload into
-   a separate `machine-*.scope`, so cgroup limits would cage only the
-   supervisor and C9's kill would orphan the still-running container.
-2. §4 — nat rules are per-cell (`iifname "v-cell-<id>"` → that cell's own
-   gateway address), whole-table atomic replace on churn; the single global
-   rule as written could not address per-`<n>` gateways.
-3. §4 — per-cell guest `.network` delivery pinned: written into `upper/`
-   pre-boot by `cell create` (template is RO; nothing else wrote it before).
-4. C10b — subuid base comes from cell.json (recorded at start), not guessed;
-   `pick` allocates dynamically.
-5. §6 — `StopKillMode=mixed` is not a systemd property → `KillMode=mixed`.
-6. §1 — kernel floor raised to 5.19: idmapped mounts over overlayfs landed
-   later than plain idmapped mounts (5.15).
-
-Changelog v2→v2.1 (from the automated review gate; all seven verified real):
-1. §4 — DNAT was in a `forward` hook, where nftables rejects it: DNAT lives
-   only in `nat`-type prerouting/output. Rewritten: `ip` table, nat-prerouting
-   for the DNAT; consequence traced — DNAT'd flows are locally destined and
-   traverse **input**, so the input policy accepts exactly `ct status dnat`
-   and forward becomes a pure drop-all.
-2. §4 — DNAT-to-dumb-proxy honesty: transparently intercepted clients send
-   relative-form requests a forward proxy cannot answer. The contract is now
-   explicitly *no-bypass guarantee, not usability*: env-ignoring traffic gets
-   refused (fail-closed), never served; real transparent handling is scoped
-   out (§9) with a new check C7b pinning the refusal.
-3. §1/§3 — `--private-users=pick` and manual `--uid-map` are mutually
-   exclusive; manual maps dropped. Spec now pins `pick` +
-   `--private-users-ownership=auto` (idmapped mounts), because chown-mode
-   would recursively copy-up the entire read-only template into `upper/` at
-   every boot.
-4. §2/§4 — `.network` files depend on systemd-networkd running (not the case
-   on Ubuntu-desktop/typical-Arch hosts): host-end addressing moves to
-   idempotent `ip` commands run by `cell start`; the guest half is fixed by
-   installing + enabling `systemd-networkd` **in the template**.
-5. C10 — asserted the nspawn supervisor's uid; that process is legitimately
-   host root. Rewritten to target payload processes (mapped uid of a known
-   exec'd process as seen from the host).
-6. C11 — in-cell `memory.max` reads `max` under cgroup namespace even when
-   the cap is real. Replaced with a behavioral enforcement probe (allocation
-   must OOM).
-7. §8 — machine-id check kept; kernel floor for idmapped bind mounts pinned
-   (5.15+) with a live `doctor` probe instead of a version-string trust.
-
-Changelog v1→v2 (architecture review): userns mandated; OverlayFS replaces
-reflink copies (ext4 has no reflink); in-cell default route (route-less
-guests fail ENETUNREACH before any host rule runs); `cell start` (boot) vs
-`cell run` (exec) split (`systemd-run --machine` execs, never boots).
-
----
 
 ## 1. Isolation primitive
 
@@ -93,8 +26,8 @@ guests fail ENETUNREACH before any host rule runs); `cell start` (boot) vs
   reopens the chown problem. Bind sources (§3) ride the same mechanism:
   kernel idmapped binds (≥ 5.15).
 - Kernel floor **5.19** — idmapped mounts over **overlayfs** (the `merged/`
-  path) require 5.19, not the 5.15 floor plain idmapped mounts do; both
-  benches (6.12, 7.2) clear it easily. Verified by live probe, not version
+  path) require 5.19, not the 5.15 floor plain idmapped mounts do. Verified by
+  live probe, not version
   strings: `doctor` spawns a throwaway cell and asserts a
   `/workspace` write lands owned by the mapped uid (same assertion as C10c).
 
@@ -293,9 +226,9 @@ pipes + exit code, cwd `/workspace`, timeout enforced host-side. No network
 in the bridge. Full daemon wiring is Phase 3 tail work after M2 — the cage
 suite drives `cell run` directly.
 
-## 8. Cage-proof suite (the G3b evidence)
+## 8. Cage-proof suite
 
-`tests/cage/` — scripted; one report per bench (kernel, systemd, nspawn, nft
+`tests/cage/` — scripted; one report per test host (kernel, systemd, nspawn, nft
 versions in the header); **exit 0 only if every check passes.** Fresh cell
 per check unless stated.
 
@@ -323,15 +256,8 @@ proxy interception (SO_ORIGINAL_DST/TPROXY) — see §4's honest contract. No
 hostile multi-tenancy beyond userns mapping (gVisor/firecracker remain the
 hostile-hosting axis).
 
-## 10. Verification bar & review gates
+## 10. Verification bar
 
-`go vet ./... && go test ./... -count=1` green; cage suite green on **two
-bench systems**, reports attached to the PR; `cell doctor` output included
-per bench. **Gate G3a = Product Owner approval of this text before code
-lands** (v1/v2 approvals void). **Gate G3b = suite review + two-bench green.**
-
-Every artifact reaching the Product Owner has passed the standard review
-bundle (BUILD-PROCESS §Review gates): Hermes static sweep, fresh-context
-Hermes reviewer, and an independent **Antigravity CLI headless pass**
-(`agy --model gemini-3.8-flash-high -p=…`). Findings bundled, conflicts
-flagged; the PO decides once on the bundle.
+`go vet ./... && go test ./... -count=1` green; the cage suite green on
+**two independent machines** (different kernel/systemd generations
+preferred); reports and `cell doctor` output attached to the merge PR.

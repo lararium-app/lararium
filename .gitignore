@@ -14,3 +14,6 @@ upload.json
 
 # Scratch persona home from compose runs (sessions/ JSONL)
 docker/hearth/sessions/
+
+# Local tool state
+.wrangler/
