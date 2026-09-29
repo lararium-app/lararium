@@ -1,7 +1,7 @@
 # CELL-SPEC — sandbox contract (`cell/1`)
 
-Status: DRAFT v2.3 — three automated review rounds applied (see changelogs);
-supersedes v2.2. **v1/v2 approvals void — fresh sign-off required (§10).**
+Status: **FROZEN — approved (G3a), 2026-09-29** (v1→v2.3 via 4 review
+rounds; see changelogs). Changes after freeze require a new gate.
 Scope: Phase 3 of BUILD-PROCESS.md. Defines the **cell**: the per-user sandbox
 container that executes tools. The daemon (hearthd) never executes tools in its
 own process space; it dispatches them into a running cell.
