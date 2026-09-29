@@ -82,6 +82,7 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Own
 |---|---|---|---|
 | G1 (penatus spec) | ✅ Approved | 2026-09-28 | Product Owner, chat record |
 | G2 (M1 demo + router review) | ✅ Approved | 2026-09-29 | Demo vs OpenRouter cloud model: chat, tool loop, memory persist across restart, `/compact`, failover chain. Carrier bugs found+fixed at gate: llama.cpp-only capability probe (0-token window on OpenAI-compatible hosts); silent 200-with-error-body accepted as completion. Carried to M1.5: `docker compose up` form + second bench system verification. |
+| G3a (cell spec) | 🔄 v2 pending | 2026-09-29 | v1 approved in chat, then an architecture review surfaced four defects (route-less guest = ENETUNREACH before DNAT; no userns = in-cell root is host root; ext4 has no reflink; `systemd-run --machine` execs, doesn't boot). All accepted → CELL-SPEC v2; v1 approval void, fresh sign-off required. |
 
 **M1.5 progress (2026-09-29):** CI gate live with x86_64 + ARM64 matrix (`build` + `vet` + `test -race`, first runs green); `docker compose up` form landed and smoke-tested (distroless image, env-only keys, persona bind mount; one live chat turn through the container REPL). Second bench verified: same compose form, clean build + live turn on the operator's second bench system (an Arch-based host, Docker 29) — proof nothing is hardcoded to the dev box.
 
