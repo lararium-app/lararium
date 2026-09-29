@@ -5,7 +5,12 @@ shot*.js
 shot-*.png
 # Secrets & tokens never enter git
 config/
+# ...but the reference (env-only) config for the Docker form is tracked:
+!docker/config/
 bin/
 memsearch_probe.go
 smoke.go
 upload.json
+
+# Scratch persona home from compose runs (sessions/ JSONL)
+docker/hearth/sessions/
