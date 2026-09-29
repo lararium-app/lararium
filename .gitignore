@@ -7,3 +7,5 @@ shot-*.png
 config/
 bin/
 memsearch_probe.go
+smoke.go
+upload.json

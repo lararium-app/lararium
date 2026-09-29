@@ -5,3 +5,8 @@ compatibility_date = "2026-09-28"
 [[kv_namespaces]]
 binding = "WAITLIST"
 id = "3773afde55fa49b9834223443d140cb5"
+
+[[routes]]
+pattern = "api.lararium.io"
+zone_name = "lararium.io"
+custom_domain = true

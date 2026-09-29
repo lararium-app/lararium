@@ -26,7 +26,9 @@ type runtime struct {
 	closer []io.Closer
 }
 
-const currentNick = "lararium-user"
+// userNick is the generic name the REPL uses for the operator in prompts.
+// It must stay generic — Lararium ships to strangers, not to one person.
+const userNick = "you"
 
 func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 	// Build provider instances by name. defaultModel per provider = the
@@ -170,13 +172,13 @@ func repl(rt *runtime) {
 		t0 := time.Now()
 		fmt.Print("\nlararium> ")
 		approver := func(name, args string) (bool, string) {
-			fmt.Printf("\n  ⚙ %s wants to run %s(%s) — allow? [y/N] ", currentNick, name, args)
+			fmt.Printf("\n  ⚙ You want to run %s(%s) — allow? [y/N] ", name, args)
 			if !sc.Scan() {
 				return false, ""
 			}
 			ans := strings.ToLower(strings.TrimSpace(sc.Text()))
 			if ans == "y" || ans == "yes" {
-				return true, currentNick
+				return true, userNick
 			}
 			return false, ""
 		}
