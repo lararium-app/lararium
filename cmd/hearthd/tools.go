@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/loop"
+	"github.com/lararium-app/lararium/internal/memindex"
 	"github.com/lararium-app/lararium/internal/penatus"
 	"github.com/lararium-app/lararium/internal/router"
 )
@@ -71,6 +72,58 @@ func buildTools(home string) []loop.Tool {
 					return "no matching line", nil
 				}
 				return fmt.Sprintf("removed %d line(s)", n), nil
+			},
+		},
+		{
+			Spec: router.ToolSpec{
+				Name:             "memory_search",
+				Description:      "Full-text (BM25) search over the memory/ tree (people, projects, notes). Returns path, title, snippet. Syncs the index first, so it always sees current files.",
+				ParamsJSONSchema: `{"type":"object","properties":{"query":{"type":"string","description":"search words"},"limit":{"type":"integer","description":"max results (default 5)"}},"required":["query"]}`,
+			},
+			Trusted: true,
+			Run: func(ctx context.Context, args string) (string, error) {
+				var a struct {
+					Query string `json:"query"`
+					Limit int    `json:"limit"`
+				}
+				if err := json.Unmarshal([]byte(args), &a); err != nil {
+					return "", fmt.Errorf("bad args: %w", err)
+				}
+				if a.Limit <= 0 || a.Limit > 20 {
+					a.Limit = 5
+				}
+				ix, err := memindex.Open(home)
+				if err != nil {
+					return "", err
+				}
+				defer ix.Close()
+				if _, err := ix.Sync(ctx); err != nil {
+					return "", err
+				}
+				hits, err := ix.Search(ctx, a.Query, a.Limit)
+				if err != nil {
+					return "", err
+				}
+				if len(hits) == 0 {
+					return "no matches", nil
+				}
+				var sb strings.Builder
+				for _, h := range hits {
+					fmt.Fprintf(&sb, "%s\t%s\n", h.Path, h.Title)
+					// Snippet: first lines of the body (after frontmatter) so
+					// the model can answer without a follow-up read_file.
+					if b, err := os.ReadFile(filepath.Join(home, "memory", filepath.FromSlash(h.Path))); err == nil {
+						if doc, perr := penatus.ParseDoc(b); perr == nil {
+							snip := strings.TrimSpace(doc.Body)
+							if r := []rune(snip); len(r) > 200 {
+								snip = string(r[:200]) + "…"
+							}
+							snip = strings.ReplaceAll(snip, "\n", " ")
+							fmt.Fprintf(&sb, "    %s\n", snip)
+						}
+					}
+				}
+				return sb.String(), nil
 			},
 		},
 		{
