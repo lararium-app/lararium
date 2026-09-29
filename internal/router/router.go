@@ -240,12 +240,13 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 	}
 
 	body := openAIRequest{
-		Model:       model,
-		Messages:    reqMsgs,
-		MaxTokens:   opts.MaxTokens,
-		Temperature: opts.Temperature,
-		Tools:       reqTools,
-		Stream:      true,
+		Model:         model,
+		Messages:      reqMsgs,
+		MaxTokens:     opts.MaxTokens,
+		Temperature:   opts.Temperature,
+		Tools:         reqTools,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -325,6 +326,13 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 			c.Model = chunk.Model
 		}
 
+		// Final usage chunk (stream_options.include_usage).
+		if chunk.Usage != nil {
+			c.InTokens = chunk.Usage.PromptTokens
+			c.OutTokens = chunk.Usage.CompletionTokens
+			c.Probed = true
+		}
+
 		for _, choice := range chunk.Choices {
 			// Forward text delta.
 			if choice.Delta.Content != "" {
@@ -383,10 +391,10 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 		})
 	}
 
-	// Estimate tokens from accumulated text.
-	c.InTokens = 0
-	c.OutTokens = len(c.Text) / 4
-	c.Probed = false
+	// Fallback estimate only if the server sent no usage chunk.
+	if !c.Probed {
+		c.OutTokens = len(c.Text) / 4
+	}
 
 	return c, nil
 }

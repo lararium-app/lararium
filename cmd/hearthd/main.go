@@ -25,6 +25,8 @@ type HearthConfig struct {
 	// CompactionTriggerPct: when live context exceeds this share of the
 	// probed window, compact before the next completion. Spec default 80.
 	CompactionTriggerPct int `yaml:"compaction_trigger_pct"`
+	// MaxTokens caps each generation (0 = provider default).
+	MaxTokens int `yaml:"max_tokens"`
 }
 
 type ModelsConfig struct {

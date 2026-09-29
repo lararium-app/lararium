@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -77,5 +78,32 @@ func TestStreamTwoToolCallsInIndexOrder(t *testing.T) {
 	}
 	if len(c.ToolCalls) != 2 || c.ToolCalls[0].Name != "first" || c.ToolCalls[1].Name != "second" {
 		t.Fatalf("index order broken: %+v", c.ToolCalls)
+	}
+}
+
+func TestStreamUsageChunkCaptured(t *testing.T) {
+	var sawStreamOptions bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if so, ok := body["stream_options"].(map[string]any); ok {
+			sawStreamOptions, _ = so["include_usage"].(bool)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":111,\"completion_tokens\":7}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	r := NewRouter(Profile{Chain: []Target{{Provider: NewOpenAI(srv.URL+"/v1", "", "m")}}})
+	c, err := r.CompleteStream(context.Background(), "chat", nil, Options{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawStreamOptions {
+		t.Fatal("stream_options.include_usage not sent on streaming requests")
+	}
+	if c.InTokens != 111 || c.OutTokens != 7 || !c.Probed {
+		t.Fatalf("usage not captured from stream: in=%d out=%d probed=%v", c.InTokens, c.OutTokens, c.Probed)
 	}
 }
