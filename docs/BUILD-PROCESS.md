@@ -12,8 +12,8 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Own
 |---|---|
 | Product Owner | Approves specs, reviews demos at phase gates, owns all launch/announcement decisions. |
 | Hermes | Architect, reviewer, release engineer. Writes specs and test suites, delegates drafting, verifies every diff against the spec, owns CI/CD and security review. |
-| OpenCode (Qwen3.6-27B, local GPU drafter box) | Code drafter. Never merges anything. Known failure mode: fabricates APIs and module bodies — every file it writes is verified against claims before merge. |
-| Antigravity CLI (`agy`, model-pinned `gemini-3.1-pro-high`) | Independent reviewer. Headless pass (`agy --model … -p=…`) on every artifact reaching the Product Owner — specs and diffs alike. Model-diverse by design (menu includes Claude Opus 4.6); its findings ship bundled with Hermes', conflicts flagged, never silently dropped. Caught 4 spec defects pre-G3 that Hermes' own passes missed. |
+| OpenCode (KAT-2.5-Dev, local GPU drafter box; Qwen3.6-27B fallback) | Code drafter. Never merges anything. Known failure mode: fabricates APIs and module bodies — every file it writes is verified against claims before merge. |
+| Antigravity CLI (`agy`, model-pinned `gemini-3.8-flash-high`) | Independent reviewer. Headless pass (`agy --model … -p=…`) on every artifact reaching the Product Owner — specs and diffs alike. Model-diverse by design (menu includes Claude Opus 4.6); its findings ship bundled with Hermes', conflicts flagged, never silently dropped. Caught 4 spec defects pre-G3 that Hermes' own passes missed. |
 | GitHub Actions CI | Independent truth. Tests run on clean runners; local-green-but-CI-red counts as red. |
 
 **Every change follows the same pipeline:**

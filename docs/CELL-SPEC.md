@@ -333,5 +333,5 @@ lands** (v1/v2 approvals void). **Gate G3b = suite review + two-bench green.**
 Every artifact reaching the Product Owner has passed the standard review
 bundle (BUILD-PROCESS §Review gates): Hermes static sweep, fresh-context
 Hermes reviewer, and an independent **Antigravity CLI headless pass**
-(`agy --model gemini-3.1-pro-high -p=…`). Findings bundled, conflicts
+(`agy --model gemini-3.8-flash-high -p=…`). Findings bundled, conflicts
 flagged; the PO decides once on the bundle.
