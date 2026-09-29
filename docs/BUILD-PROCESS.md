@@ -83,7 +83,7 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Own
 | G1 (penatus spec) | ✅ Approved | 2026-09-28 | Product Owner, chat record |
 | G2 (M1 demo + router review) | ✅ Approved | 2026-09-29 | Demo vs OpenRouter cloud model: chat, tool loop, memory persist across restart, `/compact`, failover chain. Carrier bugs found+fixed at gate: llama.cpp-only capability probe (0-token window on OpenAI-compatible hosts); silent 200-with-error-body accepted as completion. Carried to M1.5: `docker compose up` form + second bench system verification. |
 
-**M1.5 progress (2026-09-29):** CI gate live (`build` + `vet` + `test -race`, first run green on the commit that added it); `docker compose up` form landed and smoke-tested (distroless image, env-only keys, persona bind mount; one live chat turn through the container REPL). Open M1.5 items: second bench system demo (ConsolePC) + CI matrix x86_64/ARM.
+**M1.5 progress (2026-09-29):** CI gate live with x86_64 + ARM64 matrix (`build` + `vet` + `test -race`, first runs green); `docker compose up` form landed and smoke-tested (distroless image, env-only keys, persona bind mount; one live chat turn through the container REPL). Second bench verified: same compose form, clean build + live turn on ConsolePC (CachyOS, Docker 29) — proof nothing is hardcoded to the dev box.
 
 ---
 
