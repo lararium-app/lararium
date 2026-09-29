@@ -13,6 +13,7 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Own
 | Product Owner | Approves specs, reviews demos at phase gates, owns all launch/announcement decisions. |
 | Hermes | Architect, reviewer, release engineer. Writes specs and test suites, delegates drafting, verifies every diff against the spec, owns CI/CD and security review. |
 | OpenCode (Qwen3.6-27B, local GPU drafter box) | Code drafter. Never merges anything. Known failure mode: fabricates APIs and module bodies — every file it writes is verified against claims before merge. |
+| Antigravity CLI (`agy`, model-pinned `gemini-3.1-pro-high`) | Independent reviewer. Headless pass (`agy --model … -p=…`) on every artifact reaching the Product Owner — specs and diffs alike. Model-diverse by design (menu includes Claude Opus 4.6); its findings ship bundled with Hermes', conflicts flagged, never silently dropped. Caught 4 spec defects pre-G3 that Hermes' own passes missed. |
 | GitHub Actions CI | Independent truth. Tests run on clean runners; local-green-but-CI-red counts as red. |
 
 **Every change follows the same pipeline:**
@@ -23,7 +24,13 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Own
 4. Hermes reviews the full diff line-by-line against brief — fabricated files/shims are rejected, not patched blind.
 5. Tests green locally **and** in CI (property tests for security code, golden tests for prompt assembly).
 6. Fresh-context reviewer pass before merge.
-7. Merge to `main` → auto-deploy where applicable (site today; binaries later).
+7. **Review gate bundle** (before anything reaches the Product Owner): Hermes
+   static sweep + fresh-context Hermes reviewer + `agy` headless pass
+   (spec/diff read from disk inside the clone; brief = defect hunt —
+   enforceability gaps, contradictions, untestable acceptance criteria).
+   Findings delivered as one bundle; disagreements between reviewers are
+   surfaced verbatim, not averaged. Zero findings still says what was checked.
+8. Merge to `main` → auto-deploy where applicable (site today; binaries later).
 
 **Hard rules**
 
@@ -82,7 +89,7 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Own
 |---|---|---|---|
 | G1 (penatus spec) | ✅ Approved | 2026-09-28 | Product Owner, chat record |
 | G2 (M1 demo + router review) | ✅ Approved | 2026-09-29 | Demo vs OpenRouter cloud model: chat, tool loop, memory persist across restart, `/compact`, failover chain. Carrier bugs found+fixed at gate: llama.cpp-only capability probe (0-token window on OpenAI-compatible hosts); silent 200-with-error-body accepted as completion. Carried to M1.5: `docker compose up` form + second bench system verification. |
-| G3a (cell spec) | 🔄 v2 pending | 2026-09-29 | v1 approved in chat, then an architecture review surfaced four defects (route-less guest = ENETUNREACH before DNAT; no userns = in-cell root is host root; ext4 has no reflink; `systemd-run --machine` execs, doesn't boot). All accepted → CELL-SPEC v2; v1 approval void, fresh sign-off required. |
+| G3a (cell spec) | 🔄 v2.3 pending | 2026-09-29 | v1 approved in chat, then 4 review rounds: architecture review (4 defects) → v2; agy round 1 (7) → v2.1; agy round 2 (6) → v2.2; agy round 3 (4+1 naming) → v2.3, which passes the reviewer with **NO BLOCKING FINDINGS** (18 findings total, all fixed). Approve v2.3 or deny with notes. |
 
 **M1.5 progress (2026-09-29):** CI gate live with x86_64 + ARM64 matrix (`build` + `vet` + `test -race`, first runs green); `docker compose up` form landed and smoke-tested (distroless image, env-only keys, persona bind mount; one live chat turn through the container REPL). Second bench verified: same compose form, clean build + live turn on the operator's second bench system (an Arch-based host, Docker 29) — proof nothing is hardcoded to the dev box.
 
