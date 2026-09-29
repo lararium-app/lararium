@@ -258,6 +258,8 @@ hostile-hosting axis).
 
 ## 10. Verification bar
 
-`go vet ./... && go test ./... -count=1` green; the cage suite green on
-**two independent machines** (different kernel/systemd generations
-preferred); reports and `cell doctor` output attached to the merge PR.
+`go vet ./... && go test ./... -count=1` green, and the cage suite (§8)
+green on every supported platform — exit 0 across C1–C12, with the report
+header recording the kernel/systemd/nspawn/nft versions it ran against, so
+any user can reproduce a result on their own machine. `cell doctor` passes
+cleanly before any cell operation.
