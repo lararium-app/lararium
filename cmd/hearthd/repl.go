@@ -44,7 +44,8 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 		if p.APIKeyEnv != "" {
 			key = os.Getenv(p.APIKeyEnv)
 		}
-		byName[p.Name] = router.NewOpenAI(p.BaseURL, key, firstModel[p.Name])
+		disableThink := p.Think != nil && !*p.Think
+		byName[p.Name] = router.NewOpenAIWith(p.BaseURL, key, firstModel[p.Name], disableThink)
 	}
 
 	targets := func(refs []string) ([]router.Target, error) {

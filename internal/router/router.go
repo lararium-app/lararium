@@ -248,6 +248,9 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
+	if o.disableThink {
+		body.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
+	}
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
