@@ -325,6 +325,13 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 			continue
 		}
 
+		// In-band error inside the SSE stream (HTTP 200 header, failure
+		// in body): raise it — failover must see it, not a truncated
+		// completion.
+		if chunk.Error != nil && chunk.Error.Message != "" {
+			return c, chunk.Error
+		}
+
 		if c.Model == "" && chunk.Model != "" {
 			c.Model = chunk.Model
 		}
@@ -407,6 +414,7 @@ type openAIStreamChunk struct {
 	Model   string         `json:"model"`
 	Choices []streamChoice `json:"choices"`
 	Usage   *openAIUsage   `json:"usage"`
+	Error   *inBandError   `json:"error"`
 }
 
 type streamChoice struct {
