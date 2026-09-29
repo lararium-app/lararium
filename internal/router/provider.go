@@ -61,6 +61,15 @@ type Provider interface {
 	Name() string
 }
 
+// Streamer is an optional interface for providers that support token
+// streaming. The router degrades non-streamers to a single whole-text
+// delta rather than failing the chain (a chain may legitimately mix
+// streaming and non-streaming targets).
+type Streamer interface {
+	Provider
+	StreamComplete(ctx context.Context, msgs []Message, opts Options, model string, onDelta StreamHandler) (*Completion, error)
+}
+
 // Caps describes the capabilities of a model/provider.
 type Caps struct {
 	ContextLength  int

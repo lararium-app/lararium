@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -54,6 +55,14 @@ func ProbeOpenAI(ctx context.Context, baseURL, apiKey, wanted string) (Caps, err
 		}
 		caps := parseModelEntry(entry)
 		if wanted != "" && entry.ID == wanted {
+			if caps.ContextLength == 0 {
+				// llama.cpp publishes the serving window on /props, not
+				// /models — probe it before giving up (detection, not
+				// assumption).
+				if n := probeLlamaProps(ctx, baseURL); n > 0 {
+					caps.ContextLength = n
+				}
+			}
 			return caps, nil
 		}
 		if fallback == nil && (caps.ContextLength > 0 || caps.SupportsVision) {
@@ -161,4 +170,56 @@ func parseModelEntry(entry modelEntry) Caps {
 	}
 
 	return caps
+}
+
+// probeLlamaProps fetches llama.cpp's /props endpoint (server root, i.e.
+// baseURL with any /v1 suffix trimmed) and returns the serving window,
+// or 0 on any failure. This is the authoritative *serving* window (what
+// -ctx actually gave us), not the training length. Builds differ on
+// placement (top level vs. default_generation_settings.params), so we
+// search recursively for the first "n_ctx" numeric.
+func probeLlamaProps(ctx context.Context, baseURL string) int {
+	root := strings.TrimRight(baseURL, "/")
+	root = strings.TrimSuffix(root, "/v1")
+	req, err := http.NewRequestWithContext(ctx, "GET", root+"/props", nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var props map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&props); err != nil {
+		return 0
+	}
+	return findNCTX(props)
+}
+
+// findNCTX returns the first positive "n_ctx" integer found in the JSON
+// tree (breadth-first so top-level wins over nested params).
+func findNCTX(m map[string]any) int {
+	if v, ok := m["n_ctx"]; ok {
+		if f, ok := v.(float64); ok && f > 0 {
+			return int(f)
+		}
+	}
+	// Deterministic order for nested descent.
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if sub, ok := m[k].(map[string]any); ok {
+			if n := findNCTX(sub); n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }

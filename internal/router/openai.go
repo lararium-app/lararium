@@ -197,3 +197,8 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 
 	return c, nil
 }
+
+// StreamComplete implements Streamer.
+func (o *openAI) StreamComplete(ctx context.Context, msgs []Message, opts Options, model string, onDelta StreamHandler) (*Completion, error) {
+	return o.streamComplete(ctx, msgs, opts, model, onDelta)
+}
