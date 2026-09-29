@@ -203,6 +203,13 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			text = streamed
 		}
 
+		// A completion with no text and no tool calls is a provider
+		// hiccup, not an answer (spec §3: turns are facts, not noise).
+		// Refuse to log it: the user sees the error and can retry.
+		if text == "" && len(comp.ToolCalls) == 0 {
+			return "", fmt.Errorf("empty completion from %s (nothing logged — retry)", comp.Model)
+		}
+
 		if len(comp.ToolCalls) == 0 {
 			// Final answer for this user turn.
 			if err := s.appendEvent("msg", map[string]json.RawMessage{

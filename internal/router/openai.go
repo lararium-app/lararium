@@ -111,6 +111,28 @@ type openAIResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 	} `json:"usage"`
+	Error *inBandError `json:"error"`
+}
+
+// inBandError models providers (OpenRouter free tier, notably) that answer
+// HTTP 200 but carry the real failure — overloaded, rate-limited — in the
+// JSON body. Treating those as completions silently swallows the failure.
+type inBandError struct {
+	Message string      `json:"message"`
+	Code    interface{} `json:"code"`
+}
+
+func (e *inBandError) Error() string {
+	// Format the code so isRetryable's "HTTP 5xx"/"HTTP 429" classification
+	// works on in-band errors exactly as on real HTTP statuses.
+	switch c := e.Code.(type) {
+	case float64:
+		return fmt.Sprintf("HTTP %d: %s (in-band)", int(c), e.Message)
+	case string:
+		return fmt.Sprintf("HTTP %s: %s (in-band)", c, e.Message)
+	default:
+		return fmt.Sprintf("in-band error: %s", e.Message)
+	}
 }
 
 func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*Completion, error) {
@@ -188,6 +210,12 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 	var oresp openAIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&oresp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	// HTTP 200 with an error body: some hosts hide upstream failures
+	// in-band. Raise them so the chain failover sees and classifies.
+	if oresp.Error != nil && oresp.Error.Message != "" {
+		return nil, oresp.Error
 	}
 
 	if len(oresp.Choices) == 0 {
