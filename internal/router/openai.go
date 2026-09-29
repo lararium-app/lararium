@@ -15,15 +15,25 @@ type openAI struct {
 	baseURL      string
 	apiKey       string
 	defaultModel string
+	// disableThink sends chat_template_kwargs{enable_thinking:false} to
+	// llama.cpp-style servers (measured 2.5–15× faster non-reasoning turns).
+	disableThink bool
 }
 
 // NewOpenAI creates an OpenAI-compatible provider.
 // Pass an empty apiKey for local llama.cpp (no Authorization header).
 func NewOpenAI(baseURL, apiKey, defaultModel string) Provider {
+	return NewOpenAIWith(baseURL, apiKey, defaultModel, false)
+}
+
+// NewOpenAIWith additionally disables model-side reasoning chains
+// (Qwen3-style thinking) when supported by the server template.
+func NewOpenAIWith(baseURL, apiKey, defaultModel string, disableThink bool) Provider {
 	return &openAI{
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		apiKey:       apiKey,
 		defaultModel: defaultModel,
+		disableThink: disableThink,
 	}
 }
 
@@ -53,6 +63,8 @@ type openAIRequest struct {
 	// Ask for a final usage chunk on streams (OpenAI-compatible; llama.cpp
 	// supports it). Without it, streaming turns report 0 tokens.
 	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	// llama.cpp extension; nil for providers that reject unknown fields.
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type streamOptions struct {
@@ -142,6 +154,9 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 		MaxTokens:   opts.MaxTokens,
 		Temperature: opts.Temperature,
 		Tools:       reqTools,
+	}
+	if o.disableThink {
+		body.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
 	}
 
 	jsonBody, err := json.Marshal(body)

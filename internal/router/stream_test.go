@@ -107,3 +107,59 @@ func TestStreamUsageChunkCaptured(t *testing.T) {
 		t.Fatalf("usage not captured from stream: in=%d out=%d probed=%v", c.InTokens, c.OutTokens, c.Probed)
 	}
 }
+
+func TestDisableThinkSendsChatTemplateKwargs(t *testing.T) {
+	var sawBody bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if ct, ok := body["chat_template_kwargs"].(map[string]any); ok {
+			sawBody = ct["enable_thinking"] == false
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer srv.Close()
+
+	// enabled (default): field must be ABSENT (strict providers reject it)
+	p2 := NewOpenAI(srv.URL+"/v1", "", "m")
+	c2, err := p2.Complete(context.Background(), nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c2
+	if sawBody {
+		t.Fatal("default provider sent chat_template_kwargs")
+	}
+
+	// disabled thinking: field present with false
+	sawBody = false
+	p := NewOpenAIWith(srv.URL+"/v1", "", "m", true)
+	if _, err := p.Complete(context.Background(), nil, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !sawBody {
+		t.Fatal("disableThink provider did not send enable_thinking=false")
+	}
+}
+
+func TestDisableThinkOnStreamingPath(t *testing.T) {
+	var sawBody bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if ct, ok := body["chat_template_kwargs"].(map[string]any); ok {
+			sawBody = ct["enable_thinking"] == false
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	r := NewRouter(Profile{Chain: []Target{{Provider: NewOpenAIWith(srv.URL+"/v1", "", "m", true)}}})
+	if _, err := r.CompleteStream(context.Background(), "chat", nil, Options{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !sawBody {
+		t.Fatal("streaming request missing enable_thinking=false")
+	}
+}

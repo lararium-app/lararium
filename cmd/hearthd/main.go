@@ -42,6 +42,10 @@ type ProviderConf struct {
 	BaseURL   string `yaml:"base_url"`
 	APIKey    string `yaml:"api_key"`     // literal or env:VAR
 	APIKeyEnv string `yaml:"api_key_env"` // preferred: name of env var
+	// Think: false disables model-side reasoning chains on servers whose
+	// chat template supports it (llama.cpp: enable_thinking=false).
+	// Detection: template support is probed per provider at startup.
+	Think *bool `yaml:"think"`
 }
 
 // LoadConfig reads and validates lararium.yaml.
