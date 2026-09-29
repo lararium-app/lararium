@@ -5,3 +5,5 @@ shot*.js
 shot-*.png
 # Secrets & tokens never enter git
 config/
+bin/
+memsearch_probe.go
