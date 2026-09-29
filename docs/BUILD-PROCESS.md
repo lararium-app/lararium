@@ -76,6 +76,13 @@ Status: FOR REVIEW. Every phase gate below is a checkpoint where the Product Own
 
 **Gate G2:** M1 demo + code review of the router interface.
 
+### Approval log
+
+| Gate | Status | Date | Notes |
+|---|---|---|---|
+| G1 (penatus spec) | ✅ Approved | 2026-09-28 | Product Owner, chat record |
+| G2 (M1 demo + router review) | ✅ Approved | 2026-09-29 | Demo vs OpenRouter cloud model: chat, tool loop, memory persist across restart, `/compact`, failover chain. Carrier bugs found+fixed at gate: llama.cpp-only capability probe (0-token window on OpenAI-compatible hosts); silent 200-with-error-body accepted as completion. Carried to M1.5: `docker compose up` form + second bench system verification. |
+
 ---
 
 ## Phase 3 — cell (sandbox) ⏱ 2–3 weeks, parallel with late Phase 2
@@ -186,4 +193,4 @@ Full-time: ~5–6 months to M8. Evening/weekend pace: ~8–9. Phases 3+5 and 6+7
 
 - **4. Connector priority:** first-ten draft stands (Gmail, Google Calendar, Drive, GitHub, Notion, Home Assistant, Spotify, News/RSS, IMAP/SMTP, Brave) — revise with the Product Owner's daily-driver list before Phase 7.
 
-*Next action: Phase 1 — penatus spec (`docs/penatus-spec.md`) → Gate G1 review. Android pairing protocol sketch belongs in that spec's transport section so Phase 3 can start the client early.*
+*Next action: Phase 3 — cell (sandbox) per BUILD-PROCESS.md, parallel with M1.5 leftovers (docker compose form, second bench system, CI matrix).*
