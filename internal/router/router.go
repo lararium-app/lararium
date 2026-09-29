@@ -65,6 +65,20 @@ func (r *Router) SetProfile(name string, p Profile) {
 	r.profiles[name] = p
 }
 
+// Probe returns the capabilities of the profile's FIRST target (the primary).
+// The context window that governs compaction is the primary's; if the
+// primary is down the compaction trigger simply doesn't fire (conservative).
+func (r *Router) Probe(ctx context.Context, profile string) (Caps, error) {
+	p, ok := r.profiles[profile]
+	if !ok {
+		return Caps{}, fmt.Errorf("unknown profile: %s", profile)
+	}
+	if len(p.Chain) == 0 {
+		return Caps{}, fmt.Errorf("empty profile: %s", profile)
+	}
+	return p.Chain[0].Provider.Capabilities(ctx)
+}
+
 // Complete walks the profile's chain in order, retrying retryable errors
 // and advancing on non-retryable ones. Returns *ChainError only if the
 // entire chain fails.
@@ -176,12 +190,22 @@ func (r *Router) streamTarget(ctx context.Context, target Target, msgs []Message
 		model = opts.Model
 	}
 
-	oa, ok := target.Provider.(*openAI)
+	s, ok := target.Provider.(Streamer)
 	if !ok {
-		return nil, fmt.Errorf("streaming only supported for openai-compatible providers")
+		// Degrade: whole text as a single delta.
+		comp, err := target.Provider.Complete(ctx, msgs, opts)
+		if err != nil {
+			return nil, err
+		}
+		if comp.Text != "" {
+			if err := onDelta(comp.Text); err != nil {
+				return nil, err
+			}
+		}
+		return comp, nil
 	}
 
-	return oa.streamComplete(ctx, msgs, opts, model, onDelta)
+	return s.StreamComplete(ctx, msgs, opts, model, onDelta)
 }
 
 // streamComplete handles SSE streaming for openAI-compatible providers.
