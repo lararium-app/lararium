@@ -150,6 +150,20 @@ func parseModelEntry(entry modelEntry) Caps {
 			caps.ContextLength = int(f)
 		}
 	}
+	// OpenAI-compatible hosts (OpenRouter, etc.): top-level context_length,
+	// preferring the nested top_provider's serving window when present.
+	if v, ok := entry.Raw["context_length"]; ok {
+		if f, ok := v.(float64); ok && f > 0 {
+			caps.ContextLength = int(f)
+		}
+	}
+	if tp, ok := entry.Raw["top_provider"].(map[string]interface{}); ok {
+		if v, ok := tp["context_length"]; ok {
+			if f, ok := v.(float64); ok && f > 0 {
+				caps.ContextLength = int(f)
+			}
+		}
+	}
 
 	// llama.cpp: projector presence indicates vision
 	if entry.Projector != nil && *entry.Projector != "" {
