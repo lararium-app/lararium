@@ -8,13 +8,14 @@ import (
 )
 
 // Limits defines resource constraints for a cell.
+// yaml tags: lararium.yaml; json tags: cell.json per-cell overrides.
 type Limits struct {
-	MemoryMB    int    `yaml:"memory_mb"`
-	CPUQuota    string `yaml:"cpu_quota"`
-	TasksMax    int    `yaml:"tasks_max"`
-	DiskQuotaMB int    `yaml:"disk_quota_mb"`
-	Ownership   string `yaml:"ownership"`
-	ProxyURL    string `yaml:"proxy_url"`
+	MemoryMB    int    `yaml:"memory_mb" json:"memory_mb,omitempty"`
+	CPUQuota    string `yaml:"cpu_quota" json:"cpu_quota,omitempty"`
+	TasksMax    int    `yaml:"tasks_max" json:"tasks_max,omitempty"`
+	DiskQuotaMB int    `yaml:"disk_quota_mb" json:"disk_quota_mb,omitempty"`
+	Ownership   string `yaml:"ownership" json:"ownership,omitempty"`
+	ProxyURL    string `yaml:"proxy_url" json:"proxy_url,omitempty"`
 }
 
 // DefaultLimits returns the spec §5 defaults.
