@@ -2,6 +2,7 @@ package cell
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -135,6 +136,9 @@ func (s *Store) Start(id string) error {
 	// Idempotent: same base on every start.
 	if c, err := s.Load(id); err == nil && c.SubUIDBase > 0 {
 		keeper := c.SubUIDBase + 1000
+		if err := s.fixGuestRootFiles(id, c.SubUIDBase); err != nil {
+			return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
+		}
 		if err := os.Chown(s.WorkspaceDir(id), keeper, keeper); err != nil {
 			return fmt.Errorf("chown workspace to in-cell keeper: %w", err)
 		}
@@ -150,6 +154,79 @@ func (s *Store) Start(id string) error {
 		}
 	}
 
+	return nil
+}
+
+// fixGuestRootFiles copy-ups the sudo setuid binary and the sudoers
+// files from the sealed template into the cell's upper layer, owned
+// by the cell's root.
+//
+// Why: the shared template lives on the host owned by host root, and
+// the guest maps host-root files to nobody (guest uid 0 only owns
+// files at host uid = subuid base). sudo refuses to run when its
+// binary or sudoers config is not uid-0-owned in-guest (live-probed:
+// "sudo must be owned by uid 0 and have the setuid bit set"), which
+// silently invalidates the template's NOPASSWD keeper promise.
+// Copying up and chowning to base+0 gives the guest a genuinely
+// root-owned setuid copy in its own upper layer (per-cell, so cells
+// never share mutable setuid state). The seal stores sudo 0555, so
+// the setuid bit is re-asserted here at copy time; the mapped uid-0
+// setuid exec is how rootless podman runs sudo in containers.
+func (s *Store) fixGuestRootFiles(id string, base int) error {
+	for _, rel := range []string{"usr/bin/sudo", "etc/sudoers", "etc/sudoers.d/keeper"} {
+		src := filepath.Join(s.TemplateDir(), rel)
+		fi, err := os.Lstat(src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // older template without the drop-in
+			}
+			return err
+		}
+		if !fi.Mode().IsRegular() {
+			continue
+		}
+		dst := filepath.Join(s.UpperDir(id), rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return err
+		}
+		in, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+		if err != nil {
+			in.Close()
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			in.Close()
+			out.Close()
+			return err
+		}
+		in.Close()
+		if err := out.Close(); err != nil {
+			return err
+		}
+		// Host uid `base` is the guest's root. Chown FIRST: the
+		// kernel strips setuid on ownership change, so chmod with
+		// the setuid bit must come after.
+		if err := os.Chown(dst, base, base); err != nil {
+			return err
+		}
+		// The sealed template stores sudo as 0555 (the seal drops
+		// setuid), so the setuid bit is added back here for the
+		// binary only, per-cell, inside the mapped uid range.
+		// NOTE: os.Chmod takes an os.FileMode — the setuid flag is
+		// os.ModeSetuid (1<<22); the raw 04000 bit is NOT it and
+		// chmods silently without it (live-probed).
+		mode := fi.Mode().Perm()
+		if rel == "usr/bin/sudo" {
+			mode |= os.ModeSetuid
+		}
+		if err := os.Chmod(dst, mode); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
