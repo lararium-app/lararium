@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lararium — the shrine for your digital hearth</title>
-<meta name="description" content="Lararium is an open-source, self-hosted personal AI agent. Your keys, your models, your machine, your memories. The fire stays lit at your house.">
+<title>Lararium: the shrine for your digital hearth</title>
+<meta name="description" content="Lararium is an open-source, self-hosted personal AI agent. Your machine, your models, your keys. The fire stays lit at your house.">
 <meta property="og:title" content="Lararium">
 <meta property="og:description" content="An open-source personal AI agent that lives at your hearth. Bring your own model. Keep your own keys.">
 <meta property="og:type" content="website">
@@ -24,6 +24,7 @@
     --line: #2c251e;
     --serif: "Fraunces", Georgia, serif;
     --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -203,6 +204,49 @@
   .covenant dd { color: var(--ink-mute); max-width: 32em; }
   .covenant dd b { color: var(--ink); font-weight: 600; }
 
+  /* how it works: numbered steps, same ledger bones */
+  .how ol { border-top: 1px solid var(--line); list-style: none; }
+  .how li {
+    display: grid;
+    grid-template-columns: 2.5em 11em 1fr;
+    gap: 20px;
+    padding: 26px 0;
+    border-bottom: 1px solid var(--line);
+    align-items: baseline;
+  }
+  .how .n {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 300;
+    font-size: 24px;
+    color: var(--ember);
+  }
+  .how h3 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 19px;
+    color: var(--ember-soft);
+  }
+  .how p { color: var(--ink-mute); max-width: 32em; }
+  .how p + p { margin-top: 12px; }
+  .how code, .install code {
+    font-family: var(--mono);
+    font-size: 13.5px;
+    color: var(--ember-soft);
+    background: var(--bg-raise);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 2px 6px;
+  }
+  .install {
+    margin-top: 34px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .install p { font-size: 13.5px; color: var(--ink-faint); }
+
   .closing {
     text-align: left;
     padding-bottom: 130px;
@@ -231,7 +275,8 @@
   footer a:hover { color: var(--ember-soft); }
 
   @media (max-width: 620px) {
-    .covenant .row { grid-template-columns: 1fr; gap: 6px; }
+    .covenant .row, .how li { grid-template-columns: 1fr; gap: 6px; }
+    .how li { padding-left: 0; }
     .shrine { width: 300px; height: 420px; }
     .shrine::before { width: 150px; height: 330px; }
   }
@@ -248,8 +293,8 @@
   <div class="wrap">
     <p class="kicker">Open source · Self-hosted</p>
     <h1>Lararium</h1>
-    <p class="latin">/ lārārium / — the household shrine where the protective spirits were kept</p>
-    <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth and rides in <strong>your</strong> pocket. It remembers everything, works while you sleep, and answers on any screen you carry — your machine, your models, your keys.</p>
+    <p class="latin">/ lārārium /: the household shrine where the protective spirits were kept</p>
+    <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth and rides in <strong>your</strong> pocket. It keeps working while you sleep and answers on whatever screen you have with you. Your machine, your models, your keys.</p>
     <div class="cta">
       <form class="waitlist" id="wl-hero" novalidate>
         <input type="email" name="email" placeholder="you@example.com" aria-label="Email address" required autocomplete="email">
@@ -265,16 +310,16 @@
 <section class="meaning">
   <div class="wrap">
     <p class="section-label">What the name means</p>
-    <p>Two thousand years ago, every Roman house had a <em>lararium</em> — a small shrine by the door where the family kept its penates, the spirits that guarded the home, its memories, and its continuities. When Troy burned, Aeneas's hands were too new from slaughter to touch the gods — so old Anchises held the penates fast and rode out through the flames on his son's shoulders. A home is where its penates are.</p>
-    <p>Your digital life now needs the same. One place that holds your agent's memory, its credentials, its voice and habits — portable, guarded, and unmistakably yours. The commercial clouds are burning. Carry yours out.</p>
+    <p>Two thousand years ago, every Roman house kept a <em>lararium</em>: a shrine by the door, holding the family's penates, the spirits that guarded its home, its memory, and its continuities. When Troy burned, Aeneas's hands were too new from slaughter to touch the gods, so old Anchises held the penates fast and rode out through the flames on his son's shoulders. A home is where its penates are.</p>
+    <p>Your digital life wants the same thing now: one place holding your agent's memory, its credentials, its voice and habits, readable and movable by you alone. The commercial clouds are burning. Carry yours out.</p>
   </div>
 </section>
 
 <section class="pocket">
   <div class="wrap">
     <p class="section-label">At home. And in your pocket.</p>
-    <p>The hearth burns on your own hardware — a box under the stairs, a NAS, a used mini-PC. But you don't live there. Lararium reaches you wherever you already are: a tap from your home screen, a thread in <em>WhatsApp, Telegram, or Signal</em>, plain <em>SMS</em> when that's all there is.</p>
-    <p>One agent, one memory, every device. Ask it something on your phone at the store and the answer is waiting in the same conversation at your desk. When it needs your blessing — spend, send, delete — the approval card lands on the screen you're holding. Android builds go further: your phone's own contacts, calls, and texts, gated door by door.</p>
+    <p>The hearth burns on your own hardware: a box under the stairs, a NAS, a used mini-PC. You don't live there, so Lararium comes to wherever you are, as a tap from your home screen, a thread in <em>WhatsApp, Telegram, or Signal</em>, or plain <em>SMS</em> when that's all there is.</p>
+    <p>The same agent, the same memory, from any device. Ask it something on your phone at the store and the answer is waiting in the same conversation at your desk. When it needs your permission to spend, send, or delete, the approval card lands on the screen you're holding. The Android app goes further, opening your phone's own contacts, calls, and texts, one gated door at a time.</p>
   </div>
 </section>
 
@@ -284,25 +329,62 @@
     <dl>
       <div class="row">
         <dt>Your fire</dt>
-        <dd>Point it at your own llama.cpp on your own silicon, or bring an API key for any cloud — <b>Anthropic, OpenAI, Google, OpenRouter</b>. No lock-in, no hidden routing, no silent downgrades.</dd>
+        <dd>Point it at your own llama.cpp, Ollama, or vLLM box, or bring an API key for <b>Anthropic, OpenAI, Google, or OpenRouter</b>. No lock-in, and nothing rerouted without your config saying so.</dd>
       </div>
       <div class="row">
         <dt>Your memory</dt>
-        <dd>Everything your agent knows lives in <b>plain files you can read, edit, and own</b>. The conversation window is scratch paper; the shrine is forever. Export your whole life with one tar.</dd>
+        <dd>Everything your agent knows lives in <b>plain files on your disk</b>. The conversation window is scratch paper; the files are the record. One tar exports your agent's whole life.</dd>
       </div>
       <div class="row">
         <dt>Your keys</dt>
-        <dd>Credentials are vaulted and <b>never shown to the agent itself</b> — the network layer swaps them in, policy-checked, on the way out. A hijacked prompt cannot steal what the agent never held.</dd>
+        <dd>Credentials sit in a vault, and <b>the agent never sees them</b>. The network layer swaps real values in on the way out, after policy. Prompt injection can't steal what was never handed over.</dd>
       </div>
       <div class="row">
         <dt>Your doors</dt>
-        <dd>Mail, calendar, messages, browser, shell, and any API you hand it — each door with its own rule: <b>open, knock first, or sealed</b>. Every action lands in a log only you can read.</dd>
+        <dd>Mail, calendar, messages, browser, shell, and any API you hand it: each door gets its own rule, <b>open, knock first, or sealed</b>. Every action lands in a log only you can read.</dd>
       </div>
       <div class="row">
         <dt>Always lit</dt>
-        <dd>Morning briefings, price watches, inbox triage, chores on a schedule, goals across days. A hearth is only worth having if <b>it stays lit</b>.</dd>
+        <dd>Morning briefings, price watches, inbox triage, scheduled chores, goals that run for days. Quiet hours and a noise budget keep it a servant, not a spammer.</dd>
       </div>
     </dl>
+  </div>
+</section>
+
+<section class="how">
+  <div class="wrap">
+    <p class="section-label">How it works</p>
+    <ol>
+      <li>
+        <span class="n">i</span>
+        <h3>One daemon, your machine</h3>
+        <p>A single service runs the show: sessions, model calls, tools, schedules. Each session is an append-only event log on your disk, so history can be replayed, rewound, and audited.</p>
+      </li>
+      <li>
+        <span class="n">ii</span>
+        <h3>Bring your own model</h3>
+        <p>A router sits between the agent and whatever model you choose, local or cloud. You can set a cheap model for chat, a stronger one for agentic work, and a local one for private turns.</p>
+      </li>
+      <li>
+        <span class="n">iii</span>
+        <h3>Work happens in a cell</h3>
+        <p>Commands, code, and browsing run in a sandboxed container with its own filesystem and network path. Root inside the cell doesn't unlock your machine.</p>
+      </li>
+      <li>
+        <span class="n">iv</span>
+        <h3>Keys outside its hands</h3>
+        <p>The vault holds your credentials encrypted. The agent gets a placeholder; the real value goes in only at the network boundary, only after policy. Anything that spends, sends, or deletes waits for your tap, and every call lands in an append-only log.</p>
+      </li>
+      <li>
+        <span class="n">v</span>
+        <h3>Memory is files</h3>
+        <p>A summary index plus your full session history, written in open formats you can edit by hand. When the working window grows long it gets compacted, and the files keep the record.</p>
+      </li>
+    </ol>
+    <div class="install">
+      <code>curl -fsSL get.lararium.io | sh</code>
+      <p>or run the stack with Docker Compose. Any Linux box will do.</p>
+    </div>
   </div>
 </section>
 
@@ -343,7 +425,7 @@
         const d = await r.json().catch(() => ({}));
         if (r.ok && d.ok) {
           note.textContent = d.already
-            ? "You're already on the list — the fire remembers."
+            ? "You're already on the list. The fire remembers."
             : "Written on the wall of the shrine. We'll send word.";
           note.className = "wl-note ok";
           form.reset();
@@ -351,11 +433,11 @@
           note.textContent = "Slow down a moment and try again.";
           note.className = "wl-note err";
         } else {
-          note.textContent = "Something went wrong — email hello@lararium.io instead.";
+          note.textContent = "Something went wrong. Try email hello@lararium.io instead.";
           note.className = "wl-note err";
         }
       } catch {
-        note.textContent = "Couldn't reach the shrine — try again shortly.";
+        note.textContent = "Couldn't reach the shrine. Try again shortly.";
         note.className = "wl-note err";
       } finally {
         btn.disabled = false;
