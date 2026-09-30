@@ -67,6 +67,28 @@ type Cell struct {
 	SubUIDBase  int       `json:"subuid_base"`
 	Created     time.Time `json:"created"`
 	SubUIDCount int       `json:"subuid_count"`
+	// Limits overrides spec §5 per-cell: any non-zero/non-empty
+	// field replaces the lararium.yaml global at start; nil/zero
+	// inherits.
+	Limits *Limits `json:"limits,omitempty"`
+}
+
+// effectiveLimits merges per-cell overrides over the globals.
+func (s *Store) effectiveLimits(c *Cell) Limits {
+	l := s.Limits
+	if c == nil || c.Limits == nil {
+		return l
+	}
+	if c.Limits.MemoryMB > 0 {
+		l.MemoryMB = c.Limits.MemoryMB
+	}
+	if c.Limits.CPUQuota != "" {
+		l.CPUQuota = c.Limits.CPUQuota
+	}
+	if c.Limits.TasksMax > 0 {
+		l.TasksMax = c.Limits.TasksMax
+	}
+	return l
 }
 
 // Store manages cell lifecycle operations.
@@ -92,15 +114,25 @@ func (s *Store) SetRunner(r Runner) {
 	s.runner = r
 }
 
-// validateID rejects empty ids, path separators/traversal, and ids
-// starting with "-" — a leading dash (e.g. a literal "--" slipping
-// through the run parser as an id) turns into a bogus
-// --machine=-- that systemd-run fails on with a misleading
-// "machine transport" error (live-debugged 2026-09-30).
+// validateID enforces a strict whitelist: 1-64 chars of
+// [A-Za-z0-9._-], not starting with "." or "-". A leading dash turns
+// into a bogus --machine=-- flag; "." passes prefix/separators checks
+// yet CellDir(".") = cells/ itself, so Destroy(".") would wipe every
+// cell (agy round-2 F3). Anything else is ErrInvalidID.
 func validateID(id string) error {
-	if id == "" || strings.HasPrefix(id, "-") ||
-		strings.ContainsRune(id, '/') || strings.Contains(id, "..") {
+	if id == "" || len(id) > 64 {
 		return ErrInvalidID
+	}
+	if id[0] == '.' || id[0] == '-' || strings.Contains(id, "..") {
+		return ErrInvalidID
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return ErrInvalidID
+		}
 	}
 	return nil
 }

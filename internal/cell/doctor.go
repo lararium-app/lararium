@@ -50,6 +50,15 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 		results = append(results, CheckResult{"machinectl", "OK", "found in PATH"})
 	}
 
+	// Check: setfacl present (shared <hearth> grants per keeper;
+	// package "acl" — start fails without it once a cell boots).
+	if _, err := exec.LookPath("setfacl"); err != nil {
+		results = append(results, CheckResult{"setfacl", "FAIL", "setfacl not found (install package 'acl')"})
+		failed = true
+	} else {
+		results = append(results, CheckResult{"setfacl", "OK", "found in PATH"})
+	}
+
 	// Check: /run/host (container nesting detection).
 	if _, err := os.Stat("/run/host"); os.IsNotExist(err) {
 		results = append(results, CheckResult{"/run/host", "OK", "not inside a container"})
@@ -83,6 +92,16 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 		results = append(results, CheckResult{"subuid", "OK", detail})
 	} else {
 		results = append(results, CheckResult{"subuid", "FAIL", detail})
+		failed = true
+	}
+
+	// Check: cells root exists and is writable (overlay/upper work
+	// happens there; a missing root fails create with a confusing
+	// error, a read-only root fails mid-mount).
+	if ok, detail := s.probeRootWritable(); ok {
+		results = append(results, CheckResult{"cells root", "OK", detail})
+	} else {
+		results = append(results, CheckResult{"cells root", "FAIL", detail})
 		failed = true
 	}
 
@@ -136,14 +155,44 @@ func checkCgroup2() (bool, error) {
 	return strings.TrimSpace(string(statOut)) == "cgroup2fs", nil
 }
 
-// checkSubUID verifies the user has subuid/subgid entries.
+// probeRootWritable verifies the cells root exists and accepts writes.
+func (s *Store) probeRootWritable() (bool, string) {
+	info, err := os.Stat(s.Root)
+	if err != nil {
+		return false, fmt.Sprintf("cells root %s missing (create it, or fix cells_root in lararium.yaml)", s.Root)
+	}
+	if !info.IsDir() {
+		return false, fmt.Sprintf("cells root %s is not a directory", s.Root)
+	}
+	probe := filepath.Join(s.Root, ".doctor-write")
+	if err := os.WriteFile(probe, []byte("x"), 0600); err != nil {
+		return false, fmt.Sprintf("cells root %s not writable: %v", s.Root, err)
+	}
+	os.Remove(probe)
+	return true, s.Root + " exists and is writable"
+}
+
+// checkSubUID verifies the subordinate uid/gid setup (agy round-2 F12).
+// Two distinct failure modes:
+//  1. /etc/subuid AND /etc/subgid must EXIST. systemd's auto-ownership
+//     machinery (chown-recursive, uid map for binds) reads both; a
+//     missing /etc/subgid fails the boot even when subuid is present.
+//  2. For a non-root daemon user, that user needs >= 65536 ids in
+//     BOTH files. Root's --private-users=pick may allocate from
+//     unclaimed ranges without a root entry (live-proven on both
+//     benches), so root only needs requirement 1.
 func checkSubUID() (bool, string) {
-	// Root always has access.
-	if os.Geteuid() == 0 {
-		return true, "root has full uid range"
+	// Requirement 1: both files present.
+	if _, err := os.Stat("/etc/subgid"); err != nil {
+		return false, "/etc/subgid missing (systemd auto-ownership reads both /etc/subuid and /etc/subgid)"
 	}
 
-	// Check /etc/subuid for current user.
+	// Root: pick allocates host-wide; no personal range required.
+	if os.Geteuid() == 0 {
+		return true, "subuid/subgid files present; root pick allocates host-wide"
+	}
+
+	// Requirement 2: the daemon user's own ranges (both files).
 	username := os.Getenv("SUDO_USER")
 	if username == "" {
 		u, err := userCurrent()
@@ -153,11 +202,27 @@ func checkSubUID() (bool, string) {
 		username = u.Username
 	}
 
-	data, err := os.ReadFile("/etc/subuid")
+	count, err := subRangesFor("/etc/subuid", username)
 	if err != nil {
 		return false, fmt.Sprintf("cannot read /etc/subuid: %v", err)
 	}
+	countG, err := subRangesFor("/etc/subgid", username)
+	if err != nil {
+		return false, fmt.Sprintf("cannot read /etc/subgid: %v", err)
+	}
+	if count >= 65536 && countG >= 65536 {
+		return true, fmt.Sprintf("%s has %d subuids / %d subgids", username, count, countG)
+	}
+	return false, fmt.Sprintf("%s has %d subuids / %d subgids (need >= 65536 in both)", username, count, countG)
+}
 
+// subRangesFor sums the allocated id count for a username in a
+// subordinate-ids file ("/etc/subuid" or "/etc/subgid").
+func subRangesFor(path, username string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	count := 0
 	for scanner.Scan() {
@@ -177,11 +242,7 @@ func checkSubUID() (bool, string) {
 			count += n
 		}
 	}
-
-	if count >= 65536 {
-		return true, fmt.Sprintf("%s has %d subuids", username, count)
-	}
-	return false, fmt.Sprintf("%s has %d subuids (need >= 65536)", username, count)
+	return count, nil
 }
 
 // probeOverlay creates a temporary overlay mount to verify filesystem support.

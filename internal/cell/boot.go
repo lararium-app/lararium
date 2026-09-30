@@ -76,15 +76,19 @@ func (s *Store) Start(id string) error {
 
 	// Build systemd-run command.
 	unit := UnitName(id)
+	// Limits: globals from lararium.yaml with per-cell overrides from
+	// cell.json (spec §5; agy round-2 F14).
+	rec, _ := s.Load(id)
+	lim := s.effectiveLimits(rec)
 	// NOTE: --keep-unit belongs to systemd-nspawn (it keeps the
 	// systemd-run unit as its cgroup instead of creating a machine
 	// scope). systemd-run itself does not know this flag — live-probed
 	// on systemd 257: "unrecognized option".
 	runnerArgs := []string{
 		"--unit=" + unit,
-		fmt.Sprintf("--property=MemoryMax=%dM", s.Limits.MemoryMB),
-		fmt.Sprintf("--property=CPUQuota=%s%%", s.Limits.CPUQuota),
-		fmt.Sprintf("--property=TasksMax=%d", s.Limits.TasksMax),
+		fmt.Sprintf("--property=MemoryMax=%dM", lim.MemoryMB),
+		fmt.Sprintf("--property=CPUQuota=%s%%", lim.CPUQuota),
+		fmt.Sprintf("--property=TasksMax=%d", lim.TasksMax),
 		"--property=Restart=no",
 		"--property=KillMode=mixed",
 		// First boot of a freshly-reset upper (post-snapshot) does a
@@ -134,16 +138,39 @@ func (s *Store) Start(id string) error {
 		if err := os.Chown(s.WorkspaceDir(id), keeper, keeper); err != nil {
 			return fmt.Errorf("chown workspace to in-cell keeper: %w", err)
 		}
-		// Spec §3: /hearth is RW in v1 (RO deferred to custos). As
-		// host-root-owned it appears nobody:nobody in-cell and every
-		// keeper write EACCES (agy review F7). Bin dir stays
-		// host-owned: it binds RO anyway.
-		if err := os.Chown(s.Hearth, keeper, keeper); err != nil {
-			return fmt.Errorf("chown hearth to in-cell keeper: %w", err)
+		// <hearth> is SHARED across cells: chowning it to one cell's
+		// keeper revokes the previous cell's access (agy round-2 F1).
+		// Grant per-keeper read-write via ACLs instead — host keeps
+		// ownership, every started cell's keeper is a grantee, and new
+		// files inherit the grant via the default ACL. Binds are
+		// noidmap, so the raw keeper uid in the ACL matches the
+		// keeper's cred in-cell.
+		if err := s.grantHearthAccess(keeper); err != nil {
+			return fmt.Errorf("grant hearth access to in-cell keeper: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// grantHearthAccess gives host uid `keeper` rwX on <hearth> (existing
+// files + inherited defaults). Idempotent; repeated starts of the same
+// cell re-apply the same entry.
+func (s *Store) grantHearthAccess(keeper int) error {
+	spec := fmt.Sprintf("u:%d:rwX", keeper)
+	if _, _, err := s.runner.Run("setfacl", "-R", "-m", spec, s.Hearth); err != nil {
+		return err
+	}
+	_, _, err := s.runner.Run("setfacl", "-R", "-d", "-m", spec, s.Hearth)
+	return err
+}
+
+// revokeHearthAccess drops a destroyed cell's keeper grant. Best
+// effort: a missing entry is fine.
+func (s *Store) revokeHearthAccess(keeper int) {
+	spec := fmt.Sprintf("u:%d", keeper)
+	s.runner.Run("setfacl", "-R", "-x", spec, s.Hearth)
+	s.runner.Run("setfacl", "-R", "-d", "-x", spec, s.Hearth)
 }
 
 // nspawnArgs returns the systemd-nspawn arguments for a cell.
@@ -418,8 +445,16 @@ func (s *Store) findNspawnPID(id string) (int, error) {
 			continue
 		}
 		cmd := strings.Join(fields[1:], " ")
-		if strings.Contains(cmd, "systemd-nspawn") && strings.Contains(cmd, "--machine="+id) {
-			return pid, nil
+		if !strings.Contains(cmd, "systemd-nspawn") {
+			continue
+		}
+		// Match --machine=<id> as a WHOLE token: substring match
+		// let id "c1" match "--machine=c10", so pruneStaleMachined
+		// SIGKILLed the wrong container (agy round-2 F2).
+		for _, f := range fields[1:] {
+			if f == "--machine="+id {
+				return pid, nil
+			}
 		}
 	}
 
@@ -601,6 +636,13 @@ func (s *Store) Destroy(id string) error {
 		if err := os.RemoveAll(d); err != nil {
 			return fmt.Errorf("remove %s: %w", d, err)
 		}
+	}
+
+	// Drop this cell's keeper grant on <hearth> before its identity
+	// (cell.json) disappears; the uid goes back to the pool and a
+	// future cell must not inherit someone else's ACL (round-2 F1).
+	if c, err := s.Load(id); err == nil && c.SubUIDBase > 0 {
+		s.revokeHearthAccess(c.SubUIDBase + 1000)
 	}
 
 	// Remove the whole cell dir: merged, cell.json, snapshots/, bin/,
