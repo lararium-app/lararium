@@ -21,7 +21,11 @@ func (s *Store) MountOverlay(id string) error {
 	work := s.WorkDir(id)
 	merged := s.MergedDir(id)
 
-	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
+	// index=off: we do not reuse/export lowerdirs, and restored uppers
+	// carry stale trusted.overlay.* index xattrs from their original
+	// mount. btrfs rejects them on remount ("failed to verify index
+	// dir 'upper' xattr", live-proven); ext4 silently tolerated it.
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,index=off", lower, upper, work)
 
 	_, _, err := s.runner.Run("/bin/mount", "-t", "overlay", "overlay", merged, "-o", opts)
 	if err != nil {

@@ -86,12 +86,15 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 		failed = true
 	}
 
-	// Check: systemd-machined reachable.
-	if _, _, err := s.runner.Run("systemctl", "is-active", "systemd-machined"); err != nil {
-		results = append(results, CheckResult{"systemd-machined", "FAIL", "systemd-machined is not active"})
+	// Check: systemd-machined reachable. NOT `systemctl is-active`:
+	// machined is socket-activated and reads "inactive" while idle —
+	// the true probe is machinectl list, which talks to the socket
+	// and triggers activation (live-probed on Arch/systemd 261).
+	if _, _, err := s.runner.Run("machinectl", "list"); err != nil {
+		results = append(results, CheckResult{"systemd-machined", "FAIL", "machinectl list failed (machined unreachable)"})
 		failed = true
 	} else {
-		results = append(results, CheckResult{"systemd-machined", "OK", "active and reachable"})
+		results = append(results, CheckResult{"systemd-machined", "OK", "socket reachable, machines listed"})
 	}
 
 	// Check: overlay mount probe.
