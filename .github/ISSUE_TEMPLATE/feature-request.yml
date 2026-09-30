@@ -1,0 +1,37 @@
+name: Feature request
+description: An idea for Lararium or a proposal to change a spec
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals that change a frozen spec (Penatus formats, cell sandbox)
+        should argue the *problem* first — spec changes are reviewed on
+        evidence, not enthusiasm.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      placeholder: A user story that is impossible or painful today.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Optional — how you'd build it, and what you considered first.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - hearthd core
+        - model routing
+        - memory (penatus)
+        - cells / sandbox
+        - channels (PWA, messaging)
+        - pairing / Android
+        - docs
+        - other
+    validations:
+      required: true

@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not behave as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go to **security@lararium.io**, not here.
+        Before filing: update to the latest commit/release and confirm the issue reproduces.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      placeholder: Describe the behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. …
+        2. …
+      description: A minimal, complete repro. Shell sessions with real output beat descriptions of intent.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - hearthd version or commit:
+        - OS / distribution:
+        - kernel (`uname -r`):
+        - install form (docker compose / binary / other):
+        - model backend used:
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      render: text
+      description: Scrub secrets and personal data before pasting.
