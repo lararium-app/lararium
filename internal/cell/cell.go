@@ -1,0 +1,224 @@
+package cell
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+)
+
+var (
+	ErrInvalidID    = errors.New("invalid cell id")
+	ErrCellNotFound = errors.New("cell not found")
+	ErrNotRunning   = errors.New("cell not running")
+	ErrAlreadyExist = errors.New("cell already exists")
+	ErrNotRoot      = errors.New("must be run as root")
+)
+
+// Runner abstracts subprocess execution so tests can inject fakes.
+type Runner interface {
+	// Run executes cmd and returns separated stdout/stderr.
+	Run(cmd string, args ...string) (stdout, stderr []byte, err error)
+	// RunCombined executes cmd and returns merged stdout+stderr.
+	RunCombined(cmd string, args ...string) (output []byte, err error)
+	// StartDetached executes cmd in the background and returns its PID.
+	StartDetached(cmd string, args ...string) (pid int, err error)
+}
+
+// CmdRunner is the production Runner that uses os/exec.
+type CmdRunner struct{}
+
+func (r *CmdRunner) Run(cmd string, args ...string) ([]byte, []byte, error) {
+	cmdExec := exec.Command(cmd, args...)
+	var stdout, stderr bytes.Buffer
+	cmdExec.Stdout = &stdout
+	cmdExec.Stderr = &stderr
+	err := cmdExec.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+func (r *CmdRunner) RunCombined(cmd string, args ...string) ([]byte, error) {
+	cmdExec := exec.Command(cmd, args...)
+	var output bytes.Buffer
+	cmdExec.Stdout = &output
+	cmdExec.Stderr = &output
+	err := cmdExec.Run()
+	return output.Bytes(), err
+}
+
+func (r *CmdRunner) StartDetached(cmd string, args ...string) (int, error) {
+	cmdExec := exec.Command(cmd, args...)
+	cmdExec.Stdout = nil
+	cmdExec.Stderr = nil
+	cmdExec.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	err := cmdExec.Start()
+	return cmdExec.Process.Pid, err
+}
+
+// Cell represents a single sandbox cell record.
+type Cell struct {
+	ID          string    `json:"id"`
+	SubUIDBase  int       `json:"subuid_base"`
+	Created     time.Time `json:"created"`
+	SubUIDCount int       `json:"subuid_count"`
+}
+
+// Store manages cell lifecycle operations.
+type Store struct {
+	Root   string
+	Hearth string
+	Limits Limits
+	runner Runner
+}
+
+// NewStore creates a Store with the given root, hearth path, limits, and runner.
+func NewStore(root, hearth string, limits Limits, runner Runner) *Store {
+	return &Store{
+		Root:   root,
+		Hearth: hearth,
+		Limits: limits,
+		runner: runner,
+	}
+}
+
+// SetRunner replaces the runner. Used by tests to inject a fake.
+func (s *Store) SetRunner(r Runner) {
+	s.runner = r
+}
+
+// validateID rejects ids containing path separators or traversal sequences.
+func validateID(id string) error {
+	if id == "" || strings.ContainsRune(id, '/') || strings.Contains(id, "..") {
+		return ErrInvalidID
+	}
+	return nil
+}
+
+// CellDir returns the absolute path for a cell's directory.
+func (s *Store) CellDir(id string) string {
+	return filepath.Join(s.Root, "cells", id)
+}
+
+// UpperDir returns the path to the cell's overlay upper layer.
+func (s *Store) UpperDir(id string) string {
+	return filepath.Join(s.CellDir(id), "upper")
+}
+
+// WorkDir returns the path to the cell's overlay work directory.
+func (s *Store) WorkDir(id string) string {
+	return filepath.Join(s.CellDir(id), "work")
+}
+
+// MergedDir returns the path to the cell's overlay mount point.
+func (s *Store) MergedDir(id string) string {
+	return filepath.Join(s.CellDir(id), "merged")
+}
+
+// WorkspaceDir returns the path to the cell's workspace directory.
+func (s *Store) WorkspaceDir(id string) string {
+	return filepath.Join(s.CellDir(id), "workspace")
+}
+
+// BinDir returns the path to the cell's bin directory.
+func (s *Store) BinDir(id string) string {
+	return filepath.Join(s.CellDir(id), "bin")
+}
+
+// SnapshotsDir returns the path to the cell's snapshots directory.
+func (s *Store) SnapshotsDir(id string) string {
+	return filepath.Join(s.CellDir(id), "snapshots")
+}
+
+// LogDir returns the path to the cell's log directory.
+func (s *Store) LogDir(id string) string {
+	return filepath.Join(s.CellDir(id), "log")
+}
+
+// TemplateDir returns the path to the built template directory.
+func (s *Store) TemplateDir() string {
+	return filepath.Join(s.Root, "templates", "noble")
+}
+
+// CellJSONPath returns the path to the cell.json file.
+func (s *Store) CellJSONPath(id string) string {
+	return filepath.Join(s.CellDir(id), "cell.json")
+}
+
+// UnitName returns the systemd unit name for a cell.
+func UnitName(id string) string {
+	return "lararium-cell-" + id
+}
+
+// Load reads cell.json for the given id.
+func (s *Store) Load(id string) (*Cell, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(s.CellJSONPath(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrCellNotFound
+		}
+		return nil, fmt.Errorf("read cell.json: %w", err)
+	}
+	var c Cell
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, fmt.Errorf("parse cell.json: %w", err)
+	}
+	return &c, nil
+}
+
+// Save atomically writes cell.json (temp file + rename).
+func (s *Store) Save(c *Cell) error {
+	dir := s.CellDir(c.ID)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("mkdir cell dir: %w", err)
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal cell.json: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".cell.json.*")
+	if err != nil {
+		return fmt.Errorf("create temp cell.json: %w", err)
+	}
+	tmp.Close()
+	if err := os.WriteFile(tmp.Name(), data, 0644); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("write cell.json: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), s.CellJSONPath(c.ID)); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("rename cell.json: %w", err)
+	}
+	return nil
+}
+
+// List returns all cell IDs found under the cells directory.
+func (s *Store) List() ([]string, error) {
+	cellsDir := filepath.Join(s.Root, "cells")
+	entries, err := os.ReadDir(cellsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read cells dir: %w", err)
+	}
+	var ids []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		jsonPath := filepath.Join(cellsDir, e.Name(), "cell.json")
+		if _, err := os.Stat(jsonPath); err == nil {
+			ids = append(ids, e.Name())
+		}
+	}
+	return ids, nil
+}
