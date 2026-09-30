@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/lararium-app/lararium/internal/cell"
 )
@@ -66,12 +69,19 @@ func main() {
 	var cmd string
 	var cmdArgs []string
 
-	// Parse: strip global --config [PATH], first non-flag is the
-	// subcommand, everything after it passes through untouched.
+	// Parse: strip global --config [PATH] BEFORE the subcommand only.
+	// Everything from the subcommand onward passes through untouched —
+	// scanning past it let `cell run c -- curl --config f` have its
+	// guest argv eaten and parsed as our config path (agy round-2 F6).
 	args := os.Args[1:]
 	stripped := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
+	i := 0
+	for i < len(args) {
 		arg := args[i]
+		// First non-flag token is the subcommand: stop global parsing.
+		if arg != "--config" && !strings.HasPrefix(arg, "--config=") {
+			break
+		}
 		switch {
 		case arg == "--config":
 			if i+1 >= len(args) {
@@ -79,13 +89,14 @@ func main() {
 				os.Exit(2)
 			}
 			*configFlag = args[i+1]
-			i++
+			i += 2
+			continue
 		case strings.HasPrefix(arg, "--config="):
 			*configFlag = strings.TrimPrefix(arg, "--config=")
-		default:
-			stripped = append(stripped, arg)
 		}
+		i++
 	}
+	stripped = append(stripped, args[i:]...)
 	if len(stripped) > 0 {
 		cmd = stripped[0]
 		cmdArgs = stripped[1:]
@@ -219,6 +230,13 @@ func runCmd(store *cell.Store, args []string) {
 			fmt.Sscanf(timeoutStr, "%d", &timeout)
 			opts.Timeout = timeout
 			args = args[2:]
+		case "--env":
+			if len(args) < 2 {
+				fmt.Fprintf(os.Stderr, "error: --env requires KEY=VALUE\n")
+				os.Exit(1)
+			}
+			opts.Env = append(opts.Env, args[1])
+			args = args[2:]
 		case "--":
 			args = args[1:]
 			cmdParts = args
@@ -240,12 +258,20 @@ func runCmd(store *cell.Store, args []string) {
 	// literal; '|'/'>' typed by the user stay OUTSIDE quotes as the
 	// spec's shell-string form intends.
 	cmdStr := shellJoinQuoted(cmdParts)
-	res, err := store.Run(id, cmdStr, opts)
-	if err != nil {
-		if err == cell.ErrNotRunning {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+	// Spec §6: stdin is piped through. Read it only when not a TTY
+	// (a pipe/heredoc/daemon hand-off); an interactive TTY means the
+	// caller has nothing to send and blocking on read would hang.
+	if fi, serr := os.Stdin.Stat(); serr == nil && (fi.Mode()&os.ModeCharDevice) == 0 {
+		if data, rerr := io.ReadAll(os.Stdin); rerr == nil {
+			opts.Stdin = data
 		}
+	}
+	res, err := store.Run(id, cmdStr, opts)
+	if errors.Is(err, cell.ErrNotRunning) {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -349,6 +375,15 @@ func restoreCmd(store *cell.Store, args []string) {
 	id := args[0]
 	ts := args[1]
 
+	// id/ts both feed filesystem paths: ts must parse as the exact
+	// snapshot layout (rejects "../evil", globs; agy round-2 F7 —
+	// validateID inside store methods covers id at use, but the
+	// snapshot path here is built in main).
+	if _, err := time.Parse("20060102T150405Z", ts); err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid snapshot timestamp %q\n", ts)
+		os.Exit(1)
+	}
+
 	// Restore replaces upper — the cell must be stopped (same
 	// split-brain hazard as snapshot).
 	if store.IsActive(id) {
@@ -404,6 +439,19 @@ func restoreCmd(store *cell.Store, args []string) {
 		os.Exit(1)
 	}
 	os.RemoveAll(oldUpper)
+
+	// work/ holds index whiteouts tied to the REPLACED upper —
+	// remounting it against the restored tree risks overlayfs index
+	// inconsistency (same reasoning as snapshot's work/ reset; agy
+	// round-2 F7).
+	if err := os.RemoveAll(store.WorkDir(id)); err != nil {
+		fmt.Fprintf(os.Stderr, "error: clean work dir: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(store.WorkDir(id), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: mkdir work dir: %v\n", err)
+		os.Exit(1)
+	}
 
 	if err := store.MountOverlay(id); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
