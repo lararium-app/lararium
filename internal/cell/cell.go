@@ -92,9 +92,14 @@ func (s *Store) SetRunner(r Runner) {
 	s.runner = r
 }
 
-// validateID rejects ids containing path separators or traversal sequences.
+// validateID rejects empty ids, path separators/traversal, and ids
+// starting with "-" — a leading dash (e.g. a literal "--" slipping
+// through the run parser as an id) turns into a bogus
+// --machine=-- that systemd-run fails on with a misleading
+// "machine transport" error (live-debugged 2026-09-30).
 func validateID(id string) error {
-	if id == "" || strings.ContainsRune(id, '/') || strings.Contains(id, "..") {
+	if id == "" || strings.HasPrefix(id, "-") ||
+		strings.ContainsRune(id, '/') || strings.Contains(id, "..") {
 		return ErrInvalidID
 	}
 	return nil

@@ -4,10 +4,35 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/lararium-app/lararium/internal/cell"
 )
+
+// runSystem runs a host command, returning combined output + error.
+func runSystem(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	return string(out), err
+}
+
+// shellJoin prepares argv for the in-cell /bin/sh -c (agy review
+// F8). Two documented forms:
+//   - single part  → passed through verbatim: a deliberate shell
+//     string ("echo hi; id", pipes, redirects keep working —
+//     live-verified usage).
+//   - multiple parts → each part single-quoted so word boundaries
+//     survive ('ls "my dir"' stays two words).
+func shellJoinQuoted(parts []string) string {
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	quoted := make([]string, len(parts))
+	for i, p := range parts {
+		quoted[i] = "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
+}
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `Usage: cell <command> [arguments]
@@ -163,8 +188,8 @@ func startCmd(store *cell.Store, args []string) {
 
 func runCmd(store *cell.Store, args []string) {
 	// Parse: run <id> [--cwd P] [--timeout S] -- <cmd>
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "error: missing cell id\n")
+	if len(args) < 1 || args[0] == "--" || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintf(os.Stderr, "error: missing cell id (usage: cell run <id> [-- cmd...])\n")
 		os.Exit(1)
 	}
 
@@ -209,7 +234,12 @@ func runCmd(store *cell.Store, args []string) {
 		os.Exit(1)
 	}
 
-	cmdStr := strings.Join(cmdParts, " ")
+	// Quote each argv part for the in-cell /bin/sh -c so word
+	// boundaries survive (agy review F8: a bare join mangled
+	// `ls "my dir"` into two args). Single quotes make the parts
+	// literal; '|'/'>' typed by the user stay OUTSIDE quotes as the
+	// spec's shell-string form intends.
+	cmdStr := shellJoinQuoted(cmdParts)
 	res, err := store.Run(id, cmdStr, opts)
 	if err != nil {
 		if err == cell.ErrNotRunning {
@@ -343,15 +373,37 @@ func restoreCmd(store *cell.Store, args []string) {
 		}
 	}
 
-	// Remove current upper and copy snapshot.
-	if err := os.RemoveAll(currentUpper); err != nil {
+	// The snapshot must SURVIVE the restore (spec §2: "historical
+	// uppers kept for restore" — agy review F4: a rename consumed it,
+	// so re-restoring the same ts failed). Copy the snapshot tree
+	// (cp -a: mode/ownership/xattrs), then drop the old upper only
+	// after the copy completed, via an out-of-the-way rename so a
+	// crash mid-delete never leaves upper/ half-removed.
+	staging := currentUpper + ".restoring"
+	oldUpper := currentUpper + ".old"
+	os.RemoveAll(staging)
+	if err := os.RemoveAll(oldUpper); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.Rename(snapUpper, currentUpper); err != nil {
+	if _, err := runSystem("cp", "-a", snapUpper, staging); err != nil {
+		os.RemoveAll(staging)
+		fmt.Fprintf(os.Stderr, "error: copy snapshot: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Rename(currentUpper, oldUpper); err != nil {
+		os.RemoveAll(staging)
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	if err := os.Rename(staging, currentUpper); err != nil {
+		// Roll back the swap.
+		os.Rename(oldUpper, currentUpper)
+		os.RemoveAll(staging)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	os.RemoveAll(oldUpper)
 
 	if err := store.MountOverlay(id); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -41,13 +41,27 @@ func (s *Store) BuildTemplate() error {
 		"ca-certificates", "sudo", "systemd", "systemd-sysv", "dbus",
 	}
 	aptArgs := append([]string{"-y", "install"}, packages...)
+	// Refresh lists first: debootstrap's copy may predate additional
+	// packages pulled from the mirror, and re-running build-template
+	// after an Ubuntu point release needs current lists (cheap insurance).
+	if _, _, err := s.runner.Run("chroot", dst, "apt-get", "-y", "update"); err != nil {
+		return fmt.Errorf("apt-get update: %w", err)
+	}
 	if _, _, err := s.runner.Run("chroot", append([]string{dst, "apt-get"}, aptArgs...)...); err != nil {
 		return fmt.Errorf("apt-get install: %w", err)
 	}
 
-	// Create keeper user (uid 1000, in sudo group).
-	if _, _, err := s.runner.Run("chroot", dst, "useradd", "-m", "-u", "1000", "-g", "sudo", "-s", "/bin/bash", "keeper"); err != nil {
+	// Create keeper user (uid 1000, own group; sudo group only when
+	// it exists — minbase lacks it and useradd -g sudo then fails,
+	// which silently shipped keeper-less templates until the guest
+	// rejected User=keeper with status=217/USER, live-probed 2026-09-30).
+	if _, _, err := s.runner.Run("chroot", dst, "useradd", "-m", "-u", "1000", "-U", "-s", "/bin/bash", "keeper"); err != nil {
 		return fmt.Errorf("create keeper user: %w", err)
+	}
+	// Best effort: grant sudo membership when the sudo package landed.
+	s.runner.Run("chroot", dst, "usermod", "-aG", "sudo", "keeper")
+	if _, _, err := s.runner.Run("chroot", dst, "grep", "-q", "^keeper:", "/etc/passwd"); err != nil {
+		return fmt.Errorf("keeper user missing after useradd: %w", err)
 	}
 
 	// Create /workspace directory in template.
@@ -62,14 +76,24 @@ func (s *Store) BuildTemplate() error {
 		return fmt.Errorf("mkdir wants: %w", err)
 	}
 	for _, unit := range []string{"systemd-networkd.service", "dbus.service"} {
+		// The link TARGET must be guest-root-relative ("/lib/..."),
+		// not the host path — a host-absolute target dangles inside
+		// the booted guest and the unit never starts (agy review F1,
+		// confirmed on the built template).
 		unitPath := filepath.Join(dst, "lib", "systemd", "system", unit)
 		if _, err := os.Stat(unitPath); err != nil {
 			continue
 		}
 		enableLink := filepath.Join(dst, "etc", "systemd", "system", "multi-user.target.wants", unit)
 		if _, err := os.Lstat(enableLink); os.IsNotExist(err) {
-			if err := os.Symlink(unitPath, enableLink); err != nil {
+			if err := os.Symlink("/lib/systemd/system/"+unit, enableLink); err != nil {
 				return fmt.Errorf("enable %s: %w", unit, err)
+			}
+		} else if err == nil {
+			// Repair a previously-baked host-absolute link.
+			os.Remove(enableLink)
+			if err := os.Symlink("/lib/systemd/system/"+unit, enableLink); err != nil {
+				return fmt.Errorf("relink %s: %w", unit, err)
 			}
 		}
 	}

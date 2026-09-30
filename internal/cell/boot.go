@@ -47,9 +47,10 @@ func (s *Store) Start(id string) error {
 	}
 
 	// Refuse to double-start: an active unit would create a second
-	// supervisor competing for the machine name.
+	// supervisor competing for the machine name. Spec §6: start is
+	// idempotent — already-running is a no-op, not an error.
 	if s.isActive(id) {
-		return fmt.Errorf("cell %s is already running", id)
+		return nil
 	}
 
 	// Clear stale machined state from a previously killed/failed boot.
@@ -107,7 +108,10 @@ func (s *Store) Start(id string) error {
 	}
 
 	// Wait for cell to become healthy (bounded 30s).
-	if err := s.waitForHealthy(id, 30*time.Second); err != nil {
+	// Cold first boots on slow storage take minutes to a live bus
+	// (TimeoutStartSec=300 on the unit; 120s here is the observed
+	// 46s worst case with margin).
+	if err := s.waitForHealthy(id, 120*time.Second); err != nil {
 		// Cell failed to start — stop the unit.
 		s.runner.Run("systemctl", "stop", unit)
 		return fmt.Errorf("cell failed to become healthy: %w", err)
@@ -129,6 +133,13 @@ func (s *Store) Start(id string) error {
 		keeper := c.SubUIDBase + 1000
 		if err := os.Chown(s.WorkspaceDir(id), keeper, keeper); err != nil {
 			return fmt.Errorf("chown workspace to in-cell keeper: %w", err)
+		}
+		// Spec §3: /hearth is RW in v1 (RO deferred to custos). As
+		// host-root-owned it appears nobody:nobody in-cell and every
+		// keeper write EACCES (agy review F7). Bin dir stays
+		// host-owned: it binds RO anyway.
+		if err := os.Chown(s.Hearth, keeper, keeper); err != nil {
+			return fmt.Errorf("chown hearth to in-cell keeper: %w", err)
 		}
 	}
 
@@ -251,24 +262,55 @@ func isMountpoint(path string) bool {
 	return false
 }
 
-// waitForHealthy waits until the systemd unit is active. It
-// deliberately does NOT require machined registration: registration
-// completes after nspawn's own setup and races failed starts (the
-// supervisor can be SIGKILLed before it registers), so gating on it
-// only turns slow boots into false timeouts.
+// waitForHealthy waits until the cell is EXEC-CAPABLE: unit active,
+// registered with machined, AND the machine bus answers a trivial
+// systemd-run. Gating on active-only shipped a start that returned
+// before `cell run` could work (live: "Failed to connect to system
+// scope bus via machine transport" for up to ~60s after a healthy-
+// looking start on eMMC storage, 2026-09-30). machined registration
+// is required but not sufficient; the bus probe is the real contract.
 func (s *Store) waitForHealthy(id string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	unit := UnitName(id)
 
 	for time.Now().Before(deadline) {
-		_, _, err := s.runner.Run("systemctl", "is-active", unit)
-		if err == nil {
-			return nil
+		if _, _, err := s.runner.Run("systemctl", "is-active", "--quiet", unit); err == nil {
+			// Spec §6: Healthy = unit active AND machine registered
+			// with machined. Without the second half, `cell run`
+			// racing Start hits "cell not running" (agy review F3).
+			if _, _, err := s.runner.Run("machinectl", "show", id); err == nil {
+				// Third gate: the machine bus must answer. This is
+				// the exact call `cell run` makes; if it works here,
+				// Start's contract ("ready to exec") holds.
+				if _, _, err := s.runner.Run("/usr/bin/systemd-run",
+					"--machine="+id, "--wait", "--pipe", "--quiet", "--collect",
+					"--", "/bin/true"); err == nil {
+					return nil
+				}
+			}
+		} else if state := s.unitState(unit); state == "failed" {
+			// Boot crashed (e.g. supervisor killed): fail now, don't
+			// burn the whole window (prior live defect).
+			return fmt.Errorf("cell %s boot failed (unit failed)", id)
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}
 
-	return fmt.Errorf("cell %s did not start within %v", id, timeout)
+	return fmt.Errorf("cell %s did not become healthy within %v", id, timeout)
+}
+
+// unitState returns ActiveState for a unit ("" if unreadable).
+func (s *Store) unitState(unit string) string {
+	stdout, _, err := s.runner.Run("systemctl", "show", "-p", "ActiveState", unit)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(stdout), "\n") {
+		if v, ok := strings.CutPrefix(line, "ActiveState="); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // recordUIDMap reads /proc/<pid>/uid_map for the in-guest init process
@@ -445,8 +487,17 @@ func (s *Store) findMappedPID(parentPID int) (int, error) {
 		cgRel = strings.TrimSuffix(cgRel, "/payload")
 	}
 
-	// Fallback: check the given PID itself.
-	return s.checkPIDMapped(parentPID)
+	// Fallback: check the given PID itself — but only if it is a
+	// real mapped process; the supervisor is host-root (identity
+	// map → 0,nil) and /proc/0 does not exist (agy review F9).
+	pid, err := s.checkPIDMapped(parentPID)
+	if err != nil {
+		return 0, err
+	}
+	if pid == 0 {
+		return 0, fmt.Errorf("no uid-mapped process found under the cell within window")
+	}
+	return pid, nil
 }
 
 // procCgroupPath returns the cgroup2 path of a pid ("0::/path" line).
@@ -494,6 +545,16 @@ func (s *Store) Stop(id string) error {
 	}
 
 	unit := UnitName(id)
+
+	// Spec §6: stop is idempotent — already-stopped is a no-op.
+	if !s.isActive(id) {
+		// Still ensure the overlay is down (a crash between unit
+		// stop and unmount can leave the mount behind).
+		if s.isMounted(s.MergedDir(id)) {
+			return s.UnmountOverlay(id)
+		}
+		return nil
+	}
 
 	// Stop the systemd unit.
 	if _, stderr, err := s.runner.Run("systemctl", "stop", unit); err != nil {
@@ -570,9 +631,11 @@ func (s *Store) Create(id string) error {
 		return fmt.Errorf("template not found: run 'cell build-template' first")
 	}
 
-	// Check cell doesn't already exist.
+	// Spec §6: create is idempotent — an existing cell is a no-op.
+	// Must NOT fall through: re-running the create path would reset
+	// cell.json and lose the pinned uid base. (agy review F6.)
 	if _, err := s.Load(id); err == nil {
-		return ErrAlreadyExist
+		return nil
 	}
 
 	// Create all required directories.

@@ -113,9 +113,22 @@ func (s *Store) Snapshot(id string) error {
 		return fmt.Errorf("rename upper to snapshot: %w", err)
 	}
 
-	// Create fresh empty upper.
+	// Create fresh empty upper, re-seed it, and reset work/.
+	// Spec §2 order is mkdir → seed → mount: the guest .network
+	// drop-in lives in upper/, so a bare fresh upper would boot the
+	// cell without its interface config (agy review F5). Stale work/
+	// from the rotated layer risks overlayfs index inconsistency.
 	if err := os.MkdirAll(upper, 0755); err != nil {
 		return fmt.Errorf("mkdir fresh upper: %w", err)
+	}
+	if err := os.RemoveAll(s.WorkDir(id)); err != nil {
+		return fmt.Errorf("clean work dir: %w", err)
+	}
+	if err := os.MkdirAll(s.WorkDir(id), 0755); err != nil {
+		return fmt.Errorf("mkdir work: %w", err)
+	}
+	if err := s.seedUpper(id); err != nil {
+		return fmt.Errorf("seed fresh upper: %w", err)
 	}
 
 	// Remount overlay.

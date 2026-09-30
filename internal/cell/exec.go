@@ -2,6 +2,7 @@ package cell
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -53,8 +54,8 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 		cwd = "/workspace"
 	}
 
-	unit := "lararium-exec-" + id + "-" +
-		time.Now().UTC().Format("20060102T150405.000000Z") + ".service"
+	unitBase := "lararium-exec-" + id + "-" +
+		time.Now().UTC().Format("20060102T150405.000000Z")
 
 	execArgs := []string{
 		"--machine=" + id,
@@ -65,35 +66,48 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 		"--wait",
 		"--pipe",
 		"--collect",
-		"--unit=" + unit,
 		"--property=Restart=no",
 		"--property=User=keeper",
 		"--property=WorkingDirectory=" + cwd,
-		"--",
-		"/bin/sh", "-c", cmd,
 	}
+	// Host-enforced timeout belongs to the in-guest unit: systemd
+	// kills the exec scope when RuntimeMaxSec expires. (agy review
+	// F2: opts.Timeout was parsed but never enforced anywhere.)
+	if opts.Timeout > 0 {
+		execArgs = append(execArgs,
+			fmt.Sprintf("--property=RuntimeMaxSec=%d", opts.Timeout))
+	}
+	execArgs = append(execArgs, "--", "/bin/sh", "-c", cmd)
 
 	// systemd-run can race the in-guest dbus daemon: `cell start`
-	// returns once the unit is active, but the machine bus only answers
-	// after dbus.service finishes booting (~1-5s). Retry *only* the
-	// connect failure — a ran command's non-zero exit is not retried.
+	// returns once the unit is active, but the machine bus can take
+	// up to ~60s to answer on a COLD first boot of a fresh cell on
+	// slow storage (live-probed 2026-09-30 on an eMMC bench: manual
+	// systemd-run failed for ~45s post-create, then succeeded).
+	// Retry *only* the connect failure — a ran command's non-zero
+	// exit is not retried. Each attempt uses a fresh unit name: the
+	// failed attempt's --collect'd unit can linger as failed under
+	// the old name.
 	var stdout, stderr []byte
 	var err error
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		stdout, stderr, err = s.runner.Run("/usr/bin/systemd-run", execArgs...)
+	deadline := time.Now().Add(120 * time.Second)
+	for attempt := 0; ; attempt++ {
+		unit := fmt.Sprintf("%s-%03d.service", unitBase, attempt)
+		attemptArgs := append([]string{"--unit=" + unit}, execArgs...)
+		stdout, stderr, err = s.runner.Run("/usr/bin/systemd-run", attemptArgs...)
 		if err == nil || !isBusTransportError(stderr) || time.Now().After(deadline) {
 			break
 		}
-		// Drop the failed exec unit before retrying under the same name.
-		s.runner.Run("systemctl", "reset-failed", unit)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 	}
 	if err != nil && opts.Timeout > 0 {
-		// Heuristic host-side timeout: if the caller's context surfaced
-		// a deadline error, ensure the exec unit is gone (kills the exec
-		// scope only, never the cell — spec §6).
-		s.runner.Run("systemctl", "stop", unit)
+		// Safety net: if the caller's deadline surfaced before the
+		// in-guest RuntimeMaxSec kill landed, stop any exec units
+		// still running INSIDE the cell (--machine — host systemctl
+		// has no such unit; agy review F2). Kills exec scopes only,
+		// never the cell (spec §6).
+		s.runner.Run("systemctl", "--machine="+id, "stop",
+			"lararium-exec-"+id+"-*.service")
 	}
 
 	res := &ExecResult{Stdout: stdout, Stderr: stderr, ExitCode: 0}
