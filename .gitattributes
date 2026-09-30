@@ -1,0 +1,16 @@
+# Normalize line endings: LF in the repo, platform-native on checkout.
+* text=auto
+
+# Never mangle these.
+*.png binary
+*.jpg binary
+*.gif binary
+*.webp binary
+*.mp4 binary
+*.ico binary
+*.woff2 binary
+
+# GitHub language + diff stats.
+*.md linguist-documentation=false
+site/*.html -linguist-generated
+docs/**/vendor/** linguist-generated
