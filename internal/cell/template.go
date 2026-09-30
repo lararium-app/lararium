@@ -215,6 +215,12 @@ func treeSHA256(root string) (string, error) {
 		if d.IsDir() {
 			return nil // dirs carry no content; hashing them = os.Open(dir)
 		}
+		// Hash regular files and symlinks ONLY. Opening a device,
+		// FIFO, or socket BLOCKS forever (proven the hard way: the
+		// walk hung on dev/console inside the baked rootfs).
+		if !d.Type().IsRegular() && d.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
 		rel, rerr := filepath.Rel(root, p)
 		if rerr != nil {
 			return rerr
