@@ -16,6 +16,12 @@ later becomes custos (Phase 4).
 **systemd-nspawn** with **user namespaces**, pinned to:
 `--private-users=pick --private-users-ownership=auto`
 
+- First boot uses `pick`; the picked base is recorded in `cell.json`
+  and **pinned** (explicit `--private-users=<base>`) on every later
+  boot (erratum 2026-09-30, live-probed: re-`pick` allocates a fresh
+  base per boot, orphaning overlay upper/work ownership and breaking
+  keeper writes). Manual `--uid-map` remains forbidden.
+
 - `pick` allocates a free subuid/subgid block per cell → in-cell root maps to
   an unprivileged host uid; root-in-cell ≠ anything on the host, by
   mechanism. This is what makes keeper's in-cell sudo (§2) harmless.

@@ -61,6 +61,12 @@ func (f *fakeRunner) Run(cmd string, args ...string) ([]byte, []byte, error) {
 	if cmd == "machinectl" && len(args) > 0 && args[0] == "terminate" {
 		f.machineUnknown = true
 	}
+	// A successful systemd-run boots nspawn, which re-registers the
+	// machine with machined (models the stale-prune → spawn → register
+	// sequence the real system runs).
+	if cmd == "systemd-run" || cmd == "/usr/bin/systemd-run" {
+		f.machineUnknown = false
+	}
 	return nil, nil, nil
 }
 
@@ -69,6 +75,11 @@ func (f *fakeRunner) RunCombined(cmd string, args ...string) ([]byte, error) {
 	key := cmd + " " + strings.Join(args, " ")
 	if err := f.errors[key]; err != nil {
 		return nil, err
+	}
+	// A successful systemd-run boots nspawn, which registers the
+	// machine with machined (stale-prune → spawn → register).
+	if cmd == "/usr/bin/systemd-run" || cmd == "systemd-run" {
+		f.machineUnknown = false
 	}
 	return nil, nil
 }
@@ -80,6 +91,18 @@ func (f *fakeRunner) StartDetached(cmd string, args ...string) (int, error) {
 		return 0, err
 	}
 	return 42, nil
+}
+
+// isBusProbeCall identifies waitForHealthy's readiness probe
+// (systemd-run --machine=... -- /bin/true), distinguishing it from
+// the cell-spawn invocation in Start.
+func isBusProbeCall(args []string) bool {
+	for _, a := range args {
+		if a == "/bin/true" {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeRunner) hasCall(method, cmd string, argSubset []string) bool {
@@ -263,6 +286,9 @@ func TestStartArgv(t *testing.T) {
 		if call.Cmd != "systemd-run" && call.Cmd != "/usr/bin/systemd-run" {
 			continue
 		}
+		if isBusProbeCall(call.Args) {
+			continue // waitForHealthy's readiness probe, not the spawn
+		}
 		found = true
 
 		// Check systemd-run properties. (--keep-unit is NOT a systemd-run
@@ -382,6 +408,9 @@ func TestRunArgv(t *testing.T) {
 		if call.Cmd != "systemd-run" && call.Cmd != "/usr/bin/systemd-run" {
 			continue
 		}
+		if isBusProbeCall(call.Args) {
+			continue // waitForHealthy's readiness probe, not the spawn
+		}
 		found = true
 
 		required := []string{
@@ -432,7 +461,7 @@ func TestRunNotRunning(t *testing.T) {
 
 	// Verify runner was only called for machinectl show, not systemd-run.
 	for _, call := range runner.invocations {
-		if call.Cmd == "systemd-run" || call.Cmd == "/usr/bin/systemd-run" {
+		if (call.Cmd == "systemd-run" || call.Cmd == "/usr/bin/systemd-run") && !isBusProbeCall(call.Args) {
 			t.Errorf("Run should not call systemd-run when cell not running; got call: %v", call)
 		}
 	}
@@ -579,10 +608,14 @@ func TestCreateDuplicate(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// Second create should fail.
+	// Spec §6: create is idempotent — existing cell is a no-op,
+	// cell.json must survive untouched (uid base preserved).
 	err := store.Create("dup")
-	if err != cell.ErrAlreadyExist {
-		t.Errorf("Create(dup) error = %v, want ErrAlreadyExist", err)
+	if err != nil {
+		t.Errorf("Create(dup) error = %v, want nil (idempotent)", err)
+	}
+	if _, err := store.Load("dup"); err != nil {
+		t.Errorf("cell.json lost after idempotent re-create: %v", err)
 	}
 }
 
@@ -713,6 +746,9 @@ func TestNspawnArgs(t *testing.T) {
 	for _, call := range runner.invocations {
 		if call.Cmd != "systemd-run" && call.Cmd != "/usr/bin/systemd-run" {
 			continue
+		}
+		if isBusProbeCall(call.Args) {
+			continue // waitForHealthy's readiness probe, not the spawn
 		}
 		found = true
 
