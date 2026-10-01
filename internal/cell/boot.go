@@ -23,9 +23,15 @@ import (
 //	--property=Restart=no --property=KillMode=mixed
 //	systemd-nspawn --machine=<id> --register=yes --keep-unit
 //	--private-users=pick --private-users-ownership=auto
-//	--private-network -D <root>/cells/<id>/merged
+//	--network-veth -D <root>/cells/<id>/merged
 //	--bind=<workspace>:/workspace --bind=<hearth>:/hearth
 //	--bind=<bin>:/opt/lararium (via --bind-ro)
+//
+// Network order (spec §4, brief rev2): legacy-record subnet fix-up
+// BEFORE mount; proxy-unit hygiene BEFORE spawn; veth resolve/rename/
+// address + nat regen + proxy unit AFTER healthy; any post-spawn failure
+// unwinds the boot (a cell never stays active with an unenforced
+// network).
 func (s *Store) Start(id string) error {
 	if err := validateID(id); err != nil {
 		return err
@@ -84,6 +90,12 @@ func (s *Store) Start(id string) error {
 		return err
 	}
 
+	// T5 proxy-unit hygiene BEFORE spawn (C9): after a kill -9 the
+	// proxy unit may still be loaded and systemd-run refuses a loaded
+	// unit name. Errors are expected (unit usually absent) and ignored
+	// inside stopProxyUnit.
+	s.stopProxyUnit(id)
+
 	// Guest-root fixes (sudo setuid copy-up) MUST happen while the
 	// overlay is NOT live-mounted: mutating upper under a live mount
 	// leaves the guest with stale lower dentries for the fixed paths
@@ -102,6 +114,18 @@ func (s *Store) Start(id string) error {
 			return fmt.Errorf("unmount stale overlay before start: %w", err)
 		}
 	}
+
+	// T5 migration (spec §4): records written before T5 carry no
+	// network state (VethHost empty). Allocate a subnet and write the
+	// guest's static network config + proxy env HERE — the overlay is
+	// guaranteed unmounted at this point (upper-under-live-mount is a
+	// stale-dentry no-go, T4 invariant).
+	if rec0 != nil && rec0.Gateway == "" {
+		if err := s.migrateLegacyNetwork(id, rec0); err != nil {
+			return err
+		}
+	}
+
 	if basePinned {
 		if err := s.fixGuestRootFiles(id, rec0.SubUIDBase); err != nil {
 			return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
@@ -236,6 +260,23 @@ func (s *Store) Start(id string) error {
 		if err := s.grantHearthAccess(keeper); err != nil {
 			return fmt.Errorf("grant hearth access to in-cell keeper: %w", err)
 		}
+	}
+
+	// --- T5 network bring-up (spec §4): AFTER healthy, and ANY
+	// failure unwinds the boot — a cell never stays active with an
+	// unenforced network (brief §1 unwind rule).
+	if err := s.bringUpNetwork(id); err != nil {
+		//nolint:errcheck // unwind after failed boot; primary error wins
+		s.runner.Run("systemctl", "stop", unit)
+		// F8 (agy): partial bring-up must not leak the renamed
+		// veth, a half-lived proxy unit, or this cell's DNAT rule.
+		// netDown is best-effort and idempotent by design.
+		s.netDown(id)
+		//nolint:errcheck // unwind after failed boot; primary error wins
+		s.UnmountOverlay(id)
+		//nolint:errcheck // best-effort: release a stale registration
+		s.pruneStaleMachined(id)
+		return fmt.Errorf("cell network bring-up failed (boot unwound): %w", err)
 	}
 
 	return nil
@@ -456,7 +497,12 @@ func (s *Store) nspawnArgs(id string) []string {
 		"--boot",
 		privateUsers,
 		"--private-users-ownership=" + ownership,
-		"--private-network",
+		// T5 (spec §4): the shipped network path. nspawn creates the
+		// veth pair with the guest end named host0; the host end is
+		// resolved BY MECHANISM after spawn (leader PID -> iflink),
+		// renamed, addressed. Egress is governed by the host nftables
+		// cage — --private-network was the T4 interim.
+		"--network-veth",
 		"-D", s.MergedDir(id),
 	}
 
@@ -514,13 +560,30 @@ func (s *Store) pruneStaleMachined(id string) error {
 		s.runner.Run("kill", "-9", strconv.Itoa(pid))
 	}
 
-	// Wait for the kernel to release the export mount.
-	deadline = time.Now().Add(120 * time.Second)
+	// Wait for the kernel to release the export mount. A clean exit
+	// unwinds it in milliseconds; after SIGKILL the tmpfs can stay
+	// propagated into the host table with no namespace left to
+	// reclaim it (live-probed C9) — after a short grace, lazily
+	// unmount the orphan ourselves. Safe here: the unit is inactive,
+	// the registration is gone, and any live supervisor holding the
+	// dir was just killed; the mount is an empty private tmpfs.
+	deadline = time.Now().Add(5 * time.Second)
 	for isMountpoint(exportDir) {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+			break
 		}
 		time.Sleep(250 * time.Millisecond)
+	}
+	if isMountpoint(exportDir) {
+		//nolint:errcheck // verified by re-check below
+		s.runner.Run("umount", "-l", exportDir)
+		deadline = time.Now().Add(10 * time.Second)
+		for isMountpoint(exportDir) {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
 	return nil
 }
@@ -836,6 +899,9 @@ func (s *Store) Stop(id string) error {
 
 	// Spec §6: stop is idempotent — already-stopped is a no-op.
 	if !s.isActive(id) {
+		// T5: still guarantee proxy/veth/nat are gone (a crash can
+		// leave the listener or host end behind).
+		s.netDown(id)
 		// Still ensure the overlay is down (a crash between unit
 		// stop and unmount can leave the mount behind).
 		if s.isMounted(s.MergedDir(id)) {
@@ -848,6 +914,10 @@ func (s *Store) Stop(id string) error {
 	if _, stderr, err := s.runner.Run("systemctl", "stop", unit); err != nil {
 		return fmt.Errorf("systemctl stop: %s", strings.TrimSpace(string(stderr)))
 	}
+
+	// T5: drop the proxy listener + host veth, regenerate nat (the
+	// cell's DNAT rule vanishes with its active unit).
+	s.netDown(id)
 
 	// Unmount overlay.
 	if err := s.UnmountOverlay(id); err != nil {
@@ -906,6 +976,12 @@ func (s *Store) Destroy(id string) error {
 		return fmt.Errorf("remove cell dir: %w", err)
 	}
 
+	// T5: final network teardown (proxy unit usually already gone via
+	// BindsTo; this covers destroy-while-stopped and crash leftovers)
+	// and nat regeneration WITHOUT this cell (the record is deleted, so
+	// the claim is released with it).
+	s.netDown(id)
+
 	return nil
 }
 
@@ -914,9 +990,14 @@ func lookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
 
-// Create initializes a new cell: creates directories, seeds upper, mounts overlay,
-// and writes cell.json.
-func (s *Store) Create(id string) error {
+// Create initializes a new cell: creates directories, allocates the
+// cell subnet, seeds upper (with the guest network config), mounts the
+// overlay, and writes cell.json.
+//
+// noProxy (optional, default false): C8's per-cell opt-out — no proxy
+// env in the guest, no nat rule, no proxy unit at start.
+func (s *Store) Create(id string, noProxy ...bool) error {
+	optNoProxy := len(noProxy) > 0 && noProxy[0]
 	if err := validateID(id); err != nil {
 		return err
 	}
@@ -959,23 +1040,56 @@ func (s *Store) Create(id string) error {
 		return fmt.Errorf("chmod cell dir: %w", err)
 	}
 
-	// Seed upper/ BEFORE mount.
-	if err := s.seedUpper(id); err != nil {
-		return fmt.Errorf("seed upper: %w", err)
-	}
+	// T5 (spec §4): the flock covers the WHOLE scan-allocate-...
+	//-commit cycle THROUGH the cell.json write (agy F3: releasing
+	// after allocation let a concurrent create scan a cell.json-less
+	// subnet and double-claim it). Everything between alloc and Save
+	// is local fs work — bounded hold time, no external calls.
+	if err := s.withCellLock(func() error {
+		subnet, aErr := s.allocateSubnetIndex()
+		if aErr != nil {
+			return aErr
+		}
 
-	// Mount overlay.
-	if err := s.MountOverlay(id); err != nil {
-		return fmt.Errorf("mount overlay: %w", err)
-	}
+		// Seed upper/ BEFORE mount.
+		if sErr := s.seedUpper(id); sErr != nil {
+			return fmt.Errorf("seed upper: %w", sErr)
+		}
 
-	// Write cell.json.
-	c := &Cell{
-		ID:      id,
-		Created: time.Now(),
-	}
-	if err := s.Save(c); err != nil {
-		return fmt.Errorf("save cell.json: %w", err)
+		// Guest network config + proxy env go into the SEALED
+		// upper before the overlay is mounted (upper-under-live-
+		// mount mutation yields stale dentries — T4 invariant).
+		if wErr := s.writeGuestNetwork(id, subnet); wErr != nil {
+			return fmt.Errorf("write guest network config: %w", wErr)
+		}
+		proxyOn := s.proxyActive() && !optNoProxy
+		if proxyOn {
+			if wErr := s.writeGuestProxyEnv(id, subnet, s.proxyPort()); wErr != nil {
+				return fmt.Errorf("write guest proxy env: %w", wErr)
+			}
+		}
+
+		// Mount overlay.
+		if mErr := s.MountOverlay(id); mErr != nil {
+			return fmt.Errorf("mount overlay: %w", mErr)
+		}
+
+		// cell.json write = the claim commit, inside the window.
+		rec := &Cell{
+			ID:      id,
+			Created: time.Now(),
+		}
+		fillNetworkState(rec, subnet)
+		if !proxyOn {
+			off := false
+			rec.ProxyEnabled = &off
+		}
+		if svErr := s.Save(rec); svErr != nil {
+			return fmt.Errorf("save cell.json: %w", svErr)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	return nil
