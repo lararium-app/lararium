@@ -67,6 +67,11 @@ type Cell struct {
 	SubUIDBase  int       `json:"subuid_base"`
 	Created     time.Time `json:"created"`
 	SubUIDCount int       `json:"subuid_count"`
+	// GuestRootFixed records that fixGuestRootFiles has been applied
+	// for this cell (agy round-3 F6): without it, a crash between
+	// recordUIDMap and the first-boot restart would leave every later
+	// idempotent Start short-circuiting on isActive with a broken sudo.
+	GuestRootFixed bool `json:"guest_root_fixed,omitempty"`
 	// Limits overrides spec §5 per-cell: any non-zero/non-empty
 	// field replaces the lararium.yaml global at start; nil/zero
 	// inherits.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -47,11 +48,24 @@ func (s *Store) Start(id string) error {
 		return fmt.Errorf("mkdir workspace: %w", err)
 	}
 
+	rec0, _ := s.Load(id)
+	basePinned := rec0 != nil && rec0.SubUIDBase > 0
+
 	// Refuse to double-start: an active unit would create a second
 	// supervisor competing for the machine name. Spec §6: start is
 	// idempotent — already-running is a no-op, not an error.
+	// Exception (agy round-3 F6): a first boot that recorded its uid
+	// base but crashed before the guest-root fix + restart leaves a
+	// live container with a broken sudo — treat that as incomplete,
+	// not idempotent: stop it and boot properly below.
 	if s.isActive(id) {
-		return nil
+		if basePinned && !rec0.GuestRootFixed {
+			if err := s.Stop(id); err != nil {
+				return fmt.Errorf("stop incomplete first boot: %w", err)
+			}
+		} else {
+			return nil
+		}
 	}
 
 	// Clear stale machined state from a previously killed/failed boot.
@@ -75,8 +89,16 @@ func (s *Store) Start(id string) error {
 	// With a pinned uid base we can fix before boot; on the very
 	// first boot the base is unknown until nspawn picks one, so we
 	// fix after recording it and restart once.
-	rec0, _ := s.Load(id)
-	basePinned := rec0 != nil && rec0.SubUIDBase > 0
+	//
+	// Snapshot/Restore may leave the overlay mounted while stopped
+	// (agy round-3 F3). Any mount here means no live guest uses it —
+	// drop it so the pre-boot fix never mutates a live upper, then
+	// remount fresh below.
+	if s.isMounted(s.MergedDir(id)) {
+		if err := s.UnmountOverlay(id); err != nil {
+			return fmt.Errorf("unmount stale overlay before start: %w", err)
+		}
+	}
 	if basePinned {
 		if err := s.fixGuestRootFiles(id, rec0.SubUIDBase); err != nil {
 			return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
@@ -133,14 +155,17 @@ func (s *Store) Start(id string) error {
 	// (TimeoutStartSec=300 on the unit; 120s here is the observed
 	// 46s worst case with margin).
 	if err := s.waitForHealthy(id, 120*time.Second); err != nil {
-		// Cell failed to start — stop the unit.
+		// Cell failed to start — stop the unit and drop the overlay
+		// so no stale mount survives a failed boot (agy round-3 F7).
 		s.runner.Run("systemctl", "stop", unit)
+		s.UnmountOverlay(id)
 		return fmt.Errorf("cell failed to become healthy: %w", err)
 	}
 
 	// Record uid_map: find the in-guest init process and read /proc/<pid>/uid_map.
 	if err := s.recordUIDMap(id); err != nil {
 		s.runner.Run("systemctl", "stop", unit)
+		s.UnmountOverlay(id)
 		return fmt.Errorf("record uid map: %w", err)
 	}
 
@@ -166,6 +191,15 @@ func (s *Store) Start(id string) error {
 			}
 			if err := s.fixGuestRootFiles(id, c.SubUIDBase); err != nil {
 				return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
+			}
+			// Record the fix BEFORE restarting: if this process
+			// dies right here, the next Start sees the incomplete
+			// first boot and repeats it instead of short-circuiting
+			// idempotently on the active broken-sudo container
+			// (agy round-3 F6).
+			c.GuestRootFixed = true
+			if err := s.Save(c); err != nil {
+				return fmt.Errorf("record guest-root fix: %w", err)
 			}
 			return s.Start(id)
 		}
@@ -203,6 +237,18 @@ func (s *Store) Start(id string) error {
 // never share mutable setuid state). The seal stores sudo 0555, so
 // the setuid bit is re-asserted here at copy time; the mapped uid-0
 // setuid exec is how rootless podman runs sudo in containers.
+//
+// Guest sovereignty (agy round-3 F8): once a target exists in upper,
+// the guest owns it — we do NOT clobber guest apt upgrades or custom
+// sudoers on every start. Exception: a sudo binary that lost its
+// required state (owner, setuid, non-empty) is repaired, since a
+// broken sudo breaks the entire keep promise.
+//
+// Hardening (agy round-3 F1/F5): the guest can write upper freely
+// (in-cell root), so every path component under upper is verified
+// non-symlink before touching, and copies go through a temp file +
+// fchown/fchmod + atomic rename so host root never follows a guest-
+// planted symlink or leaves a truncated file in place on crash.
 func (s *Store) fixGuestRootFiles(id string, base int) error {
 	for _, rel := range []string{"usr/bin/sudo", "etc/sudoers", "etc/sudoers.d/keeper"} {
 		src := filepath.Join(s.TemplateDir(), rel)
@@ -216,49 +262,136 @@ func (s *Store) fixGuestRootFiles(id string, base int) error {
 		if !fi.Mode().IsRegular() {
 			continue
 		}
+
+		// Guest-ownership policy: existing targets stay as-is.
 		dst := filepath.Join(s.UpperDir(id), rel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
+		if dfi, err := os.Lstat(dst); err == nil {
+			if dfi.Mode().IsRegular() {
+				needsRepair := false
+				if rel == "usr/bin/sudo" {
+					// A sudo that is EMPTY, not owned by the
+					// cell's root, or missing its setuid bit
+					// cannot work — repair it. A guest apt
+					// upgrade changes size but keeps owner and
+					// setuid: that stays (agy round-3 F8).
+					okOwner := fileUID(dst) == base
+					okSetuid := dfi.Mode()&os.ModeSetuid != 0
+					okSize := dfi.Size() > 0
+					needsRepair = !okOwner || !okSetuid || !okSize
+				}
+				if !needsRepair {
+					continue
+				}
+			}
+			// Symlink or dir planted by the guest at the target:
+			// remove it so the verified copy can take its place.
+			if err := os.RemoveAll(dst); err != nil {
+				return err
+			}
 		}
-		in, err := os.Open(src)
+
+		// Every ancestor inside upper must exist as a real dir
+		// (never a guest-planted symlink escaping the cell).
+		// MkdirAll alone follows existing symlinks silently.
+		// Newly created dirs are chowned to base: host root 0:0
+		// maps to nobody in-guest and would lock the cell's root
+		// out of creating files there (agy round-3 F2).
+		upper := s.UpperDir(id)
+		walk := upper
+		for _, part := range strings.Split(filepath.Dir(rel), "/") {
+			walk = filepath.Join(walk, part)
+			st, err := os.Lstat(walk)
+			if err == nil {
+				if !st.IsDir() {
+					if err := os.RemoveAll(walk); err != nil {
+						return err
+					}
+					if err := os.Mkdir(walk, 0755); err != nil {
+						return err
+					}
+					if err := os.Chown(walk, base, base); err != nil {
+						return err
+					}
+				}
+			} else if err := os.Mkdir(walk, 0755); err != nil && !os.IsExist(err) {
+				return err
+			} else if err == nil {
+				// Just created by us: hand it to the cell's root.
+				if err := os.Chown(walk, base, base); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Copy via temp + atomic rename: a crash can never leave a
+		// truncated sudo masking the lower template file.
+		tf, err := os.CreateTemp(filepath.Dir(dst), ".fixroot-")
 		if err != nil {
 			return err
 		}
-		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+		tmpName := tf.Name()
+		func() {
+			defer os.Remove(tmpName) // no-op after successful rename
+			in, err := os.Open(src)
+			if err != nil {
+				tf.Close()
+				return
+			}
+			_, err = io.Copy(tf, in)
+			in.Close()
+			if err != nil {
+				tf.Close()
+				return
+			}
+			// Chown first (kernel strips setuid on ownership
+			// change), then fchmod on the SAME fd — path-based
+			// chmod could race a rename of dst.
+			if err := tf.Chown(base, base); err != nil {
+				tf.Close()
+				return
+			}
+			mode := fi.Mode().Perm()
+			if rel == "usr/bin/sudo" {
+				// The seal stores sudo 0555; re-assert setuid.
+				// os.Chmod takes os.FileMode: the flag is
+				// os.ModeSetuid (1<<22), NOT the raw 04000 bit
+				// (live-probed: silent no-op).
+				mode |= os.ModeSetuid
+			}
+			if err := tf.Chmod(os.FileMode(mode)); err != nil {
+				tf.Close()
+				return
+			}
+			if err := tf.Sync(); err != nil {
+				tf.Close()
+				return
+			}
+			if err := tf.Close(); err != nil {
+				return
+			}
+			err = os.Rename(tmpName, dst)
+			if err != nil {
+				return
+			}
+		}()
 		if err != nil {
-			in.Close()
-			return err
-		}
-		if _, err := io.Copy(out, in); err != nil {
-			in.Close()
-			out.Close()
-			return err
-		}
-		in.Close()
-		if err := out.Close(); err != nil {
-			return err
-		}
-		// Host uid `base` is the guest's root. Chown FIRST: the
-		// kernel strips setuid on ownership change, so chmod with
-		// the setuid bit must come after.
-		if err := os.Chown(dst, base, base); err != nil {
-			return err
-		}
-		// The sealed template stores sudo as 0555 (the seal drops
-		// setuid), so the setuid bit is added back here for the
-		// binary only, per-cell, inside the mapped uid range.
-		// NOTE: os.Chmod takes an os.FileMode — the setuid flag is
-		// os.ModeSetuid (1<<22); the raw 04000 bit is NOT it and
-		// chmods silently without it (live-probed).
-		mode := fi.Mode().Perm()
-		if rel == "usr/bin/sudo" {
-			mode |= os.ModeSetuid
-		}
-		if err := os.Chmod(dst, mode); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// fileUID returns the owner uid of path (0 on error — callers treat
+// any mismatch as "needs repair").
+func fileUID(path string) int {
+	st, err := os.Stat(path)
+	if err != nil {
+		return -1
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+		return int(sys.Uid)
+	}
+	return -1
 }
 
 // grantHearthAccess gives host uid `keeper` rwX on <hearth> (existing
@@ -796,6 +929,22 @@ func (s *Store) Create(id string) error {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
+	}
+	// Owner-only on the CELL DIRECTORY (agy round-3 F4): upper/ holds
+	// guest-controlled setuid binaries; a world-traversable path lets
+	// any unprivileged host user EXEC them (host kernel evaluates
+	// host uids — execve is not blocked by the userns mapping).
+	// Locking cells/<id> blocks the traversal for every layer below
+	// (upper, snapshots) while daemon+nspawn (host root, the owner)
+	// keep full access; the workspace bind target bypasses path
+	// traversal (VFS resolves the mount directly).
+	//
+	// NOT upper/ or merged/ themselves: upper's top inode IS the
+	// guest's / — a 0700 there is owned by host root (unmapped →
+	// nobody in-guest) and strips the guest's search permission on
+	// its own root (live-probed: container halts at boot).
+	if err := os.Chmod(s.CellDir(id), 0700); err != nil {
+		return fmt.Errorf("chmod cell dir: %w", err)
 	}
 
 	// Seed upper/ BEFORE mount.
