@@ -268,6 +268,10 @@ func (s *Store) Start(id string) error {
 	if err := s.bringUpNetwork(id); err != nil {
 		//nolint:errcheck // unwind after failed boot; primary error wins
 		s.runner.Run("systemctl", "stop", unit)
+		// F8 (agy): partial bring-up must not leak the renamed
+		// veth, a half-lived proxy unit, or this cell's DNAT rule.
+		// netDown is best-effort and idempotent by design.
+		s.netDown(id)
 		//nolint:errcheck // unwind after failed boot; primary error wins
 		s.UnmountOverlay(id)
 		//nolint:errcheck // best-effort: release a stale registration
@@ -1036,56 +1040,56 @@ func (s *Store) Create(id string, noProxy ...bool) error {
 		return fmt.Errorf("chmod cell dir: %w", err)
 	}
 
-	// T5 (spec §4): allocate the subnet UNDER FLOCK covering the whole
-	// scan-allocate-write cycle (the cell.json write below is the
-	// claim commit; concurrent creates cannot collide).
-	var subnet int
+	// T5 (spec §4): the flock covers the WHOLE scan-allocate-...
+	//-commit cycle THROUGH the cell.json write (agy F3: releasing
+	// after allocation let a concurrent create scan a cell.json-less
+	// subnet and double-claim it). Everything between alloc and Save
+	// is local fs work — bounded hold time, no external calls.
 	if err := s.withCellLock(func() error {
-		var aErr error
-		subnet, aErr = s.allocateSubnetIndex()
-		return aErr
-	}); err != nil {
-		return fmt.Errorf("allocate cell subnet: %w", err)
-	}
-
-	// Seed upper/ BEFORE mount.
-	if err := s.seedUpper(id); err != nil {
-		return fmt.Errorf("seed upper: %w", err)
-	}
-
-	// Guest network config + proxy env go into the SEALED upper
-	// before the overlay is mounted (upper-under-live-mount mutation
-	// yields stale dentries — T4 invariant).
-	if err := s.writeGuestNetwork(id, subnet); err != nil {
-		return fmt.Errorf("write guest network config: %w", err)
-	}
-	proxyOn := s.proxyActive() && !optNoProxy
-	if proxyOn {
-		if err := s.writeGuestProxyEnv(id, subnet, s.proxyPort()); err != nil {
-			return fmt.Errorf("write guest proxy env: %w", err)
+		subnet, aErr := s.allocateSubnetIndex()
+		if aErr != nil {
+			return aErr
 		}
-	}
 
-	// Mount overlay.
-	if err := s.MountOverlay(id); err != nil {
-		return fmt.Errorf("mount overlay: %w", err)
-	}
+		// Seed upper/ BEFORE mount.
+		if sErr := s.seedUpper(id); sErr != nil {
+			return fmt.Errorf("seed upper: %w", sErr)
+		}
 
-	// Write cell.json (commits the subnet claim; must stay inside the
-	// lock window conceptually — the record write is atomic-rename and
-	// a crash before it just orphans a free subnet index, never a
-	// double claim).
-	c := &Cell{
-		ID:      id,
-		Created: time.Now(),
-	}
-	fillNetworkState(c, subnet)
-	if !proxyOn {
-		off := false
-		c.ProxyEnabled = &off
-	}
-	if err := s.Save(c); err != nil {
-		return fmt.Errorf("save cell.json: %w", err)
+		// Guest network config + proxy env go into the SEALED
+		// upper before the overlay is mounted (upper-under-live-
+		// mount mutation yields stale dentries — T4 invariant).
+		if wErr := s.writeGuestNetwork(id, subnet); wErr != nil {
+			return fmt.Errorf("write guest network config: %w", wErr)
+		}
+		proxyOn := s.proxyActive() && !optNoProxy
+		if proxyOn {
+			if wErr := s.writeGuestProxyEnv(id, subnet, s.proxyPort()); wErr != nil {
+				return fmt.Errorf("write guest proxy env: %w", wErr)
+			}
+		}
+
+		// Mount overlay.
+		if mErr := s.MountOverlay(id); mErr != nil {
+			return fmt.Errorf("mount overlay: %w", mErr)
+		}
+
+		// cell.json write = the claim commit, inside the window.
+		rec := &Cell{
+			ID:      id,
+			Created: time.Now(),
+		}
+		fillNetworkState(rec, subnet)
+		if !proxyOn {
+			off := false
+			rec.ProxyEnabled = &off
+		}
+		if svErr := s.Save(rec); svErr != nil {
+			return fmt.Errorf("save cell.json: %w", svErr)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	return nil

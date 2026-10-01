@@ -63,6 +63,7 @@ Commands:
   snapshot <id>       Snapshot the cell's upper layer
   restore <id> <ts>   Restore from a snapshot
   net-install         Install the host network cage (requires root)
+  net-remove          Remove the host network cage (requires root)
 
 Flags:
   --config <path>     Path to lararium.yaml (default: /etc/lararium/lararium.yaml)
@@ -167,6 +168,8 @@ func main() {
 		restoreCmd(store, cmdArgs)
 	case "net-install":
 		netInstallCmd(store)
+	case "net-remove":
+		netRemoveCmd(store)
 	case "proxy":
 		proxyCmd(store, cmdArgs)
 	default:
@@ -230,6 +233,15 @@ func netInstallCmd(store *cell.Store) {
 		os.Exit(1)
 	}
 	fmt.Println("cage installed: filter table + forwarding sysctls (nat regenerates per boot)")
+}
+
+// netRemoveCmd tears the host-side cage down (spec §6).
+func netRemoveCmd(store *cell.Store) {
+	if err := store.RemoveNetwork(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("cage removed: nft tables, interop hook, v-lar-* leftovers")
 }
 
 // proxyCmd runs the dumb forward proxy in the foreground — it is started

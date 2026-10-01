@@ -196,6 +196,19 @@ in filter hooks):
      drop. `forward`
      chain stays a pure drop — a forward-path reset would leak host
      topology.)
+   - **Firewall interop (erratum E3, 2026-10-01, bench #2):** nft and
+     iptables register as **separate hook chains on the same hook** and
+     the strictest verdict wins — an nft `accept` cannot bypass an
+     iptables `INPUT` policy `DROP` (ufw/firewalld/legacy stacks drop
+     cooperative-path SYNs even after our filter table counts them).
+     `cell net-install` therefore ALSO maintains a tagged iptables user
+     chain (`LARARIUM-INPUT`, comment `lararium-cage-interop`,
+     Docker's shape): accept `ctstate DNAT` and `iif v-lar-+ daddr
+     10.91.0.0/16 tcp dport <proxy_port>`; hooked into `INPUT` at
+     position 1, idempotently (`-C` before `-I`), skipped when the
+     `iptables` binary is absent (nft-only hosts). Scope is exactly the
+     two cooperative flows — every other cell verdict still belongs to
+     the nft filter table. `net-remove` unwires it.
    - `forward` chain: `iifname "v-lar-*" drop` — unconditional catch-all for
      everything the nat table didn't divert (ICMP, DNS, odd ports); since no
      non-DNAT path is ever forwarded, nothing needs masquerading.
