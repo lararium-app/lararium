@@ -2,7 +2,9 @@ package cell
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,10 +142,122 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 		failed = true
 	}
 
+	// --- T5 cage checks (spec §4) ---
+
+	// nft present and our tables parse.
+	netOK, netDetail := s.probeCageTables()
+	results = append(results, CheckResult{"nft-cage", boolStatus(netOK), netDetail})
+	if !netOK {
+		failed = true
+	}
+
+	// ip_forward must be on once the cage is installed (cage without
+	// forwarding = dead cooperative path; forwarding without cage =
+	// leak — the pair is checked as a pair).
+	if v, ok := s.readSysctl("net.ipv4.ip_forward"); ok {
+		if v == "1" {
+			results = append(results, CheckResult{"ip-forward", "OK", "net.ipv4.ip_forward=1"})
+		} else {
+			results = append(results, CheckResult{
+				"ip-forward", "FAIL",
+				"net.ipv4.ip_forward=" + v + " (run 'cell net-install' as root)",
+			})
+			failed = true
+		}
+	} else {
+		results = append(results, CheckResult{"ip-forward", "FAIL", "cannot read /proc/sys/net/ipv4/ip_forward"})
+		failed = true
+	}
+
+	// Proxy port bindability: per-gateway addresses don't exist until
+	// cells boot, so the doctor probe binds loopback, NOT a gateway
+	// address (that would EADDRNOTAVAIL falsely).
+	if ok, detail := probePortFree(s.proxyPort()); ok {
+		results = append(results, CheckResult{"proxy-port", "OK", detail})
+	} else {
+		results = append(results, CheckResult{"proxy-port", "FAIL", detail})
+		failed = true
+	}
+
+	// flock file usable (subnet alloc + nat regen serialize there).
+	lockFile := s.lockFile()
+	if f, lErr := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0o644); lErr != nil {
+		results = append(results, CheckResult{"lock-file", "FAIL", lErr.Error()})
+		failed = true
+	} else {
+		f.Close()
+		results = append(results, CheckResult{"lock-file", "OK", lockFile + " usable"})
+	}
+
 	if failed {
 		return results, fmt.Errorf("doctor: one or more checks failed")
 	}
 	return results, nil
+}
+
+func boolStatus(ok bool) string {
+	if ok {
+		return "OK"
+	}
+	return "FAIL"
+}
+
+// probeCageTables verifies nft is installed and BOTH cage tables exist
+// (spec §4: filter table presence is MANDATORY for OK; the nat table is
+// optional iff no proxy-enabled cell is currently booted — an absent
+// nat with zero booted proxy cells is the fail-closed steady state, an
+// absent nat WITH booted proxy cells means a start skipped bring-up).
+func (s *Store) probeCageTables() (bool, string) {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return false, "nft not found in PATH (install nftables)"
+	}
+	out, _, err := s.runner.Run("nft", "list", "tables")
+	if err != nil {
+		return false, fmt.Sprintf("nft list tables failed: %v", err)
+	}
+	tables := string(out)
+	hasFilter := strings.Contains(tables, "table inet lararium_filter")
+	hasNat := strings.Contains(tables, "table ip lararium_nat")
+	if !hasFilter {
+		return false, "table inet lararium_filter missing (run 'cell net-install' as root)"
+	}
+	if !hasNat {
+		// Inverted check (review finding): absence is OK exactly when
+		// nothing expects DNAT right now.
+		ids, _ := s.List()
+		for _, id := range ids {
+			c, err := s.Load(id)
+			if err != nil {
+				continue
+			}
+			if s.proxyActive() && c.ProxyOn() && s.isActive(id) {
+				return false, "nat table missing while proxy-enabled cell " + id + " is booted"
+			}
+		}
+		return true, "filter table installed; nat empty (no booted proxy cell)"
+	}
+	// Parse both tables (a hand-corrupted table must fail here, not
+	// mid-boot).
+	if _, _, err := s.runner.Run("nft", "list", "table", "inet", "lararium_filter"); err != nil {
+		return false, "table inet lararium_filter does not parse"
+	}
+	if _, _, err := s.runner.Run("nft", "list", "table", "ip", "lararium_nat"); err != nil {
+		return false, "table ip lararium_nat does not parse"
+	}
+	return true, "filter + nat tables installed and parse"
+}
+
+// probePortFree tries binding :port on loopback. In use by a foreign
+// service is a FAIL (our proxy would EADDRINUSE at start with a
+// confusing message; the nat DNAT targets would black-hole).
+func probePortFree(port int) (bool, string) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		return false, fmt.Sprintf("port %d not bindable on loopback: %v", port, err)
+	}
+	ln.Close()
+	return true, fmt.Sprintf("port %d free", port)
 }
 
 // checkCgroup2 verifies /sys/fs/cgroup is cgroup2fs.

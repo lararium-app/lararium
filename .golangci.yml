@@ -79,6 +79,8 @@ linters:
       excludes:
         - G304 # reading operator-provided config/paths is the product
         - G306 # writing cell files with intended modes is the product
+        # G702 (tainted argv) is suppressed for the CmdRunner file via
+        # an exclusions rule below — see there.
     errcheck:
       exclude-functions:
         - fmt.Fprintf
@@ -91,6 +93,14 @@ linters:
     rules:
       - path: _test\.go
         linters: [funlen, gocyclo, revive, noctx, errcheck]
+      # CmdRunner execs argv slices with NO shell (execve): CLI-provided
+      # values cannot inject commands by construction — that IS the
+      # product interface (cell run -- cmd...). gosec's taint analysis
+      # flags the sink; the exclusion is scoped to this one file/line
+      # concern, not the linter.
+      - path: internal/cell/cell\.go
+        linters: [gosec]
+        text: G702
 
 formatters:
   enable: [gofumpt, goimports, gci]

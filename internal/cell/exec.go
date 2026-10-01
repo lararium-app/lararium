@@ -101,6 +101,12 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 	}
 	// Env reaches the in-guest unit via --setenv (spec §4 proxy vars
 	// depend on it; round-2 F9: RunOpts.Env was silently dropped).
+	// Order matters (agy r2 F8): defaults FIRST so an explicit
+	// --env from the caller wins the duplicate -- the cage env is a
+	// default, not an override.
+	for _, kv := range s.proxyEnvForRun(id) {
+		execArgs = append(execArgs, "--setenv="+kv)
+	}
 	for _, kv := range opts.Env {
 		execArgs = append(execArgs, "--setenv="+kv)
 	}

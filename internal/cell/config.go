@@ -35,6 +35,15 @@ type Config struct {
 	SchemaVersion int    `yaml:"schema_version"`
 	Cell          Limits `yaml:"cell"`
 	Hearth        string `yaml:"hearth"`
+	Proxy         Proxy  `yaml:"proxy"`
+}
+
+// Proxy is the fleet-wide dumb-proxy policy (spec §4). enabled=false
+// turns the whole proxy fleet off: cells boot with no proxy env, nat
+// stays empty, filter stays installed (fail closed).
+type Proxy struct {
+	Enabled *bool `yaml:"enabled"`
+	Port    int   `yaml:"port"`
 }
 
 // LoadConfig reads lararium.yaml and returns a Config with defaults applied.
@@ -62,6 +71,14 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Cell.Ownership == "" {
 		cfg.Cell.Ownership = def.Ownership
+	}
+	// Proxy defaults: enabled, standard port.
+	if cfg.Proxy.Enabled == nil {
+		on := true
+		cfg.Proxy.Enabled = &on
+	}
+	if cfg.Proxy.Port == 0 {
+		cfg.Proxy.Port = DefaultProxyPort
 	}
 
 	return &cfg, nil

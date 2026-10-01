@@ -13,6 +13,21 @@ import (
 	"time"
 )
 
+// runInTemplate executes a command inside the template chroot with a
+// complete guest PATH. chroot resolves argv[0] through the INHERITED
+// host PATH, and usrmerged noble ships useradd/usermod/grep siblings
+// under /usr/sbin — a host PATH without /usr/sbin (live-probed on
+// an Arch-based host: bake died at "create keeper user: exit status 127")
+// silently hid them. Pin the canonical PATH via env inside the guest.
+func (s *Store) runInTemplate(dst string, args ...string) ([]byte, []byte, error) {
+	full := append([]string{
+		dst,
+		"env", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	},
+		args...)
+	return s.runner.Run("chroot", full...)
+}
+
 // BuildTemplate builds a debootstrap-based rootfs template at Root/templates/noble.
 // Requires root (euid 0) and debootstrap binary.
 func (s *Store) BuildTemplate() error {
@@ -23,6 +38,18 @@ func (s *Store) BuildTemplate() error {
 	// Verify debootstrap exists.
 	if _, err := lookPath("debootstrap"); err != nil {
 		return fmt.Errorf("debootstrap not found: %w", err)
+	}
+
+	// debootstrap maps the host to a Debian arch via dpkg
+	// (--print-architecture). Distros without dpkg fall back to a
+	// host-detection block that Arch's patched debootstrap only
+	// implements for its own CARCH values — live-probed on an Arch-based host:
+	// bake dies with "Unknown architecture: x86_64". Fail with the
+	// remedy instead of the cryptic child error.
+	if _, err := lookPath("dpkg"); err != nil {
+		return fmt.Errorf("dpkg not found (required by debootstrap for " +
+			"host-architecture detection): install the 'dpkg' package " +
+			"and re-run (e.g. 'pacman -S dpkg' on Arch systems)")
 	}
 
 	dst := s.TemplateDir()
@@ -60,10 +87,10 @@ func (s *Store) BuildTemplate() error {
 	// Refresh lists first: debootstrap's copy may predate additional
 	// packages pulled from the mirror, and re-running build-template
 	// after an Ubuntu point release needs current lists (cheap insurance).
-	if _, _, err := s.runner.Run("chroot", dst, "apt-get", "-y", "update"); err != nil {
+	if _, _, err := s.runInTemplate(dst, "apt-get", "-y", "update"); err != nil {
 		return fmt.Errorf("apt-get update: %w", err)
 	}
-	if _, _, err := s.runner.Run("chroot", append([]string{dst, "apt-get"}, aptArgs...)...); err != nil {
+	if _, _, err := s.runInTemplate(dst, append([]string{"apt-get"}, aptArgs...)...); err != nil {
 		return fmt.Errorf("apt-get install: %w", err)
 	}
 
@@ -71,12 +98,12 @@ func (s *Store) BuildTemplate() error {
 	// it exists — minbase lacks it and useradd -g sudo then fails,
 	// which silently shipped keeper-less templates until the guest
 	// rejected User=keeper with status=217/USER, live-probed 2026-09-30).
-	if _, _, err := s.runner.Run("chroot", dst, "useradd", "-m", "-u", "1000", "-U", "-s", "/bin/bash", "keeper"); err != nil {
+	if _, _, err := s.runInTemplate(dst, "useradd", "-m", "-u", "1000", "-U", "-s", "/bin/bash", "keeper"); err != nil {
 		return fmt.Errorf("create keeper user: %w", err)
 	}
 	// Best effort: grant sudo membership when the sudo package landed.
 	//nolint:errcheck // absent sudo package is a valid template
-	s.runner.Run("chroot", dst, "usermod", "-aG", "sudo", "keeper")
+	s.runInTemplate(dst, "usermod", "-aG", "sudo", "keeper")
 	// Spec §2 intent — "lets the agent install a package" — requires
 	// non-interactive sudo: keeper has no password and cell run is
 	// non-TTY, so plain sudo group membership fails at the prompt
@@ -89,7 +116,7 @@ func (s *Store) BuildTemplate() error {
 	if err := os.WriteFile(sudoers, []byte("keeper ALL=(ALL) NOPASSWD:ALL\n"), 0o440); err != nil {
 		return fmt.Errorf("write sudoers drop-in: %w", err)
 	}
-	if _, _, err := s.runner.Run("chroot", dst, "grep", "-q", "^keeper:", "/etc/passwd"); err != nil {
+	if _, _, err := s.runInTemplate(dst, "grep", "-q", "^keeper:", "/etc/passwd"); err != nil {
 		return fmt.Errorf("keeper user missing after useradd: %w", err)
 	}
 
@@ -144,7 +171,7 @@ func (s *Store) BuildTemplate() error {
 	}
 
 	// APT cleanup.
-	if _, _, err := s.runner.Run("chroot", dst, "apt-get", "clean"); err != nil {
+	if _, _, err := s.runInTemplate(dst, "apt-get", "clean"); err != nil {
 		return fmt.Errorf("apt-get clean: %w", err)
 	}
 
@@ -176,6 +203,16 @@ func (s *Store) BuildTemplate() error {
 	if err := filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
+		}
+		// Symlinks get no chmod at all: os.Chmod FOLLOWS them, and a
+		// baked /dev/fd -> /proc/self/fd then points at the HOST
+		// procfs mid-walk. Ubuntu's procfs tolerates a no-op chmod;
+		// Arch's refuses (EPERM, live-probed on an Arch-based host) and a more
+		// permissive kernel would mutate the wrong file entirely.
+		// Linux ignores symlink permission bits, so skipping is
+		// exactly correct for a read-only seal.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
 		}
 		info, ierr := d.Info()
 		if ierr != nil {
