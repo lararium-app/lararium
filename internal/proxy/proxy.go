@@ -515,7 +515,7 @@ func relay(ctx context.Context, hostSide net.Conn, client io.Reader, upstream ne
 // maxRelayBody. Pipelined bytes after the terminator stay unread.
 func copyChunked(conn net.Conn, br *bufio.Reader, upstream io.Writer) error {
 	r := bufio.NewReader(io.MultiReader(br, conn))
-	total := 0
+	total := int64(0)
 	for {
 		line, err := readLineLimited(r)
 		if err != nil {
@@ -533,17 +533,30 @@ func copyChunked(conn net.Conn, br *bufio.Reader, upstream io.Writer) error {
 			// the stream upstream.
 			for {
 				t, terr := readLineLimited(r)
-				if terr != nil || t == "\r\n" || t == "\n" {
+				if terr != nil {
+					// A truncated or overlong trailer is a
+					// framing error: committing with our
+					// synthesized terminator would hand the
+					// upstream an aborted-but-final request
+					// (agy r4 F2).
+					return fmt.Errorf("chunk trailer: %w", terr)
+				}
+				if t == "\r\n" || t == "\n" {
 					break
 				}
 			}
 			_, err := upstream.Write([]byte("0\r\n\r\n"))
 			return err
 		}
-		total += int(size)
-		if total > maxRelayBody {
+		// Budget check in int64 BEFORE accumulating: a declared
+		// chunk near MaxInt64 would wrap any fixed-width sum
+		// negative and sail past the ceiling (agy r4 F1).
+		// Invariant: total <= maxRelayBody here, so if size is
+		// within range the sum cannot overflow.
+		if size > int64(maxRelayBody)-total {
 			return fmt.Errorf("chunked body exceeds %d bytes", maxRelayBody)
 		}
+		total += size
 		if _, err := fmt.Fprintf(upstream, "%x\r\n", size); err != nil {
 			return err
 		}

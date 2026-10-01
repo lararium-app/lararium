@@ -193,3 +193,46 @@ func TestReadLineLimitedBounded(t *testing.T) {
 		t.Fatalf("got %q, %v", line, err)
 	}
 }
+
+// TestCopyRequestBodyChunkedDeclaredOverflow is the regression for
+// agy r4 F1: a declared chunk near MaxInt64 used to wrap the int
+// accumulator negative (reachable with real data on 32-bit, and it
+// also let the copy block waiting for exabytes of data). The budget
+// check must fire on the DECLARATION, in int64, before any copy.
+func TestCopyRequestBodyChunkedDeclaredOverflow(t *testing.T) {
+	framing := "1\r\nA\r\n7FFFFFFFFFFFFFFF\r\n" // 1 byte, then 8 EiB declared
+	done := make(chan error, 1)
+	go func() {
+		var out bytes.Buffer
+		done <- copyRequestBody(readConn{strings.NewReader("")},
+			bufio.NewReader(strings.NewReader(framing)), &out,
+			[]string{"Transfer-Encoding: chunked"})
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("declared 8 EiB chunk accepted")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("declared-size overflow blocked instead of rejecting")
+	}
+}
+
+// TestCopyRequestBodyChunkedTrailerTruncated is the regression for
+// agy r4 F2: EOF mid-trailer used to break the trailer loop and
+// commit the request upstream with a synthesized terminator,
+// delivering an aborted-but-final request. Truncation is a framing
+// error and must propagate.
+func TestCopyRequestBodyChunkedTrailerTruncated(t *testing.T) {
+	framing := "3\r\nabc\r\n0\r\n" // zero chunk, then EOF inside trailers
+	var out bytes.Buffer
+	err := copyRequestBody(readConn{strings.NewReader("")},
+		bufio.NewReader(strings.NewReader(framing)), &out,
+		[]string{"Transfer-Encoding: chunked"})
+	if err == nil {
+		t.Fatal("truncated trailer committed the request")
+	}
+	if !strings.Contains(err.Error(), "trailer") {
+		t.Fatalf("want trailer error, got %v", err)
+	}
+}

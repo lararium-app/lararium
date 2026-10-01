@@ -37,8 +37,12 @@ EOF
 step "net-install is idempotent"
 "$BIN" --config "$CFG" net-install && "$BIN" --config "$CFG" net-install || bad "net-install failed"
 nft list table inet lararium_filter >/dev/null || bad "filter table missing after net-install"
-iptables -w -C INPUT -j LARARIUM-INPUT 2>/dev/null \
-  || bad "interop chain not wired into INPUT"
+# Interop chain is conditional by spec: skipped on nft-only hosts
+# where the iptables binary is absent (CELL-SPEC §4).
+if command -v iptables >/dev/null 2>&1; then
+  iptables -w -C INPUT -j LARARIUM-INPUT 2>/dev/null \
+    || bad "interop chain not wired into INPUT"
+fi
 
 step "create/start/status/stop/destroy lifecycle"
 "$BIN" --config "$CFG" create "$ID" || bad "create"
@@ -64,7 +68,7 @@ step "fail-closed: guest bypass dies with no leak"
 "$BIN" --config "$CFG" run "$ID" -- curl -s -o /dev/null --max-time 10 --noproxy '*' http://example.com/ 2>/dev/null
 rc=$?
 [ $rc -ne 0 ] || bad "direct fetch unexpectedly succeeded"
-grep -E "port 53 " "$ROOT/proxy/access.log" \
+grep -E ":53 " "$ROOT/proxy/access.log" \
   && bad "DNS reached the proxy" || ok "no DNS in access.log"
 
 step "floor: cell cannot reach the host's own addresses"
