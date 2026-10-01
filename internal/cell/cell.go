@@ -38,7 +38,7 @@ type CmdRunner struct{}
 // Run executes cmd via execve (no shell); argv values from the CLI
 // cannot inject commands by construction.
 func (r *CmdRunner) Run(cmd string, args ...string) ([]byte, []byte, error) {
-	//nolint:gosec,noctx // G702: argv slice, no shell; ctx cancels wait only
+	//nolint:noctx // argv slice, no shell; ctx cancels wait only
 	cmdExec := exec.Command(cmd, args...)
 	var stdout, stderr bytes.Buffer
 	cmdExec.Stdout = &stdout

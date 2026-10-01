@@ -101,14 +101,13 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 	}
 	// Env reaches the in-guest unit via --setenv (spec §4 proxy vars
 	// depend on it; round-2 F9: RunOpts.Env was silently dropped).
-	for _, kv := range opts.Env {
+	// Order matters (agy r2 F8): defaults FIRST so an explicit
+	// --env from the caller wins the duplicate -- the cage env is a
+	// default, not an override.
+	for _, kv := range s.proxyEnvForRun(id) {
 		execArgs = append(execArgs, "--setenv="+kv)
 	}
-	// T5 (spec §4): the proxy env goes to the CELL's own env too —
-	// --setenv on nspawn reaches PID 1 only, so every exec unit gets
-	// it explicitly here (or C7's env assertion fails in the common
-	// `cell run curl …` path).
-	for _, kv := range s.proxyEnvForRun(id) {
+	for _, kv := range opts.Env {
 		execArgs = append(execArgs, "--setenv="+kv)
 	}
 	execArgs = append(execArgs, "--", "/bin/sh", "-c", cmd)

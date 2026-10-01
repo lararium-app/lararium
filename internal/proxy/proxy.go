@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,12 +49,21 @@ const (
 	maxTotalHeaders = 64 * 1024
 	// copyBufSize per spec: 32 KiB relay buffers.
 	copyBufSize = 32 * 1024
+	// maxRelayBody bounds a single request body's stream (agy r2
+	// F7's chunked-path cap).
+	maxRelayBody = 16 << 20
 )
 
 // cellMesh covers every allocated cell subnet (10.91.<n>.0/28 for all
 // n): the proxy must never relay into it (cell-to-cell and
 // proxy-to-other-cell gateway both bypass the filter's fib scope).
 var cellMesh = &net.IPNet{IP: net.IPv4(10, 91, 0, 0), Mask: net.CIDRMask(16, 32)}
+
+// ErrFloor marks a destination the proxy floor refused (as opposed to
+// a plain network failure). Callers log it as refused-floor evidence
+// (C7: the audit trail must distinguish "we said no" from "origin
+// down").
+var ErrFloor = errors.New("refused by proxy floor")
 
 // forbiddenDest reports destination IPs the floor rejects: loopback,
 // unspecified, link-local (incl. cloud metadata 169.254.169.254),
@@ -63,6 +73,28 @@ func forbiddenDest(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
 		ip.IsMulticast() || cellMesh.Contains(ip)
+}
+
+// hostInterfaceAddrs returns every address currently assigned to a
+// host interface (agy r2 F2: the floor must cover the host's OWN
+// non-loopback addresses — dialing the box's LAN IP, docker0 bridge,
+// or tailscale address from a cell reaches the same daemons loopback
+// was blocked for; bench-verified escape class). Enumerated per
+// request, not cached: interfaces churn (tunnels up/down) and a stale
+// allow-set is exactly the bypass. Failure is fatal for the request —
+// if we cannot enumerate, we cannot certify the destination.
+func hostInterfaceAddrs() ([]net.IP, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP != nil {
+			ips = append(ips, ipn.IP)
+		}
+	}
+	return ips, nil
 }
 
 // Server is one cell's dumb proxy listener.
@@ -201,14 +233,12 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			rstHangup(conn)
 			return
 		}
-		s.logEntry(conn.RemoteAddr(), method, u.Host, "proxied")
 		s.forwardHTTP(ctx, conn, br, u, method, headers)
 	case http.MethodConnect:
 		if !validHostPort(target) {
 			rstHangup(conn)
 			return
 		}
-		s.logEntry(conn.RemoteAddr(), method, target, "connect")
 		s.forwardCONNECT(ctx, conn, br, target)
 	default:
 		// Not a proxy verb: same no-bypass refusal.
@@ -237,17 +267,30 @@ func parseRequestLine(line string) (method, target, version string, ok bool) {
 }
 
 // readLineLimited reads one \n-terminated line, failing past max bytes
-// (bufio.Reader.ReadString accumulates unbounded otherwise — host
-// memory DoS, agy F6).
+// BEFORE the bytes hit memory (agy r2 F3: ReadString('\n') returns only
+// at the newline, so an endless body without one accumulated
+// unbounded — the size check after return was too late). ReadSlice
+// parks at the buffer boundary; we accumulate in explicit chunks and
+// refuse the moment the budget trips.
 func readLineLimited(br *bufio.Reader, maxLen int) (string, error) {
-	chunk, err := br.ReadString('\n')
-	if err != nil {
-		return "", err
+	var b strings.Builder
+	for {
+		chunk, err := br.ReadSlice('\n')
+		b.Write(chunk)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			if b.Len() > maxLen {
+				return "", fmt.Errorf("line exceeds %d bytes", maxLen)
+			}
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if b.Len() > maxLen {
+			return "", fmt.Errorf("line exceeds %d bytes", maxLen)
+		}
+		return b.String(), nil
 	}
-	if len(chunk) > maxLen {
-		return "", fmt.Errorf("line exceeds %d bytes", maxLen)
-	}
-	return chunk, nil
 }
 
 // readHeaders consumes lines until the terminating blank line, capping
@@ -295,6 +338,11 @@ func validHostPort(target string) bool {
 func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reader, u *url.URL, method string, headers []string) {
 	upstream, err := dialUpstream(ctx, withDefaultPort(u))
 	if err != nil {
+		if errors.Is(err, ErrFloor) {
+			s.logEntry(conn.RemoteAddr(), method, u.Host, "refused-floor")
+		} else {
+			s.logEntry(conn.RemoteAddr(), method, u.Host, "proxied-dial-fail")
+		}
 		// Upstream unreachable (or refused by the destination
 		// floor): close without a synthesized response (no
 		// 400/502 — the cage refuses, it does not role-play a
@@ -325,9 +373,68 @@ func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reade
 		return
 	}
 
-	// Bidirectional stream until either side closes; the client
-	// side continues THROUGH br (buffered body bytes first).
-	relay(ctx, conn, br, upstream)
+	// Client -> upstream: exactly this request's body bytes,
+	// br's buffered tail FIRST (agy F2), then only up to
+	// Content-Length of what remains on the wire. NEVER a blind
+	// io.Copy: that forwards pipelined second requests straight to
+	// THIS upstream, bypassing floor + log per request
+	// (agy r2 F7, smuggling class).
+	s.logEntry(conn.RemoteAddr(), method, u.Host, "proxied")
+	if err := copyRequestBody(conn, br, upstream, headers); err != nil {
+		return
+	}
+
+	// Upstream -> client only (agy r2 F7; body already streamed).
+	relayOneWay(ctx, conn, upstream)
+}
+
+// copyRequestBody streams exactly one request body: bytes already
+// buffered in br (the tail of the body a header-read swallowed),
+// then from the raw connection, capped at Content-Length. No body →
+// nothing copied. Chunked bodies ride the raw connection until the
+// framing's terminator — cap them at the same budget a hostile cell
+// should not be able to exceed anyway (16 MiB).
+func copyRequestBody(conn net.Conn, br *bufio.Reader, upstream io.Writer, headers []string) error {
+	contentLen := int64(-1)
+	chunked := false
+	for _, h := range headers {
+		i := strings.IndexByte(h, ':')
+		if i < 0 {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(h[:i])) {
+		case "content-length":
+			if n, err := strconv.ParseInt(strings.TrimSpace(h[i+1:]), 10, 64); err == nil {
+				contentLen = n
+			}
+		case "transfer-encoding":
+			if strings.Contains(strings.ToLower(h[i+1:]), "chunked") {
+				chunked = true
+			}
+		}
+	}
+	if contentLen == 0 {
+		return nil
+	}
+	if contentLen > maxRelayBody {
+		return fmt.Errorf("body too large: %d bytes", contentLen)
+	}
+	src := io.MultiReader(br, conn)
+	switch {
+	case contentLen >= 0:
+		src = io.LimitReader(src, contentLen)
+	case chunked:
+		// Framed body of unknown length: bounded budget; the
+		// upstream's own chunk parser terminates the copy at
+		// the zero-size chunk well before this cap in
+		// practice.
+		src = io.LimitReader(src, maxRelayBody)
+	default:
+		// No Content-Length, not chunked: no body on the wire.
+		return nil
+	}
+	_, err := io.Copy(upstream, src)
+	return err
 }
 
 // forwardCONNECT establishes the TLS tunnel: destination floor + dial,
@@ -337,10 +444,16 @@ func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reade
 func (s *Server) forwardCONNECT(ctx context.Context, conn net.Conn, br *bufio.Reader, target string) {
 	upstream, err := dialUpstream(ctx, target)
 	if err != nil {
+		if errors.Is(err, ErrFloor) {
+			s.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "refused-floor")
+		} else {
+			s.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "connect-dial-fail")
+		}
 		rstHangup(conn)
 		return
 	}
 	defer upstream.Close()
+	s.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "connect")
 
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		return
@@ -373,16 +486,40 @@ func relay(ctx context.Context, hostSide net.Conn, client io.Reader, upstream ne
 	upstream.Close()
 }
 
+// relayOneWay streams the upstream's response back to the client
+// only. forwardHTTP uses this (agy r2 F7): the request body was
+// already copied exactly, so keeping the client->upstream direction
+// open would hand any pipelined second request to THIS upstream —
+// unlogged, unfloored. Closing after the response gives Connection:
+// close semantics on both hops.
+func relayOneWay(ctx context.Context, hostSide net.Conn, upstream net.Conn) {
+	done := make(chan struct{}, 1)
+	go func() {
+		buf := make([]byte, copyBufSize)
+		_, _ = io.CopyBuffer(hostSide, upstream, buf)
+		done <- struct{}{}
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	hostSide.Close()
+	upstream.Close()
+}
+
 // withDefaultPort returns u.Host with the scheme's default port
 // appended when the URL omits it (net.Dial refuses bare "example.com").
+// Hostname() is mandatory, not Host: for IPv6 literals Host carries
+// brackets, and JoinHostPort would double-wrap them into
+// "[[::1]]:80" — unparseable downstream (agy r2 F4).
 func withDefaultPort(u *url.URL) string {
 	if u.Port() != "" {
 		return u.Host
 	}
 	if u.Scheme == "https" {
-		return net.JoinHostPort(u.Host, "443")
+		return net.JoinHostPort(u.Hostname(), "443")
 	}
-	return net.JoinHostPort(u.Host, "80")
+	return net.JoinHostPort(u.Hostname(), "80")
 }
 
 // dialUpstream applies the destination floor (E3) and connects.
@@ -427,9 +564,24 @@ func dialUpstream(ctx context.Context, hostPort string) (net.Conn, error) {
 // the whole request if ANY answer trips the floor. Hostname literals
 // are checked without resolution.
 func resolveFloor(ctx context.Context, host string) (string, error) {
+	localAddrs, err := hostInterfaceAddrs()
+	if err != nil {
+		return "", fmt.Errorf("cannot enumerate host addresses: %w", err)
+	}
+	isLocal := func(ip net.IP) bool {
+		for _, l := range localAddrs {
+			if l.Equal(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	reject := func(ip net.IP) bool {
+		return forbiddenDest(ip) || isLocal(ip)
+	}
 	if ip := net.ParseIP(host); ip != nil {
-		if forbiddenDest(ip) {
-			return "", fmt.Errorf("destination %s refused by proxy floor", host)
+		if reject(ip) {
+			return "", fmt.Errorf("%w: destination %s", ErrFloor, host)
 		}
 		return host, nil
 	}
@@ -444,8 +596,8 @@ func resolveFloor(ctx context.Context, host string) (string, error) {
 		return "", err
 	}
 	for _, a := range ips {
-		if forbiddenDest(a.IP) {
-			return "", fmt.Errorf("destination %s refused by proxy floor", host)
+		if reject(a.IP) {
+			return "", fmt.Errorf("%w: destination %s", ErrFloor, host)
 		}
 	}
 	if len(ips) > 0 {

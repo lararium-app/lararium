@@ -73,21 +73,35 @@ func cellIP(n int) string { return fmt.Sprintf("10.91.%d.2", n) }
 // would leak host topology, so plain drop).
 func renderFilterNft(proxyPort int) string {
 	return fmt.Sprintf(`destroy table inet lararium_filter
-table inet lararium_filter {
-  chain input {
-    type filter hook input priority filter; policy accept;
-    iifname "v-lar-*" ct status dnat accept
-    iifname "v-lar-*" tcp dport %d fib daddr . iif type local accept
-    iifname "v-lar-*" ct state established,related accept
-    iifname "v-lar-*" meta l4proto tcp reject with tcp reset
-    iifname "v-lar-*" drop
+  table inet lararium_filter {
+    chain input {
+      type filter hook input priority filter; policy accept;
+      # Un-caged boot window (agy r2 F1): nspawn creates the host end
+      # as ve-* (systemd >= 254 naming) and it is UP before we rename
+      # it to v-lar-*. Until rename+address land, nothing from those
+      # names may reach the host except neighbor discovery and ping
+      # (no ports exposed; forward path stays fully closed). Syntax
+      # live-verified on nft 1.1.3 (icmpx keyword absent there).
+      iifname { "ve-*", "veth-*", "vb-*" } meta l4proto { icmp, icmpv6 } accept
+      iifname { "ve-*", "veth-*", "vb-*" } meta l4proto tcp reject with tcp reset
+      iifname { "ve-*", "veth-*", "vb-*" } drop
+      iifname "v-lar-*" ct status dnat accept
+      iifname "v-lar-*" tcp dport %d fib daddr . iif type local accept
+      iifname "v-lar-*" ct state established,related accept
+      iifname "v-lar-*" meta l4proto tcp reject with tcp reset
+      iifname "v-lar-*" drop
+    }
+    chain forward {
+      type filter hook forward priority filter; policy accept;
+      iifname { "ve-*", "veth-*", "vb-*" } drop
+      iifname "v-lar-*" drop
+      # No external ingress toward cells (agy r2 F6): with
+      # ip_forward=1 an outside host could otherwise route straight
+      # to 10.91.<n>.2. Cells are egress-only.
+      oifname "v-lar-*" drop
+    }
   }
-  chain forward {
-    type filter hook forward priority filter; policy accept;
-    iifname "v-lar-*" drop
-  }
-}
-`, proxyPort)
+  `, proxyPort)
 }
 
 // natRule is one booted proxy-enabled cell's DNAT rule input.
@@ -512,6 +526,17 @@ func (s *Store) configureHostVeth(id string, subnet int) error {
 		return err
 	}
 	target := vethHostName(id)
+
+	// Stale host-end from a crashed start (agy r2 F5): if the target
+	// name already exists the rename below fails with EEXIST. A host-
+	// side v-lar-* interface with no live cell claiming it is ours to
+	// delete (cell netns owns the peer; deleting the host end tears
+	// the pair down wholesale).
+	if _, _, err := s.runner.Run("ip", "link", "show", target); err == nil {
+		if _, stderr, derr := s.runner.Run("ip", "link", "delete", target); derr != nil {
+			return fmt.Errorf("clear stale %s: %s", target, strings.TrimSpace(string(stderr)))
+		}
+	}
 
 	if resolved != target {
 		if _, stderr, err := s.runner.Run("ip", "link", "set", resolved, "down"); err != nil {

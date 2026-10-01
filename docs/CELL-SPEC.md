@@ -209,6 +209,23 @@ in filter hooks):
      `iptables` binary is absent (nft-only hosts). Scope is exactly the
      two cooperative flows — every other cell verdict still belongs to
      the nft filter table. `net-remove` unwires it.
+   - **Boot-window + ingress hardening (erratum E4, 2026-10-01, review
+     round 2):** (a) nspawn names the host end of its `--network-veth`
+     `ve-<machine>` and brings it UP *before* our rename to `v-lar-*`
+     lands — during that window the interface matches none of the
+     `v-lar-*` rules, so the filter table additionally rejects
+     everything from `{ "ve-*", "veth-*", "vb-*" }` except ICMP/ICMPv6
+     (neighbor discovery stays alive; no ports exposed; forward path
+     fully closed for those names). (b) The `forward` chain drops BOTH
+     directions (`iifname` AND `oifname "v-lar-*"`): with
+     `ip_forward=1`, an unsolicited external packet routed toward
+     `10.91.<n>.2` would otherwise satisfy policy-accept — cells are
+     egress-only. (c) The proxy destination floor covers the host's
+     OWN non-loopback interface addresses (`net.InterfaceAddrs()`,
+     enumerated per request — interfaces churn): dialing the host's
+     LAN/bridge/tunnel IP from a cell is the same escape loopback was
+     blocked for. Rebinding a public name to a local address is caught
+     by the any-answer check.
    - `forward` chain: `iifname "v-lar-*" drop` — unconditional catch-all for
      everything the nat table didn't divert (ICMP, DNS, odd ports); since no
      non-DNAT path is ever forwarded, nothing needs masquerading.
