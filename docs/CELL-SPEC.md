@@ -66,6 +66,22 @@ bare foreground spawn — the unit is what `cell run` targets.
   other way to configure its interface, §4) → machine-id zeroed → cached
   read-only at `/var/lib/lararium/template/<distro>-<ver>/` with manifest
   `template.json` (distro, version, built-at, sha256 of the tree).
+  - **Host-portability of the bake (erratum E5, 2026-10-01, live-probed
+    on an Arch-family host, kernel 7.2.8):** (a) every `chroot`
+    invocation during the bake must pin the GUEST-canonical PATH
+    (`env PATH=/usr/local/sbin:...` inside the chroot) — `chroot`
+    resolves argv[0] through the inherited HOST PATH, and on a
+    usrmerged noble guest `useradd`/friends live under `/usr/sbin`,
+    invisible to a host PATH that omits it (bake died: keeper-user
+    `exit status 127`); (b) the read-only seal must NOT chmod
+    symlinks — `os.Chmod` follows them, so `/dev/fd → /proc/self/fd`
+    reaches the HOST procfs (EPERM on Arch kernels; a wrong-file
+    mutation hazard wherever procfs is permissive) and Linux ignores
+    symlink permission bits anyway; (c) `debootstrap` requires `dpkg`
+    for host-architecture detection: Arch's patched debootstrap falls
+    back to a `pacman-conf` mapping that rejects plain `x86_64`
+    ("Unknown architecture"), so the bake checks for `dpkg` upfront
+    and fails with the remedy (`pacman -S dpkg`) instead.
 - **Cell root = OverlayFS**, never a copy:
   - `lowerdir` = template (RO, shared by all cells),
   - `upperdir` = `cells/<id>/upper/`, `workdir` = `cells/<id>/work/` (same fs),
