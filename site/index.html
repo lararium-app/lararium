@@ -368,15 +368,21 @@
       <li>
         <span class="n">iii</span>
         <h3>Work happens in a cell</h3>
-        <p>Commands, code, and browsing run in a sandboxed container with its own filesystem and network path. Root inside the cell doesn't unlock your machine.</p>
+        <p>Commands, code, and browsing run inside a cell: a real Linux container fenced by user namespaces and kernel cgroup quotas. Root inside the cell unlocks nothing outside it.</p>
+        <p>The filesystem is an overlay on a sealed template. Snapshot takes a second; rewinding takes a second, even after the agent made a mess of things.</p>
       </li>
       <li>
         <span class="n">iv</span>
+        <h3>No doors without a key</h3>
+        <p>A cell gets no route to the internet by default. The one exit runs through a proxy that drops anything policy has not allowed, and the policy is yours: open, knock first, or sealed.</p>
+      </li>
+      <li>
+        <span class="n">v</span>
         <h3>Keys outside its hands</h3>
         <p>The vault holds your credentials encrypted. The agent gets a placeholder; the real value goes in only at the network boundary, only after policy. Anything that spends, sends, or deletes waits for your tap, and every call lands in an append-only log.</p>
       </li>
       <li>
-        <span class="n">v</span>
+        <span class="n">vi</span>
         <h3>Memory is files</h3>
         <p>A summary index plus your full session history, written in open formats you can edit by hand. When the working window grows long it gets compacted, and the files keep the record.</p>
       </li>
