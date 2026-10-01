@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/cell"
+	"github.com/lararium-app/lararium/internal/proxy"
 )
 
 // runSystem runs a host command, returning combined output + error.
@@ -49,7 +51,9 @@ func usage() {
 Commands:
   doctor              Check environment prerequisites
   build-template      Build rootfs template (requires root)
-  create <id>         Create a new cell
+  create [--no-proxy] <id>
+                      Create a new cell (--no-proxy opts out of egress
+                      policy enforcement; hard cage applies either way)
   start <id>          Boot the cell container
   run <id> -- <cmd>   Execute a command inside the cell
   stop <id>           Stop the cell container
@@ -58,6 +62,7 @@ Commands:
   destroy <id>        Destroy the cell (stop + unmount + remove)
   snapshot <id>       Snapshot the cell's upper layer
   restore <id> <ts>   Restore from a snapshot
+  net-install         Install the host network cage (requires root)
 
 Flags:
   --config <path>     Path to lararium.yaml (default: /etc/lararium/lararium.yaml)
@@ -128,6 +133,8 @@ func main() {
 
 	runner := &cell.CmdRunner{}
 	store := cell.NewStore(root, cfg.Hearth, cfg.Cell, runner)
+	store.ProxyPort = cfg.Proxy.Port
+	store.ProxyGlobal = cfg.Proxy.Enabled != nil && *cfg.Proxy.Enabled
 
 	switch cmd {
 	case "doctor":
@@ -152,6 +159,10 @@ func main() {
 		snapshotCmd(store, cmdArgs)
 	case "restore":
 		restoreCmd(store, cmdArgs)
+	case "net-install":
+		netInstallCmd(store)
+	case "proxy":
+		proxyCmd(store, cmdArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
@@ -182,12 +193,58 @@ func createCmd(store *cell.Store, args []string) {
 		fmt.Fprintf(os.Stderr, "error: missing cell id\n")
 		os.Exit(1)
 	}
-	id := args[0]
-	if err := store.Create(id); err != nil {
+	var noProxy bool
+	id := ""
+	for _, a := range args {
+		switch a {
+		case "--no-proxy":
+			noProxy = true
+		default:
+			if id == "" {
+				id = a
+			}
+		}
+	}
+	if id == "" {
+		fmt.Fprintf(os.Stderr, "error: missing cell id\n")
+		os.Exit(1)
+	}
+	if err := store.Create(id, noProxy); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("cell %s created\n", id)
+}
+
+// netInstallCmd installs the host-side cage (spec §4): filter table
+// first, then ip_forward — the ORDER is the contract. Root, idempotent.
+func netInstallCmd(store *cell.Store) {
+	if err := store.InstallNetwork(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("cage installed: filter table + forwarding sysctls (nat regenerates per boot)")
+}
+
+// proxyCmd runs the dumb forward proxy in the foreground — it is started
+// by systemd-run as the transient lararium-proxy@<id> unit (spec §4);
+// it lives and dies with that unit. Not for direct human use.
+func proxyCmd(store *cell.Store, args []string) {
+	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
+	listen := fs.String("listen", "", "gateway addr:port to bind (the cell's own gateway)")
+	peer := fs.String("peer", "", "the cell's own address (only peer accepted)")
+	logPath := fs.String("log", store.ProxyLogPath(), "access log path")
+	//nolint:errcheck // ExitOnError handles parse failures
+	fs.Parse(args)
+	if *listen == "" || *peer == "" {
+		fmt.Fprintln(os.Stderr, "error: proxy requires --listen and --peer")
+		os.Exit(2)
+	}
+	srv := &proxy.Server{Listen: *listen, Peer: *peer, LogPath: *logPath}
+	if err := srv.Serve(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func startCmd(store *cell.Store, args []string) {

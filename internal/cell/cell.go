@@ -38,7 +38,8 @@ type CmdRunner struct{}
 // Run executes cmd via execve (no shell); argv values from the CLI
 // cannot inject commands by construction.
 func (r *CmdRunner) Run(cmd string, args ...string) ([]byte, []byte, error) {
-	//nolint:gosec,noctx // G702: argv slice, no shell; ctx cancels wait only
+	//nolint:noctx // argv slice, no shell; the short-lived CLI/cage
+	// helpers have no context to thread and must not require one
 	cmdExec := exec.Command(cmd, args...)
 	var stdout, stderr bytes.Buffer
 	cmdExec.Stdout = &stdout
@@ -88,7 +89,29 @@ type Cell struct {
 	// field replaces the lararium.yaml global at start; nil/zero
 	// inherits.
 	Limits *Limits `json:"limits,omitempty"`
+	// Network state (spec §4, T5). SubnetIndex is allocated at
+	// create under flock; VethHost is the deterministic host-end
+	// name (erratum E1). Gateway/CellIPAddr mirror 10.91.<n>.1/.2
+	// so consumers (proxy unit, tests) read one record, never
+	// re-derive.
+	SubnetIndex int    `json:"subnet_index"`
+	VethHost    string `json:"veth_host"`
+	Gateway     string `json:"gateway"`
+	CellIPAddr  string `json:"cell_ip"`
+	// ProxyEnabled defaults TRUE: nil (legacy/pre-T5 records) and
+	// absent both mean proxied; explicit false comes from create
+	// --no-proxy (C8's isolated cell).
+	ProxyEnabled *bool `json:"proxy_enabled,omitempty"`
 }
+
+// ProxyOn reports the effective proxy policy (default true).
+func (c *Cell) ProxyOn() bool {
+	return c.ProxyEnabled == nil || *c.ProxyEnabled
+}
+
+// SubnetAllocated reports whether the record carries a T5 subnet claim
+// (0 is a valid index).
+func (c *Cell) SubnetAllocated() bool { return c.VethHost != "" }
 
 // effectiveLimits merges per-cell overrides over the globals.
 func (s *Store) effectiveLimits(c *Cell) Limits {
@@ -113,16 +136,23 @@ type Store struct {
 	Root   string
 	Hearth string
 	Limits Limits
-	runner Runner
+	// ProxyPort overrides DefaultProxyPort (0 = default). Config
+	// file [proxy] port / tests inject here.
+	ProxyPort int
+	// ProxyGlobal is false when lararium.yaml disables the proxy
+	// fleet-wide (spec §4 fail-closed: filter installed, nat omitted).
+	ProxyGlobal bool
+	runner      Runner
 }
 
 // NewStore creates a Store with the given root, hearth path, limits, and runner.
 func NewStore(root, hearth string, limits Limits, runner Runner) *Store {
 	return &Store{
-		Root:   root,
-		Hearth: hearth,
-		Limits: limits,
-		runner: runner,
+		Root:        root,
+		Hearth:      hearth,
+		Limits:      limits,
+		ProxyGlobal: true, // config may flip off; default is proxied fleet
+		runner:      runner,
 	}
 }
 
