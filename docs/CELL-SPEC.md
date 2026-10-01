@@ -16,6 +16,12 @@ later becomes custos (Phase 4).
 **systemd-nspawn** with **user namespaces**, pinned to:
 `--private-users=pick --private-users-ownership=auto`
 
+- First boot uses `pick`; the picked base is recorded in `cell.json`
+  and **pinned** (explicit `--private-users=<base>`) on every later
+  boot (erratum 2026-09-30, live-probed: re-`pick` allocates a fresh
+  base per boot, orphaning overlay upper/work ownership and breaking
+  keeper writes). Manual `--uid-map` remains forbidden.
+
 - `pick` allocates a free subuid/subgid block per cell → in-cell root maps to
   an unprivileged host uid; root-in-cell ≠ anything on the host, by
   mechanism. This is what makes keeper's in-cell sudo (§2) harmless.
@@ -48,7 +54,12 @@ bare foreground spawn — the unit is what `cell run` targets.
 
 - Builder script (root, once per host): debootstrap Ubuntu LTS minimal →
   install `bash curl python3 iputils-ping iproute2 ca-certificates sudo
-  systemd-networkd` → create uid 1000 user `keeper` (in the `sudo` group
+  systemd systemd-sysv dbus` (erratum 2026-09-29/30, live-probed on noble:
+  there is no `systemd-networkd` package — networkd ships inside `systemd`;
+  `systemd-sysv` provides `/sbin/init` (PID 1) without which nspawn cannot
+  boot the template; `dbus` provides the in-guest machine bus that
+  `systemd-run --machine=` (§6 exec) requires, enabled at boot)
+  → create uid 1000 user `keeper` (in the `sudo` group
   **inside the cell only**; harmless under §1, lets the agent install a
   package without host privileges) → **enable `systemd-networkd.service`
   inside the template** (minbase doesn't ship it enabled; the guest has no
@@ -65,7 +76,12 @@ bare foreground spawn — the unit is what `cell run` targets.
     still unmounted** (guest `.network` drop-in, §4) → overlay mount
     (instantaneous, any filesystem; mutating `upper/` behind a live mount is
     off-limits — undefined-behavior territory);
-    **destroy** = unmount + `rm -rf upper`;
+    **destroy** = unmount + `rm -rf upper` + remove the cell dir
+    (erratum 2026-09-30, live-probed: deleting only `upper/` leaked
+    815M of snapshots and let `create <same-id>` silently re-inherit
+    stale workspace/snapshots state; §6's destroy contract is
+    stop + unmount + `rm -rf`, and the crash doctrine scopes
+    `workspace/` survival to `kill -9`, not explicit destroy);
     **snapshot** = unmount, rename `upper` → `snapshots/<ts>/upper`, fresh
     upper (historical uppers kept for restore); record `unsupported` only if
     rename itself fails — never faked.
@@ -193,9 +209,12 @@ only asks. `IOWeight` default.
 ## 6. Lifecycle — boot vs exec (two operations, two commands)
 
 - **`cell start <id>` boots the container.** `systemd-nspawn --machine=<id>
-  --keep-unit` (template `/sbin/init`) inside a transient systemd unit
+  --keep-unit --boot` (template `/sbin/init`) inside a transient systemd unit
   (`systemd-run --unit=lararium-cell-<id>`, root-mode or delegated
-  user-scope) carrying §5 limits, §1 flags, §3 binds. **`--keep-unit` is
+  user-scope) carrying §5 limits, §1 flags, §3 binds. **`--boot` is
+  mandatory** (erratum 2026-09-30, live-probed: without it nspawn's default
+  "init" is an interactive shell — no in-guest systemd, no machine bus,
+  `cell run` dead). **`--keep-unit` is
   mandatory:** without it machined extracts the payload (in-cell PID 1) into
   a separate `machine-*.scope`, so §5 limits would cage only the supervisor
   and a crash-kill of the unit would orphan the still-running payload — the
