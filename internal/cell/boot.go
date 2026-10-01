@@ -103,6 +103,17 @@ func (s *Store) Start(id string) error {
 		if err := s.fixGuestRootFiles(id, rec0.SubUIDBase); err != nil {
 			return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
 		}
+		// The pre-boot fix only runs when the fix was pending
+		// (round-4 F3): the recovery path that stopped an
+		// incomplete first boot lands here, and without saving
+		// GuestRootFixed every later Start would stop-and-reboot
+		// the healthy container again.
+		if !rec0.GuestRootFixed {
+			rec0.GuestRootFixed = true
+			if err := s.Save(rec0); err != nil {
+				return fmt.Errorf("record guest-root fix: %w", err)
+			}
+		}
 	}
 
 	// Ensure the overlay is mounted — Stop unmounts it; Start must
@@ -244,11 +255,19 @@ func (s *Store) Start(id string) error {
 // required state (owner, setuid, non-empty) is repaired, since a
 // broken sudo breaks the entire keep promise.
 //
-// Hardening (agy round-3 F1/F5): the guest can write upper freely
-// (in-cell root), so every path component under upper is verified
-// non-symlink before touching, and copies go through a temp file +
-// fchown/fchmod + atomic rename so host root never follows a guest-
-// planted symlink or leaves a truncated file in place on crash.
+// Hardening (agy round-3 F1/F5, round-4 F1/F2): the guest can write
+// upper freely (in-cell root), so ancestors are sanitized FIRST —
+// each path component under upper is checked with Lstat and replaced
+// by a real directory if the guest planted a symlink or file there.
+// Only then is the target inspected (Lstat/RemoveAll never follow a
+// FINAL symlink, but DO resolve ancestors — inspecting dst before
+// sanitizing let `upper/usr -> /usr` escape to the host root fs and
+// RemoveAll delete the host's /usr/bin/sudo, live-found by review).
+// Copies go through a temp file + fchown/fchmod + atomic rename with
+// full error propagation; a swallowed copy failure once recorded
+// GuestRootFixed=true over a broken sudo. Safe against guest
+// interference because this runs only while the cell is stopped
+// (overlay unmounted) and upper sits under cells/<id> at 0700.
 func (s *Store) fixGuestRootFiles(id string, base int) error {
 	for _, rel := range []string{"usr/bin/sudo", "etc/sudoers", "etc/sudoers.d/keeper"} {
 		src := filepath.Join(s.TemplateDir(), rel)
@@ -263,135 +282,116 @@ func (s *Store) fixGuestRootFiles(id string, base int) error {
 			continue
 		}
 
-		// Guest-ownership policy: existing targets stay as-is.
-		dst := filepath.Join(s.UpperDir(id), rel)
+		// 1) Sanitize ancestors BEFORE touching the target. Each
+		// component is Lstat'ed (no following); a symlink or file
+		// planted where a dir belongs is removed — Lstat/RemoveAll
+		// do not follow a final symlink, so only the link dies,
+		// never the escape target. Newly created dirs are chowned
+		// to base: host root 0:0 maps to nobody in-guest and would
+		// lock the cell's root out of creating files there (agy
+		// round-3 F2).
+		upper := s.UpperDir(id)
+		walk := upper
+		for _, part := range strings.Split(filepath.Dir(rel), "/") {
+			walk = filepath.Join(walk, part)
+			st, lerr := os.Lstat(walk)
+			if lerr == nil && !st.IsDir() {
+				if err := os.RemoveAll(walk); err != nil {
+					return err
+				}
+				lerr = os.ErrNotExist
+			}
+			if os.IsNotExist(lerr) {
+				if err := os.Mkdir(walk, 0755); err != nil {
+					if !os.IsExist(err) {
+						return err
+					}
+				} else if err := os.Chown(walk, base, base); err != nil {
+					return err
+				}
+			} else if lerr != nil {
+				return lerr
+			}
+		}
+
+		// 2) Inspect the target (ancestors are verified real dirs).
+		// Guest-ownership policy (agy round-3 F8): an existing
+		// healthy target stays untouched. A sudo that is EMPTY, not
+		// owned by the cell's root, or missing its setuid bit
+		// cannot work — repair it. A guest apt upgrade changes size
+		// but keeps owner+setuid: that survives.
+		dst := filepath.Join(upper, rel)
 		if dfi, err := os.Lstat(dst); err == nil {
+			needsRepair := false
 			if dfi.Mode().IsRegular() {
-				needsRepair := false
 				if rel == "usr/bin/sudo" {
-					// A sudo that is EMPTY, not owned by the
-					// cell's root, or missing its setuid bit
-					// cannot work — repair it. A guest apt
-					// upgrade changes size but keeps owner and
-					// setuid: that stays (agy round-3 F8).
-					okOwner := fileUID(dst) == base
+					okOwner := false
+					if st, ok := dfi.Sys().(*syscall.Stat_t); ok {
+						okOwner = int(st.Uid) == base
+					}
 					okSetuid := dfi.Mode()&os.ModeSetuid != 0
-					okSize := dfi.Size() > 0
-					needsRepair = !okOwner || !okSetuid || !okSize
+					needsRepair = !okOwner || !okSetuid || dfi.Size() == 0
 				}
 				if !needsRepair {
 					continue
 				}
 			}
-			// Symlink or dir planted by the guest at the target:
-			// remove it so the verified copy can take its place.
+			// Symlink or dir planted by the guest AT the target
+			// (safe to remove now: ancestors are real dirs, and
+			// RemoveAll does not follow a final symlink).
 			if err := os.RemoveAll(dst); err != nil {
 				return err
 			}
 		}
 
-		// Every ancestor inside upper must exist as a real dir
-		// (never a guest-planted symlink escaping the cell).
-		// MkdirAll alone follows existing symlinks silently.
-		// Newly created dirs are chowned to base: host root 0:0
-		// maps to nobody in-guest and would lock the cell's root
-		// out of creating files there (agy round-3 F2).
-		upper := s.UpperDir(id)
-		walk := upper
-		for _, part := range strings.Split(filepath.Dir(rel), "/") {
-			walk = filepath.Join(walk, part)
-			st, err := os.Lstat(walk)
-			if err == nil {
-				if !st.IsDir() {
-					if err := os.RemoveAll(walk); err != nil {
-						return err
-					}
-					if err := os.Mkdir(walk, 0755); err != nil {
-						return err
-					}
-					if err := os.Chown(walk, base, base); err != nil {
-						return err
-					}
-				}
-			} else if err := os.Mkdir(walk, 0755); err != nil && !os.IsExist(err) {
-				return err
-			} else if err == nil {
-				// Just created by us: hand it to the cell's root.
-				if err := os.Chown(walk, base, base); err != nil {
-					return err
-				}
-			}
-		}
-
-		// Copy via temp + atomic rename: a crash can never leave a
-		// truncated sudo masking the lower template file.
-		tf, err := os.CreateTemp(filepath.Dir(dst), ".fixroot-")
+		// 3) Copy via temp + atomic rename with real error
+		// propagation (agy round-4 F2: a swallowed failure here
+		// recorded the cell fixed while sudo stayed broken).
+		tmp, err := os.CreateTemp(filepath.Dir(dst), ".fixroot-")
 		if err != nil {
 			return err
 		}
-		tmpName := tf.Name()
-		func() {
-			defer os.Remove(tmpName) // no-op after successful rename
-			in, err := os.Open(src)
-			if err != nil {
-				tf.Close()
-				return
-			}
-			_, err = io.Copy(tf, in)
-			in.Close()
-			if err != nil {
-				tf.Close()
-				return
-			}
-			// Chown first (kernel strips setuid on ownership
-			// change), then fchmod on the SAME fd — path-based
-			// chmod could race a rename of dst.
-			if err := tf.Chown(base, base); err != nil {
-				tf.Close()
-				return
-			}
-			mode := fi.Mode().Perm()
-			if rel == "usr/bin/sudo" {
-				// The seal stores sudo 0555; re-assert setuid.
-				// os.Chmod takes os.FileMode: the flag is
-				// os.ModeSetuid (1<<22), NOT the raw 04000 bit
-				// (live-probed: silent no-op).
-				mode |= os.ModeSetuid
-			}
-			if err := tf.Chmod(os.FileMode(mode)); err != nil {
-				tf.Close()
-				return
-			}
-			if err := tf.Sync(); err != nil {
-				tf.Close()
-				return
-			}
-			if err := tf.Close(); err != nil {
-				return
-			}
-			err = os.Rename(tmpName, dst)
-			if err != nil {
-				return
-			}
-		}()
+		tmpName := tmp.Name()
+		err = writeFixupCopy(tmp, src, fi, base, rel == "usr/bin/sudo")
+		tmp.Close()
 		if err != nil {
-			return err
+			os.Remove(tmpName)
+			return fmt.Errorf("copy up %s: %w", rel, err)
+		}
+		if err := os.Rename(tmpName, dst); err != nil {
+			os.Remove(tmpName)
+			return fmt.Errorf("install %s: %w", rel, err)
 		}
 	}
 	return nil
 }
 
-// fileUID returns the owner uid of path (0 on error — callers treat
-// any mismatch as "needs repair").
-func fileUID(path string) int {
-	st, err := os.Stat(path)
+// writeFixupCopy streams src into the open temp file out, then sets
+// ownership and mode via the SAME fd (path-based chmod could race a
+// rename of dst). Chown first: the kernel strips setuid on ownership
+// change. The seal stores sudo 0555, so the setuid bit is re-asserted
+// here; os.Chmod takes os.FileMode — the flag is os.ModeSetuid
+// (1<<22), NOT the raw 04000 bit (live-probed: silent no-op).
+func writeFixupCopy(out *os.File, src string, fi os.FileInfo, base int, setuid bool) error {
+	in, err := os.Open(src)
 	if err != nil {
-		return -1
+		return err
 	}
-	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-		return int(sys.Uid)
+	defer in.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
 	}
-	return -1
+	if err := out.Chown(base, base); err != nil {
+		return err
+	}
+	mode := fi.Mode().Perm()
+	if setuid {
+		mode |= os.ModeSetuid
+	}
+	if err := out.Chmod(mode); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 // grantHearthAccess gives host uid `keeper` rwX on <hearth> (existing
