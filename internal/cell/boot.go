@@ -556,13 +556,30 @@ func (s *Store) pruneStaleMachined(id string) error {
 		s.runner.Run("kill", "-9", strconv.Itoa(pid))
 	}
 
-	// Wait for the kernel to release the export mount.
-	deadline = time.Now().Add(120 * time.Second)
+	// Wait for the kernel to release the export mount. A clean exit
+	// unwinds it in milliseconds; after SIGKILL the tmpfs can stay
+	// propagated into the host table with no namespace left to
+	// reclaim it (live-probed C9) — after a short grace, lazily
+	// unmount the orphan ourselves. Safe here: the unit is inactive,
+	// the registration is gone, and any live supervisor holding the
+	// dir was just killed; the mount is an empty private tmpfs.
+	deadline = time.Now().Add(5 * time.Second)
 	for isMountpoint(exportDir) {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+			break
 		}
 		time.Sleep(250 * time.Millisecond)
+	}
+	if isMountpoint(exportDir) {
+		//nolint:errcheck // verified by re-check below
+		s.runner.Run("umount", "-l", exportDir)
+		deadline = time.Now().Add(10 * time.Second)
+		for isMountpoint(exportDir) {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
 	return nil
 }

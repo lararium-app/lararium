@@ -125,10 +125,14 @@ Topology: nspawn `--network-veth`; cell end `host0`. The veth pair is
 created **at spawn** (nspawn's own work; the host end gets nspawn's
 `ve-<machine>`-family name, *not* a name we choose) — so **`cell start`
 addresses the host end after spawn, resolving the real interface by
-mechanism, never by guessing:** read the peer ifindex via machined,
-`ip -o link`, or `/sys/class/net/<dev>/iflink` (a bare veth exposes
-`iflink` only — no `lower_*` symlink unless enslaved to a bridge), or
-enumerate the unit's netns, then `ip addr
+mechanism, never by guessing:** read the peer index from inside the
+guest netns with netlink — `nsenter --net=/proc/<leader>/ns/net ip -o
+link show dev host0` prints `host0@ifM`, the host-namespace ifindex of
+our end (globally unique). NOTE: `cat /sys/class/net/host0/iflink`
+under `nsenter --net` CANNOT work — sysfs stays the host's mount when
+only the netns switches (live-proven 2026-10-01); a bare veth on the
+host exposes `iflink` only (no `lower_*` symlink unless enslaved to a
+bridge). Then `ip addr
 replace 10.91.<n>.1/28 dev <resolved>` + `ip link set ... up`, bounded retry
 until the peer appears. `net.sysctl` forwards for the cell subnet pair are
 installed once by `cell net-install`. `.network` files are explicitly **not**

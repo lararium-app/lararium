@@ -70,7 +70,8 @@ func cellIP(n int) string { return fmt.Sprintf("10.91.%d.2", n) }
 // forward: unconditional drop for cell interfaces (a forward-path reset
 // would leak host topology, so plain drop).
 func renderFilterNft(proxyPort int) string {
-	return fmt.Sprintf(`table inet lararium_filter {
+	return fmt.Sprintf(`destroy table inet lararium_filter
+table inet lararium_filter {
   chain input {
     type filter hook input priority filter; policy accept;
     iifname "v-lar-*" ct status dnat accept
@@ -433,21 +434,21 @@ func (s *Store) leaderPID(id string) (int, error) {
 
 // resolveHostVethByLeader maps leader PID -> host-end interface name.
 func (s *Store) resolveHostVethByLeader(leader int) (string, error) {
-	// Guest side: peer ifindex of host0. `ip -o link show dev host0`
-	// prints "N: host0@ifM: <flags>..." where M is the host-namespace
-	// ifindex of our end; /sys/class/net/host0/iflink is the same.
+	// Guest side: peer ifindex of host0. PROVEN LIVE: `cat
+	// /sys/class/net/host0/iflink` via `nsenter --net` CANNOT work —
+	// sysfs stays the host's mount; only the netns switches. Netlink
+	// inside the guest netns does: `ip -o link show dev host0` prints
+	// "N: host0@ifM: <flags>..." where M is the host-namespace
+	// ifindex of our end (ifindices are globally unique).
 	stdout, stderr, err := s.runner.Run("nsenter", "--net=/proc/"+
-		strconv.Itoa(leader)+"/ns/net", "cat", "/sys/class/net/host0/iflink")
+		strconv.Itoa(leader)+"/ns/net", "ip", "-o", "link", "show", "dev", "host0")
 	if err != nil {
-		return "", fmt.Errorf("read guest iflink: %s", strings.TrimSpace(
+		return "", fmt.Errorf("read guest peer index: %s", strings.TrimSpace(
 			string(append(stdout, stderr...))))
 	}
-	peerIdx := strings.TrimSpace(string(stdout))
-	if peerIdx == "" || strings.ContainsAny(peerIdx, "\n\r \t") {
-		return "", fmt.Errorf("unexpected iflink value %q", peerIdx)
-	}
-	if _, err := strconv.Atoi(peerIdx); err != nil {
-		return "", fmt.Errorf("bad iflink %q: %w", peerIdx, err)
+	peerIdx, err := parsePeerIfindex(string(stdout))
+	if err != nil {
+		return "", err
 	}
 	// Host side: find the interface whose ifindex is peerIdx.
 	linkOut, _, err := s.runner.Run("ip", "-o", "link", "show")
@@ -476,6 +477,27 @@ func (s *Store) resolveHostVethByLeader(leader int) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no host interface with ifindex %s yet", peerIdx)
+}
+
+// parsePeerIfindex extracts M from `ip -o link` output for a veth
+// end: "N: host0@ifM: <FLAGS>...". A bare name without "@if" means
+// no peer index is visible yet (peer gone or not created) — error,
+// the caller's bounded retry handles it.
+func parsePeerIfindex(out string) (string, error) {
+	line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(out), "\n", 2)[0])
+	at := strings.Index(line, "@if")
+	if at < 0 {
+		return "", fmt.Errorf("no @if peer marker in %q", line)
+	}
+	rest := line[at+3:]
+	if end := strings.IndexByte(rest, ':'); end >= 0 {
+		rest = rest[:end]
+	}
+	idx := strings.TrimSpace(rest)
+	if _, err := strconv.Atoi(idx); err != nil {
+		return "", fmt.Errorf("bad peer ifindex in %q: %w", line, err)
+	}
+	return idx, nil
 }
 
 // configureHostVeth brings the resolved host end up as the cell gateway:

@@ -208,7 +208,7 @@ func validHostPort(target string) bool {
 // forwardHTTP dials the upstream, replays the request headers verbatim
 // (minus hop-by-hop noise), and streams the response back byte-for-byte.
 func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reader, u *url.URL, method string) {
-	upstream, err := dialUpstream(ctx, u.Host)
+	upstream, err := dialUpstream(ctx, withDefaultPort(u))
 	if err != nil {
 		// Upstream unreachable: close without a synthesized
 		// response (no 400/502 — the cage refuses, it does not
@@ -291,6 +291,18 @@ func relay(ctx context.Context, a, b net.Conn) {
 	}
 	a.Close()
 	b.Close()
+}
+
+// withDefaultPort returns u.Host with the scheme's default port
+// appended when the URL omits it (net.Dial refuses bare "example.com").
+func withDefaultPort(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	if u.Scheme == "https" {
+		return net.JoinHostPort(u.Host, "443")
+	}
+	return net.JoinHostPort(u.Host, "80")
 }
 
 // dialUpstream resolves and connects with a bounded dial timeout,

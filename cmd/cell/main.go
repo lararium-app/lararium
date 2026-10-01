@@ -118,11 +118,17 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Load config.
+	// Load config. The proxy subcommand is fully flag-driven and its
+	// transient unit carries no --config; a missing file there falls
+	// back to defaults rather than crash-looping.
 	cfg, err := cell.LoadConfig(*configFlag)
-	if err != nil {
+	proxyFallback := cmd == "proxy" && errors.Is(err, os.ErrNotExist)
+	if err != nil && !proxyFallback {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+	if proxyFallback {
+		cfg = &cell.Config{Hearth: "", Cell: cell.DefaultLimits()}
 	}
 
 	// Determine root directory.
