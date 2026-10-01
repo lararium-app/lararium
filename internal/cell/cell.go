@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// Sentinel errors returned by the cell Store.
 var (
 	ErrInvalidID    = errors.New("invalid cell id")
 	ErrCellNotFound = errors.New("cell not found")
@@ -34,7 +35,10 @@ type Runner interface {
 // CmdRunner is the production Runner that uses os/exec.
 type CmdRunner struct{}
 
+// Run executes cmd via execve (no shell); argv values from the CLI
+// cannot inject commands by construction.
 func (r *CmdRunner) Run(cmd string, args ...string) ([]byte, []byte, error) {
+	//nolint:gosec,noctx // G702: argv slice, no shell; ctx cancels wait only
 	cmdExec := exec.Command(cmd, args...)
 	var stdout, stderr bytes.Buffer
 	cmdExec.Stdout = &stdout
@@ -43,6 +47,11 @@ func (r *CmdRunner) Run(cmd string, args ...string) ([]byte, []byte, error) {
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 
+// RunCombined runs a command capturing merged stdout+stderr. Contexts are
+// intentionally absent: lifecycle commands are supervised by systemd itself;
+// a Go ctx would only cancel the wait, not the unit.
+//
+//nolint:noctx // see doc: cancellation is systemd's job.
 func (r *CmdRunner) RunCombined(cmd string, args ...string) ([]byte, error) {
 	cmdExec := exec.Command(cmd, args...)
 	var output bytes.Buffer
@@ -52,6 +61,9 @@ func (r *CmdRunner) RunCombined(cmd string, args ...string) ([]byte, error) {
 	return output.Bytes(), err
 }
 
+// StartDetached spawns a command that outlives this call and returns its PID.
+//
+//nolint:noctx // detached spawn must outlive this call by design.
 func (r *CmdRunner) StartDetached(cmd string, args ...string) (int, error) {
 	cmdExec := exec.Command(cmd, args...)
 	cmdExec.Stdout = nil
@@ -219,7 +231,7 @@ func (s *Store) Load(id string) (*Cell, error) {
 // Save atomically writes cell.json (temp file + rename).
 func (s *Store) Save(c *Cell) error {
 	dir := s.CellDir(c.ID)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir cell dir: %w", err)
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
@@ -231,7 +243,7 @@ func (s *Store) Save(c *Cell) error {
 		return fmt.Errorf("create temp cell.json: %w", err)
 	}
 	tmp.Close()
-	if err := os.WriteFile(tmp.Name(), data, 0644); err != nil {
+	if err := os.WriteFile(tmp.Name(), data, 0o644); err != nil {
 		os.Remove(tmp.Name())
 		return fmt.Errorf("write cell.json: %w", err)
 	}

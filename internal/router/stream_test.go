@@ -14,7 +14,7 @@ func sseHandler(t *testing.T, chunks []string, trailingJunk bool) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 		for _, c := range chunks {
 			fmt.Fprintf(w, "data: %s\n\n", c)

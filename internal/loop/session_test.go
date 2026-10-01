@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,7 @@ func (s *stubProvider) Name() string { return s.name }
 func (s *stubProvider) Capabilities(context.Context) (router.Caps, error) {
 	return s.caps, nil
 }
+
 func (s *stubProvider) Complete(_ context.Context, msgs []router.Message, _ router.Options) (*router.Completion, error) {
 	i := atomic.AddInt32(&s.n, 1)
 	s.got = append(s.got, msgs)
@@ -51,7 +53,7 @@ func setup(t *testing.T, sp *stubProvider) *Session {
 
 func TestTurnsRoundTripThroughLog(t *testing.T) {
 	sp := &stubProvider{name: "stub", replies: func(n int, _ []router.Message) string {
-		return "reply" + string(rune('0'+n))
+		return "reply" + strconv.Itoa(n)
 	}}
 	s := setup(t, sp)
 	ctx := context.Background()
@@ -81,12 +83,12 @@ func TestCompactEventRewiresAssembly(t *testing.T) {
 		if msgs[0].Content == compactInstruction {
 			return "SUMMARY HERE"
 		}
-		return "r" + string(rune('0'+n))
+		return "r" + strconv.Itoa(n)
 	}}
 	s := setup(t, sp)
 	ctx := context.Background()
 
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		if _, err := s.RunTurn(ctx, "msg", nil); err != nil {
 			t.Fatal(err)
 		}

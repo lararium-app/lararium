@@ -41,6 +41,8 @@ func res0(stdout, stderr []byte) *ExecResult {
 // runWithStdin is the Stdin-capable twin of Runner.Run: os/exec with
 // the byte slice piped to the child (Runner stays byte-only; adding
 // stdin to the interface churns every fake for one call site).
+//
+//nolint:noctx // exec unit churns per call site; timeout is enforced by systemd-run.
 func (s *Store) runWithStdin(stdin []byte, cmd string, args ...string) ([]byte, []byte, error) {
 	c := exec.Command(cmd, args...)
 	c.Stdin = strings.NewReader(string(stdin))
@@ -143,6 +145,7 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 		// a wildcard stop killed concurrent exec jobs in the same
 		// cell on any non-zero exit; agy round-2 F5). If the command
 		// already exited, stopping its collected unit is a no-op.
+		//nolint:errcheck // already-exited units stop cleanly; nothing to undo
 		s.runner.Run("systemctl", "--machine="+id, "stop", unit)
 	}
 

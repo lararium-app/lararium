@@ -10,7 +10,7 @@ import (
 )
 
 // MountOverlay mounts an overlayfs for the given cell.
-// lowerdir=templates/noble,upperdir=cells/<id>/upper,workdir=cells/<id>/work
+// lowerdir=templates/noble,upperdir=cells/<id>/upper,workdir=cells/<id>/work.
 func (s *Store) MountOverlay(id string) error {
 	if err := validateID(id); err != nil {
 		return err
@@ -46,7 +46,7 @@ func (s *Store) UnmountOverlay(id string) error {
 
 	merged := s.MergedDir(id)
 
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			time.Sleep(1 * time.Second)
 		}
@@ -110,7 +110,7 @@ func (s *Store) Snapshot(id string) error {
 	// Rename upper to snapshots/<ts>/upper.
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	snapUpper := filepath.Join(snapshotsDir, ts, "upper")
-	if err := os.MkdirAll(filepath.Dir(snapUpper), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(snapUpper), 0o755); err != nil {
 		return fmt.Errorf("mkdir snapshots: %w", err)
 	}
 	if err := os.Rename(upper, snapUpper); err != nil {
@@ -118,17 +118,17 @@ func (s *Store) Snapshot(id string) error {
 	}
 
 	// Create fresh empty upper, re-seed it, and reset work/.
-	// Spec §2 order is mkdir → seed → mount: the guest .network
+	// Spec §2 order is mkdir -> seed -> mount: the guest .network
 	// drop-in lives in upper/, so a bare fresh upper would boot the
 	// cell without its interface config (agy review F5). Stale work/
 	// from the rotated layer risks overlayfs index inconsistency.
-	if err := os.MkdirAll(upper, 0755); err != nil {
+	if err := os.MkdirAll(upper, 0o755); err != nil {
 		return fmt.Errorf("mkdir fresh upper: %w", err)
 	}
 	if err := os.RemoveAll(s.WorkDir(id)); err != nil {
 		return fmt.Errorf("clean work dir: %w", err)
 	}
-	if err := os.MkdirAll(s.WorkDir(id), 0755); err != nil {
+	if err := os.MkdirAll(s.WorkDir(id), 0o755); err != nil {
 		return fmt.Errorf("mkdir work: %w", err)
 	}
 	if err := s.seedUpper(id); err != nil {
@@ -137,8 +137,10 @@ func (s *Store) Snapshot(id string) error {
 
 	// Remount overlay.
 	if err := s.MountOverlay(id); err != nil {
-		// Restore snapshot on failure.
+		// Restore snapshot on failure. Compensation best-effort: if this
+		// rename also fails the original error is what the caller must see.
 		os.RemoveAll(upper)
+		//nolint:errcheck // compensating rollback; primary error wins
 		os.Rename(snapUpper, upper)
 		return fmt.Errorf("remount after snapshot: %w", err)
 	}
@@ -171,7 +173,7 @@ func (s *Store) isMounted(mp string) bool {
 }
 
 // CreateOverlay sets up overlay directories and mounts the overlay.
-// Create = mkdir 3 dirs → seed upper/ (spec: seed BEFORE mount) → mount.
+// Create = mkdir 3 dirs -> seed upper/ (spec: seed BEFORE mount) -> mount.
 func (s *Store) CreateOverlay(id string) error {
 	if err := validateID(id); err != nil {
 		return err
@@ -179,7 +181,7 @@ func (s *Store) CreateOverlay(id string) error {
 
 	// mkdir three dirs.
 	for _, d := range []string{s.UpperDir(id), s.WorkDir(id), s.MergedDir(id)} {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
@@ -200,7 +202,7 @@ func (s *Store) CreateOverlay(id string) error {
 // seedUpper writes the guest .network file into upper/ before mount.
 func (s *Store) seedUpper(id string) error {
 	networkDir := filepath.Join(s.UpperDir(id), "etc", "systemd", "network")
-	if err := os.MkdirAll(networkDir, 0755); err != nil {
+	if err := os.MkdirAll(networkDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir network dir: %w", err)
 	}
 
@@ -212,7 +214,7 @@ Address=10.91.0.2/28
 Gateway=10.91.0.1
 `
 	networkFile := filepath.Join(networkDir, "10-lararium.network")
-	if err := os.WriteFile(networkFile, []byte(networkContent), 0644); err != nil {
+	if err := os.WriteFile(networkFile, []byte(networkContent), 0o644); err != nil {
 		return fmt.Errorf("write .network: %w", err)
 	}
 

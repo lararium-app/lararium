@@ -56,7 +56,7 @@ func buildTools(home string) []loop.Tool {
 					"text":{"type":"string","description":"text of the fact to remove"}
 				},"required":["text"]}`,
 			},
-			Trusted: false, // deletion always asks (spec: destructive → approval)
+			Trusted: false, // deletion always asks (spec: destructive -> approval)
 			Run: func(_ context.Context, argsJSON string) (string, error) {
 				var a struct {
 					Text string `json:"text"`
@@ -92,6 +92,7 @@ func buildTools(home string) []loop.Tool {
 				if a.Limit <= 0 || a.Limit > 20 {
 					a.Limit = 5
 				}
+				//nolint:contextcheck // Open bootstraps the schema; Sync below carries ctx
 				ix, err := memindex.Open(home)
 				if err != nil {
 					return "", err

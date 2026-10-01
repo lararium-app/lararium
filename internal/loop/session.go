@@ -12,8 +12,9 @@ import (
 	"github.com/lararium-app/lararium/internal/router"
 )
 
-// OnTool, if set, is called as each tool call is dispatched ("start") and
-// finishes ("done"). The REPL uses it for a live status line.
+// OnToolFunc is the callback invoked as each tool call is dispatched
+// ("start") and finishes ("done"), if set. The REPL uses it for a live
+// status line.
 type OnToolFunc func(phase, name, approval string, ok bool)
 
 // Session is one live chat bound to its event log.
@@ -49,18 +50,18 @@ func (s *Session) messages() []router.Message {
 	// are emitted first (in compact order), then surviving messages.
 	var summaries []router.Message
 	for _, ev := range live {
-		switch ev.T {
-		case "compact":
-			var f struct {
-				SummaryText string `json:"summary_text"`
-			}
-			decodeInto(ev, &f)
-			if f.SummaryText != "" {
-				summaries = append(summaries, router.Message{
-					Role:    router.RoleAssistant,
-					Content: "[earlier conversation summary]\n" + f.SummaryText,
-				})
-			}
+		if ev.T != "compact" {
+			continue
+		}
+		var f struct {
+			SummaryText string `json:"summary_text"`
+		}
+		decodeInto(ev, &f)
+		if f.SummaryText != "" {
+			summaries = append(summaries, router.Message{
+				Role:    router.RoleAssistant,
+				Content: "[earlier conversation summary]\n" + f.SummaryText,
+			})
 		}
 	}
 	msgs = append(msgs, summaries...)
@@ -152,8 +153,8 @@ func decodeInto(ev penatus.Event, dst any) {
 	_ = json.Unmarshal(b, dst)
 }
 
-// RunTurn appends the user message and drives the agent loop: completion →
-// tool dispatch (each dispatch logged BEFORE execution) → follow-up
+// RunTurn appends the user message and drives the agent loop: completion ->
+// tool dispatch (each dispatch logged BEFORE execution) -> follow-up
 // completions until the model answers without calling tools (or maxSteps).
 // Returns the final assistant text.
 func (s *Session) RunTurn(ctx context.Context, userText string, onDelta func(string)) (string, error) {
@@ -169,7 +170,8 @@ func (s *Session) RunTurnTools(ctx context.Context, userText string, onDelta fun
 const maxSteps = 12
 
 func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
-	src, _ := json.Marshal(map[string]any{"channel": "api", "device": nil})
+	//nolint:errchkjson // all-string map always marshals
+	src, _ := json.Marshal(map[string]string{"channel": "api", "device": ""})
 	if err := s.appendEvent("msg", map[string]json.RawMessage{
 		"role": raw("user"), "text": raw(userText), "src": src,
 	}); err != nil {
@@ -177,7 +179,7 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 	}
 
 	var final string
-	for step := 0; step < maxSteps; step++ {
+	for range maxSteps {
 		msgs := s.messages()
 		opts := router.Options{MaxTokens: s.MaxTokens}
 		if eng != nil {
@@ -280,7 +282,8 @@ func (s *Session) MaybeCompact(ctx context.Context) (bool, error) {
 	// using the real completion usage when the provider reports it.
 	caps, err := s.Router.Probe(ctx, "chat")
 	if err != nil || caps.ContextLength <= 0 {
-		return false, nil // can't trigger what we can't measure
+		//nolint:nilerr // can't trigger what we can't measure; probe failure is not the caller's error
+		return false, nil
 	}
 	approx := s.lastIn
 	if approx <= 0 {

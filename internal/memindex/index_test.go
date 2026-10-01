@@ -2,6 +2,7 @@ package memindex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,19 +11,15 @@ import (
 
 func tmpHome(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "memindex-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := t.TempDir()
 	return dir
 }
 
 func writeMD(t *testing.T, dir, rel string, content string) {
 	t.Helper()
 	full := filepath.Join(dir, rel)
-	os.MkdirAll(filepath.Dir(full), 0755)
-	if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+	os.MkdirAll(filepath.Dir(full), 0o755)
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -118,7 +115,7 @@ func TestEditFile(t *testing.T) {
 	// Edit and force mtime change.
 	content2 := "---\ntitle: Foo\ntype: note\n---\nUpdated content about oranges."
 	fullPath := filepath.Join(memoryDir, "notes/foo.md")
-	if err := os.WriteFile(fullPath, []byte(content2), 0644); err != nil {
+	if err := os.WriteFile(fullPath, []byte(content2), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(10 * time.Millisecond)
@@ -299,12 +296,12 @@ func TestEmptyQuery(t *testing.T) {
 	ix := mustOpen(t, home)
 
 	_, err := ix.Search(context.Background(), "", 10)
-	if err != ErrEmptyQuery {
+	if !errors.Is(err, ErrEmptyQuery) {
 		t.Fatalf("expected ErrEmptyQuery, got %v", err)
 	}
 
 	_, err = ix.Search(context.Background(), "   ", 10)
-	if err != ErrEmptyQuery {
+	if !errors.Is(err, ErrEmptyQuery) {
 		t.Fatalf("expected ErrEmptyQuery for whitespace, got %v", err)
 	}
 }
