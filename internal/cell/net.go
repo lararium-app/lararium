@@ -548,7 +548,7 @@ func (s *Store) configureHostVeth(id string, subnet int) error {
 		{"ipv6", "accept_ra_rt_info_max_plen", "0"},
 		{"ipv6", "router_solicitations", "0"},
 	} {
-		p := "/proc/sys/" + kv.family + "/conf/" + target + "/" + kv.key
+		p := "/proc/sys/net/" + kv.family + "/conf/" + target + "/" + kv.key
 		if err := os.WriteFile(p, []byte(kv.val), 0o644); err != nil {
 			return fmt.Errorf("sysctl %s.%s=%s: %w", kv.family, kv.key, kv.val, err)
 		}
