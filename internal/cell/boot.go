@@ -67,6 +67,22 @@ func (s *Store) Start(id string) error {
 		return err
 	}
 
+	// Guest-root fixes (sudo setuid copy-up) MUST happen while the
+	// overlay is NOT live-mounted: mutating upper under a live mount
+	// leaves the guest with stale lower dentries for the fixed paths
+	// (live-probed: guest exec'd the lower sudo — "effective uid is
+	// not 0" — while the host upper held the correct 4555 copy).
+	// With a pinned uid base we can fix before boot; on the very
+	// first boot the base is unknown until nspawn picks one, so we
+	// fix after recording it and restart once.
+	rec0, _ := s.Load(id)
+	basePinned := rec0 != nil && rec0.SubUIDBase > 0
+	if basePinned {
+		if err := s.fixGuestRootFiles(id, rec0.SubUIDBase); err != nil {
+			return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
+		}
+	}
+
 	// Ensure the overlay is mounted — Stop unmounts it; Start must
 	// remount or nspawn sees an empty merged dir ("no OS tree").
 	if !s.isMounted(s.MergedDir(id)) {
@@ -134,11 +150,26 @@ func (s *Store) Start(id string) error {
 	// root:root shows up as nobody and is write-denied (live-probed).
 	// Hearth/bin stay host-owned: keeper must not write them.
 	// Idempotent: same base on every start.
-	if c, err := s.Load(id); err == nil && c.SubUIDBase > 0 {
+	c, err := s.Load(id)
+	if err == nil && c.SubUIDBase > 0 {
 		keeper := c.SubUIDBase + 1000
-		if err := s.fixGuestRootFiles(id, c.SubUIDBase); err != nil {
-			return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
+
+		// First boot: the uid base was just picked, so the guest-root
+		// copy-up could not run pre-mount. Apply it now with the
+		// overlay NOT live (stop unmounts it) and boot once more so
+		// the guest resolves the fixed inodes instead of stale lower
+		// dentries (live-probed: mutating upper under a live mount
+		// left the guest exec'ing the lower sudo).
+		if !basePinned {
+			if err := s.Stop(id); err != nil {
+				return fmt.Errorf("restart for guest-root fix: %w", err)
+			}
+			if err := s.fixGuestRootFiles(id, c.SubUIDBase); err != nil {
+				return fmt.Errorf("copy up root-owned setuid/config files: %w", err)
+			}
+			return s.Start(id)
 		}
+
 		if err := os.Chown(s.WorkspaceDir(id), keeper, keeper); err != nil {
 			return fmt.Errorf("chown workspace to in-cell keeper: %w", err)
 		}
