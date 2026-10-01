@@ -1,3 +1,5 @@
+// Package memindex keeps a SQLite index over workspace files for fast
+// recall queries (path, mtime, text snippets).
 package memindex
 
 import (
@@ -21,7 +23,7 @@ type Index struct {
 // Open opens or creates the index database at <home>/memory/index.db.
 func Open(home string) (*Index, error) {
 	dir := filepath.Join(home, "memory")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("memindex: mkdir %s: %w", dir, err)
 	}
 
@@ -77,6 +79,7 @@ func (ix *Index) Sync(ctx context.Context) (int, error) {
 		if _, err := os.Stat(root); os.IsNotExist(err) {
 			continue
 		}
+		//nolint:errcheck,nilerr // unreadable individual files are skipped, not fatal
 		filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
@@ -98,16 +101,18 @@ func (ix *Index) Sync(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("memindex: query manifest: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var path string
 		var mtimeNs, size int64
 		if err := rows.Scan(&path, &mtimeNs, &size); err != nil {
-			rows.Close()
 			return 0, err
 		}
 		oldManifest[path] = entry{mtimeNs: mtimeNs, size: size}
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("memindex: scan manifest: %w", err)
+	}
 
 	// Build new manifest from filesystem.
 	newManifest := make(map[string]entry)
@@ -167,6 +172,7 @@ func (ix *Index) Sync(ctx context.Context) (int, error) {
 		// Insert new doc.
 		_, err = tx.ExecContext(ctx, "INSERT INTO docs(path, title, body) VALUES (?, ?, ?)", rel, title, body)
 		if err != nil {
+			//nolint:errcheck // rollback is best-effort; insert error wins
 			tx.Rollback()
 			return 0, fmt.Errorf("memindex: insert doc %s: %w", rel, err)
 		}
@@ -175,6 +181,7 @@ func (ix *Index) Sync(ctx context.Context) (int, error) {
 		ne := newManifest[rel]
 		_, err = tx.ExecContext(ctx, "INSERT INTO manifest(path, mtime_ns, size) VALUES (?, ?, ?)", rel, ne.mtimeNs, ne.size)
 		if err != nil {
+			//nolint:errcheck // rollback is best-effort; insert error wins
 			tx.Rollback()
 			return 0, fmt.Errorf("memindex: insert manifest %s: %w", rel, err)
 		}

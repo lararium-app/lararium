@@ -90,19 +90,15 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func providerOf(ref string) string {
-	for i := 0; i < len(ref); i++ {
-		if ref[i] == '/' {
-			return ref[:i]
-		}
+	if i := strings.IndexByte(ref, '/'); i >= 0 {
+		return ref[:i]
 	}
 	return ref
 }
 
 func modelOf(ref string) string {
-	for i := 0; i < len(ref); i++ {
-		if ref[i] == '/' {
-			return ref[i+1:]
-		}
+	if i := strings.IndexByte(ref, '/'); i >= 0 {
+		return ref[i+1:]
 	}
 	return ""
 }

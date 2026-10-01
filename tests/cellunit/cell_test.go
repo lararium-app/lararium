@@ -2,6 +2,7 @@ package cellunit
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,7 +63,7 @@ func (f *fakeRunner) Run(cmd string, args ...string) ([]byte, []byte, error) {
 		f.machineUnknown = true
 	}
 	// A successful systemd-run boots nspawn, which re-registers the
-	// machine with machined (models the stale-prune → spawn → register
+	// machine with machined (models the stale-prune -> spawn -> register
 	// sequence the real system runs).
 	if cmd == "systemd-run" || cmd == "/usr/bin/systemd-run" {
 		f.machineUnknown = false
@@ -77,7 +78,7 @@ func (f *fakeRunner) RunCombined(cmd string, args ...string) ([]byte, error) {
 		return nil, err
 	}
 	// A successful systemd-run boots nspawn, which registers the
-	// machine with machined (stale-prune → spawn → register).
+	// machine with machined (stale-prune -> spawn -> register).
 	if cmd == "/usr/bin/systemd-run" || cmd == "systemd-run" {
 		f.machineUnknown = false
 	}
@@ -103,30 +104,6 @@ func isBusProbeCall(args []string) bool {
 		}
 	}
 	return false
-}
-
-func (f *fakeRunner) hasCall(method, cmd string, argSubset []string) bool {
-	for _, call := range f.invocations {
-		if call.Method != method {
-			continue
-		}
-		if call.Cmd != cmd {
-			continue
-		}
-		if containsAll(call.Args, argSubset) {
-			return true
-		}
-	}
-	return false
-}
-
-func (f *fakeRunner) lastCall(method string) fakeCall {
-	for i := len(f.invocations) - 1; i >= 0; i-- {
-		if f.invocations[i].Method == method {
-			return f.invocations[i]
-		}
-	}
-	return fakeCall{}
 }
 
 func containsAll(haystack, needle []string) bool {
@@ -177,14 +154,14 @@ func TestValidateID(t *testing.T) {
 			// Test via Create (which calls validateID).
 			err := store.Create(tt.id)
 			if tt.want != nil {
-				if err != tt.want {
+				if !errors.Is(err, tt.want) {
 					t.Errorf("Create(%q) error = %v, want %v", tt.id, err, tt.want)
 				}
 				return
 			}
 			// For valid IDs, Create will fail because no template exists.
 			// That's expected — we just want to verify validateID passed.
-			if err != nil && err == cell.ErrInvalidID {
+			if err != nil && errors.Is(err, cell.ErrInvalidID) {
 				t.Errorf("Create(%q) got ErrInvalidID, want success (or template error)", tt.id)
 			}
 		})
@@ -225,7 +202,7 @@ func TestCellNotFound(t *testing.T) {
 	store := cell.NewStore(tmp, tmp+"/hearth", cell.DefaultLimits(), &fakeRunner{})
 
 	_, err := store.Load("nonexistent")
-	if err != cell.ErrCellNotFound {
+	if !errors.Is(err, cell.ErrCellNotFound) {
 		t.Errorf("Load(nonexistent) error = %v, want ErrCellNotFound", err)
 	}
 }
@@ -256,7 +233,7 @@ func TestStartArgv(t *testing.T) {
 	store := cell.NewStore(tmp, tmp+"/hearth", cell.DefaultLimits(), &fakeRunner{})
 
 	// Create template directory.
-	if err := os.MkdirAll(store.TemplateDir(), 0755); err != nil {
+	if err := os.MkdirAll(store.TemplateDir(), 0o755); err != nil {
 		t.Fatalf("mkdir template: %v", err)
 	}
 
@@ -267,7 +244,7 @@ func TestStartArgv(t *testing.T) {
 	}
 
 	// Create merged dir.
-	if err := os.MkdirAll(store.MergedDir("test123"), 0755); err != nil {
+	if err := os.MkdirAll(store.MergedDir("test123"), 0o755); err != nil {
 		t.Fatalf("mkdir merged: %v", err)
 	}
 
@@ -455,7 +432,7 @@ func TestRunNotRunning(t *testing.T) {
 	store.SetRunner(runner)
 
 	_, err := store.Run("mycell", "echo hello", cell.RunOpts{})
-	if err != cell.ErrNotRunning {
+	if !errors.Is(err, cell.ErrNotRunning) {
 		t.Errorf("Run(not registered) error = %v, want ErrNotRunning", err)
 	}
 
@@ -473,7 +450,7 @@ func TestMountOverlayArgv(t *testing.T) {
 
 	// Create dirs.
 	for _, d := range []string{store.UpperDir("mtest"), store.WorkDir("mtest"), store.MergedDir("mtest")} {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
 	}
@@ -533,7 +510,7 @@ func TestDestroyUnmountThenDelete(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	for _, d := range []string{store.UpperDir("dtest"), store.WorkDir("dtest"), store.MergedDir("dtest")} {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
 	}
@@ -598,7 +575,7 @@ func TestCreateDuplicate(t *testing.T) {
 	store := cell.NewStore(tmp, tmp+"/hearth", cell.DefaultLimits(), &fakeRunner{})
 
 	// Create template dir.
-	if err := os.MkdirAll(store.TemplateDir(), 0755); err != nil {
+	if err := os.MkdirAll(store.TemplateDir(), 0o755); err != nil {
 		t.Fatalf("mkdir template: %v", err)
 	}
 
@@ -628,7 +605,7 @@ func TestConfigDefaults(t *testing.T) {
 cell:
   memory_mb: 4096
 `)
-	if err := os.WriteFile(cfgPath, configData, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, configData, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -656,7 +633,7 @@ func TestConfigEmpty(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "lararium.yaml")
 
 	// Write empty config.
-	if err := os.WriteFile(cfgPath, []byte{}, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte{}, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -720,7 +697,7 @@ func TestNspawnArgs(t *testing.T) {
 	store := cell.NewStore(tmp, tmp+"/hearth", cell.DefaultLimits(), &fakeRunner{})
 
 	// Create template directory.
-	if err := os.MkdirAll(store.TemplateDir(), 0755); err != nil {
+	if err := os.MkdirAll(store.TemplateDir(), 0o755); err != nil {
 		t.Fatalf("mkdir template: %v", err)
 	}
 
@@ -731,7 +708,7 @@ func TestNspawnArgs(t *testing.T) {
 	}
 
 	// Create merged dir.
-	if err := os.MkdirAll(store.MergedDir("nspawn-test"), 0755); err != nil {
+	if err := os.MkdirAll(store.MergedDir("nspawn-test"), 0o755); err != nil {
 		t.Fatalf("mkdir merged: %v", err)
 	}
 

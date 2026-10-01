@@ -7,6 +7,7 @@ import (
 // Role identifies the sender of a message.
 type Role string
 
+// Conversation roles for Message.
 const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"

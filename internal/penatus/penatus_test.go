@@ -2,6 +2,7 @@ package penatus
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func TestParseDoc(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if tt.errType != nil && err != tt.errType {
+				if tt.errType != nil && !errors.Is(err, tt.errType) {
 					t.Errorf("got error %v, want %v", err, tt.errType)
 				}
 				return
@@ -341,7 +342,7 @@ func TestLogAppendAndReopen(t *testing.T) {
 	}
 
 	// Append events
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		err := log.Append(Event{T: "msg", Fields: map[string]json.RawMessage{
 			"role": json.RawMessage(`"user"`),
 			"text": json.RawMessage(`"hello"`),
@@ -378,7 +379,7 @@ func TestLogCorruptGap(t *testing.T) {
 		`{"seq":4,"t":"msg","ts":"2026-01-01T00:00:03Z","role":"user"}`,
 	}
 	content := strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -386,7 +387,8 @@ func TestLogCorruptGap(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for gap, got nil")
 	}
-	ce, ok := err.(CorruptError)
+	var ce CorruptError
+	ok := errors.As(err, &ce)
 	if !ok {
 		t.Fatalf("expected CorruptError, got %T: %v", err, err)
 	}
@@ -404,7 +406,7 @@ func TestLogCorruptDuplicate(t *testing.T) {
 		`{"seq":1,"t":"msg","ts":"2026-01-01T00:00:01Z"}`,
 	}
 	content := strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -412,7 +414,8 @@ func TestLogCorruptDuplicate(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for duplicate, got nil")
 	}
-	ce, ok := err.(CorruptError)
+	var ce CorruptError
+	ok := errors.As(err, &ce)
 	if !ok {
 		t.Fatalf("expected CorruptError, got %T: %v", err, err)
 	}
@@ -429,7 +432,7 @@ func TestLogReadOnlyOnCorrupt(t *testing.T) {
 		`{"seq":1,"t":"msg","ts":"2026-01-01T00:00:00Z"}`,
 		`{"seq":3,"t":"msg","ts":"2026-01-01T00:00:02Z"}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -455,7 +458,7 @@ func TestLogTombstoneExcludedFromLive(t *testing.T) {
 		`{"seq":3,"t":"msg","ts":"2026-01-01T00:00:02Z","role":"user","text":"also keep"}`,
 		`{"seq":4,"t":"tombstone","ts":"2026-01-01T00:00:03Z","seqs":[2]}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -499,7 +502,7 @@ func TestLogCompactionAssembly(t *testing.T) {
 		`{"seq":6,"t":"compact","ts":"2026-01-01T00:00:05Z","covers":[1,5],"summary_text":"summary of 1-5","kept":[{"t":"msg","seq":3}]}`,
 		`{"seq":7,"t":"msg","ts":"2026-01-01T00:00:06Z","role":"user","text":"after compact"}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -544,7 +547,7 @@ func TestLogNestedCompaction(t *testing.T) {
 		`{"seq":7,"t":"compact","ts":"2026-01-01T00:00:06Z","covers":[2,6],"summary_text":"outer summary","kept":[{"t":"compact","seq":4}]}`,
 		`{"seq":8,"t":"msg","ts":"2026-01-01T00:00:07Z","role":"user","text":"f"}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

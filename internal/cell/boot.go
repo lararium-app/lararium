@@ -1,3 +1,5 @@
+// Package cell implements the Lararium cell lifecycle: templates,
+// overlay-backed cells, start/stop/run, snapshots and host doctor.
 package cell
 
 import (
@@ -38,13 +40,13 @@ func (s *Store) Start(id string) error {
 	if s.Hearth == "" {
 		return fmt.Errorf("hearth path not configured (hearth: in lararium.yaml)")
 	}
-	if err := os.MkdirAll(s.Hearth, 0755); err != nil {
+	if err := os.MkdirAll(s.Hearth, 0o755); err != nil {
 		return fmt.Errorf("mkdir hearth: %w", err)
 	}
-	if err := os.MkdirAll(s.BinDir(id), 0755); err != nil {
+	if err := os.MkdirAll(s.BinDir(id), 0o755); err != nil {
 		return fmt.Errorf("mkdir bin: %w", err)
 	}
-	if err := os.MkdirAll(s.WorkspaceDir(id), 0755); err != nil {
+	if err := os.MkdirAll(s.WorkspaceDir(id), 0o755); err != nil {
 		return fmt.Errorf("mkdir workspace: %w", err)
 	}
 
@@ -59,12 +61,13 @@ func (s *Store) Start(id string) error {
 	// live container with a broken sudo — treat that as incomplete,
 	// not idempotent: stop it and boot properly below.
 	if s.isActive(id) {
-		if basePinned && !rec0.GuestRootFixed {
-			if err := s.Stop(id); err != nil {
-				return fmt.Errorf("stop incomplete first boot: %w", err)
-			}
-		} else {
+		if !basePinned || rec0.GuestRootFixed {
 			return nil
+		}
+		// base but crashed before the guest-root fix + restart: stop it
+		// and boot properly below.
+		if err := s.Stop(id); err != nil {
+			return fmt.Errorf("stop incomplete first boot: %w", err)
 		}
 	}
 
@@ -156,6 +159,7 @@ func (s *Store) Start(id string) error {
 	// Start detached via systemd-run. Best-effort reset of any stale
 	// failed state from a previous crashed run (a failed unit with the
 	// same name would block reuse until reset-failed).
+	//nolint:errcheck // stale-failed reset is best-effort
 	s.runner.Run("systemctl", "reset-failed", unit)
 	if _, err := s.runner.RunCombined("/usr/bin/systemd-run", cmdArgs...); err != nil {
 		return fmt.Errorf("systemd-run: %w", err)
@@ -168,14 +172,18 @@ func (s *Store) Start(id string) error {
 	if err := s.waitForHealthy(id, 120*time.Second); err != nil {
 		// Cell failed to start — stop the unit and drop the overlay
 		// so no stale mount survives a failed boot (agy round-3 F7).
+		//nolint:errcheck // cleanup after failed boot; primary error wins
 		s.runner.Run("systemctl", "stop", unit)
+		//nolint:errcheck // cleanup after failed boot; primary error wins
 		s.UnmountOverlay(id)
 		return fmt.Errorf("cell failed to become healthy: %w", err)
 	}
 
 	// Record uid_map: find the in-guest init process and read /proc/<pid>/uid_map.
 	if err := s.recordUIDMap(id); err != nil {
+		//nolint:errcheck // cleanup after failed boot; primary error wins
 		s.runner.Run("systemctl", "stop", unit)
+		//nolint:errcheck // cleanup after failed boot; primary error wins
 		s.UnmountOverlay(id)
 		return fmt.Errorf("record uid map: %w", err)
 	}
@@ -302,7 +310,7 @@ func (s *Store) fixGuestRootFiles(id string, base int) error {
 				lerr = os.ErrNotExist
 			}
 			if os.IsNotExist(lerr) {
-				if err := os.Mkdir(walk, 0755); err != nil {
+				if err := os.Mkdir(walk, 0o755); err != nil {
 					if !os.IsExist(err) {
 						return err
 					}
@@ -410,7 +418,9 @@ func (s *Store) grantHearthAccess(keeper int) error {
 // effort: a missing entry is fine.
 func (s *Store) revokeHearthAccess(keeper int) {
 	spec := fmt.Sprintf("u:%d", keeper)
+	//nolint:errcheck // revoke is idempotent cleanup; entry may not exist
 	s.runner.Run("setfacl", "-R", "-x", spec, s.Hearth)
+	//nolint:errcheck // revoke is idempotent cleanup; entry may not exist
 	s.runner.Run("setfacl", "-R", "-d", "-x", spec, s.Hearth)
 }
 
@@ -421,7 +431,7 @@ func (s *Store) revokeHearthAccess(keeper int) {
 // and may pick a DIFFERENT base on every boot. Once a cell has run,
 // its recorded base MUST be reused (explicit --private-users=<base>),
 // or the overlay upper/work + bind ownerships no longer line up
-// (live-probed: second start → in-cell root-owned trees, keeper writes
+// (live-probed: second start -> in-cell root-owned trees, keeper writes
 // denied).
 func (s *Store) nspawnArgs(id string) []string {
 	ownership := s.Limits.Ownership
@@ -500,6 +510,7 @@ func (s *Store) pruneStaleMachined(id string) error {
 	// healthy nspawn, which unregisters at exit) holds the export dir
 	// invisibly — kill it.
 	if pid, err := s.findNspawnPID(id); err == nil && pid > 0 {
+		//nolint:errcheck // kill targets a PID we just observed; racing exit is fine
 		s.runner.Run("kill", "-9", strconv.Itoa(pid))
 	}
 
@@ -729,6 +740,7 @@ func (s *Store) findMappedPID(parentPID int) (int, error) {
 		if err == nil && cgRel != "" && cgRel != "/" {
 			base := filepath.Join("/sys/fs/cgroup", filepath.Clean(cgRel))
 			var best int
+			//nolint:nilerr // unreadable cgroup subdirs are skipped, not fatal
 			_ = filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
 				if err != nil || !d.IsDir() || best != 0 {
 					return nil
@@ -765,7 +777,7 @@ func (s *Store) findMappedPID(parentPID int) (int, error) {
 
 	// Fallback: check the given PID itself — but only if it is a
 	// real mapped process; the supervisor is host-root (identity
-	// map → 0,nil) and /proc/0 does not exist (agy review F9).
+	// map -> 0,nil) and /proc/0 does not exist (agy review F9).
 	pid, err := s.checkPIDMapped(parentPID)
 	if err != nil {
 		return 0, err
@@ -926,7 +938,7 @@ func (s *Store) Create(id string) error {
 		s.UpperDir(id), s.WorkDir(id), s.MergedDir(id),
 		s.WorkspaceDir(id), s.BinDir(id), s.SnapshotsDir(id), s.LogDir(id),
 	} {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
@@ -940,10 +952,10 @@ func (s *Store) Create(id string) error {
 	// traversal (VFS resolves the mount directly).
 	//
 	// NOT upper/ or merged/ themselves: upper's top inode IS the
-	// guest's / — a 0700 there is owned by host root (unmapped →
+	// guest's / — a 0700 there is owned by host root (unmapped ->
 	// nobody in-guest) and strips the guest's search permission on
 	// its own root (live-probed: container halts at boot).
-	if err := os.Chmod(s.CellDir(id), 0700); err != nil {
+	if err := os.Chmod(s.CellDir(id), 0o700); err != nil {
 		return fmt.Errorf("chmod cell dir: %w", err)
 	}
 
@@ -969,15 +981,15 @@ func (s *Store) Create(id string) error {
 	return nil
 }
 
-// CellStatus holds the runtime status of a cell.
-type CellStatus struct {
+// Status holds the runtime status of a cell.
+type Status struct {
 	ID      string
 	Running bool
 	Mounted bool
 }
 
 // Status returns the status of a single cell.
-func (s *Store) Status(id string) (*CellStatus, error) {
+func (s *Store) Status(id string) (*Status, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
@@ -993,7 +1005,7 @@ func (s *Store) Status(id string) (*CellStatus, error) {
 
 	mounted := s.isMounted(s.MergedDir(id))
 
-	return &CellStatus{
+	return &Status{
 		ID:      id,
 		Running: running,
 		Mounted: mounted,
@@ -1001,13 +1013,13 @@ func (s *Store) Status(id string) (*CellStatus, error) {
 }
 
 // ListStatus returns the status of all cells.
-func (s *Store) ListStatus() ([]CellStatus, error) {
+func (s *Store) ListStatus() ([]Status, error) {
 	ids, err := s.List()
 	if err != nil {
 		return nil, err
 	}
 
-	var statuses []CellStatus
+	var statuses []Status
 	for _, id := range ids {
 		st, err := s.Status(id)
 		if err != nil {

@@ -65,7 +65,7 @@ func CreateSession(root, id, kind string) (*Log, error) {
 	}
 
 	dir := filepath.Join(root, "sessions", id)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 
@@ -86,7 +86,7 @@ func CreateSession(root, id, kind string) (*Log, error) {
 
 	// Atomic write: write to temp, then rename
 	tmpPath := filepath.Join(dir, "session.json.tmp")
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return nil, err
 	}
 
@@ -97,7 +97,7 @@ func CreateSession(root, id, kind string) (*Log, error) {
 
 	// Create empty events.jsonl so the session directory is complete.
 	eventsPath := filepath.Join(dir, "events.jsonl")
-	if err := os.WriteFile(eventsPath, nil, 0644); err != nil {
+	if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
 		return nil, err
 	}
 

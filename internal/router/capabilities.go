@@ -1,3 +1,5 @@
+// Package router normalizes OpenAI-compatible backends behind one
+// Provider interface with capability probing.
 package router
 
 import (
@@ -17,7 +19,7 @@ import (
 // when present. Anthropic-style /v1/models id-match is best-effort.
 // Absent fields result in 0/false — never invent numbers.
 func ProbeOpenAI(ctx context.Context, baseURL, apiKey, wanted string) (Caps, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(baseURL, "/")+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/models", nil)
 	if err != nil {
 		return Caps{}, fmt.Errorf("create request: %w", err)
 	}
@@ -195,7 +197,7 @@ func parseModelEntry(entry modelEntry) Caps {
 func probeLlamaProps(ctx context.Context, baseURL string) int {
 	root := strings.TrimRight(baseURL, "/")
 	root = strings.TrimSuffix(root, "/v1")
-	req, err := http.NewRequestWithContext(ctx, "GET", root+"/props", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, root+"/props", nil)
 	if err != nil {
 		return 0
 	}

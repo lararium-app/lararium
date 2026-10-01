@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -167,7 +168,8 @@ func TestChainErrorListsAllLegs(t *testing.T) {
 		{Provider: NewOpenAI(s2.URL+"/v1", "", "mb"), Model: "mb"},
 	}})
 	_, err := r.Complete(context.Background(), "chat", nil, Options{})
-	ce, ok := err.(*ChainError)
+	var ce *ChainError
+	ok := errors.As(err, &ce)
 	if !ok {
 		t.Fatalf("want *ChainError, got %T", err)
 	}

@@ -88,12 +88,12 @@ type Log struct {
 	nextSeq  int64
 }
 
-// OpenLog reads and validates the events.jsonl in the given session directory.
-// Seq must increase by 1 starting from 1. A gap or duplicate opens the log
-// read-only and returns a CorruptError.
 // Dir returns the session directory this log lives in.
 func (l *Log) Dir() string { return l.dir }
 
+// OpenLog reads and validates the events.jsonl in the given session directory.
+// Seq must increase by 1 starting from 1. A gap or duplicate opens the log
+// read-only and returns a CorruptError.
 func OpenLog(dir string) (*Log, error) {
 	path := filepath.Join(dir, "events.jsonl")
 
@@ -165,7 +165,7 @@ func (l *Log) Append(e Event) error {
 		return err
 	}
 
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -241,7 +241,12 @@ func (l *Log) Live() []Event {
 	for _, c := range compacts {
 		var covers []int64
 		if v, ok := c.Fields["covers"]; ok {
-			json.Unmarshal(v, &covers)
+			// Corrupt covers: skip this compact — its covered seqs
+			// replay as live events (safe direction, same as the
+			// < 2 bounds skip below).
+			if err := json.Unmarshal(v, &covers); err != nil {
+				continue
+			}
 		}
 		if len(covers) < 2 {
 			continue

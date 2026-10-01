@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 
 // CheckResult holds the result of a single doctor check.
@@ -69,13 +68,14 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 
 	// Check: cgroup2.
 	cgroup2, err := checkCgroup2()
-	if err != nil {
+	switch {
+	case err != nil:
 		results = append(results, CheckResult{"cgroup2", "FAIL", fmt.Sprintf("check cgroup2: %v", err)})
 		failed = true
-	} else if !cgroup2 {
+	case !cgroup2:
 		results = append(results, CheckResult{"cgroup2", "FAIL", "/sys/fs/cgroup is not cgroup2fs"})
 		failed = true
-	} else {
+	default:
 		results = append(results, CheckResult{"cgroup2", "OK", "cgroup2 unified hierarchy"})
 	}
 
@@ -148,7 +148,7 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 
 // checkCgroup2 verifies /sys/fs/cgroup is cgroup2fs.
 func checkCgroup2() (bool, error) {
-	statOut, _, err := runLookup("stat", "-fc", "%T", "/sys/fs/cgroup")
+	statOut, err := runLookup("stat", "-fc", "%T", "/sys/fs/cgroup")
 	if err != nil {
 		return false, err
 	}
@@ -165,7 +165,7 @@ func (s *Store) probeRootWritable() (bool, string) {
 		return false, fmt.Sprintf("cells root %s is not a directory", s.Root)
 	}
 	probe := filepath.Join(s.Root, ".doctor-write")
-	if err := os.WriteFile(probe, []byte("x"), 0600); err != nil {
+	if err := os.WriteFile(probe, []byte("x"), 0o600); err != nil {
 		return false, fmt.Sprintf("cells root %s not writable: %v", s.Root, err)
 	}
 	os.Remove(probe)
@@ -252,7 +252,7 @@ func (s *Store) probeOverlay() (bool, string) {
 	// NFS cells dirs; agy review F11).
 	probeRoot := filepath.Join(s.Root, ".doctor-probe")
 	os.RemoveAll(probeRoot)
-	if err := os.MkdirAll(probeRoot, 0755); err != nil {
+	if err := os.MkdirAll(probeRoot, 0o755); err != nil {
 		return false, fmt.Sprintf("cannot create probe dir under cells root: %v", err)
 	}
 	defer os.RemoveAll(probeRoot)
@@ -263,13 +263,13 @@ func (s *Store) probeOverlay() (bool, string) {
 	merged := filepath.Join(probeRoot, "merged")
 
 	for _, d := range []string{lower, upper, work, merged} {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			return false, fmt.Sprintf("mkdir: %v", err)
 		}
 	}
 
 	// Write a test file in lower.
-	if err := os.WriteFile(filepath.Join(lower, "test"), []byte("ok"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(lower, "test"), []byte("ok"), 0o644); err != nil {
 		return false, fmt.Sprintf("write test file: %v", err)
 	}
 
@@ -279,11 +279,13 @@ func (s *Store) probeOverlay() (bool, string) {
 	}
 
 	// Try to write to merged (copy-up test).
-	if err := os.WriteFile(filepath.Join(merged, "test2"), []byte("ok"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(merged, "test2"), []byte("ok"), 0o644); err != nil {
+		//nolint:errcheck // best-effort unmount of the probe mount
 		s.runner.Run("umount", merged)
 		return false, fmt.Sprintf("write to overlay failed: %v", err)
 	}
 
+	//nolint:errcheck // best-effort unmount of the probe mount
 	s.runner.Run("umount", merged)
 	return true, "overlay mount + copy-up successful"
 }
@@ -311,7 +313,9 @@ func (s *Store) probeUserNS() (bool, string) {
 		// nspawn refuses trees without /usr (OS-tree check) even for
 		// builtin-only probes.
 		for _, d := range []string{"usr", "etc", "proc", "sys", "dev", "workspace"} {
-			os.MkdirAll(filepath.Join(dir, d), 0755)
+			if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+				return false, fmt.Sprintf("cannot stage probe rootfs: %v", err)
+			}
 		}
 		if err := copyBinaryWithDeps("/bin/sh", dir); err != nil {
 			return false, fmt.Sprintf("cannot stage probe rootfs: %v", err)
@@ -331,7 +335,9 @@ func (s *Store) probeUserNS() (bool, string) {
 	// the default noidmap bind) can create the probe file; ownership
 	// of the written file is the assertion below (live-probed 2026-09-30:
 	// a 700 root-owned dir denies the mapped write).
-	os.Chmod(wsDir, 0o777)
+	if err := os.Chmod(wsDir, 0o777); err != nil {
+		return false, fmt.Sprintf("cannot open probe workspace perms: %v", err)
+	}
 	defer os.RemoveAll(wsDir)
 
 	args := []string{
@@ -391,7 +397,7 @@ func checkKernel() (bool, string) {
 	}
 
 	// Fallback to uname.
-	out, _, err := runLookup("uname", "-r")
+	out, err := runLookup("uname", "-r")
 	if err != nil {
 		return false, fmt.Sprintf("cannot determine kernel version: %v", err)
 	}
@@ -407,7 +413,7 @@ func checkKernel() (bool, string) {
 
 func parseKernelVersion(major, minor, patch string) (bool, string) {
 	maj, _ := strconv.Atoi(major)
-	min, _ := strconv.Atoi(minor)
+	minV, _ := strconv.Atoi(minor)
 	// Two-component kernels exist (e.g. "7.2" — an explicitly
 	// targeted bench); patch is optional in the regex (agy F11).
 	if patch == "" {
@@ -415,7 +421,7 @@ func parseKernelVersion(major, minor, patch string) (bool, string) {
 	}
 	ver := fmt.Sprintf("%s.%s.%s", major, minor, patch)
 
-	if maj > 5 || (maj == 5 && min >= 19) {
+	if maj > 5 || (maj == 5 && minV >= 19) {
 		return true, fmt.Sprintf("kernel %s >= 5.19", ver)
 	}
 	return false, fmt.Sprintf("kernel %s < 5.19", ver)
@@ -442,25 +448,26 @@ func userCurrent() (*struct{ Username string }, error) {
 	return nil, fmt.Errorf("user not found in /etc/passwd for uid %s", uid)
 }
 
-// runLookup is a helper that looks up a command and runs it.
-func runLookup(cmd string, args ...string) ([]byte, []byte, error) {
+// runLookup resolves cmd on PATH and runs it, capturing stdout and
+// stdout only; probe diagnostics that matter are in stdout or the error.
+//
+//nolint:noctx // doctor probes are bounded by the command itself.
+func runLookup(cmd string, args ...string) ([]byte, error) {
 	path, err := exec.LookPath(cmd)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	c := exec.Command(path, args...)
-	var stdout, stderr strings.Builder
+	var stdout strings.Builder
 	c.Stdout = &stdout
-	c.Stderr = &stderr
+	c.Stderr = nil
 	err = c.Run()
-	return []byte(stdout.String()), []byte(stderr.String()), err
+	return []byte(stdout.String()), err
 }
-
-var _ = time.Second // used in probe timeouts
 
 // checkSystemdVersion verifies systemd >= 254 via `systemctl --version`.
 func checkSystemdVersion() (bool, string) {
-	out, _, err := runLookup("systemctl", "--version")
+	out, err := runLookup("systemctl", "--version")
 	if err != nil {
 		return false, fmt.Sprintf("cannot run systemctl --version: %v", err)
 	}
@@ -482,7 +489,7 @@ func checkSystemdVersion() (bool, string) {
 // copyBinaryWithDeps stages a binary and ONLY its loader + ldd libs
 // into a rootfs dir (a few MB, not hundreds).
 func copyBinaryWithDeps(bin, rootfs string) error {
-	out, _, err := runLookup("ldd", bin)
+	out, err := runLookup("ldd", bin)
 	if err != nil {
 		return fmt.Errorf("ldd %s: %w", bin, err)
 	}
@@ -505,15 +512,16 @@ func copyBinaryWithDeps(bin, rootfs string) error {
 		if rErr != nil {
 			return fmt.Errorf("read %s: %w", p, rErr)
 		}
+		// rootfs probe copy of ldd-listed paths; fixed source set.
 		dst := filepath.Join(rootfs, strings.TrimPrefix(p, "/"))
-		if mErr := os.MkdirAll(filepath.Dir(dst), 0755); mErr != nil {
+		if mErr := os.MkdirAll(filepath.Dir(dst), 0o755); mErr != nil {
 			return mErr
 		}
-		mode := os.FileMode(0755)
+		mode := os.FileMode(0o755)
 		if fi, sErr := os.Stat(p); sErr == nil {
 			mode = fi.Mode().Perm()
 		}
-		if wErr := os.WriteFile(dst, data, mode); wErr != nil {
+		if wErr := os.WriteFile(dst, data, mode); wErr != nil { //nolint:gosec // G703: ldd-listed fixed source set
 			return wErr
 		}
 	}
