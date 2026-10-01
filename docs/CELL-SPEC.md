@@ -125,8 +125,10 @@ Topology: nspawn `--network-veth`; cell end `host0`. The veth pair is
 created **at spawn** (nspawn's own work; the host end gets nspawn's
 `ve-<machine>`-family name, *not* a name we choose) — so **`cell start`
 addresses the host end after spawn, resolving the real interface by
-mechanism, never by guessing:** read the guest ifindex via machined/`ip -o
-link` peer-symlink (`.../lowerindex`) or the unit's netns, then `ip addr
+mechanism, never by guessing:** read the peer ifindex via machined,
+`ip -o link`, or `/sys/class/net/<dev>/iflink` (a bare veth exposes
+`iflink` only — no `lower_*` symlink unless enslaved to a bridge), or
+enumerate the unit's netns, then `ip addr
 replace 10.91.<n>.1/28 dev <resolved>` + `ip link set ... up`, bounded retry
 until the peer appears. `net.sysctl` forwards for the cell subnet pair are
 installed once by `cell net-install`. `.network` files are explicitly **not**
@@ -134,7 +136,8 @@ used on the **host** (host-side systemd-networkd may not run — Arch often
 runs no network manager, Ubuntu desktop runs NetworkManager; both silently
 ignore dropped files).
 **Guest end:** the template's enabled `systemd-networkd` (§2) applies a
-generated `.network` (Match on `OriginalName=host0`, with a wildcard fallback
+generated `.network` (Match on `Name=host0` — `OriginalName` is a `.link`
+directive, invalid under `[Match]` in `.network`; with a wildcard fallback
 pinned by reading the real interface name off a probe boot — do not guess)
 assigning static `10.91.<n>.2` + default route via `10.91.<n>.1`). Delivery
 of the per-cell `.network` file: `cell create` writes it into the cell's
@@ -164,12 +167,17 @@ in filter hooks):
    - `input` chain, in order:
      `iifname "v-lar-*" ct status dnat accept` (DNAT'd flows are locally
      destined — after prerouting they traverse **input**, not forward);
-     `iifname "v-lar-*" tcp dport <proxy_port> accept` — **the cooperative
+     `iifname "v-lar-*" tcp dport <proxy_port> fib daddr . iif type local
+     accept` — **the cooperative
      path:** env-obeying clients aim directly at the proxy address and are
      never DNAT'd, so without this explicit accept the intended door itself
-     would be dropped;
+     would be dropped; the `fib daddr . iif type local` scope binds the
+     accept to the destination being **this interface's own** gateway
+     address — without it, Linux's weak host model lets one cell dial a
+     neighboring cell's gateway and borrow its proxy (erratum 2026-10-01,
+     live-proven cross-cell breach);
      `iifname "v-lar-*" ct state established,related accept`;
-     `iifname "v-lar-*" tcp reject with tcp reset`; remaining
+     `iifname "v-lar-*" meta l4proto tcp reject with tcp reset`; remaining
      `iifname "v-lar-*" drop`. The gateway address answers on the proxy
      door and nothing else (C6). Rest of input policy untouched. (`v-lar-*` =
      the host-veth naming namespace for cells: `cell start` renames the
@@ -177,8 +185,11 @@ in filter hooks):
      sha256(cell id) — before addressing; cell.json records the name.
      Erratum 2026-09-30, PO-approved: literal `v-lar-<id>` breaks on ids
      over 9 chars (IFNAMSIZ=15); the glob is unchanged. TCP from cells gets
-     `reject with tcp reset`, not silent `drop`, so C6 observes a refusal
-     (ECONNREFUSED) instead of a timeout; non-TCP stays drop. `forward`
+     `meta l4proto tcp reject with tcp reset`, not silent `drop`, so C6
+     observes a refusal (ECONNREFUSED) instead of a timeout (erratum
+     2026-10-01: bare `tcp reject` is an nft syntax error — `tcp` needs a
+     field; live-verified `meta l4proto tcp reject` loads); non-TCP stays
+     drop. `forward`
      chain stays a pure drop — a forward-path reset would leak host
      topology.)
    - `forward` chain: `iifname "v-lar-*" drop` — unconditional catch-all for
@@ -265,7 +276,7 @@ per check unless stated.
 | C3 | ICMP | `ping -c 2 -W 3 1.1.1.1` fails |
 | C4 | raw TCP odd port | `timeout 6 bash -c '</dev/tcp/93.184.216.34/81'` fails |
 | C5 | external DNS | direct A query to 8.8.8.8 fails |
-| C6 | host escape | gateway `10.91.<n>.1` refused on every port **except the proxy port**, which must connect (it is the door) — at minimum :22 and :8080 refused |
+| C6 | host escape | gateway `10.91.<n>.1` refused on every port **except the proxy port**, which must connect (it is the door) — at minimum :22 and :8080 refused. For a **no-proxy** cell (C8) the door is closed too: **every** port including the proxy port must be refused |
 | C7 | proxy path works | default cell env: HTTP fetch of example.com returns 200 (allowing a bounded post-start settle for veth addressing + guest networkd, e.g. retry ≤ 15 s) **and** the dumb proxy's access log gains a matching line (proves the packet took the door, not a hole) |
 | C7b | bypass refused | in-cell client ignoring proxy env, relative-form request to 80 → connection refused/error by the proxy (NOT a 200); C1–C5 still fail in the same cell |
 | C8 | no-proxy fail-closed | cell created with no proxy → C7-style fetch fails **and** C1–C6 still fail; no path bypasses |
