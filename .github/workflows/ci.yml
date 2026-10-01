@@ -33,7 +33,7 @@ jobs:
 
       - name: gofumpt
         run: |
-          go install mvdan.cc/gofumpt@latest
+          go install mvdan.cc/gofumpt@v0.9.2
           unformatted="$(gofumpt -l .)"
           if [ -n "$unformatted" ]; then
             echo "$unformatted"; echo "run: gofumpt -w ."; exit 1
@@ -57,5 +57,5 @@ jobs:
           cache: true
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...
