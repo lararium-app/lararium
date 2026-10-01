@@ -17,3 +17,4 @@ docker/hearth/sessions/
 
 # Local tool state
 .wrangler/
+/cell
