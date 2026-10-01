@@ -49,9 +49,16 @@ ip -o link | grep -q "v-lar-" || bad "no v-lar-* host veth after start"
 
 step "cooperative egress (proxied) works"
 out=$("$BIN" --config "$CFG" run "$ID" -- curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://example.com/ 2>/dev/null)
-case "$out" in 200|301|308) ok "coop http=$out";; *) bad "coop http got '$out'";; esac
+case "$out" in 200|301|308) ok "http coop ($out)";; *) bad "http coop got '$out'";; esac
+
+step "chunked POST survives the proxy (framing regression)"
+head -c 200000 /dev/urandom | base64 > "$ROOT/cells/$ID/workspace/chunk.bin"
+out=$("$BIN" --config "$CFG" run "$ID" -- curl -s -o /dev/null -w '%{http_code}' --max-time 30 -H 'Transfer-Encoding: chunked' --data-binary @/workspace/chunk.bin http://example.com/ 2>/dev/null)
+case "$out" in 405|200|413) ok "chunked POST answered, not RST ($out)";; *) bad "chunked POST got '$out' (any REAL response beats a reset)";; esac
+
+step "cooperative HTTPS (CONNECT tunnel) works"
 out=$("$BIN" --config "$CFG" run "$ID" -- curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://example.com/ 2>/dev/null)
-case "$out" in 200|301|308) ok "coop https=$out";; *) bad "coop https got '$out'";; esac
+case "$out" in 200|301|308) ok "https coop ($out)";; *) bad "https coop got '$out'";; esac
 
 step "fail-closed: guest bypass dies with no leak"
 "$BIN" --config "$CFG" run "$ID" -- curl -s -o /dev/null --max-time 10 --noproxy '*' http://example.com/ 2>/dev/null

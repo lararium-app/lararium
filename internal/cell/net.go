@@ -527,18 +527,20 @@ func (s *Store) configureHostVeth(id string, subnet int) error {
 	}
 	target := vethHostName(id)
 
-	// Stale host-end from a crashed start (agy r2 F5): if the target
-	// name already exists the rename below fails with EEXIST. A host-
-	// side v-lar-* interface with no live cell claiming it is ours to
-	// delete (cell netns owns the peer; deleting the host end tears
-	// the pair down wholesale).
-	if _, _, err := s.runner.Run("ip", "link", "show", target); err == nil {
-		if _, stderr, derr := s.runner.Run("ip", "link", "delete", target); derr != nil {
-			return fmt.Errorf("clear stale %s: %s", target, strings.TrimSpace(string(stderr)))
-		}
-	}
-
 	if resolved != target {
+		// Stale host-end from a crashed start (agy r2 F5): if the
+		// target name already exists the rename below fails with
+		// EEXIST. A host-side v-lar-* interface with no live cell
+		// claiming it is ours to delete (cell netns owns the peer;
+		// deleting the host end tears the pair down wholesale).
+		// ONLY in this branch: when resolved == target the name is
+		// the live link itself — deleting it would tear down our own
+		// veth (agy r3 F3).
+		if _, _, err := s.runner.Run("ip", "link", "show", target); err == nil {
+			if _, stderr, derr := s.runner.Run("ip", "link", "delete", target); derr != nil {
+				return fmt.Errorf("clear stale %s: %s", target, strings.TrimSpace(string(stderr)))
+			}
+		}
 		if _, stderr, err := s.runner.Run("ip", "link", "set", resolved, "down"); err != nil {
 			return fmt.Errorf("link down %s: %s", resolved, strings.TrimSpace(string(stderr)))
 		}
@@ -719,8 +721,12 @@ func (s *Store) installIptablesInterop() error {
 	// the mesh daddr is host-local by construction).
 	type r struct{ args []string }
 	for _, rule := range []r{
+		// DNAT-accepted flows are only OURS when they arrive on a
+		// cell interface; unscoped, an operator port-forward's DNAT
+		// traffic on eth0 sailed through position 1 before UFW ever
+		// saw it (agy r3 F6).
 		{[]string{
-			"-A", iptablesInteropChain, "-m", "conntrack",
+			"-A", iptablesInteropChain, "-i", "v-lar-+", "-m", "conntrack",
 			"--ctstate", "DNAT", "-m", "comment", "--comment", iptablesInteropTag, "-j", "ACCEPT",
 		}},
 		{[]string{
@@ -776,7 +782,12 @@ func (s *Store) RemoveNetwork() error {
 			if len(fields) < 2 || !strings.HasPrefix(fields[1], "v-lar-") {
 				continue
 			}
+			// veth lines read "12: v-lar-ab12@if34:" — the @peer
+			// suffix must go or iproute2 rejects the name (agy r3 F5).
 			name := strings.TrimSuffix(fields[1], ":")
+			if at := strings.IndexByte(name, '@'); at >= 0 {
+				name = name[:at]
+			}
 			s.runner.Run("ip", "link", "del", name) //nolint:errcheck // best-effort
 		}
 	}
@@ -976,27 +987,29 @@ func (s *Store) proxyActive() bool { return s.ProxyGlobal }
 // sentinel: fillNetworkState stamps it on every post-T5 record (a zero
 // SubnetIndex is a legitimate index, so it cannot serve).
 func (s *Store) migrateLegacyNetwork(id string, rec *Cell) error {
-	var n int
-	if err := s.withCellLock(func() error {
-		var aErr error
-		n, aErr = s.allocateSubnetIndex()
-		return aErr
-	}); err != nil {
-		return fmt.Errorf("allocate subnet for legacy cell record: %w", err)
-	}
-	if err := s.writeGuestNetwork(id, n); err != nil {
-		return fmt.Errorf("write guest network config: %w", err)
-	}
-	if s.proxyActive() && rec.ProxyOn() {
-		if err := s.writeGuestProxyEnv(id, n, s.proxyPort()); err != nil {
-			return fmt.Errorf("write guest proxy env: %w", err)
+	// Allocation THROUGH save under one flock (agy r3 F4): releasing
+	// after allocateSubnetIndex leaves the claim invisible until Save
+	// lands, so a concurrent Create/migrate can take the same index.
+	// Same lock-through-commit invariant as Create.
+	return s.withCellLock(func() error {
+		n, err := s.allocateSubnetIndex()
+		if err != nil {
+			return fmt.Errorf("allocate subnet for legacy cell record: %w", err)
 		}
-	}
-	fillNetworkState(rec, n)
-	if err := s.Save(rec); err != nil {
-		return fmt.Errorf("record network state: %w", err)
-	}
-	return nil
+		if err := s.writeGuestNetwork(id, n); err != nil {
+			return fmt.Errorf("write guest network config: %w", err)
+		}
+		if s.proxyActive() && rec.ProxyOn() {
+			if err := s.writeGuestProxyEnv(id, n, s.proxyPort()); err != nil {
+				return fmt.Errorf("write guest proxy env: %w", err)
+			}
+		}
+		fillNetworkState(rec, n)
+		if err := s.Save(rec); err != nil {
+			return fmt.Errorf("record network state: %w", err)
+		}
+		return nil
+	})
 }
 
 // fillNetworkState stamps network fields after subnet allocation.

@@ -70,9 +70,13 @@ var ErrFloor = errors.New("refused by proxy floor")
 // multicast, and the cell mesh. Private internet ranges are policy
 // (custos, Phase 4), not the floor.
 func forbiddenDest(ip net.IP) bool {
+	// IsPrivate covers RFC 1918 v4 and RFC 4193 ULA v6: the AWS
+	// IPv6 IMDS endpoint (fd00:ec2::254) is ULA, not link-local, so
+	// the link-local check alone left instance-credential theft open
+	// (agy r3 F7). Cells reach the internet, not the host's backyard.
 	return ip.IsLoopback() || ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || cellMesh.Contains(ip)
+		ip.IsMulticast() || ip.IsPrivate() || cellMesh.Contains(ip)
 }
 
 // hostInterfaceAddrs returns every address currently assigned to a
@@ -192,7 +196,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 	br := bufio.NewReaderSize(conn, maxRequestLine)
 	_ = conn.SetReadDeadline(time.Now().Add(RequestPhaseTimeout))
-	line, err := readLineLimited(br, maxRequestLine)
+	line, err := readLineLimited(br)
 	if err != nil {
 		// EOF, oversized line, or timeout before a request line:
 		// RST is rude but correct per spec for the no-bypass path.
@@ -272,7 +276,8 @@ func parseRequestLine(line string) (method, target, version string, ok bool) {
 // unbounded — the size check after return was too late). ReadSlice
 // parks at the buffer boundary; we accumulate in explicit chunks and
 // refuse the moment the budget trips.
-func readLineLimited(br *bufio.Reader, maxLen int) (string, error) {
+func readLineLimited(br *bufio.Reader) (string, error) {
+	maxLen := maxRequestLine
 	var b strings.Builder
 	for {
 		chunk, err := br.ReadSlice('\n')
@@ -300,7 +305,7 @@ func readHeaders(br *bufio.Reader) ([]string, error) {
 	var headers []string
 	total := 0
 	for {
-		l, err := readLineLimited(br, maxRequestLine)
+		l, err := readLineLimited(br)
 		if err != nil {
 			return nil, err
 		}
@@ -336,7 +341,7 @@ func validHostPort(target string) bool {
 // (agy F2 — reading raw conn orphans them and the upstream hangs on
 // Content-Length forever).
 func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reader, u *url.URL, method string, headers []string) {
-	upstream, err := dialUpstream(ctx, withDefaultPort(u))
+	upstream, err := dialUpstreamFn(ctx, withDefaultPort(u))
 	if err != nil {
 		if errors.Is(err, ErrFloor) {
 			s.logEntry(conn.RemoteAddr(), method, u.Host, "refused-floor")
@@ -369,7 +374,13 @@ func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reade
 			return
 		}
 	}
-	if _, err := upstream.Write([]byte("\r\n")); err != nil {
+	// Connection: close upstream (agy r3 F2): HTTP/1.1 defaults to
+	// keep-alive — without it the upstream holds the socket after the
+	// response, relayOneWay blocks on Read until its 5-minute idle,
+	// and every request leaks a MaxConnsPerCell slot. One-shot upstream
+	// connections are the proxy's model anyway (one request, one
+	// relay, close both).
+	if _, err := upstream.Write([]byte("Connection: close\r\n\r\n")); err != nil {
 		return
 	}
 
@@ -381,6 +392,17 @@ func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reade
 	// (agy r2 F7, smuggling class).
 	s.logEntry(conn.RemoteAddr(), method, u.Host, "proxied")
 	if err := copyRequestBody(conn, br, upstream, headers); err != nil {
+		// The upstream may have ALREADY answered the request line
+		// and hung up (Cloudflare-style 405/413 for bodies it
+		// refuses to read): our body write fails with EPIPE but a
+		// complete response sits in the socket. Delivering it is
+		// what direct clients see (bench parity: direct curl got
+		// the 405; through the proxy it became a bare RST). With
+		// Connection: close upstream this terminates on EOF; the
+		// ctx bounds the pathological silent-upstream case.
+		earlyCtx, cancel := context.WithTimeout(ctx, RequestPhaseTimeout)
+		relayOneWay(earlyCtx, conn, upstream)
+		cancel()
 		return
 	}
 
@@ -424,11 +446,12 @@ func copyRequestBody(conn net.Conn, br *bufio.Reader, upstream io.Writer, header
 	case contentLen >= 0:
 		src = io.LimitReader(src, contentLen)
 	case chunked:
-		// Framed body of unknown length: bounded budget; the
-		// upstream's own chunk parser terminates the copy at
-		// the zero-size chunk well before this cap in
-		// practice.
-		src = io.LimitReader(src, maxRelayBody)
+		// Chunk framing must be PARSED, not streamed blind:
+		// io.Copy over the raw wire waits for 16 MiB or EOF,
+		// but a well-behaved client finishes at the zero-size
+		// chunk and waits for OUR response (agy r3 F1: blind
+		// copy = guaranteed deadlock on every chunked POST).
+		return copyChunked(conn, br, upstream)
 	default:
 		// No Content-Length, not chunked: no body on the wire.
 		return nil
@@ -442,7 +465,7 @@ func copyRequestBody(conn net.Conn, br *bufio.Reader, upstream io.Writer, header
 // client side of the relay is io.MultiReader(br, conn) so any
 // ClientHello bytes br had already buffered reach upstream (agy F1).
 func (s *Server) forwardCONNECT(ctx context.Context, conn net.Conn, br *bufio.Reader, target string) {
-	upstream, err := dialUpstream(ctx, target)
+	upstream, err := dialUpstreamFn(ctx, target)
 	if err != nil {
 		if errors.Is(err, ErrFloor) {
 			s.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "refused-floor")
@@ -486,6 +509,63 @@ func relay(ctx context.Context, hostSide net.Conn, client io.Reader, upstream ne
 	upstream.Close()
 }
 
+// copyChunked parses chunk framing from the guest (buffered tail
+// first) and re-frames it upstream, stopping at the zero-size chunk
+// plus trailers — exactly one request's body, bounded by
+// maxRelayBody. Pipelined bytes after the terminator stay unread.
+func copyChunked(conn net.Conn, br *bufio.Reader, upstream io.Writer) error {
+	r := bufio.NewReader(io.MultiReader(br, conn))
+	total := 0
+	for {
+		line, err := readLineLimited(r)
+		if err != nil {
+			return fmt.Errorf("chunk size: %w", err)
+		}
+		if i := strings.IndexByte(line, ';'); i >= 0 {
+			line = line[:i] // chunk extension
+		}
+		size, err := strconv.ParseInt(strings.TrimSpace(line), 16, 64)
+		if err != nil || size < 0 {
+			return fmt.Errorf("malformed chunk size %q", strings.TrimSpace(line))
+		}
+		if size == 0 {
+			// Trailers until the blank line, then terminate
+			// the stream upstream.
+			for {
+				t, terr := readLineLimited(r)
+				if terr != nil || t == "\r\n" || t == "\n" {
+					break
+				}
+			}
+			_, err := upstream.Write([]byte("0\r\n\r\n"))
+			return err
+		}
+		total += int(size)
+		if total > maxRelayBody {
+			return fmt.Errorf("chunked body exceeds %d bytes", maxRelayBody)
+		}
+		if _, err := fmt.Fprintf(upstream, "%x\r\n", size); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(upstream, r, size); err != nil {
+			return err
+		}
+		// Chunk data is terminated by CRLF (RFC 9112 §7.1): consume
+		// it (a missing terminator is a framing error, not a
+		// suggestion) and re-emit it for the upstream.
+		term, terr := readLineLimited(r)
+		if terr != nil {
+			return fmt.Errorf("chunk terminator: %w", terr)
+		}
+		if term != "\r\n" && term != "\n" {
+			return fmt.Errorf("malformed chunk terminator %q", term)
+		}
+		if _, err := upstream.Write([]byte("\r\n")); err != nil {
+			return err
+		}
+	}
+}
+
 // relayOneWay streams the upstream's response back to the client
 // only. forwardHTTP uses this (agy r2 F7): the request body was
 // already copied exactly, so keeping the client->upstream direction
@@ -521,6 +601,13 @@ func withDefaultPort(u *url.URL) string {
 	}
 	return net.JoinHostPort(u.Hostname(), "80")
 }
+
+// dialUpstreamFn is the dial seam: forwardCONNECT/forwardHTTP dial
+// through it, unit tests swap in a permissive dialer to exercise
+// request/reply paths without opening real sockets to the internet.
+// The production function (dialUpstream) is the ONLY implementation
+// outside tests.
+var dialUpstreamFn = dialUpstream
 
 // dialUpstream applies the destination floor (E3) and connects.
 //
