@@ -77,7 +77,7 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 		rt.SetProfile("compact", router.Profile{Chain: def})
 	}
 
-	// Persona tree → system prompt.
+	// Persona tree -> system prompt.
 	sys, warnings, err := loop.SystemPrompt(cfg.Hearth.Home)
 	if err != nil {
 		return nil, err
@@ -148,21 +148,25 @@ func repl(rt *runtime) {
 			return
 		}
 		line := strings.TrimSpace(sc.Text())
-		switch {
-		case line == "":
+		switch line {
+		case "":
 			continue
-		case line == "/exit" || line == "/quit":
+		case "/exit", "/quit":
 			return
-		case line == "/compact":
+		case "/compact":
 			if err := rt.sess.Compact(context.Background()); err != nil {
 				fmt.Fprintln(os.Stderr, "compact:", err)
 			} else {
 				fmt.Println("(compacted)")
 			}
 			continue
-		case line == "/dump":
+		case "/dump":
 			for _, ev := range rt.sess.Log.Live() {
-				b, _ := json.Marshal(ev)
+				b, err := json.Marshal(ev)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "dump: %v\n", err)
+					continue
+				}
 				fmt.Println(string(b))
 			}
 			continue

@@ -114,7 +114,7 @@ func (r *Router) executeChain(ctx context.Context, chain []Target, msgs []Messag
 		}
 
 		// Retry loop for this target (max 3 attempts).
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := range 3 {
 			if attempt > 0 {
 				// Check if caller cancelled before retrying.
 				select {
@@ -257,7 +257,7 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/chat/completions", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

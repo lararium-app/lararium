@@ -75,17 +75,18 @@ func (s *Store) BuildTemplate() error {
 		return fmt.Errorf("create keeper user: %w", err)
 	}
 	// Best effort: grant sudo membership when the sudo package landed.
+	//nolint:errcheck // absent sudo package is a valid template
 	s.runner.Run("chroot", dst, "usermod", "-aG", "sudo", "keeper")
 	// Spec §2 intent — "lets the agent install a package" — requires
 	// non-interactive sudo: keeper has no password and cell run is
 	// non-TTY, so plain sudo group membership fails at the prompt
 	// (agy round-2 F10). NOPASSWD drop-in is in-guest only; §1's
 	// userns keeps it harmless.
-	if err := os.MkdirAll(filepath.Join(dst, "etc", "sudoers.d"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dst, "etc", "sudoers.d"), 0o755); err != nil {
 		return fmt.Errorf("mkdir sudoers.d: %w", err)
 	}
 	sudoers := filepath.Join(dst, "etc", "sudoers.d", "keeper")
-	if err := os.WriteFile(sudoers, []byte("keeper ALL=(ALL) NOPASSWD:ALL\n"), 0440); err != nil {
+	if err := os.WriteFile(sudoers, []byte("keeper ALL=(ALL) NOPASSWD:ALL\n"), 0o440); err != nil {
 		return fmt.Errorf("write sudoers drop-in: %w", err)
 	}
 	if _, _, err := s.runner.Run("chroot", dst, "grep", "-q", "^keeper:", "/etc/passwd"); err != nil {
@@ -94,13 +95,13 @@ func (s *Store) BuildTemplate() error {
 
 	// Create /workspace directory in template.
 	ws := filepath.Join(dst, "workspace")
-	if err := os.MkdirAll(ws, 0755); err != nil {
+	if err := os.MkdirAll(ws, 0o755); err != nil {
 		return fmt.Errorf("mkdir workspace: %w", err)
 	}
 
 	// Enable in-guest units: networkd (interface config, spec §4) and
 	// dbus (machine bus — `cell run` reaches the guest through it).
-	if err := os.MkdirAll(filepath.Join(dst, "etc", "systemd", "system", "multi-user.target.wants"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dst, "etc", "systemd", "system", "multi-user.target.wants"), 0o755); err != nil {
 		return fmt.Errorf("mkdir wants: %w", err)
 	}
 	for _, unit := range []string{"systemd-networkd.service", "dbus.service"} {
@@ -128,7 +129,7 @@ func (s *Store) BuildTemplate() error {
 
 	// Mask NetworkManager if present.
 	nmWants := filepath.Join(dst, "etc", "systemd", "system", "NetworkManager.service")
-	if err := os.MkdirAll(filepath.Dir(nmWants), 0755); err == nil {
+	if err := os.MkdirAll(filepath.Dir(nmWants), 0o755); err == nil {
 		os.Remove(nmWants)
 		if err := os.Symlink("/dev/null", nmWants); err != nil {
 			return fmt.Errorf("mask NetworkManager: %w", err)
@@ -165,7 +166,7 @@ func (s *Store) BuildTemplate() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dst, "template.json"), append(data, '\n'), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dst, "template.json"), append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write template manifest: %w", err)
 	}
 
@@ -180,20 +181,29 @@ func (s *Store) BuildTemplate() error {
 		if ierr != nil {
 			return ierr
 		}
-		// Strip WRITE bits only — execute bits must survive or the
+		// Strip WRITE bits only -- execute bits must survive or the
 		// guest cannot run /sbin/init and every binary.
-		os.Chmod(p, info.Mode().Perm()&^0o222)
+		//nolint:gosec // G122: tree is host-owned, baked by us; no hostile writer mid-bake
+		if err := os.Chmod(p, info.Mode().Perm()&^0o222); err != nil {
+			return err
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("seal template: %w", err)
 	}
 	// Directories: readable+traversable, not writable (0555).
-	filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && d.IsDir() {
-			os.Chmod(p, 0o555)
+	if err := filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			//nolint:gosec // G122: host-owned baked tree; see file-chmod above
+			return os.Chmod(p, 0o555)
 		}
 		return nil
-	})
+	}); err != nil {
+		return fmt.Errorf("seal template dirs: %w", err)
+	}
 
 	return nil
 }

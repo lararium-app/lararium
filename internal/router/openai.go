@@ -37,10 +37,12 @@ func NewOpenAIWith(baseURL, apiKey, defaultModel string, disableThink bool) Prov
 	}
 }
 
+// Name returns the provider id.
 func (o *openAI) Name() string {
 	return "openai"
 }
 
+// Capabilities probes the backend (GET /models) and reports what it supports.
 func (o *openAI) Capabilities(ctx context.Context) (Caps, error) {
 	return ProbeOpenAI(ctx, o.baseURL, o.apiKey, o.defaultModel)
 }
@@ -135,6 +137,7 @@ func (e *inBandError) Error() string {
 	}
 }
 
+// Complete issues one non-streaming chat completion.
 func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*Completion, error) {
 	model := opts.Model
 	if model == "" {
@@ -186,7 +189,7 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/chat/completions", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

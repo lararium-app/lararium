@@ -26,10 +26,11 @@ func (s *toolStub) Capabilities(context.Context) (router.Caps, error) {
 	c := router.Caps{SupportsTools: true, ContextLength: 100000, Source: "stub"}
 	return c, nil
 }
+
 func (s *toolStub) Complete(_ context.Context, msgs []router.Message, opts router.Options) (*router.Completion, error) {
 	s.gotMsgs = append(s.gotMsgs, msgs)
 	i := atomic.AddInt32(&s.n, 1)
-	// Any tool results in the request → answer with text.
+	// Any tool results in the request -> answer with text.
 	for _, m := range msgs {
 		if m.Role == router.RoleTool {
 			s.sawTool = true
@@ -131,7 +132,9 @@ func TestDeniedToolNotExecuted(t *testing.T) {
 	}
 	for _, ev := range log.Live() {
 		if ev.T == "tool_call" {
-			var f struct{ Approval string }
+			var f struct {
+				Approval string `json:"approval"`
+			}
 			b, _ := ev.MarshalJSON()
 			_ = json.Unmarshal(b, &f)
 			if !strings.HasPrefix(f.Approval, "denied:") {

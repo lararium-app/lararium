@@ -1,3 +1,5 @@
+// Command cell is the Lararium cell lifecycle CLI: create, start, stop,
+// run, snapshot, restore, destroy, and doctor.
 package main
 
 import (
@@ -7,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,17 +17,20 @@ import (
 )
 
 // runSystem runs a host command, returning combined output + error.
+// Args reach execve directly (no shell), so caller-supplied values cannot
+// inject commands -- this is the CLI's designed control surface.
 func runSystem(name string, args ...string) (string, error) {
+	//nolint:gosec,noctx // G204/G702: argv slice, no shell; ctx cancels wait only
 	out, err := exec.Command(name, args...).CombinedOutput()
 	return string(out), err
 }
 
 // shellJoin prepares argv for the in-cell /bin/sh -c (agy review
 // F8). Two documented forms:
-//   - single part  → passed through verbatim: a deliberate shell
+//   - single part  -> passed through verbatim: a deliberate shell
 //     string ("echo hi; id", pipes, redirects keep working —
 //     live-verified usage).
-//   - multiple parts → each part single-quoted so word boundaries
+//   - multiple parts -> each part single-quoted so word boundaries
 //     survive ('ls "my dir"' stays two words).
 func shellJoinQuoted(parts []string) string {
 	if len(parts) == 1 {
@@ -225,9 +231,11 @@ func runCmd(store *cell.Store, args []string) {
 				os.Exit(1)
 			}
 			// Parse timeout.
-			timeoutStr := args[1]
-			var timeout int
-			fmt.Sscanf(timeoutStr, "%d", &timeout)
+			timeout, err := strconv.Atoi(args[1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: --timeout wants an integer, got %q\n", args[1])
+				os.Exit(2)
+			}
 			opts.Timeout = timeout
 			args = args[2:]
 		case "--env":
@@ -391,10 +399,12 @@ func restoreCmd(store *cell.Store, args []string) {
 		os.Exit(1)
 	}
 
+	// ts was strictly validated against 20060102T150405Z above; CellDir is
+	// root+validated-id. No traversal input remains.
 	snapUpper := fmt.Sprintf("%s/snapshots/%s/upper", store.CellDir(id), ts)
 	currentUpper := store.UpperDir(id)
 
-	if _, err := os.Stat(snapUpper); os.IsNotExist(err) {
+	if _, err := os.Stat(snapUpper); os.IsNotExist(err) { //nolint:gosec // G703: validated id+ts
 		fmt.Fprintf(os.Stderr, "error: snapshot %s not found\n", ts)
 		os.Exit(1)
 	}
@@ -416,39 +426,43 @@ func restoreCmd(store *cell.Store, args []string) {
 	// crash mid-delete never leaves upper/ half-removed.
 	staging := currentUpper + ".restoring"
 	oldUpper := currentUpper + ".old"
-	os.RemoveAll(staging)
-	if err := os.RemoveAll(oldUpper); err != nil {
+	os.RemoveAll(staging)                          //nolint:gosec // G703: validated id+ts derived path
+	if err := os.RemoveAll(oldUpper); err != nil { //nolint:gosec // G703: validated id derived path
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	//nolint:gosec // G703: snapUpper built from validated id+ts (see above)
 	if _, err := runSystem("cp", "-a", snapUpper, staging); err != nil {
 		os.RemoveAll(staging)
 		fmt.Fprintf(os.Stderr, "error: copy snapshot: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.Rename(currentUpper, oldUpper); err != nil {
+	if err := os.Rename(currentUpper, oldUpper); err != nil { //nolint:gosec // G703: validated id derived
+		os.RemoveAll(staging) //nolint:gosec // G703: validated id+ts derived
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Rename(staging, currentUpper); err != nil { //nolint:gosec // G703: validated id+ts derived
+		// Roll back the swap (best-effort; the primary error is reported).
+		//nolint:gosec // rollback rename; validated id paths
+		os.Rename(oldUpper, currentUpper) //nolint:errcheck // primary error wins
+		//nolint:gosec // rollback cleanup; validated id paths
 		os.RemoveAll(staging)
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.Rename(staging, currentUpper); err != nil {
-		// Roll back the swap.
-		os.Rename(oldUpper, currentUpper)
-		os.RemoveAll(staging)
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+	//nolint:gosec // best-effort cleanup; validated id path
 	os.RemoveAll(oldUpper)
 
 	// work/ holds index whiteouts tied to the REPLACED upper —
 	// remounting it against the restored tree risks overlayfs index
 	// inconsistency (same reasoning as snapshot's work/ reset; agy
 	// round-2 F7).
-	if err := os.RemoveAll(store.WorkDir(id)); err != nil {
+	if err := os.RemoveAll(store.WorkDir(id)); err != nil { //nolint:gosec // G703: validated id path
 		fmt.Fprintf(os.Stderr, "error: clean work dir: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.MkdirAll(store.WorkDir(id), 0755); err != nil {
+	if err := os.MkdirAll(store.WorkDir(id), 0o755); err != nil { //nolint:gosec // G703: validated id path
 		fmt.Fprintf(os.Stderr, "error: mkdir work dir: %v\n", err)
 		os.Exit(1)
 	}
