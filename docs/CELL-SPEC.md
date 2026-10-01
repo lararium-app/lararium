@@ -169,11 +169,18 @@ in filter hooks):
      never DNAT'd, so without this explicit accept the intended door itself
      would be dropped;
      `iifname "v-lar-*" ct state established,related accept`;
+     `iifname "v-lar-*" tcp reject with tcp reset`; remaining
      `iifname "v-lar-*" drop`. The gateway address answers on the proxy
      door and nothing else (C6). Rest of input policy untouched. (`v-lar-*` =
      the host-veth naming namespace for cells: `cell start` renames the
-     resolved host end to exactly `v-lar-<id>` — the glob above matches it —
-     before addressing; cell.json records the name.)
+     resolved host end to exactly `v-lar-<hash8>` — first 8 hex of
+     sha256(cell id) — before addressing; cell.json records the name.
+     Erratum 2026-09-30, PO-approved: literal `v-lar-<id>` breaks on ids
+     over 9 chars (IFNAMSIZ=15); the glob is unchanged. TCP from cells gets
+     `reject with tcp reset`, not silent `drop`, so C6 observes a refusal
+     (ECONNREFUSED) instead of a timeout; non-TCP stays drop. `forward`
+     chain stays a pure drop — a forward-path reset would leak host
+     topology.)
    - `forward` chain: `iifname "v-lar-*" drop` — unconditional catch-all for
      everything the nat table didn't divert (ICMP, DNS, odd ports); since no
      non-DNAT path is ever forwarded, nothing needs masquerading.
