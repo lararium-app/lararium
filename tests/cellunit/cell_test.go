@@ -317,12 +317,17 @@ func TestStartArgv(t *testing.T) {
 			"--keep-unit",
 			"--private-users=pick",
 			"--private-users-ownership=auto",
-			"--private-network",
+			"--network-veth",
 		}
 		for _, flag := range requiredNspawnFlags {
 			if !containsAll(call.Args, []string{flag}) {
 				t.Errorf("nspawn missing flag %q in args: %v", flag, call.Args)
 			}
+		}
+		// T5: --private-network must be GONE (the veth is the cage's
+		// anchor; --private-network would leave it unattached).
+		if containsAll(call.Args, []string{"--private-network"}) {
+			t.Errorf("nspawn still passes --private-network (T4 leftover): %v", call.Args)
 		}
 
 		// Check -D points to merged dir.
@@ -736,12 +741,15 @@ func TestNspawnArgs(t *testing.T) {
 			"--keep-unit",
 			"--private-users=pick",
 			"--private-users-ownership=auto",
-			"--private-network",
+			"--network-veth",
 		}
 		for _, flag := range required {
 			if !containsAll(call.Args, []string{flag}) {
 				t.Errorf("nspawn missing flag %q in args: %v", flag, call.Args)
 			}
+		}
+		if containsAll(call.Args, []string{"--private-network"}) {
+			t.Errorf("nspawn still passes --private-network (T4 leftover): %v", call.Args)
 		}
 
 		// Check bind mounts (bin is via --bind-ro; option tokens like
