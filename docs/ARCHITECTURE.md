@@ -24,9 +24,9 @@ Prototyping tools stay outside the product — never a runtime dependency.
 ## 1. Principles
 
 1. **Model-agnostic by construction.** Every call goes through a router speaking OpenAI-completions/Chat-Completions + Anthropic Messages + OpenRouter. Local llama.cpp/Ollama/vLLM are first-class providers, not a fallback-of-last-resort mode. No feature may depend on a vendor-specific capability without a documented degradation path.
-2. **The file layer is the product's memory; the model window is scratch.** Durable state is human-readable markdown + JSONL, per-user, exportable in one `tar`. (This is exactly how Muse actually works; the trained-compaction is the model's problem, the file layer is ours.)
+2. **The file layer is the product's memory; the model window is scratch.** Durable state is human-readable markdown + JSONL, per-user, exportable in one `tar`. Trained-compaction is the model's problem; the file layer is ours.
 3. **Single node, boring infra.** SQLite + filesystem + containers. Postgres only if someone ships a multi-tenant host. The whole stack must `docker compose up` on a $20/mo box or a home NUC.
-4. **Trust no transcript.** Assume prompt injection succeeds at the prompt level; enforcement happens below the model: kernel-level egress control, scoped credentials, human approval gates. (Muse's own security post is the design brief.)
+4. **Trust no transcript.** Assume prompt injection succeeds at the prompt level; enforcement happens below the model: kernel-level egress control, scoped credentials, human approval gates.
 5. **Never break users.** SemVer + pinned releases + migration test suites + frozen file formats. The discipline we demanded from upstream is the discipline we ship.
 
 ---
@@ -49,19 +49,19 @@ Prototyping tools stay outside the product — never a runtime dependency.
 - Tool dispatch: MCP-native. Tools run **inside the cell**, never in the daemon's process space.
 
 ### 2.2 The cell (sandbox)
-- systemd-nspawn (Muse uses the same primitive; it is proven at scale for exactly this) or gVisor/firecracker for hostile-tenant hosting providers.
+- systemd-nspawn (proven at scale for exactly this shape of workload) or gVisor/firecracker for hostile-tenant hosting providers.
 - Image ships: bash, python, git, chromium via CDP, a browser-automation helper, the user home tree: `agent/` (soul/identity/memory — the **penatus** layer), `workspace/`, `sessions/`.
 - Root-in-cell ≠ root-on-host. Filtered syscalls, no io_uring, its own veth — only route to anywhere is custos.
 
 ### 2.3 penatus — memory & context (answers "what happens when main chat grows forever")
-Three tiers, mirroring (not copying) Muse's proven design:
+Three tiers:
 1. **Hot**: working window, auto-compacted by harness policy (token-budget trigger, structured summary that preserves tasks/decidents/entity refs; compaction is an event in the session log, restorable, auditable).
 2. **Warm**: `MEMORY.md` + `memory/` tree (people/, projects/, daily notes). The agent is instructed to persist anything that must survive compaction *before* compaction. Search = BM25 + sqlite-vec hybrid, no external vector DB.
 3. **Cold**: full session transcripts + workspace files on disk. The agent greps/opens them via tools.
 - Persona files are **user-editable, versioned, documented formats** (our answer to SOUL.md/IDENTITY.md — but spec'd openly so other clients can implement them).
-- Importers: ChatGPT/Muse/Other exports → penatus format (Muse itself ships this feature; parity table-stakes).
+- Importers: ChatGPT / Claude / generic JSON exports → penatus format (import parity is table-stakes).
 
-### 2.4 custos — the security envelope (the moat, cloned from first principles)
+### 2.4 custos — the security envelope (the moat)
 Three separations, each kernel-enforced:
 1. **Vault**: credentials encrypted at rest (age/age-compatible; user KMS optional). The agent process *never* holds real secrets.
 2. **Surrogation**: agent receives surrogate tokens; custos swaps real credentials at the network boundary, per-request, after policy passes. Prompt injection cannot exfiltrate what the agent never has.
@@ -70,12 +70,12 @@ Three separations, each kernel-enforced:
 - Egress: forward proxy is the *only* network path from cells (DNS + L4 + L7 checks, SSRF guard: re-resolve and pin).
 
 ### 2.5 fasti — proactivity
-- Cron (5-field + intervals, same ergonomics as Muse Code's /loop), goals (multi-turn, checkpointed, requirement-checked before "done"), heartbeat (periodic wake with HEARTBEAT.md checklist → morning briefings, price-watch, inbox triage). Quiet-hours + noise-budget policy so it doesn't become a notification spammer.
+- Cron (5-field + intervals), goals (multi-turn, checkpointed, requirement-checked before "done"), heartbeat (periodic wake with HEARTBEAT.md checklist → morning briefings, price-watch, inbox triage). Quiet-hours + noise-budget policy so it doesn't become a notification spammer.
 
 ### 2.6 Connectors
 - **MCP is the connector standard.** Built-ins ship as typed workers executed by custos (outside the cell, with explicit per-worker credential allowlists).
 - v1 built-ins: Gmail/Calendar/Drive, IMAP/SMTP, contacts, local files, web/browser, local shell, Lararium API. Everything else by API key.
-- **Custom connector builder**: user pastes an OpenAPI spec URL or MCP server URL → agent writes the connector, sandboxed test call, credential into vault. (Muse's most-loved feature; fully ours to build since MCP+OpenAPI are public standards.)
+- **Custom connector builder**: user pastes an OpenAPI spec URL or MCP server URL → agent writes the connector, sandboxed test call, credential into vault. Fully ours to build since MCP+OpenAPI are public standards.
 - Directory/community connectors: signed manifest repo, install = verify signature + policy default-deny.
 - OAuth honesty: Google/MS365 app verification is a real tax (weeks, review) — budget it once, ship a BYO-client path immediately for developers.
 
@@ -118,11 +118,11 @@ Virtual cards = regulated money movement (issuer + BIN partner + KYC). Phase 5; 
 - **P5 — Proactivity + import + polish (ongoing):** goals/fasti depth, heartbeats, importers, public directory, `1.0`.
 - Wallet: post-1.0, partnerships-first.
 
-**Cut line (v1):** image generation and voice calls are out. Text + browser + connectors + memory + proactivity is the Muse core; everything else rides the MCP train post-launch.
+**Cut line (v1):** image generation and voice calls are out. Text + browser + connectors + memory + proactivity is the core; everything else rides the MCP train post-launch.
 
 ## 7. Risks (named, not hidden)
 
-1. **Scope gravity** — Muse has a funded org; we have discipline. The cut line above is a load-bearing document.
+1. **Scope gravity** — the funded competitors in this space have orgs; we have discipline. The cut line above is a load-bearing document.
 2. **OAuth review timelines** — start Google verification paperwork in P1, not P3.
 3. **Solo-bus factor** — AGPL + radical docs + dogfooding are the mitigation; it's also why every subsystem gets its spec in `/docs` before code lands.
 4. **Model drift** — some models behave worse under our harness; the router's eval suite (golden agentic tasks per model) runs in CI against every provider bump.

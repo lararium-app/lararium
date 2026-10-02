@@ -172,7 +172,7 @@ Core event types (v1):
 device: string|null}` — answers "where did this instruction come from" for the audit
 story and for trust scoring later.
 
-**Deletion semantics (Muse parity):** deleting a message appends a `tombstone`
+**Deletion semantics:** deleting a message appends a `tombstone`
 event naming the target `seq`s. Renderers and the prompt assembler skip
 tombstoned messages. Physical removal happens only in `archive/` during retention
 sweep, which is itself an event. Rewriting `events.jsonl` in place is never valid.
@@ -256,8 +256,8 @@ Not frozen here — only the constraints the file layer imposes on it:
 
 ## 6. Decisions (RESOLVED at G1, 2026-09-28)
 
-1. **File split: five persona files** (SOUL/IDENTITY/USER/MEMORY/HEARTBEAT). Muse
-   parity; SOUL (values/boundaries) stays separate from IDENTITY (name/self-facts)
+1. **File split: five persona files** (SOUL/IDENTITY/USER/MEMORY/HEARTBEAT).
+   SOUL (values/boundaries) stays separate from IDENTITY (name/self-facts)
    because boundaries are policy-referenced and identity is cosmetic.
 2. **MEMORY.md line format: inline tags** (`- [p:high] …`) with a lenient parser.
    Nano-friendliness wins; ambiguous lines degrade to `p:med` + verbatim text, never
