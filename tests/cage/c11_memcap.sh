@@ -23,12 +23,15 @@ check_c11() {
   # python MemoryError (cgroup v2 sends signal first; either counts
   # ONLY when it happened BEFORE allocating everything, i.e. under
   # the cap — the allocation loop prints ALLOADED if it truly fits).
+  # os.urandom fill: zero pages compress away in zram-backed swap
+  # (ConsolePC let 768MB of zeros pass; random fill is charged
+  # honestly — live-probed 2026-10-01).
   rc=$(cellrun -- python3 -c "
-import time
+import os, time
 buf = []
 try:
     for _ in range(8):
-        buf.append(bytearray($chunk * 1024 * 1024))
+        buf.append(bytearray(os.urandom($chunk * 1024 * 1024)))
         time.sleep(0.5)
     print('ALLOADED', flush=True)
     time.sleep(2)   # let the counter settle; survivor check below
