@@ -286,6 +286,14 @@ runaway process would take the whole cell with it. `cell start` sets
 `OOMPolicy=continue`: the offender dies (payload exit 137), the cell
 survives (live-probed: hog killed, `cell run` works right after).
 
+Erratum E7 (2026-10-01, live-probed by C9 on systemd 262): nspawn's
+private export tmpfs MOVED — ≤257 mounts
+`/run/systemd/nspawn/unix-export/<id>`, 262 mounts
+`/run/systemd/nspawn/<id>/unix-export`. Pruning only the old path
+leaves the orphan after SIGKILL and every later boot refuses ("Mount
+point ... exists already") — crash recovery dead on newer systemd.
+Start's stale-export prune checks BOTH layouts.
+
 ## 6. Lifecycle — boot vs exec (two operations, two commands)
 
 - **`cell start <id>` boots the container.** `systemd-nspawn --machine=<id>

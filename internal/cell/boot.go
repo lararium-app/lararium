@@ -541,7 +541,14 @@ func (s *Store) nspawnArgs(id string) []string {
 // refusing." (all live-probed). Must be called only when the unit is
 // known inactive (the caller's double-start guard ensures that).
 func (s *Store) pruneStaleMachined(id string) error {
-	exportDir := "/run/systemd/nspawn/unix-export/" + id
+	// systemd moved the private export tmpfs: <=257 mounted it at
+	// unix-export/<id>, 262 at <id>/unix-export (live-probed on both
+	// benches — missing the new path shipped C9 restarts broken:
+	// nspawn refuses "Mount point ... exists already").
+	exportDirs := []string{
+		"/run/systemd/nspawn/unix-export/" + id,
+		"/run/systemd/nspawn/" + id + "/unix-export",
+	}
 
 	_, _, showErr := s.runner.Run("machinectl", "show", id)
 	if showErr == nil {
@@ -577,22 +584,24 @@ func (s *Store) pruneStaleMachined(id string) error {
 	// unmount the orphan ourselves. Safe here: the unit is inactive,
 	// the registration is gone, and any live supervisor holding the
 	// dir was just killed; the mount is an empty private tmpfs.
-	deadline = time.Now().Add(5 * time.Second)
-	for isMountpoint(exportDir) {
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if isMountpoint(exportDir) {
-		//nolint:errcheck // verified by re-check below
-		s.runner.Run("umount", "-l", exportDir)
-		deadline = time.Now().Add(10 * time.Second)
+	for _, exportDir := range exportDirs {
+		deadline = time.Now().Add(5 * time.Second)
 		for isMountpoint(exportDir) {
 			if time.Now().After(deadline) {
-				return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+				break
 			}
 			time.Sleep(250 * time.Millisecond)
+		}
+		if isMountpoint(exportDir) {
+			//nolint:errcheck // verified by re-check below
+			s.runner.Run("umount", "-l", exportDir)
+			deadline = time.Now().Add(10 * time.Second)
+			for isMountpoint(exportDir) {
+				if time.Now().After(deadline) {
+					return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+				}
+				time.Sleep(250 * time.Millisecond)
+			}
 		}
 	}
 	return nil
