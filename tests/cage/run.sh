@@ -57,7 +57,9 @@ run_check() { # run_check <name> <fn>
   printf -- '-- %s\n' "$1"
   CAGE_MARK=$CAGE_FAIL
   "$2"
+  # bad() increments CAGE_FAIL; equality means nothing fired inside.
   [ "$CAGE_MARK" -eq "$CAGE_FAIL" ] && ok "$1 passed"
+  return 0
 }
 
 run_c1() {

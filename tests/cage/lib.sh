@@ -2,9 +2,11 @@
 # shellcheck shell=bash
 
 ok() { printf 'ok: %s\n' "$*"; }
-# CAGE_FAIL is set by run.sh and read across the whole suite.
+# CAGE_FAIL counts failures (set by run.sh). Increment, never set to
+# a constant: run_check compares before/after, and a boolean would
+# make every group after the first failure report "passed".
 # shellcheck disable=SC2034
-bad() { printf 'FAIL: %s\n' "$*"; CAGE_FAIL=1; }
+bad() { printf 'FAIL: %s\n' "$*"; CAGE_FAIL=$((CAGE_FAIL + 1)); }
 
 # cellrun -- cmd... runs cmd inside $ID as root via `cell run`.
 cellrun() {
