@@ -274,6 +274,8 @@ func TestStartArgv(t *testing.T) {
 		requiredRunFlags := []string{
 			"--unit=lararium-cell-test123",
 			"--property=MemoryMax=8192M",
+			"--property=MemorySwapMax=0",    // E6: hard cap, no swap lending
+			"--property=OOMPolicy=continue", // E6b: kill hog, spare cell
 			"--property=CPUQuota=200%",
 			"--property=TasksMax=512",
 			"--property=Restart=no",
