@@ -164,6 +164,16 @@ func (s *Store) Start(id string) error {
 	runnerArgs := []string{
 		"--unit=" + unit,
 		fmt.Sprintf("--property=MemoryMax=%dM", lim.MemoryMB),
+		// E6: cgroup v2 defaults memory.swap.max=max — without
+		// this the cap is soft (cells grow into host swap).
+		"--property=MemorySwapMax=0",
+		// E6b: systemd's default OOMPolicy=stop tears down the
+		// WHOLE unit when the kernel OOM kills any task in the
+		// cgroup — one runaway task would destroy the cell.
+		// continue = kill the offender (payload sees 137), cell
+		// survives (live-probed 2026-10-01: stop-sigterm on the
+		// first 768M alloc attempt without this).
+		"--property=OOMPolicy=continue",
 		fmt.Sprintf("--property=CPUQuota=%s%%", lim.CPUQuota),
 		fmt.Sprintf("--property=TasksMax=%d", lim.TasksMax),
 		"--property=Restart=no",
@@ -531,7 +541,14 @@ func (s *Store) nspawnArgs(id string) []string {
 // refusing." (all live-probed). Must be called only when the unit is
 // known inactive (the caller's double-start guard ensures that).
 func (s *Store) pruneStaleMachined(id string) error {
-	exportDir := "/run/systemd/nspawn/unix-export/" + id
+	// systemd moved the private export tmpfs: <=257 mounted it at
+	// unix-export/<id>, 262 at <id>/unix-export (live-probed on both
+	// benches — missing the new path shipped C9 restarts broken:
+	// nspawn refuses "Mount point ... exists already").
+	exportDirs := []string{
+		"/run/systemd/nspawn/unix-export/" + id,
+		"/run/systemd/nspawn/" + id + "/unix-export",
+	}
 
 	_, _, showErr := s.runner.Run("machinectl", "show", id)
 	if showErr == nil {
@@ -567,22 +584,24 @@ func (s *Store) pruneStaleMachined(id string) error {
 	// unmount the orphan ourselves. Safe here: the unit is inactive,
 	// the registration is gone, and any live supervisor holding the
 	// dir was just killed; the mount is an empty private tmpfs.
-	deadline = time.Now().Add(5 * time.Second)
-	for isMountpoint(exportDir) {
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if isMountpoint(exportDir) {
-		//nolint:errcheck // verified by re-check below
-		s.runner.Run("umount", "-l", exportDir)
-		deadline = time.Now().Add(10 * time.Second)
+	for _, exportDir := range exportDirs {
+		deadline = time.Now().Add(5 * time.Second)
 		for isMountpoint(exportDir) {
 			if time.Now().After(deadline) {
-				return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+				break
 			}
 			time.Sleep(250 * time.Millisecond)
+		}
+		if isMountpoint(exportDir) {
+			//nolint:errcheck // verified by re-check below
+			s.runner.Run("umount", "-l", exportDir)
+			deadline = time.Now().Add(10 * time.Second)
+			for isMountpoint(exportDir) {
+				if time.Now().After(deadline) {
+					return fmt.Errorf("stale unix-export mount at %s will not go away; unmount it manually", exportDir)
+				}
+				time.Sleep(250 * time.Millisecond)
+			}
 		}
 	}
 	return nil

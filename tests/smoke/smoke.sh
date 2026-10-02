@@ -50,6 +50,11 @@ step "create/start/status/stop/destroy lifecycle"
 state=$("$BIN" --config "$CFG" status "$ID" 2>/dev/null | grep -oE "running|starting|stopped" | head -1)
 [ "$state" = "running" ] || bad "status shows '$state', want running"
 ip -o link | grep -q "v-lar-" || bad "no v-lar-* host veth after start"
+# Gateway depends on the ALLOCATED subnet index, not a constant.
+gw_idx=$(sed -n 's/.*"subnet_index":[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+  "$ROOT/cells/$ID/cell.json" 2>/dev/null)
+[ -n "$gw_idx" ] || bad "no subnet_index recorded in cell.json"
+GW="10.91.${gw_idx:-0}.1"
 
 step "cooperative egress (proxied) works"
 out=$("$BIN" --config "$CFG" run "$ID" -- curl -s -o /dev/null -w '%{http_code}' --max-time 20 http://example.com/ 2>/dev/null)
