@@ -1,0 +1,109 @@
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # stacked upstream/legacy linters: covered by active equivalents
+    - dupl # duplication gate runs separately (allowlist below) until drift audit lands
+    - exhaustruct # hostile to stdlib-heavy code
+    - gochecknoglobals # CLI binaries need them
+    - gochecknoinits
+    - nonamedreturns # named returns read well in this codebase
+    - varnamelen # size noise; review enforces domain vocabulary
+    - ireturn # "accept interfaces, return structs" is not our economy
+    - depguard # dependency policy lives in CONTRIBUTING, enforced in review
+    - err113 # dynamic fmt.Errorf-wrapped errors everywhere is the Go norm
+    - goconst # thresholds make more noise than signal at our size
+    - tagliatelle # struct tags mirror external formats (json/yaml keys)
+    - wrapcheck # every error path wrap-debate stalls diffs; errorlint covers %w
+    # style-churn: gofumpt is the formatting floor; these add taste-noise
+    - wsl
+    - wsl_v5
+    - nlreturn
+    - lll
+    - tagalign
+    - funcorder
+    - noinlineerr
+    - mnd # magic-number thresholds (timeouts, sizes) are legible inline
+    - modernize # churn-linter; adoption via targeted cleanups, not gates
+    - paralleltest # enable with the test-suite parallelization sweep
+    - exhaustruct_v5
+    - cyclop
+    - gocognit
+    - nestif
+    - testpackage # white-box tests are deliberate here (argv assertions)
+    - forbidigo # main packages print with fmt by design
+    - prealloc # micro-optimization churn
+    - perfsprint
+    - errname
+  enable:
+    - errcheck
+    - errorlint
+    - nilerr
+    - bodyclose
+    - contextcheck
+    - durationcheck
+    - gosec
+    - exhaustive
+    - gocritic
+    - revive
+    - godot
+    - misspell
+    - usestdlibvars
+    - unparam
+    - unused
+    - makezero
+    - nakedret
+    - funlen
+    - govet
+  settings:
+    revive:
+      rules:
+        - name: exported
+          arguments: ["checkPrivateReceivers"]
+        - name: package-comments
+        - name: var-naming
+        - name: early-return
+    funlen:
+      # Baseline freeze (2026-10-01): measured maxima of merged code.
+      # Ratchet down over time; never raise.
+      lines: 180
+      statements: 98
+    gocyclo:
+      min-complexity: 40
+    maintidx:
+      # Baseline freeze (2026-10-01): merged orchestrators sit at MI 18-19;
+      # these split when T5 refactors land. Ratchet up, never down.
+      under: 15
+    gosec:
+      excludes:
+        - G304 # reading operator-provided config/paths is the product
+        - G306 # writing cell files with intended modes is the product
+        # G702 (tainted argv) is suppressed for the CmdRunner file via
+        # an exclusions rule below — see there.
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (net.NetworkListener).Close
+  exclusions:
+    generated: lax
+    presets: [common-false-positives, legacy, std-error-handling]
+    rules:
+      - path: _test\.go
+        linters: [funlen, gocyclo, revive, noctx, errcheck]
+      # CmdRunner execs argv slices with NO shell (execve): CLI-provided
+      # values cannot inject commands by construction — that IS the
+      # product interface (cell run -- cmd...). gosec's taint analysis
+      # flags the sink; the exclusion is scoped to this one file/line
+      # concern, not the linter.
+      - path: internal/cell/cell\.go
+        linters: [gosec]
+        text: G702
+
+formatters:
+  enable: [gofumpt, goimports, gci]
+  settings:
+    gci:
+      sections: [standard, default, prefix(github.com/lararium-app/lararium)]
