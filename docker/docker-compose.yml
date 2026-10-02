@@ -1,0 +1,21 @@
+# hearthd in Docker — see docker/config/lararium.yaml (config) and
+# docker/hearth/ (persona home: SOUL.md, IDENTITY.md, USER.md, MEMORY.md,
+# sessions/). API keys come from the host environment only; nothing secret
+# is baked into the image.
+#
+#   OPENROUTER_API_KEY=sk-or-... docker compose up --build
+services:
+  hearthd:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    stdin_open: true # REPL needs a terminal
+    tty: true
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - ./config:/etc/lararium:ro
+      # Bind (not named volume): persona files are required at startup and
+      # an empty volume would shadow them; the bind keeps them editable and
+      # persistent (sessions/ JSONL lands here too).
+      - ./hearth:/hearth
