@@ -274,6 +274,18 @@ default 8G, `CPUQuota` default 200%, `TasksMax` default 512 (`[cell]` in
 lararium.yaml, per-cell override in cell.json). systemd enforces; our code
 only asks. `IOWeight` default.
 
+Erratum E6 (2026-10-01, live-probed by C11): cgroup v2 leaves
+`memory.swap.max=max` unless set, so `MemoryMax` ALONE is a soft cap —
+a cell allocates MemoryMax into RAM then keeps growing into host swap
+(768 MB allocated under a 512 MB cap on any swap-enabled host; passes
+on swapless hosts → bench variance). `cell start` therefore ALSO sets
+`MemorySwapMax=0`: hard memory cap, OOM kills inside the cell, host
+swap is never a cell resource. E6b: systemd's default `OOMPolicy=stop`
+tears down the ENTIRE unit when the kernel OOM kills any task — one
+runaway process would take the whole cell with it. `cell start` sets
+`OOMPolicy=continue`: the offender dies (payload exit 137), the cell
+survives (live-probed: hog killed, `cell run` works right after).
+
 ## 6. Lifecycle — boot vs exec (two operations, two commands)
 
 - **`cell start <id>` boots the container.** `systemd-nspawn --machine=<id>

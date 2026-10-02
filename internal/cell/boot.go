@@ -164,6 +164,16 @@ func (s *Store) Start(id string) error {
 	runnerArgs := []string{
 		"--unit=" + unit,
 		fmt.Sprintf("--property=MemoryMax=%dM", lim.MemoryMB),
+		// E6: cgroup v2 defaults memory.swap.max=max — without
+		// this the cap is soft (cells grow into host swap).
+		"--property=MemorySwapMax=0",
+		// E6b: systemd's default OOMPolicy=stop tears down the
+		// WHOLE unit when the kernel OOM kills any task in the
+		// cgroup — one runaway task would destroy the cell.
+		// continue = kill the offender (payload sees 137), cell
+		// survives (live-probed 2026-10-01: stop-sigterm on the
+		// first 768M alloc attempt without this).
+		"--property=OOMPolicy=continue",
 		fmt.Sprintf("--property=CPUQuota=%s%%", lim.CPUQuota),
 		fmt.Sprintf("--property=TasksMax=%d", lim.TasksMax),
 		"--property=Restart=no",
