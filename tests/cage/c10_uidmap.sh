@@ -50,15 +50,18 @@ check_c10() {
     [ -n "$found" ] && break
     sleep 1
   done
-  kill "$runner" 2>/dev/null
-  wait "$runner" 2>/dev/null
-
+  # Read the payload's uid BEFORE tearing down the runner: killing it
+  # reaps the process and /proc/<pid> can vanish under us (flaky fail).
   pid=$found
   if [ -z "$pid" ]; then
+    kill "$runner" 2>/dev/null
+    wait "$runner" 2>/dev/null
     bad "C10b: payload not found under the unit cgroup"
     return
   fi
-  uid_h=$(stat -c %u /proc/"$pid")
+  uid_h=$(stat -c %u /proc/"$pid" 2>/dev/null)
+  kill "$runner" 2>/dev/null
+  wait "$runner" 2>/dev/null
   if [ "$uid_h" = "$((base + 1000))" ]; then
     ok "C10b: host-visible payload uid == subuid_base+1000 ($uid_h)"
   else
@@ -73,9 +76,11 @@ check_c10() {
     return
   fi
   uid_h=$(stat -c %u "$f")
-  if [ "$uid_h" != 0 ] && [ "$uid_h" != "$(id -u)" ]; then
-    ok "C10c: workspace write owner is mapped uid $uid_h (not 0/operator)"
+  # MUST equal subuid_base+1000 exactly: "not 0 and not operator" also
+  # passes when userns mapping is broken and raw 1000 or nobody lands.
+  if [ "$uid_h" = "$((base + 1000))" ]; then
+    ok "C10c: workspace write owner is mapped uid $uid_h (subuid_base+1000)"
   else
-    bad "C10c: workspace write owner uid $uid_h is not a mapped uid"
+    bad "C10c: workspace write owner uid $uid_h != mapped $((base + 1000))"
   fi
 }

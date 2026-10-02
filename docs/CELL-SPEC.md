@@ -352,7 +352,7 @@ per check unless stated.
 | C8 | no-proxy fail-closed | cell created with no proxy → C7-style fetch fails **and** C1–C6 still fail; no path bypasses |
 | C9 | crash containment | SIGKILL boot unit → host unaffected, `start` works again, workspace intact |
 | C10 | uid map + binds | (a) in-cell `id -u keeper` == 1000; (b) `cell run` a `sleep 300`, locate its host pid (unit cgroup walk), **host-visible uid == cell.json's recorded `subuid_base` + 1000** — not 0, not the operator uid. (`cell start` records the picked block in cell.json from nspawn's allocation — the test asserts against that record, no re-guessing; `--keep-unit` keeps the payload in the unit's cgroup so the walk is deterministic. The nspawn supervisor is legitimately host root and is *not* the subject); (c) keeper writes a file in `/workspace` in-cell → readable via the operator path, on-disk owner is the mapped uid |
-| C11 | cgroup cap enforced behaviorally | in-cell python allocates MemoryMax + 256 MB → killed (exit 137) or boot unit's `memory.events` `oom_kill` counter increments. Reading `memory.max` in-cell is **not** accepted as evidence (cgroup namespace root reads `max` even when enforced) |
+| C11 | cgroup cap enforced behaviorally | in-cell python allocates MemoryMax + 256 MB → killed (exit 137) or boot unit's `memory.events` `oom_kill` counter increments, **and the cell survives** (a subsequent `cell run` succeeds; erratum E6b). Reading `memory.max` in-cell is **not** accepted as evidence (cgroup namespace root reads `max` even when enforced) |
 | C12 | destroy/rebuild | destroy + create + start + one `cell run` echo < 60 s |
 
 ## 9. Non-goals (Phase 3)

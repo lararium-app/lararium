@@ -43,8 +43,11 @@ except Exception:
   ev1=$(awk '/^oom_kill /{print $2}' "$cgroupd/memory.events" 2>/dev/null)
   [ -n "$ev1" ] || { bad "C11: memory.events unreadable after alloc"; return; }
 
-  if printf '%s' "$rc" | grep -q ALLOADED && [ "$ev1" = "$ev0" ]; then
-    bad "C11: allocated $((cap + 256))MB > ${cap}MB cap AND oom_kill unchanged — cap not enforced"
+  if printf '%s' "$rc" | grep -q ALLOADED; then
+    # Full 768MB resident under a 512MB cap = the cap is not enforced,
+    # whatever the counter later does. Unconditional failure.
+    bad "C11: allocated $((cap + 256))MB > ${cap}MB cap (ALLOADED) — cap not enforced"
+    return
   elif [ "$ev1" != "$ev0" ]; then
     ok "C11: oom_kill counter incremented ($ev0 -> $ev1)"
   elif printf '%s' "$rc" | grep -q MEMERROR; then
@@ -60,6 +63,16 @@ except Exception:
       ok "C11: oom_kill counter incremented on recheck ($ev0 -> $ev1)"
     else
       bad "C11: inconclusive (rc='$rc', events $ev0->$ev1)"
+      return
     fi
+  fi
+
+  # E6b: OOMPolicy=continue — the offender dies, the CELL survives.
+  # Without this, default OOMPolicy=stop tears the whole unit down and
+  # the counter check alone still passes.
+  if cellrun -- echo survivor >/dev/null 2>&1; then
+    ok "C11: cell survived OOM kill (OOMPolicy=continue)"
+  else
+    bad "C11: cell dead after OOM (OOMPolicy=continue not in effect)"
   fi
 }

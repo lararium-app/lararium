@@ -17,7 +17,18 @@ check_c09() {
 
   # Kill the boot unit mid-life: SIGKILL, no graceful shutdown path.
   systemctl kill -s KILL "$unit" >/dev/null 2>&1
-  sleep 3
+  # systemctl kill is async: CONFIRM the unit actually died, else a
+  # later `start` is a no-op against the unkilled original (false green).
+  local dead=0 _i
+  for _i in $(seq 1 15); do
+    systemctl is-active --quiet "$unit" || { dead=1; break; }
+    sleep 1
+  done
+  if [ "$dead" -ne 1 ]; then
+    bad "C9: unit still active 15s after SIGKILL"
+    return
+  fi
+  ok "C9: unit confirmed dead after SIGKILL"
 
   # Host unaffected: systemctl still answers for the unit's manager.
   if ! systemctl show "$unit" --property=LoadState >/dev/null 2>&1; then

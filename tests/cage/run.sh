@@ -11,7 +11,7 @@ cd "$(dirname "$0")" || exit 1
 BIN="${CELL_BIN:-cell}"
 ROOT="${LARARIUM_CELL_ROOT:?set LARARIUM_CELL_ROOT to an absolute scratch root}"
 CFG="$ROOT/cage.yaml"
-ID=cage-$-
+ID="cage-$$-$(date +%s)"   # PID+epoch: '$-' is shell FLAGS, collides across runs
 PROXY_PORT="${PROXY_PORT:-3128}"
 GW=10.91.0.1
 CAGE_FAIL=0
@@ -115,9 +115,11 @@ run_c7() {
 }
 run_c7b() {
   local code
+  # Pure HTTP code: appending '; echo $?' glued curl's exit status
+  # onto the code ("2000"), so a real bypass-200 fell to the ok arm.
   code=$(cellrun -- env -u http_proxy -u https_proxy \
     curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
-    -x "" "http://$GW:$PROXY_PORT/" 2>/dev/null; echo "$?")
+    -x "" "http://$GW:$PROXY_PORT/" 2>/dev/null)
   # Relative-form request to the proxy without proxy env: proxy must
   # reject non-proxy-form requests (400/405), never fetch (200).
   case "$code" in
