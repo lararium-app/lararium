@@ -49,6 +49,9 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Surface V-suite
+        run: bash tests/surface/run.sh
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:
