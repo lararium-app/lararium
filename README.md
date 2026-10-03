@@ -93,11 +93,34 @@ misbehavior physically expensive below the model:
 - **Proven, not claimed.** A C1–C12 containment suite asserts each
   property positively (escape attempts, crash containment, uid mapping,
   memory caps with random fill so zero-page tricks can't false-pass).
-  Green on four hosts spanning two architectures, three distro families,
-  ext4/btrfs, and all three iptables/nftables host shapes.
+  Green on five hosts spanning two architectures, three distro families,
+  ext4/btrfs, bare metal and WSL2, and all three iptables/nftables host
+  shapes.
 
 Found a way around any of this? [SECURITY.md](SECURITY.md) — we take it
 seriously and credit reporters.
+
+## Platforms
+
+| Platform | The daemon | The sandbox |
+|---|---|---|
+| Linux (native) | ✅ | ✅ full cage — the reference target |
+| WSL2 (Windows 11) | ✅ | ✅ full cage — bench-proven, one config line |
+| Windows native | ✅ compiles clean (runtime unproven) | ❌ no cage yet — Docker door instead |
+| macOS | ✅ compiles clean (runtime unproven) | ❌ no cage yet — Docker door instead |
+
+The sandbox is built on `systemd-nspawn`, nftables, overlayfs, and
+cgroup2 — Linux kernel features, not Go portability problems. On Windows
+that means one good answer: **WSL2**, where the cage runs on a real
+kernel. Enable systemd in the distro (`/etc/wsl.conf`: `[boot]` /
+`systemd=true`, then `wsl --shutdown`), install
+`uidmap systemd-container nftables acl debootstrap`, and the cell stack
+is identical to bare metal — doctor 16/16, lifecycle smoke green, and
+the full C1–C12 containment suite passing on a x86-64 hardware
+(kernel 6.18.40-vendor kernel-WSL2). Until native Windows/macOS
+sandboxes exist (planned: a hypervisor-backed cell), those platforms
+run the daemon through Docker, which keeps the web chat and the REPL
+but not the cage.
 
 ## Quick start
 
@@ -114,8 +137,8 @@ image or committed to this repo. Edit `docker/config/lararium.yaml` to
 point at your own model server instead (any OpenAI-compatible endpoint
 works, e.g. llama.cpp).
 
-Compose runs the REPL in your terminal *and* serves the web chat on
-`http://127.0.0.1:7717`. To open a door to it:
+Compose serves the web chat on `http://127.0.0.1:7717`. To open a door
+to it:
 
 ```bash
 docker compose exec hearthd hearthd token create me
