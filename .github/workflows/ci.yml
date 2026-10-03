@@ -83,8 +83,9 @@ jobs:
           # or hardware specifics in tracked files. (grep -I skips binary
           # assets; hits captured by content, not xargs exit code — a
           # partial-match batch exits 123 and must still FAIL the job.)
-          hits=$(git ls-files -z | xargs -0 grep -lI -i -E \
-            "lararium|dev|dev|a bench|bench|user|laptop|x86-64|vendor kernel" 2>/dev/null || true)
+          # Pattern assembled at runtime so this file cannot match itself.
+          pat=$(printf '%s' 'x1|x2|x3|x4|x5|/home/x6|x7|x8|x9')
+          hits=$(git ls-files -z | xargs -0 grep -lI -i -E "$pat" 2>/dev/null || true)
           if [ -n "$hits" ]; then
             echo "$hits"
             echo "personal identifiers found in tracked files (list above)"; exit 1
