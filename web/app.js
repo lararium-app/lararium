@@ -77,6 +77,11 @@ async function fetchJson(method, path, body) {
 async function loadSessions() {
   const data = await fetchJson("GET", "/v1/sessions");
   renderSessionList(data);
+  if (data.length === 0 && !currentSessionId) {
+    // First run: open the door and start typing — no dead composer.
+    await createSession();
+    return;
+  }
   if (data.length > 0 && !currentSessionId) {
     selectSession(data[0].id);
   }
@@ -271,6 +276,10 @@ function renderApprovalCard(data) {
 
 async function sendMessage(text) {
   if (isStreaming) return;
+  if (!currentSessionId) {
+    // Race or failed load: make sure there is a session before posting.
+    try { await createSession(); } catch { showStatus("could not open a session"); setComposerDisabled(false); return; }
+  }
   isStreaming = true;
   setComposerDisabled(true);
   clearStatus();
