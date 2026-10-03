@@ -12,6 +12,10 @@ Your machine, your models, your keys.
 
 [Website](https://lararium.io) · [Docs](docs/) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
+![The web chat door: a real streamed reply and reload catch-up](site/demo.gif)
+
+*`hearthd serve` — the browser door. One command, one token, one real conversation.*
+
 </div>
 
 ---
