@@ -97,36 +97,44 @@ function selectSession(id) {
 }
 
 function renderEvent(ev) {
+  // Penatus event schema (PENATUS-SPEC §2, frozen): every event has `t`
+  // (type) and `seq`; msg events carry `role`; tool_result carries
+  // `result_digest`. Unknown `t` values render as nothing (forward-compat).
   const wrapper = createElement("div", "event");
-  if (ev.type === "user") {
+  if (ev.t === "msg" && ev.role === "user") {
     const bubble = createElement("div", "bubble user");
     bubble.textContent = ev.text;
     wrapper.appendChild(bubble);
-  } else if (ev.type === "assistant") {
+  } else if (ev.t === "msg" && ev.role === "assistant") {
     const bubble = createElement("div", "bubble assistant");
     bubble.textContent = ev.text;
     wrapper.appendChild(bubble);
-  } else if (ev.type === "tool_call") {
+  } else if (ev.t === "tool_call") {
     const details = createElement("details", "tool-call");
     const summary = createElement("summary");
     summary.textContent = "⚙ " + ev.name + " (approval)";
     details.appendChild(summary);
     const content = createElement("div", "tool-content");
     content.dataset.callId = ev.call_id;
-    content.textContent = "args: " + ev.args_summary;
+    content.textContent = "args: " + (typeof ev.args === "string"
+      ? ev.args : JSON.stringify(ev.args || {}));
     details.appendChild(content);
     wrapper.appendChild(details);
-  } else if (ev.type === "tool_result") {
+  } else if (ev.t === "tool_result") {
     const existing = transcriptEl.querySelector('[data-call-id="' + ev.call_id + '"]');
     if (existing) {
       const outcome = createElement("div", ev.ok ? "tool-outcome" : "tool-outcome err");
-      outcome.textContent = "→ " + (ev.ok ? "ok" : "error") + ": " + (ev.digest || "");
+      outcome.textContent = "→ " + (ev.ok ? "ok" : "error") + ": " + (ev.result_digest || "");
       existing.appendChild(outcome);
       existing.closest("details").open = true;
     }
-  } else if (ev.type === "compact") {
+  } else if (ev.t === "compact") {
     const sep = createElement("hr", "compact-sep");
     wrapper.appendChild(sep);
+  } else if (ev.t === "branch") {
+    const note = createElement("div", "branch-note");
+    note.textContent = "branched from " + (ev.from_session || "?");
+    wrapper.appendChild(note);
   }
   transcriptEl.appendChild(wrapper);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
