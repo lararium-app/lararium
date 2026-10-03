@@ -33,17 +33,63 @@ providers you choose, and reaches you on the screens you already carry.
   ([CELL-SPEC](docs/CELL-SPEC.md)): systemd-nspawn + cgroup2 + overlayfs,
   fail-closed networking by default.
 
-## Status
+## Status: public preview (v0.1.0-alpha)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
 > per-component; the wire APIs may still change between releases. Run it on
 > machines you can wipe. Not fit for production or multi-tenant use.
 
-Current state: `hearthd` core loop with pluggable model providers, Penatus
-memory layer, PWA + messaging channels, and the cell sandbox under
-construction. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
-whole shape.
+**Working today:**
+
+- **`hearthd`** — the agent daemon: interactive REPL session loop with an
+  append-only, crash-safe event log; context compaction so sessions
+  outlive the context window; tools for memory (`remember`, `forget`,
+  `memory_search`) and time (`clock`).
+- **Model routing** — any OpenAI-compatible endpoint (llama.cpp,
+  OpenRouter, …) and Anthropic Messages; per-session model selection,
+  fallback chains, streaming, capability probing.
+- **Penatus memory** — persona files + `MEMORY.md` + a searchable memory
+  tree, all plain text with a frozen on-disk spec. Your agent's whole mind
+  is files you own.
+- **Cell sandbox** — `cell` runs agent work inside systemd-nspawn +
+  cgroup2 + overlayfs with hard memory/CPU/task caps, uid-mapped binds,
+  snapshots, and crash recovery. Networking is fail-closed: a cell has no
+  route anywhere except through an auditing egress proxy (CONNECT + HTTP,
+  SSRF re-resolve, host-address floor). Template bake → create → run →
+  destroy in under a minute.
+
+**Not built yet:** messaging channels and a web UI (the session layer is
+channel-ready; the REPL is the only front door today), the credential
+vault (`custos`), and the HTTP API server. See
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) for the whole shape and what each
+component will do.
+
+## How the sandbox protects you
+
+The threat model assumes prompt injection *succeeds* — a hostile web page
+or email convinces the agent to misbehave. Lararium's answer is to make
+misbehavior physically expensive below the model:
+
+- **No network except the door.** Each cell gets a dedicated veth pair in
+  its own netns; an nftables cage drops direct HTTP/HTTPS/DNS/ICMP/raw
+  TCP, refuses the host's own addresses (SSRF floor), and logs every
+  bypass attempt. The only exit is the local proxy, which re-resolves
+  hostnames per request and enforces per-request budgets.
+- **Hard resource caps.** `memory.max` with swap disabled, CPU quota,
+  task limits, OOM containment (`OOMPolicy=continue`) — a runaway cell
+  dies inside its own cgroup and the host never notices.
+- **Filesystem containment.** overlayfs workspaces, uid-mapped binds so
+  in-cell root is a mapped unprivileged uid on the host, and per-cell
+  snapshots you can roll back.
+- **Proven, not claimed.** A C1–C12 containment suite asserts each
+  property positively (escape attempts, crash containment, uid mapping,
+  memory caps with random fill so zero-page tricks can't false-pass).
+  Green on four hosts spanning two architectures, three distro families,
+  ext4/btrfs, and all three iptables/nftables host shapes.
+
+Found a way around any of this? [SECURITY.md](SECURITY.md) — we take it
+seriously and credit reporters.
 
 ## Quick start
 
