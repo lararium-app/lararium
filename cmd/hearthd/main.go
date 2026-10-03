@@ -12,6 +12,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/lararium-app/lararium/internal/loop"
+	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
@@ -214,7 +216,70 @@ func serve(cfgPath string) {
 		os.Exit(1)
 	}
 
-	hub := &noopHub{}
+	// Build router (same as repl.go)
+	firstModel := map[string]string{}
+	for _, ref := range append(append([]string{}, cfg.Models.Default...), cfg.Models.Compact...) {
+		p := providerOf(ref)
+		if _, ok := firstModel[p]; !ok {
+			firstModel[p] = modelOf(ref)
+		}
+	}
+	byName := map[string]router.Provider{}
+	for _, p := range cfg.Providers {
+		key := p.APIKey
+		if p.APIKeyEnv != "" {
+			key = os.Getenv(p.APIKeyEnv)
+		}
+		disableThink := p.Think != nil && !*p.Think
+		byName[p.Name] = router.NewOpenAIWith(p.BaseURL, key, firstModel[p.Name], disableThink)
+	}
+
+	targets := func(refs []string) ([]router.Target, error) {
+		var ts []router.Target
+		for _, ref := range refs {
+			prov, ok := byName[providerOf(ref)]
+			if !ok {
+				return nil, fmt.Errorf("unknown provider in ref %q", ref)
+			}
+			ts = append(ts, router.Target{Provider: prov, Model: modelOf(ref)})
+		}
+		return ts, nil
+	}
+
+	def, err := targets(cfg.Models.Default)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	rt := router.NewRouter(router.Profile{Chain: def})
+	if len(cfg.Models.Compact) > 0 {
+		ct, err := targets(cfg.Models.Compact)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		rt.SetProfile("compact", router.Profile{Chain: ct})
+	} else {
+		rt.SetProfile("compact", router.Profile{Chain: def})
+	}
+
+	// Build tools
+	tools := buildTools(home)
+
+	// System prompt (validated by Hub per-session)
+	_, warnings, err := loop.SystemPrompt(home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "⚠ "+w)
+	}
+
+	// ApprovalHub and Hub
+	ap := surface.NewApprovalHub(cfg.Serve.ApprovalTimeout)
+	hub := surface.NewHub(cfg.Serve, home, cfg.Hearth.MaxTokens, cfg.Hearth.CompactionTriggerPct, tools, rt, ap)
+
 	sessions := surface.NewPenatusSource(home, hub)
 
 	srv := &surface.Server{
