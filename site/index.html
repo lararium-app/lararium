@@ -172,6 +172,22 @@
   }
   .cta span { color: var(--ink-faint); font-size: 14px; }
 
+  /* ---------- demo ---------- */
+  .demo { text-align: center; }
+  .demo img {
+    max-width: 100%;
+    width: 880px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, .5);
+  }
+  .demo .caption {
+    margin-top: 18px;
+    font-size: 14px;
+    color: var(--ink-mute);
+  }
+  .demo .caption code { font-size: 13px; color: var(--ember-soft); }
+
   /* ---------- sections ---------- */
   section { padding: 96px 0; border-top: 1px solid var(--line); }
   .section-label {
@@ -313,6 +329,14 @@
 </header>
 
 <main>
+
+<section class="demo">
+  <div class="wrap">
+    <p class="section-label">The door, in one minute</p>
+    <img src="/demo.gif" alt="Lararium web chat: a message is typed, the hearth keeper streams a real reply, and a page reload shows the conversation persisted." loading="lazy">
+    <p class="caption"><code>docker compose up</code> · <code>hearthd token create</code> · open the link. Real model, streamed, on your own machine.</p>
+  </div>
+</section>
 
 <section class="meaning">
   <div class="wrap">
