@@ -80,10 +80,14 @@ jobs:
       - name: Neutrality scan
         run: |
           # Product repo: zero personal identifiers, hostnames, home paths,
-          # or hardware specifics in tracked files.
-          if git ls-files -z | xargs -0 grep -l -i -E \
-            "lararium|dev|dev|a bench|bench|user|laptop|x86-64|vendor kernel" 2>/dev/null; then
-            echo "personal identifiers found in tracked files (see list above)"; exit 1
+          # or hardware specifics in tracked files. (grep -I skips binary
+          # assets; hits captured by content, not xargs exit code — a
+          # partial-match batch exits 123 and must still FAIL the job.)
+          hits=$(git ls-files -z | xargs -0 grep -lI -i -E \
+            "lararium|dev|dev|a bench|bench|user|laptop|x86-64|vendor kernel" 2>/dev/null || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "personal identifiers found in tracked files (list above)"; exit 1
           fi
 
   vulncheck:
