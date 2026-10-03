@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: mailto:security@lararium.io
+    about: Report privately — never open a public issue for security problems.
+  - name: Questions & community
+    url: https://github.com/lararium-app/lararium/discussions
+    about: How-do-I questions and general discussion live in Discussions, not issues.
