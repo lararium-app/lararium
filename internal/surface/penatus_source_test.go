@@ -23,7 +23,10 @@ func TestPenatusSource(t *testing.T) {
 		Created: "2024-01-01T00:00:00Z",
 		Kind:    "main",
 	}
-	data, _ := json.MarshalIndent(mainHeader, "", "  ")
+	data, err := json.MarshalIndent(mainHeader, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal main header: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(mainDir, "session.json"), data, 0o644); err != nil {
 		t.Fatalf("write main session.json: %v", err)
 	}
@@ -45,7 +48,10 @@ func TestPenatusSource(t *testing.T) {
 		Title:   strPtr("Test Side"),
 		Parent:  strPtr("main"),
 	}
-	data, _ = json.MarshalIndent(sideHeader, "", "  ")
+	data, err = json.MarshalIndent(sideHeader, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal side header: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(sideDir, "session.json"), data, 0o644); err != nil {
 		t.Fatalf("write side session.json: %v", err)
 	}
@@ -86,7 +92,7 @@ func TestPenatusSource(t *testing.T) {
 	}
 
 	// Test Events with after_seq
-	events, inFlight, err = source.Events(sideID, 1, 10)
+	events, _, err = source.Events(sideID, 1, 10)
 	if err != nil {
 		t.Fatalf("Events after_seq: %v", err)
 	}

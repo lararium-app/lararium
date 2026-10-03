@@ -1,11 +1,13 @@
 package surface
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // NewServer wires all routes behind the Host gate and the body limit.
@@ -33,8 +35,7 @@ func NewServer(s *Server) http.Handler {
 
 // dispatch routes authenticated /v1/ requests.
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/v1/sessions":
+	if r.URL.Path == "/v1/sessions" {
 		switch r.Method {
 		case http.MethodGet:
 			s.listSessionsHandler(w, r)
@@ -43,53 +44,64 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	default:
-		if strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
-			if strings.HasSuffix(r.URL.Path, "/events") && r.Method == http.MethodGet {
-				s.eventsHandler(w, r)
-				return
-			}
-			if strings.HasSuffix(r.URL.Path, "/cancel") && r.Method == http.MethodPost {
-				s.cancelHandler(w, r)
-				return
-			}
-			if strings.HasSuffix(r.URL.Path, "/messages") && r.Method == http.MethodPost {
-				id := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
-				id = strings.TrimSuffix(id, "/messages")
-				if !ValidSessionID(id) {
-					s.error(w, "not found", http.StatusNotFound)
-					return
-				}
-				if hub, ok := s.Hub.(*Hub); ok {
-					hub.HandleMessage(w, r, id)
-				} else {
-					s.error(w, "not implemented", http.StatusNotImplemented)
-				}
-				return
-			}
-			if strings.HasPrefix(r.URL.Path, "/v1/sessions/") && strings.Contains(r.URL.Path, "/approvals/") && r.Method == http.MethodPost {
-				id := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
-				parts := strings.Split(id, "/approvals/")
-				if len(parts) == 2 {
-					sessionID := parts[0]
-					approvalID := parts[1]
-					if !ValidSessionID(sessionID) || !ValidApprovalID(approvalID) {
-						s.error(w, "not found", http.StatusNotFound)
-						return
-					}
-					if hub, ok := s.Hub.(*Hub); ok {
-						hub.HandleApproval(w, r, sessionID, approvalID)
-					} else {
-						s.error(w, "not implemented", http.StatusNotImplemented)
-					}
-					return
-				}
-			}
+		return
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
+		s.dispatchSession(w, r)
+		return
+	}
+	s.error(w, "not found", http.StatusNotFound)
+}
+
+// dispatchSession handles /v1/sessions/{id}/... subroutes.
+func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+
+	switch {
+	case rest == "":
+		s.error(w, "not found", http.StatusNotFound)
+	case strings.HasSuffix(rest, "/events") && r.Method == http.MethodGet:
+		s.eventsHandler(w, r)
+	case strings.HasSuffix(rest, "/cancel") && r.Method == http.MethodPost:
+		s.cancelHandler(w, r)
+	case strings.HasSuffix(rest, "/messages") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(rest, "/messages")
+		if !ValidSessionID(id) {
+			s.error(w, "not found", http.StatusNotFound)
+			return
 		}
+		hub, ok := s.Hub.(*Hub)
+		if !ok {
+			s.error(w, "not implemented", http.StatusNotImplemented)
+			return
+		}
+		hub.HandleMessage(w, r, id)
+	case strings.Contains(rest, "/approvals/") && r.Method == http.MethodPost:
+		parts := strings.SplitN(rest, "/approvals/", 2)
+		if len(parts) != 2 || parts[1] == "" {
+			s.error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if !ValidSessionID(parts[0]) || !ValidApprovalID(parts[1]) {
+			s.error(w, "not found", http.StatusNotFound)
+			return
+		}
+		hub, ok := s.Hub.(*Hub)
+		if !ok {
+			s.error(w, "not implemented", http.StatusNotImplemented)
+			return
+		}
+		hub.HandleApproval(w, r, parts[0], parts[1])
+	default:
 		s.error(w, "not found", http.StatusNotFound)
 	}
 }
 
+// ListenAndServe normalizes config, binds, and serves until failure.
+// Timeouts are set on the http.Server (gosec G114) EXCEPT WriteTimeout,
+// which is deliberately zero: SSE turn streams are long-lived by design
+// and bounded instead by serve.turn_timeout inside the turn engine.
 func (s *Server) ListenAndServe() error {
 	if err := s.Cfg.Normalize(); err != nil {
 		return err
@@ -104,10 +116,17 @@ func (s *Server) ListenAndServe() error {
 		log.Printf("WARNING: listening beyond loopback on %s", s.Cfg.Listen)
 	}
 
-	ln, err := net.Listen("tcp", s.Cfg.Listen)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", s.Cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	return http.Serve(ln, NewServer(s))
+	srv := &http.Server{
+		Handler:           NewServer(s),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       0, // request bodies stream; capped by body limit
+		IdleTimeout:       120 * time.Second,
+	}
+	return srv.Serve(ln)
 }

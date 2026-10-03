@@ -23,10 +23,14 @@ type tokenEntry struct {
 	Created string `json:"created"`
 }
 
+// TokenStore is the bearer-token registry on disk: JSON of SHA-256
+// hashes (never plaintext), file mode 0600, re-read on every Verify so
+// `token revoke` takes effect on the next request (spec §3).
 type TokenStore struct {
 	path string
 }
 
+// OpenTokenStore ensures the store file exists with mode 0600.
 func OpenTokenStore(path string) (*TokenStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -41,6 +45,9 @@ func OpenTokenStore(path string) (*TokenStore, error) {
 	return &TokenStore{path: path}, nil
 }
 
+// NewToken mints a lar1_-prefixed 32-char token from crypto/rand. The
+// plaintext exists only in memory: it is printed once by `token create`
+// and never written to disk (spec §3).
 func NewToken() string {
 	const tokenLen = 32
 	b := make([]byte, tokenLen)
@@ -55,6 +62,8 @@ func NewToken() string {
 	return tokenPrefix + string(b)
 }
 
+// Create appends a hashed token under label and returns the plaintext
+// exactly once, for the operator to copy into the ready-URL.
 func (s *TokenStore) Create(label string) (string, error) {
 	entries, err := s.readEntries()
 	if err != nil {
@@ -73,6 +82,8 @@ func (s *TokenStore) Create(label string) (string, error) {
 	return plaintext, s.writeEntries(entries)
 }
 
+// Revoke drops every entry with the label; reports whether one existed.
+// In-flight turns are unaffected — revocation gates new requests.
 func (s *TokenStore) Revoke(label string) (bool, error) {
 	entries, err := s.readEntries()
 	if err != nil {
@@ -96,6 +107,8 @@ func (s *TokenStore) Revoke(label string) (bool, error) {
 	return true, s.writeEntries(newEntries)
 }
 
+// Verify constant-time compares SHA-256(token) against every stored
+// hash, re-reading the file each call (revoke = effective immediately).
 func (s *TokenStore) Verify(token string) bool {
 	entries, err := s.readEntries()
 	if err != nil {
@@ -122,7 +135,7 @@ func (s *TokenStore) Verify(token string) bool {
 }
 
 func (s *TokenStore) readEntries() ([]tokenEntry, error) {
-	data, err := os.ReadFile(s.path)
+	data, err := os.ReadFile(s.path) //nolint:gosec // operator-configured path, not request data
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil

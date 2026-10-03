@@ -103,7 +103,10 @@ func TestTokenStoreVerifyReReadsFile(t *testing.T) {
 
 	// Modify file directly to revoke
 	entries := []tokenEntry{}
-	data, _ := json.Marshal(entries)
+	data, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -115,7 +118,7 @@ func TestTokenStoreVerifyReReadsFile(t *testing.T) {
 }
 
 func TestNewTokenFormat(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		tok := NewToken()
 		if len(tok) != 37 {
 			t.Errorf("token length = %d, want 37", len(tok))

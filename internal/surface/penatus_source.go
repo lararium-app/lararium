@@ -15,11 +15,16 @@ func strPtr(s string) *string { return &s }
 // to 404 (spec: unknown session id → 404, never a phantom empty 200).
 var ErrNoSession = errors.New("no such session")
 
+// PenatusSource is the SessionSource over the Penatus file layer:
+// sessions live at <root>/sessions/<id>/ exactly where repl.go and
+// penatus put them (spec §5: the API never forks the storage format).
 type PenatusSource struct {
 	root string
 	hub  TurnHub
 }
 
+// NewPenatusSource roots the source at the hearth home; hub supplies
+// the in_flight flag for catch-up (may be nil in tests).
 func NewPenatusSource(root string, hub TurnHub) *PenatusSource {
 	return &PenatusSource{
 		root: root,
@@ -27,6 +32,7 @@ func NewPenatusSource(root string, hub TurnHub) *PenatusSource {
 	}
 }
 
+// List returns every session (main first-class, spec §5), newest first.
 func (p *PenatusSource) List() ([]SessionInfo, error) {
 	sessionsDir := filepath.Join(p.root, "sessions")
 	entries, err := os.ReadDir(sessionsDir)
@@ -97,6 +103,8 @@ func (p *PenatusSource) List() ([]SessionInfo, error) {
 	return sessions, nil
 }
 
+// Create makes a side chat branched from main: header with parent,
+// optional title/model_pin, and the branch event (PENATUS §2).
 func (p *PenatusSource) Create(title string, modelPin string) (SessionInfo, error) {
 	id := penatus.NewID()
 	log, err := penatus.CreateSession(p.root, id, "side")
@@ -142,8 +150,14 @@ func (p *PenatusSource) Create(title string, modelPin string) (SessionInfo, erro
 			fromSeq = evs[len(evs)-1].Seq
 		}
 	}
-	sb, _ := json.Marshal(fromSeq)
-	fb, _ := json.Marshal("main")
+	sb, err := json.Marshal(fromSeq)
+	if err != nil {
+		return SessionInfo{}, err
+	}
+	fb, err := json.Marshal("main")
+	if err != nil {
+		return SessionInfo{}, err
+	}
 	if err := log.Append(penatus.Event{T: "branch", Fields: map[string]json.RawMessage{
 		"from_session": fb,
 		"from_seq":     sb,
@@ -165,20 +179,24 @@ func (p *PenatusSource) headerToInfo(h penatus.SessionHeader) SessionInfo {
 	}
 }
 
+// Events replays the session log after afterSeq (clamped by limit)
+// plus the in_flight flag; unknown sessions are ErrNoSession -> 404.
 func (p *PenatusSource) Events(id string, afterSeq int64, limit int) ([]json.RawMessage, bool, error) {
 	if !ValidSessionID(id) {
 		return nil, false, ErrNoSession
 	}
 
+	// Validated above: id matches ^(s_[0-9A-Z]{26}|main)$ — no traversal
+	// is possible, which is what gosec's taint analysis cannot see.
 	sessionDir := filepath.Join(p.root, "sessions", id)
 	// Existence gate: OpenLog happily opens a missing log, which would
 	// answer 200-empty for sessions that never existed. Require the
 	// session dir (and, for side chats, the header) before serving.
-	if info, err := os.Stat(sessionDir); err != nil || !info.IsDir() {
+	if info, err := os.Stat(sessionDir); err != nil || !info.IsDir() { //nolint:gosec // regex-validated id
 		return nil, false, ErrNoSession
 	}
 	if id != "main" {
-		if _, err := os.Stat(filepath.Join(sessionDir, "session.json")); err != nil {
+		if _, err := os.Stat(filepath.Join(sessionDir, "session.json")); err != nil { //nolint:gosec // regex-validated id
 			return nil, false, ErrNoSession
 		}
 	}

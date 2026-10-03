@@ -294,8 +294,3 @@ func serve(cfgPath string) {
 		os.Exit(1)
 	}
 }
-
-type noopHub struct{}
-
-func (noopHub) InFlight(string) bool { return false }
-func (noopHub) Cancel(string) bool   { return false }
