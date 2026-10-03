@@ -24,3 +24,8 @@ docker/hearth/sessions/
 __pycache__/
 cell-arm64
 docker/hearth/tokens.json
+
+# Built binaries live in bin/ (gitignored) — never at repo root
+/hearthd
+/hearthd.exe
+/cell.exe
