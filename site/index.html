@@ -298,7 +298,7 @@
 <header>
   <div class="shrine" aria-hidden="true"><div class="ember"></div></div>
   <div class="wrap">
-    <p class="kicker">Open source · Self-hosted</p>
+    <p class="kicker">Open source · Self-hosted · Public preview</p>
     <h1>Lararium</h1>
     <p class="latin">/ lārārium /: the household shrine where the protective spirits were kept</p>
     <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth and rides in <strong>your</strong> pocket. It keeps working while you sleep and answers on whatever screen you have with you. Your machine, your models, your keys.</p>
@@ -307,7 +307,7 @@
         <input type="email" name="email" placeholder="you@example.com" aria-label="Email address" required autocomplete="email">
         <button class="mail" type="submit">Tell me when the fire is lit</button>
       </form>
-      <span class="wl-note" id="wl-hero-note">Coming soon · AGPL-licensed</span>
+      <span class="wl-note" id="wl-hero-note">Alpha is public now · <a href="https://github.com/lararium-app/lararium">github.com/lararium-app/lararium</a></span>
     </div>
   </div>
 </header>
@@ -325,8 +325,8 @@
 <section class="pocket">
   <div class="wrap">
     <p class="section-label">At home. And in your pocket.</p>
-    <p>The hearth burns on your own hardware: a box under the stairs, a NAS, a used mini-PC. You don't live there, so Lararium comes to wherever you are, as a tap from your home screen, a thread in <em>WhatsApp, Telegram, or Signal</em>, or plain <em>SMS</em> when that's all there is.</p>
-    <p>The same agent, the same memory, from any device. Ask it something on your phone at the store and the answer is waiting in the same conversation at your desk. When it needs your permission to spend, send, or delete, the approval card lands on the screen you're holding. The Android app goes further, opening your phone's own contacts, calls, and texts, one gated door at a time.</p>
+    <p>The hearth burns on your own hardware: a box under the stairs, a NAS, a used mini-PC. Today you meet it at a terminal on that machine; next come the doors to wherever you are — a tap from your home screen, a thread in <em>WhatsApp, Telegram, or Signal</em>, or plain <em>SMS</em> when that's all there is.</p>
+    <p>The goal: the same agent, the same memory, from any device. Ask it something on your phone at the store and the answer is waiting in the same conversation at your desk. When it needs your permission to spend, send, or delete, the approval card lands on the screen you're holding. The Android app, further down the road, opens your phone's own contacts, calls, and texts, one gated door at a time.</p>
   </div>
 </section>
 
@@ -344,15 +344,15 @@
       </div>
       <div class="row">
         <dt>Your keys</dt>
-        <dd>Credentials sit in a vault, and <b>the agent never sees them</b>. The network layer swaps real values in on the way out, after policy. Prompt injection can't steal what was never handed over.</dd>
+        <dd><i>Planned.</i> Credentials will sit in a vault, and <b>the agent never sees them</b>. The network layer swaps real values in on the way out, after policy. Prompt injection can't steal what was never handed over.</dd>
       </div>
       <div class="row">
         <dt>Your doors</dt>
-        <dd>Mail, calendar, messages, browser, shell, and any API you hand it: each door gets its own rule, <b>open, knock first, or sealed</b>. Every action lands in a log only you can read.</dd>
+        <dd><i>Planned.</i> Mail, calendar, messages, browser, shell, and any API you hand it: each door gets its own rule, <b>open, knock first, or sealed</b>. Every action lands in a log only you can read.</dd>
       </div>
       <div class="row">
         <dt>Always lit</dt>
-        <dd>Morning briefings, price watches, inbox triage, scheduled chores, goals that run for days. Quiet hours and a noise budget keep it a servant, not a spammer.</dd>
+        <dd><i>Planned.</i> Morning briefings, price watches, inbox triage, scheduled chores, goals that run for days. Quiet hours and a noise budget keep it a servant, not a spammer.</dd>
       </div>
     </dl>
   </div>
@@ -386,7 +386,7 @@
       <li>
         <span class="n">v</span>
         <h3>Keys outside its hands</h3>
-        <p>The vault holds your credentials encrypted. The agent gets a placeholder; the real value goes in only at the network boundary, only after policy. Anything that spends, sends, or deletes waits for your tap, and every call lands in an append-only log.</p>
+        <p><i>Planned.</i> The vault will hold your credentials encrypted. The agent gets a placeholder; the real value goes in only at the network boundary, only after policy. Anything that spends, sends, or deletes waits for your tap, and every call lands in an append-only log.</p>
       </li>
       <li>
         <span class="n">vi</span>
@@ -395,8 +395,8 @@
       </li>
     </ol>
     <div class="install">
-      <code>curl -fsSL get.lararium.io | sh</code>
-      <p>or run the stack with Docker Compose. Any Linux box will do.</p>
+      <code>git clone https://github.com/lararium-app/lararium.git &amp;&amp; cd lararium/docker &amp;&amp; OPENROUTER_API_KEY=*** docker compose up --build</code>
+      <p>The alpha runs today via Docker Compose or a Go 1.24+ build from source. Any Linux box will do.</p>
     </div>
   </div>
 </section>
