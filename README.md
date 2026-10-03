@@ -33,7 +33,7 @@ providers you choose, and reaches you on the screens you already carry.
   ([CELL-SPEC](docs/CELL-SPEC.md)): systemd-nspawn + cgroup2 + overlayfs,
   fail-closed networking by default.
 
-## Status: public preview (v0.1.0-alpha)
+## Status: public preview (v0.2.0-alpha)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
