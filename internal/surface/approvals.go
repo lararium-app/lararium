@@ -8,8 +8,10 @@ import (
 	"time"
 )
 
-const approvalIDPrefix = "a_"
-const approvalIDEntropyBytes = 12
+const (
+	approvalIDPrefix       = "a_"
+	approvalIDEntropyBytes = 12
+)
 
 type approval struct {
 	ch          chan bool
