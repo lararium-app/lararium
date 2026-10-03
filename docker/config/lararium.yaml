@@ -1,0 +1,19 @@
+# Reference config for the Docker form. Container paths only — inside the
+# image the persona home is /hearth and this file lives at
+# /etc/lararium/lararium.yaml. Keys via environment (api_key_env), never
+# literal values in tracked files.
+hearth:
+  home: /hearth
+  compaction_trigger_pct: 80
+  max_tokens: 512
+
+models:
+  default:
+    - openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+  compact:
+    - openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+
+providers:
+  - name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
