@@ -3,6 +3,7 @@ package surface
 import (
 	"context"
 	"encoding/json"
+	stdlog "log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +44,11 @@ type Hub struct {
 // logs live under <hearthHome>/sessions/<id> exactly where repl.go puts
 // them, so REPL and API see the same logs.
 func NewHub(cfg ServeConfig, hearthHome string, maxTokens int, compactionTriggerPct int, tools []loop.Tool, rt *router.Router, ap *ApprovalHub) *Hub {
+	// Fill spec defaults here too: callers build the Hub before
+	// ListenAndServe, and a zero TurnTimeout would arm an already-expired
+	// context on every turn. Normalize only errors on a non-loopback
+	// bind without allowed_hosts, which ListenAndServe reports properly.
+	_ = cfg.Normalize()
 	return &Hub{
 		cfg:                  cfg,
 		hearthHome:           hearthHome,
@@ -358,6 +364,7 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 	// client disconnect (spec §5 P3), bounded by turn_timeout only.
 	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.tools, approver)
 	if err != nil {
+		stdlog.Printf("hearthd serve: turn on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours
 		ts.fail()
 		return
 	}

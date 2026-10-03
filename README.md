@@ -110,6 +110,15 @@ image or committed to this repo. Edit `docker/config/lararium.yaml` to
 point at your own model server instead (any OpenAI-compatible endpoint
 works, e.g. llama.cpp).
 
+Compose runs the REPL in your terminal *and* serves the web chat on
+`http://127.0.0.1:7717`. To open a door to it:
+
+```bash
+docker compose exec hearthd hearthd token create me
+```
+
+The command prints a ready URL to open in a browser (shown once).
+
 Build from source with Go 1.25+:
 
 ```bash

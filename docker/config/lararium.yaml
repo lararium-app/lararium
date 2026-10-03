@@ -7,6 +7,14 @@ hearth:
   compaction_trigger_pct: 80
   max_tokens: 512
 
+# Web chat + HTTP API (`hearthd serve`). Inside the container we bind all
+# interfaces; the compose file publishes the port on 127.0.0.1 only, and
+# the Host gate still applies: only these Host values are accepted. To
+# reach the chat through your own TLS proxy, add its hostname here.
+serve:
+  listen: "0.0.0.0:7717"
+  allowed_hosts: ["localhost", "127.0.0.1", "[::1]"]
+
 models:
   default:
     - openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
