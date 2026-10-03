@@ -106,7 +106,7 @@ image or committed to this repo. Edit `docker/config/lararium.yaml` to
 point at your own model server instead (any OpenAI-compatible endpoint
 works, e.g. llama.cpp).
 
-Build from source with Go 1.24+:
+Build from source with Go 1.25+:
 
 ```bash
 go build ./cmd/hearthd && go test ./...
