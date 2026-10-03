@@ -21,9 +21,9 @@ Your machine, your models, your keys.
 ---
 
 Lararium is an open-source, self-hosted AI agent daemon (`hearthd`). It
-runs on hardware you own — a box under the stairs, a NAS, a used mini-PC —
-remembers everything in plain files you can read and own, points at model
-providers you choose, and reaches you on the screens you already carry.
+runs on hardware you own, remembers everything in plain files you can
+read and edit, points at model providers you choose, and reaches you on
+the screens you already carry.
 
 ## The covenant
 
@@ -33,9 +33,12 @@ providers you choose, and reaches you on the screens you already carry.
   ([Penatus](docs/PENATUS-SPEC.md)). Export your whole life with one `tar`.
 - **Your keys** — credentials are vaulted and never shown to the model;
   the network layer injects them, policy-checked, on the way out.
-- **Sandboxed work** — long-running agent work executes inside cells
+  *(Planned.)*
+- **Sandboxed work** — agent work executes inside cells
   ([CELL-SPEC](docs/CELL-SPEC.md)): systemd-nspawn + cgroup2 + overlayfs,
-  fail-closed networking by default.
+  fail-closed networking, hard resource caps, snapshot/rollback. The
+  threat model assumes prompt injection *succeeds*; the cage makes
+  misbehavior physically expensive below the model.
 
 ## Status: public preview (v0.2.0-alpha)
 
@@ -44,83 +47,31 @@ providers you choose, and reaches you on the screens you already carry.
 > per-component; the wire APIs may still change between releases. Run it on
 > machines you can wipe. Not fit for production or multi-tenant use.
 
-**Working today:**
-
-- **`hearthd`** — the agent daemon: interactive REPL session loop with an
-  append-only, crash-safe event log; context compaction so sessions
-  outlive the context window; tools for memory (`remember`, `forget`,
-  `memory_search`) and time (`clock`).
-- **Model routing** — any OpenAI-compatible endpoint (llama.cpp,
-  OpenRouter, …) and Anthropic Messages; per-session model selection,
-  fallback chains, streaming, capability probing.
-- **Penatus memory** — persona files + `MEMORY.md` + a searchable memory
-  tree, all plain text with a frozen on-disk spec. Your agent's whole mind
-  is files you own.
-- **Web chat surface** — `hearthd serve` puts an HTTP/SSE API and a
-  built-in chat page on `127.0.0.1:7717`. Bearer-token auth (tokens are
-  hashed at rest, printed once), streaming replies, side sessions, and
-  tool approvals you can click Allow/Deny on — the same gate the REPL
-  enforces. Loopback by default; the Host gate blocks DNS rebinding.
-- **Cell sandbox** — `cell` runs agent work inside systemd-nspawn +
-  cgroup2 + overlayfs with hard memory/CPU/task caps, uid-mapped binds,
-  snapshots, and crash recovery. Networking is fail-closed: a cell has no
-  route anywhere except through an auditing egress proxy (CONNECT + HTTP,
-  SSRF re-resolve, host-address floor). Template bake → create → run →
-  destroy in under a minute.
+**Working today:** the `hearthd` REPL (append-only event log, context
+compaction, memory tools) · model routing with fallback chains (any
+OpenAI-compatible endpoint, Anthropic) · Penatus memory · `hearthd
+serve` — HTTP/SSE API + built-in web chat with streaming and clickable
+tool approvals · the `cell` sandbox, proven by a C1–C12 containment
+suite on five hosts across two architectures.
 
 **Not built yet:** messaging channels (Telegram, Signal, …) and the
-credential vault (`custos`). See
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) for the whole shape and what each
-component will do.
-
-## How the sandbox protects you
-
-The threat model assumes prompt injection *succeeds* — a hostile web page
-or email convinces the agent to misbehave. Lararium's answer is to make
-misbehavior physically expensive below the model:
-
-- **No network except the door.** Each cell gets a dedicated veth pair in
-  its own netns; an nftables cage drops direct HTTP/HTTPS/DNS/ICMP/raw
-  TCP, refuses the host's own addresses (SSRF floor), and logs every
-  bypass attempt. The only exit is the local proxy, which re-resolves
-  hostnames per request and enforces per-request budgets.
-- **Hard resource caps.** `memory.max` with swap disabled, CPU quota,
-  task limits, OOM containment (`OOMPolicy=continue`) — a runaway cell
-  dies inside its own cgroup and the host never notices.
-- **Filesystem containment.** overlayfs workspaces, uid-mapped binds so
-  in-cell root is a mapped unprivileged uid on the host, and per-cell
-  snapshots you can roll back.
-- **Proven, not claimed.** A C1–C12 containment suite asserts each
-  property positively (escape attempts, crash containment, uid mapping,
-  memory caps with random fill so zero-page tricks can't false-pass).
-  Green on five hosts spanning two architectures, three distro families,
-  ext4/btrfs, bare metal and WSL2, and all three iptables/nftables host
-  shapes.
-
-Found a way around any of this? [SECURITY.md](SECURITY.md) — we take it
-seriously and credit reporters.
+credential vault (`custos`). [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+maps the whole shape.
 
 ## Platforms
 
-| Platform | The daemon | The sandbox |
+| Platform | Daemon | Sandbox |
 |---|---|---|
 | Linux (native) | ✅ | ✅ full cage — the reference target |
-| WSL2 (Windows 11) | ✅ | ✅ full cage — bench-proven, one config line |
-| Windows native | ✅ compiles clean (runtime unproven) | ❌ no cage yet — Docker door instead |
-| macOS | ✅ compiles clean (runtime unproven) | ❌ no cage yet — Docker door instead |
+| WSL2 (Windows 11) | ✅ | ✅ full cage — enable systemd, one package line |
+| Windows / macOS native | ✅ compiles clean | ❌ cage needs a Linux kernel (or hypervisor backend, planned) — Docker door meanwhile |
 
-The sandbox is built on `systemd-nspawn`, nftables, overlayfs, and
-cgroup2 — Linux kernel features, not Go portability problems. On Windows
-that means one good answer: **WSL2**, where the cage runs on a real
-kernel. Enable systemd in the distro (`/etc/wsl.conf`: `[boot]` /
-`systemd=true`, then `wsl --shutdown`), install
-`uidmap systemd-container nftables acl debootstrap`, and the cell stack
-is identical to bare metal — doctor 16/16, lifecycle smoke green, and
-the full C1–C12 containment suite passing under WSL2. Until native
-Windows/macOS
-sandboxes exist (planned: a hypervisor-backed cell), those platforms
-run the daemon through Docker, which keeps the web chat and the REPL
-but not the cage.
+The cage is built on kernel features (`systemd-nspawn`, nftables,
+overlayfs, cgroup2), not distro-specific glue — it has run green on
+x86-64 and arm64, three distro families, ext4 and btrfs, bare metal and
+WSL2. On Windows the answer is WSL2: set `[boot] systemd=true` in
+`/etc/wsl.conf`, install `uidmap systemd-container nftables acl
+debootstrap`, and the cell stack behaves exactly as on bare metal.
 
 ## Quick start
 
@@ -146,23 +97,11 @@ docker compose exec hearthd hearthd token create me
 
 The command prints a ready URL to open in a browser (shown once).
 
-Build from source with Go 1.25+:
-
-```bash
-go build ./cmd/hearthd && go test ./...
-```
-
-To use the web chat instead of the REPL, start the server and mint a
-one-time access URL:
-
-```bash
-./hearthd serve              # page + API on http://127.0.0.1:7717
-./hearthd token create me    # prints the URL to open (shown once)
-```
-
-The page is loopback-only by default; see
-[`docs/SURFACE-SPEC.md`](docs/SURFACE-SPEC.md) for the API and its
-security model.
+Build from source with Go 1.25+ (`go build ./cmd/hearthd && go test
+./...`); run `./hearthd` for the REPL or `./hearthd serve` for the web
+door. Native Linux/WSL2 installs additionally get the `cell` sandbox —
+see [CELL-SPEC.md](docs/CELL-SPEC.md) for the host requirements and
+`cell doctor` to check yours.
 
 ## Documentation
 
