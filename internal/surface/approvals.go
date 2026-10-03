@@ -1,3 +1,7 @@
+// Package surface is the HTTP/SSE surface of hearthd (docs/SURFACE-SPEC.md):
+// loopback API on serve.listen, bearer-token auth, session CRUD, streamed
+// turns through the frozen loop engine, and the tool-approval round-trip.
+// It never forks storage or loop semantics — Penatus and loop stay frozen.
 package surface
 
 import (
@@ -23,12 +27,18 @@ type approval struct {
 	reason      string
 }
 
+// ApprovalHub tracks pending tool approvals across sessions: one
+// pending approval per (session, id), resolved by the HTTP approver,
+// auto-denied on timeout, or denied when the listener disconnects
+// (spec §5 approval state machine: pending -> approved|denied|timed_out).
 type ApprovalHub struct {
 	mu        sync.Mutex
 	bySession map[string]map[string]*approval
 	timeout   time.Duration
 }
 
+// NewApprovalHub builds the hub; timeout is serve.approval_timeout —
+// a pending approval auto-denies (reason timed_out) once it elapses.
 func NewApprovalHub(timeout time.Duration) *ApprovalHub {
 	return &ApprovalHub{
 		bySession: make(map[string]map[string]*approval),
@@ -49,6 +59,9 @@ func generateApprovalID() string {
 	return approvalIDPrefix + encoded
 }
 
+// Register creates a pending approval and fires onEvent exactly once
+// (the SSE approval_request frame). The decision channel receives true
+// (allow) or false (deny/deny-reason) exactly once.
 func (h *ApprovalHub) Register(sessionID, name, argsSummary string, onEvent func(approvalID string)) (id string, decision <-chan bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -100,6 +113,9 @@ func (h *ApprovalHub) resolveTimeout(id string) {
 	}
 }
 
+// Resolve settles a pending approval. Returns the HTTP status the
+// caller should answer with: 200 resolved, 404 unknown session or id,
+// 410 already resolved (denied/approved/timed_out).
 func (h *ApprovalHub) Resolve(sessionID, id string, allow bool) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -139,6 +155,8 @@ func (h *ApprovalHub) Resolve(sessionID, id string, allow bool) int {
 	return 200
 }
 
+// DenyAllFor denies every pending approval of a session (disconnect
+// policy: reason "disconnected").
 func (h *ApprovalHub) DenyAllFor(sessionID, reason string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -148,7 +166,7 @@ func (h *ApprovalHub) DenyAllFor(sessionID, reason string) {
 		return
 	}
 
-	for id, ap := range session {
+	for _, ap := range session {
 		if ap.state == "pending" {
 			ap.state = "denied"
 			ap.reason = reason
@@ -160,11 +178,11 @@ func (h *ApprovalHub) DenyAllFor(sessionID, reason string) {
 				ap.timer.Stop()
 				ap.timer = nil
 			}
-			_ = id // keep for potential future use
 		}
 	}
 }
 
+// PendingCount is the number of pending approvals for a session.
 func (h *ApprovalHub) PendingCount(sessionID string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -183,6 +201,7 @@ func (h *ApprovalHub) PendingCount(sessionID string) int {
 	return count
 }
 
+// Reason is why an approval resolved (ok|denied|timed_out|disconnected).
 func (h *ApprovalHub) Reason(sessionID, id string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()

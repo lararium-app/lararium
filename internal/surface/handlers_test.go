@@ -89,7 +89,8 @@ func TestHealthHandler(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !resp["ok"].(bool) {
+	ok, _ := resp["ok"].(bool)
+	if !ok {
 		t.Errorf("ok = false, want true")
 	}
 	if resp["version"] == nil {
@@ -194,7 +195,7 @@ func TestEventsHandler(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 					t.Fatalf("unmarshal: %v", err)
 				}
-				evts := resp["events"].([]any)
+				evts, _ := resp["events"].([]any)
 				if len(evts) != tc.wantEvents {
 					t.Errorf("events len = %d, want %d", len(evts), tc.wantEvents)
 				}

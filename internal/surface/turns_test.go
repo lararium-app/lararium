@@ -3,6 +3,7 @@ package surface
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -52,16 +53,21 @@ func (s *stubProvider) CompleteStream(ctx context.Context, msgs []router.Message
 	return comp, nil
 }
 
-func mustJSON(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	return b
 }
 
-func raw(s string) json.RawMessage {
-	return mustJSON(s)
+func raw(t *testing.T, s string) json.RawMessage {
+	t.Helper()
+	return mustJSON(t, s)
 }
 
-func setupHub(t *testing.T, sp *stubProvider) (*Hub, string) {
+func setupHub(t *testing.T, sp *stubProvider) *Hub {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -80,8 +86,8 @@ func setupHub(t *testing.T, sp *stubProvider) (*Hub, string) {
 
 	// Write a system prompt
 	_ = log.Append(penatus.Event{T: "msg", TS: time.Now().UTC().Format(time.RFC3339), Fields: map[string]json.RawMessage{
-		"role": raw("assistant"), "text": raw("system prompt"), "model": raw("test"),
-		"usage": mustJSON(map[string]int{"in": 10, "out": 5}),
+		"role": raw(t, "assistant"), "text": raw(t, "system prompt"), "model": raw(t, "test"),
+		"usage": mustJSON(t, map[string]int{"in": 10, "out": 5}),
 	}})
 
 	rt := router.NewRouter(router.Profile{Chain: []router.Target{{Provider: sp}}})
@@ -107,9 +113,7 @@ func setupHub(t *testing.T, sp *stubProvider) (*Hub, string) {
 	}
 
 	ap := NewApprovalHub(cfg.ApprovalTimeout)
-	hub := NewHub(cfg, dir, 1000, 80, tools, rt, ap)
-
-	return hub, dir
+	return NewHub(cfg, dir, 1000, 80, tools, rt, ap)
 }
 
 func parseSSEFrames(body string) []map[string]any {
@@ -119,12 +123,13 @@ func parseSSEFrames(body string) []map[string]any {
 	var data strings.Builder
 	for _, line := range lines {
 		line = strings.TrimSuffix(line, "\r")
-		if strings.HasPrefix(line, "event: ") {
+		switch {
+		case strings.HasPrefix(line, "event: "):
 			eventType = strings.TrimPrefix(line, "event: ")
-		} else if strings.HasPrefix(line, "data: ") {
+		case strings.HasPrefix(line, "data: "):
 			data.WriteString(strings.TrimPrefix(line, "data: "))
 			data.WriteString("\n")
-		} else if line == "" && eventType != "" {
+		case line == "" && eventType != "":
 			var m map[string]any
 			_ = json.Unmarshal([]byte(data.String()), &m)
 			frames = append(frames, map[string]any{
@@ -133,7 +138,7 @@ func parseSSEFrames(body string) []map[string]any {
 			})
 			eventType = ""
 			data.Reset()
-		} else if strings.HasPrefix(line, ": ping") {
+		case strings.HasPrefix(line, ": ping"):
 			frames = append(frames, map[string]any{
 				"event": "ping",
 				"data":  nil,
@@ -158,7 +163,7 @@ func TestHub_GateConcurrentRequests(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
 	wg := sync.WaitGroup{}
 	wg.Add(2)
@@ -166,10 +171,10 @@ func TestHub_GateConcurrentRequests(t *testing.T) {
 	var codes [2]int
 	var bodies [2]string
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		go func(idx int) {
 			defer wg.Done()
-			req := httptest.NewRequest("POST", "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+			req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			hub.HandleMessage(w, req, "main")
@@ -190,9 +195,10 @@ func TestHub_GateConcurrentRequests(t *testing.T) {
 	successCount := 0
 	conflictCount := 0
 	for _, c := range codes {
-		if c == 200 {
+		switch c {
+		case 200:
 			successCount++
-		} else if c == 409 {
+		case 409:
 			conflictCount++
 		}
 	}
@@ -235,9 +241,9 @@ func TestHub_SSEOrderWithApproval(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
-	req := httptest.NewRequest("POST", "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	hub.HandleMessage(w, req, "main")
@@ -253,8 +259,9 @@ func TestHub_SSEOrderWithApproval(t *testing.T) {
 	expectedEvents := []string{"delta", "approval_request", "tool_start", "tool_done", "delta", "turn_done"}
 	var seenEvents []string
 	for _, f := range frames {
-		if f["event"] != "ping" {
-			seenEvents = append(seenEvents, f["event"].(string))
+		ev, _ := f["event"].(string)
+		if ev != "ping" {
+			seenEvents = append(seenEvents, ev)
 		}
 	}
 
@@ -299,10 +306,10 @@ func TestHub_DisconnectDeniesPending(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest("POST", "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -350,12 +357,12 @@ func TestHub_Heartbeat(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	req := httptest.NewRequest("POST", "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -400,11 +407,11 @@ func TestHub_Cancel(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
 	// First request - will be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest("POST", "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -456,7 +463,7 @@ func TestHub_CancelNoInFlight(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
 	// Cancel with no in-flight turn
 	cancelled := hub.Cancel("main")
@@ -474,13 +481,13 @@ func TestHub_HandleApproval(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
 	// Register an approval
 	id, ch := hub.ap.Register("main", "echo", `{"v":"hi"}`, func(id string) {})
 
 	// Allow it
-	req := httptest.NewRequest("POST", "/v1/sessions/main/approvals/"+id, strings.NewReader(`{"decision":"allow"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/approvals/"+id, strings.NewReader(`{"decision":"allow"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	hub.HandleApproval(w, req, "main", id)
@@ -506,7 +513,7 @@ func TestHub_HandleApproval(t *testing.T) {
 	}
 
 	// Double resolve should return 410
-	req2 := httptest.NewRequest("POST", "/v1/sessions/main/approvals/"+id, strings.NewReader(`{"decision":"allow"}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/approvals/"+id, strings.NewReader(`{"decision":"allow"}`))
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 	hub.HandleApproval(w2, req2, "main", id)
@@ -525,13 +532,13 @@ func TestHub_HandleApprovalForeignSession(t *testing.T) {
 		},
 	}
 
-	hub, _ := setupHub(t, sp)
+	hub := setupHub(t, sp)
 
 	// Register an approval in session A
 	id, _ := hub.ap.Register("s_AAA", "echo", `{"v":"hi"}`, func(id string) {})
 
 	// Try to resolve from session B
-	req := httptest.NewRequest("POST", "/v1/sessions/s_BBB/approvals/"+id, strings.NewReader(`{"decision":"allow"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/s_BBB/approvals/"+id, strings.NewReader(`{"decision":"allow"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	hub.HandleApproval(w, req, "s_BBB", id)

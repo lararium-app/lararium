@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// ServeConfig is the serve: block of lararium.yaml (spec §2): where the
+// surface listens and its two timeouts. All zero values normalize to
+// spec defaults.
 type ServeConfig struct {
 	Listen          string        `yaml:"listen"`
 	AllowedHosts    []string      `yaml:"allowed_hosts"`
@@ -13,6 +16,9 @@ type ServeConfig struct {
 	TurnTimeout     time.Duration `yaml:"turn_timeout"`
 }
 
+// Normalize fills spec defaults (port 7717, approval 5m, turn 10m) and
+// enforces the non-loopback rule: binding outside loopback without an
+// allowed_hosts allowlist refuses to start (spec §2).
 func (c *ServeConfig) Normalize() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:7717"
@@ -29,14 +35,15 @@ func (c *ServeConfig) Normalize() error {
 		host = c.Listen
 	}
 
-	isLoopback := host == "127.0.0.1" || host == "localhost" || host == "::1"
-	if !isLoopback && len(c.AllowedHosts) == 0 {
+	if !isLoopbackHost(host) && len(c.AllowedHosts) == 0 {
 		return errors.New("non-loopback bind requires serve.allowed_hosts")
 	}
 
 	return nil
 }
 
+// isLoopbackHost is the loopback test used by both the start gate and
+// the server's bind-time check (spec §2).
 func isLoopbackHost(host string) bool {
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
