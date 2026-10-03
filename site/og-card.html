@@ -1,0 +1,99 @@
+<!doctype html>
+<!-- Social preview card source (1280x640). Render to og-image.png:
+     npx playwright screenshot is not used; see scripts/render-og.sh flow.
+     Palette mirrors site/index.html. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #100d0a;
+    --bg-raise: #171310;
+    --ember: #e8763a;
+    --ember-soft: #f2a35f;
+    --ink: #f0e8dc;
+    --ink-mute: #9a8f80;
+    --ink-faint: #6b6156;
+    --line: #2c251e;
+    --serif: "Fraunces", Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    background: var(--bg);
+    font-family: var(--sans);
+    color: var(--ink);
+    position: relative;
+  }
+  .vignette {
+    position: absolute; inset: 0;
+    background: radial-gradient(900px 520px at 78% 30%, rgba(232,118,58,.10), transparent 60%);
+  }
+  .shrine {
+    position: absolute; right: 140px; top: 150px;
+    width: 340px; height: 340px;
+    border: 1px solid var(--line);
+    border-radius: 170px 170px 18px 18px;
+    background: linear-gradient(180deg, var(--bg-raise), var(--bg));
+    box-shadow: inset 0 0 90px rgba(232,118,58,.12);
+  }
+  .ember {
+    position: absolute; left: 50%; top: 58%;
+    width: 64px; height: 64px; transform: translate(-50%,-50%);
+    border-radius: 50%;
+    background: radial-gradient(circle, #ffd9a8 0%, var(--ember-soft) 34%, var(--ember) 62%, rgba(232,118,58,0) 72%);
+    filter: blur(1px);
+  }
+  .content {
+    position: absolute; left: 88px; top: 0; height: 100%;
+    width: 640px;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 21px; letter-spacing: .14em;
+    color: var(--ember-soft);
+    text-transform: uppercase;
+    margin-bottom: 26px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-size: 108px; font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1;
+  }
+  .lede {
+    margin-top: 30px;
+    font-size: 30px; line-height: 1.42;
+    color: var(--ink-mute);
+    max-width: 600px;
+  }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  .foot {
+    position: absolute; left: 88px; bottom: 52px;
+    font-family: var(--mono); font-size: 20px;
+    color: var(--ink-faint);
+  }
+  .foot b { color: var(--ember); font-weight: 600; }
+  .tag {
+    position: absolute; right: 88px; bottom: 52px;
+    font-family: var(--mono); font-size: 20px;
+    color: var(--ink-faint);
+  }
+</style>
+</head>
+<body>
+  <div class="vignette"></div>
+  <div class="shrine"><div class="ember"></div></div>
+  <div class="content">
+    <p class="kicker">Open source · Self-hosted</p>
+    <h1>Lararium</h1>
+    <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth.
+       Your machine, your models, your keys.</p>
+  </div>
+  <p class="foot">lararium<b>.</b>io</p>
+  <p class="tag">AGPL-3.0</p>
+</body>
+</html>

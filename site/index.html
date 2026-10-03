@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lararium: the shrine for your digital hearth</title>
+<meta name="description" content="Lararium is an open-source, self-hosted personal AI agent. Your machine, your models, your keys. The fire stays lit at your house.">
+<meta property="og:title" content="Lararium">
+<meta property="og:description" content="An open-source personal AI agent that lives at your hearth. Bring your own model. Keep your own keys.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://lararium.io/og-image.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Lararium — a personal AI agent that lives at your hearth. Your machine, your models, your keys.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://lararium.io/og-image.png">
+<meta name="twitter:image:alt" content="Lararium — a personal AI agent that lives at your hearth.">
+<meta property="og:url" content="https://lararium.io">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;1,9..144,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #100d0a;
+    --bg-raise: #171310;
+    --ink: #f0e8dc;
+    --ink-mute: #9a8f80;
+    --ink-faint: #6b6156;
+    --ember: #e8763a;
+    --ember-soft: #f2a35f;
+    --line: #2c251e;
+    --serif: "Fraunces", Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 28px; }
+
+  /* ---------- hero ---------- */
+  header {
+    min-height: 92vh;
+    display: grid;
+    align-content: center;
+    position: relative;
+    padding: 96px 0;
+  }
+  /* the shrine: a narrow arch of ember light behind the wordmark */
+  .shrine {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -46%);
+    width: 420px; height: 560px;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 46% 34% at 50% 62%, rgba(232,118,58,.22), transparent 70%),
+      radial-gradient(ellipse 30% 20% at 50% 64%, rgba(242,163,95,.18), transparent 70%);
+    filter: blur(2px);
+  }
+  .shrine::before {
+    content: "";
+    position: absolute;
+    top: 8%; left: 50%;
+    transform: translateX(-50%);
+    width: 200px; height: 460px;
+    border: 1px solid var(--line);
+    border-bottom: none;
+    border-radius: 100px 100px 0 0;
+    opacity: .7;
+  }
+  .ember {
+    position: absolute;
+    top: 63%; left: 50%;
+    width: 7px; height: 7px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: var(--ember-soft);
+    box-shadow: 0 0 22px 7px rgba(232,118,58,.55), 0 0 60px 22px rgba(232,118,58,.22);
+    animation: breathe 4.2s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: .75; transform: translate(-50%,-50%) scale(1); }
+    50%      { opacity: 1;   transform: translate(-50%,-50%) scale(1.25); }
+  }
+  .kicker {
+    font-size: 12.5px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--ember);
+    margin-bottom: 26px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 300;
+    font-size: clamp(52px, 9vw, 96px);
+    letter-spacing: -.015em;
+    line-height: 1.02;
+    margin-bottom: 8px;
+  }
+  .latin {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 300;
+    color: var(--ink-faint);
+    font-size: clamp(17px, 2.4vw, 21px);
+    margin-bottom: 34px;
+  }
+  .lede {
+    font-size: clamp(19px, 2.6vw, 23px);
+    line-height: 1.55;
+    color: var(--ink);
+    max-width: 30em;
+    font-weight: 300;
+  }
+  .lede strong { font-weight: 600; color: var(--ember-soft); }
+  .cta {
+    margin-top: 44px;
+    display: flex;
+    gap: 22px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  form.waitlist { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  form.waitlist input[type="email"] {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--ink);
+    font: inherit;
+    font-size: 15px;
+    padding: 13px 16px;
+    min-width: 240px;
+    max-width: 320px;
+    transition: border-color .18s ease;
+  }
+  form.waitlist input[type="email"]:focus {
+    outline: none;
+    border-color: var(--ember);
+  }
+  form.waitlist input::placeholder { color: var(--ink-faint); }
+  .wl-note { font-size: 13px; color: var(--ink-faint); max-width: 22em; }
+  .wl-note.ok { color: var(--ember-soft); }
+  .wl-note.err { color: #d97a6a; }
+  .cta a.mail, .cta button.mail, a.mail, button.mail {
+    display: inline-block;
+    padding: 14px 26px;
+    border: 1px solid var(--ember);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--ember-soft);
+    text-decoration: none;
+    font: inherit;
+    font-size: 15px;
+    letter-spacing: .02em;
+    cursor: pointer;
+    transition: background .18s ease, color .18s ease;
+  }
+  .cta a.mail:hover, .cta a.mail:focus-visible,
+  button.mail:hover, button.mail:focus-visible {
+    background: var(--ember);
+    color: #1a0f07;
+    outline: none;
+  }
+  .cta span { color: var(--ink-faint); font-size: 14px; }
+
+  /* ---------- sections ---------- */
+  section { padding: 96px 0; border-top: 1px solid var(--line); }
+  .section-label {
+    font-size: 12px;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 34px;
+  }
+  .meaning p, .pocket p {
+    font-family: var(--serif);
+    font-weight: 300;
+    font-size: clamp(21px, 3vw, 27px);
+    line-height: 1.55;
+    color: var(--ink);
+    max-width: 34em;
+  }
+  .meaning p + p, .pocket p + p { margin-top: 26px; color: var(--ink-mute); }
+  .meaning em, .pocket em { color: var(--ember-soft); font-style: italic; }
+
+  /* the covenant: typographic ledger lines, no icon cards */
+  .covenant dl { border-top: 1px solid var(--line); }
+  .covenant .row {
+    display: grid;
+    grid-template-columns: 12em 1fr;
+    gap: 20px;
+    padding: 26px 0;
+    border-bottom: 1px solid var(--line);
+    align-items: baseline;
+  }
+  .covenant dt {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 19px;
+    color: var(--ember-soft);
+  }
+  .covenant dd { color: var(--ink-mute); max-width: 32em; }
+  .covenant dd b { color: var(--ink); font-weight: 600; }
+
+  /* how it works: numbered steps, same ledger bones */
+  .how ol { border-top: 1px solid var(--line); list-style: none; }
+  .how li {
+    display: grid;
+    grid-template-columns: 2.5em 11em 1fr;
+    gap: 20px;
+    padding: 26px 0;
+    border-bottom: 1px solid var(--line);
+    align-items: baseline;
+  }
+  .how .n {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 300;
+    font-size: 24px;
+    color: var(--ember);
+  }
+  .how h3 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 19px;
+    color: var(--ember-soft);
+  }
+  .how p { color: var(--ink-mute); max-width: 32em; }
+  .how p + p { margin-top: 12px; }
+  .how code, .install code {
+    font-family: var(--mono);
+    font-size: 13.5px;
+    color: var(--ember-soft);
+    background: var(--bg-raise);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 2px 6px;
+  }
+  .install {
+    margin-top: 34px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .install p { font-size: 13.5px; color: var(--ink-faint); }
+
+  .closing {
+    text-align: left;
+    padding-bottom: 130px;
+  }
+  .closing p.big {
+    font-family: var(--serif);
+    font-weight: 300;
+    font-style: italic;
+    font-size: clamp(24px, 4vw, 34px);
+    line-height: 1.4;
+    color: var(--ink);
+    max-width: 24em;
+    margin-bottom: 34px;
+  }
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 34px 0 46px;
+    color: var(--ink-faint);
+    font-size: 13.5px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  footer a { color: var(--ink-mute); text-decoration: none; }
+  footer a:hover { color: var(--ember-soft); }
+
+  @media (max-width: 620px) {
+    .covenant .row, .how li { grid-template-columns: 1fr; gap: 6px; }
+    .how li { padding-left: 0; }
+    .shrine { width: 300px; height: 420px; }
+    .shrine::before { width: 150px; height: 330px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ember { animation: none; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="shrine" aria-hidden="true"><div class="ember"></div></div>
+  <div class="wrap">
+    <p class="kicker">Open source · Self-hosted</p>
+    <h1>Lararium</h1>
+    <p class="latin">/ lārārium /: the household shrine where the protective spirits were kept</p>
+    <p class="lede">A personal AI agent that lives at <strong>your</strong> hearth and rides in <strong>your</strong> pocket. It keeps working while you sleep and answers on whatever screen you have with you. Your machine, your models, your keys.</p>
+    <div class="cta">
+      <form class="waitlist" id="wl-hero" novalidate>
+        <input type="email" name="email" placeholder="you@example.com" aria-label="Email address" required autocomplete="email">
+        <button class="mail" type="submit">Tell me when the fire is lit</button>
+      </form>
+      <span class="wl-note" id="wl-hero-note">Coming soon · AGPL-licensed</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="meaning">
+  <div class="wrap">
+    <p class="section-label">What the name means</p>
+    <p>Two thousand years ago, every Roman house kept a <em>lararium</em>: a shrine by the door, holding the family's penates, the spirits that guarded its home, its memory, and its continuities. When Troy burned, Aeneas's hands were too new from slaughter to touch the gods, so old Anchises held the penates fast and rode out through the flames on his son's shoulders. A home is where its penates are.</p>
+    <p>Your digital life wants the same thing now: one place holding your agent's memory, its credentials, its voice and habits, readable and movable by you alone. The commercial clouds are burning. Carry yours out.</p>
+  </div>
+</section>
+
+<section class="pocket">
+  <div class="wrap">
+    <p class="section-label">At home. And in your pocket.</p>
+    <p>The hearth burns on your own hardware: a box under the stairs, a NAS, a used mini-PC. You don't live there, so Lararium comes to wherever you are, as a tap from your home screen, a thread in <em>WhatsApp, Telegram, or Signal</em>, or plain <em>SMS</em> when that's all there is.</p>
+    <p>The same agent, the same memory, from any device. Ask it something on your phone at the store and the answer is waiting in the same conversation at your desk. When it needs your permission to spend, send, or delete, the approval card lands on the screen you're holding. The Android app goes further, opening your phone's own contacts, calls, and texts, one gated door at a time.</p>
+  </div>
+</section>
+
+<section class="covenant">
+  <div class="wrap">
+    <p class="section-label">The covenant</p>
+    <dl>
+      <div class="row">
+        <dt>Your fire</dt>
+        <dd>Point it at your own llama.cpp, Ollama, or vLLM box, or bring an API key for <b>Anthropic, OpenAI, Google, or OpenRouter</b>. No lock-in, and nothing rerouted without your config saying so.</dd>
+      </div>
+      <div class="row">
+        <dt>Your memory</dt>
+        <dd>Everything your agent knows lives in <b>plain files on your disk</b>. The conversation window is scratch paper; the files are the record. One tar exports your agent's whole life.</dd>
+      </div>
+      <div class="row">
+        <dt>Your keys</dt>
+        <dd>Credentials sit in a vault, and <b>the agent never sees them</b>. The network layer swaps real values in on the way out, after policy. Prompt injection can't steal what was never handed over.</dd>
+      </div>
+      <div class="row">
+        <dt>Your doors</dt>
+        <dd>Mail, calendar, messages, browser, shell, and any API you hand it: each door gets its own rule, <b>open, knock first, or sealed</b>. Every action lands in a log only you can read.</dd>
+      </div>
+      <div class="row">
+        <dt>Always lit</dt>
+        <dd>Morning briefings, price watches, inbox triage, scheduled chores, goals that run for days. Quiet hours and a noise budget keep it a servant, not a spammer.</dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+<section class="how">
+  <div class="wrap">
+    <p class="section-label">How it works</p>
+    <ol>
+      <li>
+        <span class="n">i</span>
+        <h3>One daemon, your machine</h3>
+        <p>A single service runs the show: sessions, model calls, tools, schedules. Each session is an append-only event log on your disk, so history can be replayed, rewound, and audited.</p>
+      </li>
+      <li>
+        <span class="n">ii</span>
+        <h3>Bring your own model</h3>
+        <p>A router sits between the agent and whatever model you choose, local or cloud. You can set a cheap model for chat, a stronger one for agentic work, and a local one for private turns.</p>
+      </li>
+      <li>
+        <span class="n">iii</span>
+        <h3>Work happens in a cell</h3>
+        <p>Commands, code, and browsing run inside a cell: a real Linux container fenced by user namespaces and kernel cgroup quotas. Root inside the cell unlocks nothing outside it.</p>
+        <p>The filesystem is an overlay on a sealed template. Snapshot takes a second; rewinding takes a second, even after the agent made a mess of things.</p>
+      </li>
+      <li>
+        <span class="n">iv</span>
+        <h3>No doors without a key</h3>
+        <p>A cell gets no route to the internet by default. The one exit runs through a proxy that drops anything policy has not allowed, and the policy is yours: open, knock first, or sealed.</p>
+      </li>
+      <li>
+        <span class="n">v</span>
+        <h3>Keys outside its hands</h3>
+        <p>The vault holds your credentials encrypted. The agent gets a placeholder; the real value goes in only at the network boundary, only after policy. Anything that spends, sends, or deletes waits for your tap, and every call lands in an append-only log.</p>
+      </li>
+      <li>
+        <span class="n">vi</span>
+        <h3>Memory is files</h3>
+        <p>A summary index plus your full session history, written in open formats you can edit by hand. When the working window grows long it gets compacted, and the files keep the record.</p>
+      </li>
+    </ol>
+    <div class="install">
+      <code>curl -fsSL get.lararium.io | sh</code>
+      <p>or run the stack with Docker Compose. Any Linux box will do.</p>
+    </div>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="wrap">
+    <p class="big">The shrine keeps the penates. Lararium keeps your agent.</p>
+    <form class="waitlist" id="wl-closing" novalidate>
+      <input type="email" name="email" placeholder="you@example.com" aria-label="Email address" required autocomplete="email">
+      <button class="mail" type="submit">Tell me when the fire is lit</button>
+    </form>
+    <p class="wl-note" id="wl-closing-note" style="margin-top:14px">One email when we launch. No newsletters, no noise.</p>
+  </div>
+</section>
+
+</main>
+
+<script>
+(() => {
+  const API = "https://api.lararium.io";
+  document.querySelectorAll("form.waitlist").forEach((form) => {
+    const note = document.getElementById(form.id + "-note");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = form.email.value.trim();
+      if (!/^[^@\s@]+@[^@\s.]+(\.[^@\s.]+)+$/.test(email)) {
+        note.textContent = "That address doesn't look right.";
+        note.className = "wl-note err";
+        return;
+      }
+      const btn = form.querySelector("button");
+      btn.disabled = true;
+      try {
+        const r = await fetch(API + "/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d.ok) {
+          note.textContent = d.already
+            ? "You're already on the list. The fire remembers."
+            : "Written on the wall of the shrine. We'll send word.";
+          note.className = "wl-note ok";
+          form.reset();
+        } else if (r.status === 429) {
+          note.textContent = "Slow down a moment and try again.";
+          note.className = "wl-note err";
+        } else {
+          note.textContent = "Something went wrong. Try email hello@lararium.io instead.";
+          note.className = "wl-note err";
+        }
+      } catch {
+        note.textContent = "Couldn't reach the shrine. Try again shortly.";
+        note.className = "wl-note err";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+})();
+</script>
+
+<footer>
+  <div class="wrap" style="display:flex;justify-content:space-between;width:100%;gap:16px;flex-wrap:wrap;">
+    <span>© 2026 Lararium · built in the open, AGPL-3.0</span>
+    <span>your machine · your models · your keys</span>
+  </div>
+</footer>
+
+</body>
+</html>
