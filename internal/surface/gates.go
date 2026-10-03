@@ -7,8 +7,10 @@ import (
 	"strings"
 )
 
-var sessionIDRe = regexp.MustCompile(`^(s_[0-9A-Z]{26}|main)$`)
-var approvalIDRe = regexp.MustCompile(`^a_[0-9A-Za-z]{10,32}$`)
+var (
+	sessionIDRe  = regexp.MustCompile(`^(s_[0-9A-Z]{26}|main)$`)
+	approvalIDRe = regexp.MustCompile(`^a_[0-9A-Za-z]{10,32}$`)
+)
 
 func ValidSessionID(id string) bool {
 	return sessionIDRe.MatchString(id)

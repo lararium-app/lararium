@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
-const tokenPrefix = "lar1_"
-const tokenAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const (
+	tokenPrefix   = "lar1_"
+	tokenAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
 
 type tokenEntry struct {
 	Hash    string `json:"hash"`
