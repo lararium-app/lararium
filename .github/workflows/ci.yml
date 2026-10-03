@@ -52,6 +52,40 @@ jobs:
       - name: Surface V-suite
         run: bash tests/surface/run.sh
 
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: No executables in the tree
+        run: |
+          # Built binaries belong in bin/ (gitignored). A release cut once
+          # swept two 15 MB executables into tracked history — they embed
+          # build-host paths, so this gate makes it mechanically hard.
+          # (Media assets like .gif/.png are fine; ELF/PE/Mach-O are not.)
+          bad=0
+          while IFS= read -r -d '' f; do
+            magic=$(file -b "$f")
+            case "$magic" in
+              ELF*|PE32*|Mach-O*)
+                echo "executable tracked: $f ($magic)"
+                bad=1
+                ;;
+            esac
+          done < <(git ls-files -z)
+          if [ "$bad" -ne 0 ]; then
+            echo "remove the files above from git (bin/ is the build output dir)"; exit 1
+          fi
+
+      - name: Neutrality scan
+        run: |
+          # Product repo: zero personal identifiers, hostnames, home paths,
+          # or hardware specifics in tracked files.
+          if git ls-files -z | xargs -0 grep -l -i -E \
+            "lararium|dev|dev|a bench|bench|user|laptop|x86-64|vendor kernel" 2>/dev/null; then
+            echo "personal identifiers found in tracked files (see list above)"; exit 1
+          fi
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:
