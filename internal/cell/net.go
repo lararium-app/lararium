@@ -661,11 +661,15 @@ func (s *Store) InstallNetwork() error {
 		return cause
 	}
 
-	// Future interfaces default closed (per-veth overrides happen at
-	// start).
-	if err := s.writeSysctl("net.ipv4.conf.default.forwarding", "0"); err != nil {
-		return rollback(fmt.Errorf("set default.forwarding: %w", err))
-	}
+	// NOTE: net.ipv4.conf.default.forwarding is deliberately NOT
+	// touched. It looked tempting to default new interfaces to
+	// closed, but the kernel applies it to EVERY interface created
+	// afterwards — including Docker bridges, whose containers then
+	// fail with "No route to host" on forwarded traffic (observed in
+	// production: compose egress died host-wide after net-install).
+	// The cage's isolation never depended on it: the nft filter table
+	// drops vb-*/ve-*/veth-* in forward, and our own veths get
+	// forwarding=1 explicitly at start (configureHostVeth).
 	if err := s.writeSysctl("net.ipv4.conf.default.proxy_arp", "0"); err != nil {
 		return rollback(fmt.Errorf("set default.proxy_arp: %w", err))
 	}
