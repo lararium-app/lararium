@@ -53,6 +53,38 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 				s.cancelHandler(w, r)
 				return
 			}
+			if strings.HasSuffix(r.URL.Path, "/messages") && r.Method == http.MethodPost {
+				id := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+				id = strings.TrimSuffix(id, "/messages")
+				if !ValidSessionID(id) {
+					s.error(w, "not found", http.StatusNotFound)
+					return
+				}
+				if hub, ok := s.Hub.(*Hub); ok {
+					hub.HandleMessage(w, r, id)
+				} else {
+					s.error(w, "not implemented", http.StatusNotImplemented)
+				}
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/v1/sessions/") && strings.Contains(r.URL.Path, "/approvals/") && r.Method == http.MethodPost {
+				id := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+				parts := strings.Split(id, "/approvals/")
+				if len(parts) == 2 {
+					sessionID := parts[0]
+					approvalID := parts[1]
+					if !ValidSessionID(sessionID) || !ValidApprovalID(approvalID) {
+						s.error(w, "not found", http.StatusNotFound)
+						return
+					}
+					if hub, ok := s.Hub.(*Hub); ok {
+						hub.HandleApproval(w, r, sessionID, approvalID)
+					} else {
+						s.error(w, "not implemented", http.StatusNotImplemented)
+					}
+					return
+				}
+			}
 		}
 		s.error(w, "not found", http.StatusNotFound)
 	}
