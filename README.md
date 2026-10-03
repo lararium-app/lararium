@@ -116,8 +116,8 @@ kernel. Enable systemd in the distro (`/etc/wsl.conf`: `[boot]` /
 `systemd=true`, then `wsl --shutdown`), install
 `uidmap systemd-container nftables acl debootstrap`, and the cell stack
 is identical to bare metal — doctor 16/16, lifecycle smoke green, and
-the full C1–C12 containment suite passing on a x86-64 hardware
-(kernel 6.18.40-vendor kernel-WSL2). Until native Windows/macOS
+the full C1–C12 containment suite passing under WSL2. Until native
+Windows/macOS
 sandboxes exist (planned: a hypervisor-backed cell), those platforms
 run the daemon through Docker, which keeps the web chat and the REPL
 but not the cage.
