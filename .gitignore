@@ -18,3 +18,7 @@ docker/hearth/sessions/
 # Local tool state
 .wrangler/
 /cell
+
+# V-suite build artifact
+/hearthd.vsuite
+__pycache__/

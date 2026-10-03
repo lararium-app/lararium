@@ -365,27 +365,49 @@ func TestHub_Heartbeat(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
 
-	done := make(chan struct{})
+	// Mutex-guarded sink: the heartbeat goroutine writes while the test
+	// reads, so ResponseRecorder's unsynchronized buffer would race.
+	var mu sync.Mutex
+	var buf strings.Builder
+	pinged := make(chan struct{})
+	var pingOnce sync.Once
+	w := &funcWriter{
+		header: make(http.Header),
+		writeFn: func(p []byte) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			n, err := buf.Write(p)
+			if strings.Contains(buf.String(), ": ping") {
+				pingOnce.Do(func() { close(pinged) })
+			}
+			return n, err
+		},
+	}
+
 	go func() {
 		hub.HandleMessage(w, req, "main")
-		close(done)
 	}()
 
-	// Wait for heartbeat
 	select {
-	case <-done:
-		t.Fatal("handler finished unexpectedly")
-	case <-time.After(6 * time.Second):
-		// Check if we got a ping
-		body := w.Body.String()
-		if !strings.Contains(body, ": ping") {
-			t.Fatal("no heartbeat ping received within 6 seconds")
-		}
+	case <-pinged:
 		cancel()
+	case <-time.After(8 * time.Second):
+		t.Fatal("no heartbeat ping received within 8 seconds")
 	}
 }
+
+// funcWriter is a minimal http.ResponseWriter for tests that need
+// synchronized access to the written bytes.
+type funcWriter struct {
+	header  http.Header
+	writeFn func([]byte) (int, error)
+}
+
+func (f *funcWriter) Header() http.Header         { return f.header }
+func (f *funcWriter) Write(p []byte) (int, error) { return f.writeFn(p) }
+func (f *funcWriter) WriteHeader(int)             {}
+func (f *funcWriter) Flush()                      {}
 
 func TestHub_Cancel(t *testing.T) {
 	cancelCall := make(chan struct{}, 1)

@@ -6,8 +6,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path"
 	"strings"
 	"time"
+
+	"github.com/lararium-app/lararium/web"
 )
 
 // NewServer wires all routes behind the Host gate and the body limit.
@@ -17,20 +20,34 @@ import (
 func NewServer(s *Server) http.Handler {
 	mux := http.NewServeMux()
 
+	// Static routes (no auth; Host gate still applies).
+	RegisterStatic(mux, web.FS)
+
 	// Health endpoint (no auth).
 	mux.HandleFunc("/v1/health", s.healthHandler)
 
 	// Everything under /v1/ requires a bearer token.
 	mux.Handle("/v1/", BearerAuth(s.Store)(http.HandlerFunc(s.dispatch)))
 
-	// static routes land in T9
+	// Host gate first, then reject unclean paths before the mux can
+	// 301 them (spec V4: fuzzed ids get a direct 404, no redirect dance).
+	return HostGate(s.Cfg.AllowedHosts)(bodyLimitMiddleware(cleanPathGate(mux)))
+}
 
-	// Anything else: JSON 404 (spec: errors are always {"error": string}).
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s.error(w, "not found", http.StatusNotFound)
+// cleanPathGate answers dot-segment and double-slash paths with a JSON
+// 404. Without it, net/http's mux issues a 301 to the cleaned path,
+// which leaks redirect noise on every fuzzed id (spec V4).
+func cleanPathGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if p != "" && p != path.Clean(p) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found"}`))
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
-
-	return HostGate(s.Cfg.AllowedHosts)(bodyLimitMiddleware(mux))
 }
 
 // dispatch routes authenticated /v1/ requests.
