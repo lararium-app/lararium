@@ -57,7 +57,7 @@ type ProviderConf struct {
 
 // LoadConfig reads and validates lararium.yaml.
 func LoadConfig(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // path is the --config flag or operator-set LARARIUM_CONFIG env: same trust as any CLI arg
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
@@ -111,7 +111,13 @@ func modelOf(ref string) string {
 }
 
 func main() {
-	cfgPath := flag.String("config", "lararium.yaml", "path to lararium.yaml")
+	// LARARIUM_CONFIG lets container images set the config path once;
+	// the flag still wins when given.
+	defaultCfg := "lararium.yaml"
+	if e := os.Getenv("LARARIUM_CONFIG"); e != "" {
+		defaultCfg = e
+	}
+	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml")
 	modelFlag := flag.String("model", "", "override: model ref for this run")
 	flag.Parse()
 
@@ -193,10 +199,14 @@ func tokenCmd(cfgPath string, args []string) {
 
 // serveHostPort is the host:port the ready URL points at; a wildcard or
 // empty bind is reported as loopback (the operator opens this browser).
+// The port always comes from the config, never a hardcoded default.
 func serveHostPort(cfg *Config) string {
 	host, port, err := net.SplitHostPort(cfg.Serve.Listen)
-	if err != nil || host == "0.0.0.0" || host == "" || host == "::" || host == "[::]" {
-		return "127.0.0.1:7717"
+	if err != nil {
+		host, port = cfg.Serve.Listen, "7717"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
 }
@@ -204,6 +214,12 @@ func serveHostPort(cfg *Config) string {
 func serve(cfgPath string) {
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	// Fill spec defaults (port, approval/turn timeouts) BEFORE anything
+	// reads cfg.Serve: a zero timeout would arm already-expired contexts.
+	if err := cfg.Serve.Normalize(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -288,6 +304,9 @@ func serve(cfgPath string) {
 		Sessions: sessions,
 		Hub:      hub,
 	}
+
+	fmt.Printf("hearthd serve: web chat + API on http://%s\n", serveHostPort(cfg))
+	fmt.Printf("  open a door:  hearthd token create <label>   (prints a ready URL, shown once)\n")
 
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

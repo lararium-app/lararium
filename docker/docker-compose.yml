@@ -4,15 +4,28 @@
 # is baked into the image.
 #
 #   OPENROUTER_API_KEY=sk-or-... docker compose up --build
+#
+# Starts the web chat + API on http://127.0.0.1:7717; open a door with:
+#   docker compose exec hearthd hearthd token create me
+# Prefer the terminal?  docker compose exec -it hearthd hearthd
 services:
   hearthd:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    stdin_open: true # REPL needs a terminal
+    # The container serves the web chat + API. For the REPL in your
+    # terminal:  docker compose exec -it hearthd hearthd
+    command: ["serve"]
+    stdin_open: true # REPL via `exec -it` needs a terminal
     tty: true
+    # Web chat + API (`hearthd serve`). Published on the host's loopback
+    # only — reach it from the machine running Docker, or put your own
+    # TLS proxy in front and add its hostname to serve.allowed_hosts.
+    ports:
+      - "127.0.0.1:7717:7717"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LARARIUM_CONFIG: /etc/lararium/lararium.yaml
     volumes:
       - ./config:/etc/lararium:ro
       # Bind (not named volume): persona files are required at startup and

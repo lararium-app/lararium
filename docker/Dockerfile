@@ -11,4 +11,4 @@ COPY --from=build /out/hearthd /usr/local/bin/hearthd
 # /hearth = persona home (SOUL.md, MEMORY.md, sessions/); mount a volume there.
 # /etc/lararium = config (lararium.yaml); mount the config dir there.
 WORKDIR /hearth
-ENTRYPOINT ["/usr/local/bin/hearthd", "--config", "/etc/lararium/lararium.yaml"]
+ENTRYPOINT ["/usr/local/bin/hearthd"]
