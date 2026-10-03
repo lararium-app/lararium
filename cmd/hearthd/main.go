@@ -5,18 +5,23 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // Config is the whole of lararium.yaml. Unknown keys are an ERROR (fasti
 // lesson: silent config drift is how daemons start doing surprise things).
 type Config struct {
-	Hearth    HearthConfig   `yaml:"hearth"`
-	Models    ModelsConfig   `yaml:"models"`
-	Providers []ProviderConf `yaml:"providers"`
+	Hearth    HearthConfig        `yaml:"hearth"`
+	Models    ModelsConfig        `yaml:"models"`
+	Providers []ProviderConf      `yaml:"providers"`
+	Serve     surface.ServeConfig `yaml:"serve"`
 }
 
 type HearthConfig struct {
@@ -108,6 +113,18 @@ func main() {
 	modelFlag := flag.String("model", "", "override: model ref for this run")
 	flag.Parse()
 
+	args := flag.Args()
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve":
+			serve(*cfgPath)
+			return
+		case "token":
+			tokenCmd(*cfgPath, args[1:])
+			return
+		}
+	}
+
 	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -127,3 +144,93 @@ func main() {
 
 	repl(rt)
 }
+
+// tokenCmd implements `hearthd token create|revoke <label>` (spec §3).
+// Create prints the plaintext exactly once, plus the ready URL whose
+// fragment never reaches a proxy log.
+func tokenCmd(cfgPath string, args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label>")
+		os.Exit(2)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	store, err := surface.OpenTokenStore(filepath.Join(cfg.Hearth.Home, "tokens.json"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "create":
+		token, err := store.Create(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(token)
+		fmt.Printf("Open: http://%s/#%s\n", serveHostPort(cfg), token)
+	case "revoke":
+		ok, err := store.Revoke(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if !ok {
+			fmt.Fprintf(os.Stderr, "no token with label %q\n", args[1])
+			os.Exit(1)
+		}
+		fmt.Printf("revoked %q (effective on the daemon's next request)\n", args[1])
+	default:
+		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label>")
+		os.Exit(2)
+	}
+}
+
+// serveHostPort is the host:port the ready URL points at; a wildcard or
+// empty bind is reported as loopback (the operator opens this browser).
+func serveHostPort(cfg *Config) string {
+	host, port, err := net.SplitHostPort(cfg.Serve.Listen)
+	if err != nil || host == "0.0.0.0" || host == "" || host == "::" || host == "[::]" {
+		return "127.0.0.1:7717"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func serve(cfgPath string) {
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	home := cfg.Hearth.Home
+	tokensPath := filepath.Join(home, "tokens.json")
+	store, err := surface.OpenTokenStore(tokensPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	hub := &noopHub{}
+	sessions := surface.NewPenatusSource(home, hub)
+
+	srv := &surface.Server{
+		Cfg:      cfg.Serve,
+		Store:    store,
+		Sessions: sessions,
+		Hub:      hub,
+	}
+
+	if err := srv.ListenAndServe(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+type noopHub struct{}
+
+func (noopHub) InFlight(string) bool { return false }
+func (noopHub) Cancel(string) bool   { return false }
