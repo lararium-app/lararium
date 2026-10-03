@@ -52,6 +52,11 @@ providers you choose, and reaches you on the screens you already carry.
 - **Penatus memory** — persona files + `MEMORY.md` + a searchable memory
   tree, all plain text with a frozen on-disk spec. Your agent's whole mind
   is files you own.
+- **Web chat surface** — `hearthd serve` puts an HTTP/SSE API and a
+  built-in chat page on `127.0.0.1:7717`. Bearer-token auth (tokens are
+  hashed at rest, printed once), streaming replies, side sessions, and
+  tool approvals you can click Allow/Deny on — the same gate the REPL
+  enforces. Loopback by default; the Host gate blocks DNS rebinding.
 - **Cell sandbox** — `cell` runs agent work inside systemd-nspawn +
   cgroup2 + overlayfs with hard memory/CPU/task caps, uid-mapped binds,
   snapshots, and crash recovery. Networking is fail-closed: a cell has no
@@ -59,9 +64,8 @@ providers you choose, and reaches you on the screens you already carry.
   SSRF re-resolve, host-address floor). Template bake → create → run →
   destroy in under a minute.
 
-**Not built yet:** messaging channels and a web UI (the session layer is
-channel-ready; the REPL is the only front door today), the credential
-vault (`custos`), and the HTTP API server. See
+**Not built yet:** messaging channels (Telegram, Signal, …) and the
+credential vault (`custos`). See
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the whole shape and what each
 component will do.
 
@@ -112,6 +116,18 @@ Build from source with Go 1.25+:
 go build ./cmd/hearthd && go test ./...
 ```
 
+To use the web chat instead of the REPL, start the server and mint a
+one-time access URL:
+
+```bash
+./hearthd serve              # page + API on http://127.0.0.1:7717
+./hearthd token create me    # prints the URL to open (shown once)
+```
+
+The page is loopback-only by default; see
+[`docs/SURFACE-SPEC.md`](docs/SURFACE-SPEC.md) for the API and its
+security model.
+
 ## Documentation
 
 | Document | What it freezes |
@@ -119,6 +135,7 @@ go build ./cmd/hearthd && go test ./...
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component map, data flow, design principles |
 | [PENATUS-SPEC.md](docs/PENATUS-SPEC.md) | The on-disk memory formats |
 | [CELL-SPEC.md](docs/CELL-SPEC.md) | The sandbox contract (nspawn + cgroup2 + nftables) |
+| [SURFACE-SPEC.md](docs/SURFACE-SPEC.md) | The HTTP/SSE API and web chat security model |
 
 ## What Lararium is *not*
 
