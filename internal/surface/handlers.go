@@ -42,6 +42,8 @@ type Server struct {
 	Store    *TokenStore
 	Sessions SessionSource
 	Hub      TurnHub
+	// keys is nil until AttachKeys; routes answer 404 without it.
+	keys *KeysDeps
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {

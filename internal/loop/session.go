@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/penatus"
 	"github.com/lararium-app/lararium/internal/router"
 )
@@ -32,6 +33,10 @@ type Session struct {
 	// TriggerPct: compact when assembled prompt exceeds this % of the
 	// probed context window (checked AFTER each turn, never mid-stream).
 	TriggerPct int
+	// Keys is the live key registry (nil = no key plumbing). At turn
+	// start its snapshot is pinned to the turn context so a mid-turn
+	// key edit cannot split one turn across two keys (KEYS-SPEC K6).
+	Keys *keystore.Registry
 
 	// lastUsage carries In/Out tokens from the most recent completion so
 	// the trigger check uses real counts when available.
@@ -170,6 +175,12 @@ func (s *Session) RunTurnTools(ctx context.Context, userText string, onDelta fun
 const maxSteps = 12
 
 func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
+	// Turn-pinned key snapshot (KEYS-SPEC K6): one registry read at
+	// turn start; every provider call in this turn resolves through
+	// the pinned map, so a mid-turn reload cannot split the turn.
+	if s.Keys != nil {
+		ctx = keystore.WithSnapshot(ctx, s.Keys.Snapshot())
+	}
 	//nolint:errchkjson // all-string map always marshals
 	src, _ := json.Marshal(map[string]string{"channel": "api", "device": ""})
 	if err := s.appendEvent("msg", map[string]json.RawMessage{

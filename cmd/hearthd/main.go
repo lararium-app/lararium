@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -12,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
@@ -130,6 +132,9 @@ func main() {
 		case "token":
 			tokenCmd(*cfgPath, args[1:])
 			return
+		case "keys":
+			keysCmd(*cfgPath, args[1:])
+			return
 		}
 	}
 
@@ -241,13 +246,61 @@ func serve(cfgPath string) {
 		}
 	}
 	byName := map[string]router.Provider{}
+	// Provider key plumbing (KEYS-SPEC K5/K6): keys.json + registry +
+	// control socket. Resolution order env -> keys.json -> literal is
+	// computed at startup for the K2 warnings and on every reload;
+	// providers read the live registry per request, turns pin a
+	// snapshot at start.
+	kstore := keystore.New(home)
+	provInfos := func() []keystore.ProviderInfo {
+		infos := make([]keystore.ProviderInfo, 0, len(cfg.Providers))
+		for _, p := range cfg.Providers {
+			infos = append(infos, keystore.ProviderInfo{
+				Name: p.Name, EnvVar: p.APIKeyEnv, Literal: p.APIKey,
+			})
+		}
+		return infos
+	}
+	keyReg := keystore.NewRegistry(nil)
+	reloadKeys := func() error {
+		m, err := kstore.Read()
+		if err != nil {
+			return err
+		}
+		keyReg.Swap(m)
+		if _, warns := keystore.ResolveAll(kstore, provInfos(), os.Getenv); len(warns) > 0 {
+			for _, w := range warns {
+				fmt.Fprintln(os.Stderr, w)
+			}
+		}
+		return nil
+	}
+	if err := reloadKeys(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	for _, p := range cfg.Providers {
-		key := p.APIKey
-		if p.APIKeyEnv != "" {
-			key = os.Getenv(p.APIKeyEnv)
+		provName, envVar, literal := p.Name, p.APIKeyEnv, p.APIKey
+		// K2 order: env -> keys.json (turn snapshot, else live
+		// registry) -> config literal. Each layer counts only when
+		// non-empty after trimming.
+		keyFn := func(ctx context.Context) string {
+			if envVar != "" {
+				if k := os.Getenv(envVar); strings.TrimSpace(k) != "" {
+					return k
+				}
+			}
+			if snap, ok := keystore.SnapshotFrom(ctx); ok {
+				if k := snap[provName]; k != "" {
+					return k
+				}
+			} else if k := keyReg.Key(provName); k != "" {
+				return k
+			}
+			return literal
 		}
 		disableThink := p.Think != nil && !*p.Think
-		byName[p.Name] = router.NewOpenAIWith(p.BaseURL, key, firstModel[p.Name], disableThink)
+		byName[provName] = router.NewOpenAIKeyed(p.BaseURL, keyFn, firstModel[provName], disableThink)
 	}
 
 	targets := func(refs []string) ([]router.Target, error) {
@@ -295,6 +348,7 @@ func serve(cfgPath string) {
 	// ApprovalHub and Hub
 	ap := surface.NewApprovalHub(cfg.Serve.ApprovalTimeout)
 	hub := surface.NewHub(cfg.Serve, home, cfg.Hearth.MaxTokens, cfg.Hearth.CompactionTriggerPct, tools, rt, ap)
+	hub.AttachKeys(keyReg)
 
 	sessions := surface.NewPenatusSource(home, hub)
 
@@ -304,12 +358,27 @@ func serve(cfgPath string) {
 		Sessions: sessions,
 		Hub:      hub,
 	}
+	srv.AttachKeys(&surface.KeysDeps{
+		Store:     kstore,
+		Registry:  keyReg,
+		Providers: provInfos,
+		Reload:    reloadKeys,
+	})
+
+	// Control socket (KEYS-SPEC K6): CLI writes, then pings here.
+	sock, err := srv.ServeSocket(filepath.Join(home, "hearthd.sock"), reloadKeys)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("hearthd serve: web chat + API on http://%s\n", serveHostPort(cfg))
 	fmt.Printf("  open a door:  hearthd token create <label>   (prints a ready URL, shown once)\n")
 
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		sock.Close()
 		os.Exit(1)
 	}
+	sock.Close()
 }

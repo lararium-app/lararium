@@ -16,8 +16,8 @@ import (
 // runInTemplate executes a command inside the template chroot with a
 // complete guest PATH. chroot resolves argv[0] through the INHERITED
 // host PATH, and usrmerged noble ships useradd/usermod/grep siblings
-// under /usr/sbin — a host PATH without /usr/sbin (live-probed on
-// an Arch-based host: bake died at "create keeper user: exit status 127")
+// under /usr/sbin — a host PATH without /usr/sbin (live-probed on an
+// Arch-based host: bake died at "create keeper user: exit status 127")
 // silently hid them. Pin the canonical PATH via env inside the guest.
 func (s *Store) runInTemplate(dst string, args ...string) ([]byte, []byte, error) {
 	full := append([]string{
@@ -43,8 +43,8 @@ func (s *Store) BuildTemplate() error {
 	// debootstrap maps the host to a Debian arch via dpkg
 	// (--print-architecture). Distros without dpkg fall back to a
 	// host-detection block that Arch's patched debootstrap only
-	// implements for its own CARCH values — live-probed on an Arch-based host:
-	// bake dies with "Unknown architecture: x86_64". Fail with the
+	// implements for its own CARCH values — live-probed on an
+	// Arch-based host: bake dies with "Unknown architecture: x86_64".
 	// remedy instead of the cryptic child error.
 	if _, err := lookPath("dpkg"); err != nil {
 		return fmt.Errorf("dpkg not found (required by debootstrap for " +
@@ -207,8 +207,8 @@ func (s *Store) BuildTemplate() error {
 		// Symlinks get no chmod at all: os.Chmod FOLLOWS them, and a
 		// baked /dev/fd -> /proc/self/fd then points at the HOST
 		// procfs mid-walk. Ubuntu's procfs tolerates a no-op chmod;
-		// Arch's refuses (EPERM, live-probed on an Arch-based host) and a more
-		// permissive kernel would mutate the wrong file entirely.
+		// Arch's refuses (EPERM, live-probed on an Arch-based host) and
+		// a more permissive kernel would mutate the wrong file entirely.
 		// Linux ignores symlink permission bits, so skipping is
 		// exactly correct for a read-only seal.
 		if d.Type()&fs.ModeSymlink != 0 {

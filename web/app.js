@@ -360,8 +360,128 @@ function initToken() {
   return true;
 }
 
+// --- Provider keys drawer (KEYS-SPEC K4 web door) ---------------------
+
+const keysButtonEl = document.getElementById("keys-button");
+const keysDrawerEl = document.getElementById("keys-drawer");
+const keysBackdropEl = document.getElementById("keys-backdrop");
+const keysCloseEl = document.getElementById("keys-close");
+const keysListEl = document.getElementById("keys-list");
+const keysFormEl = document.getElementById("keys-form");
+const keysNameEl = document.getElementById("keys-name");
+const keysValueEl = document.getElementById("keys-value");
+const keysStatusEl = document.getElementById("keys-status");
+const keysTransportWarnEl = document.getElementById("keys-transport-warn");
+
+function keysStatus(msg, isError) {
+  keysStatusEl.textContent = msg || "";
+  keysStatusEl.classList.toggle("err", !!isError);
+}
+
+function openKeysDrawer() {
+  keysDrawerEl.hidden = false;
+  keysBackdropEl.hidden = false;
+  // Transport honesty (spec K4): warn only on plain HTTP from a
+  // non-loopback host. HTTPS pages never nag; loopback is the local
+  // machine by definition.
+  const host = location.hostname;
+  const loopback = host === "localhost" || host === "127.0.0.1" ||
+    host === "[::1]" || host === "::1" || host === "";
+  keysTransportWarnEl.hidden = location.protocol === "https:" || loopback;
+  loadKeys();
+}
+
+function closeKeysDrawer() {
+  keysDrawerEl.hidden = true;
+  keysBackdropEl.hidden = true;
+  keysValueEl.value = ""; // never linger in the DOM
+  keysStatus("");
+}
+
+async function loadKeys() {
+  try {
+    const rows = await fetchJson("GET", "/v1/keys");
+    renderKeys(rows);
+  } catch (e) {
+    if (e.message !== "unauthorized") keysStatus("failed to load keys: " + e.message, true);
+  }
+}
+
+function renderKeys(rows) {
+  keysListEl.textContent = "";
+  for (const row of rows) {
+    const li = createElement("li");
+    const name = createElement("span", "key-name", row.name);
+    const status = createElement("span", "key-status",
+      row.status === "missing" ? "missing" : row.status + " · " + row.sha256_8);
+    li.appendChild(name);
+    li.appendChild(status);
+    if (row.status === "set (keys.json)") {
+      const del = createElement("button", "key-remove", "remove");
+      del.title = "Remove this key from the daemon";
+      del.addEventListener("click", () => removeKey(row.name));
+      li.appendChild(del);
+    }
+    keysListEl.appendChild(li);
+  }
+}
+
+async function saveKey(name, value) {
+  try {
+    await fetchJson("PUT", "/v1/keys/" + encodeURIComponent(name), { key: value });
+    keysValueEl.value = "";
+    keysStatus("saved " + name);
+    await loadKeys();
+  } catch (e) {
+    if (e.message === "unknown provider") {
+      // First key for a provider the daemon's config never mentioned:
+      // an explicit user choice, not an error state.
+      if (window.confirm('"' + name + '" is not a configured provider. Save it anyway?')) {
+        try {
+          await fetchJson("PUT", "/v1/keys/" + encodeURIComponent(name) + "?force=true", { key: value });
+          keysValueEl.value = "";
+          keysStatus("saved " + name);
+          await loadKeys();
+        } catch (e2) {
+          if (e2.message !== "unauthorized") keysStatus(e2.message, true);
+        }
+      }
+      return;
+    }
+    if (e.message !== "unauthorized") keysStatus(e.message, true);
+  }
+}
+
+async function removeKey(name) {
+  if (!window.confirm("Remove the key for " + name + "?")) return;
+  try {
+    await fetchJson("DELETE", "/v1/keys/" + encodeURIComponent(name));
+    keysStatus("removed " + name);
+    await loadKeys();
+  } catch (e) {
+    if (e.message !== "unauthorized") keysStatus(e.message, true);
+  }
+}
+
+function initKeysDrawer() {
+  keysButtonEl.addEventListener("click", openKeysDrawer);
+  keysCloseEl.addEventListener("click", closeKeysDrawer);
+  keysBackdropEl.addEventListener("click", closeKeysDrawer);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !keysDrawerEl.hidden) closeKeysDrawer();
+  });
+  keysFormEl.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = keysNameEl.value.trim();
+    const value = keysValueEl.value;
+    if (!name || !value) return;
+    saveKey(name, value);
+  });
+}
+
 function init() {
   if (!initToken()) return;
+  initKeysDrawer();
   newSessionBtn.addEventListener("click", createSession);
   composerEl.addEventListener("submit", (e) => {
     e.preventDefault();

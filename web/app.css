@@ -327,3 +327,112 @@ main {
 ::-webkit-scrollbar-thumb:hover {
   background: #3a3f4a;
 }
+/* Provider keys drawer (KEYS-SPEC K4 web door). */
+#keys-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+
+#keys-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(24rem, 92vw);
+  background: #151821;
+  border-left: 1px solid #2a2e36;
+  z-index: 41;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overflow-y: auto;
+}
+
+#keys-drawer[hidden], #keys-backdrop[hidden] {
+  display: none;
+}
+
+.drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.drawer-head h2 {
+  font-size: 1rem;
+}
+
+.drawer-hint {
+  color: #9aa2b1;
+  font-size: 12px;
+}
+
+#keys-transport-warn {
+  background: #3a2a1a;
+  border: 1px solid #7a5a2a;
+  border-radius: var(--bubble-radius);
+  padding: 0.5rem 0.75rem;
+  font-size: 12px;
+}
+
+#keys-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+#keys-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #0f1115;
+  border: 1px solid #2a2e36;
+  border-radius: var(--bubble-radius);
+  padding: 0.4rem 0.6rem;
+}
+
+#keys-list .key-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#keys-list .key-status {
+  color: #9aa2b1;
+  font-size: 12px;
+}
+
+#keys-list .key-remove {
+  background: none;
+  border: none;
+  color: #e06c75;
+  cursor: pointer;
+}
+
+#keys-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+#keys-form input {
+  background: #0f1115;
+  border: 1px solid #2a2e36;
+  border-radius: var(--bubble-radius);
+  color: var(--text);
+  padding: 0.45rem 0.6rem;
+}
+
+#keys-status {
+  min-height: 1.2em;
+  font-size: 12px;
+  color: #9aa2b1;
+}
+
+#keys-status.err {
+  color: #e06c75;
+}
