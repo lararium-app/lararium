@@ -39,7 +39,7 @@ func TestKeyedProviderUsesCtxSnapshot(t *testing.T) {
 		}
 		return "fallback"
 	}
-	p := NewOpenAIKeyed(srv.URL, keyFn, "m", false)
+	p := NewOpenAIKeyed("openai", srv.URL, keyFn, "m", false)
 
 	ctxA := keystore.WithSnapshot(context.Background(), map[string]string{"p": "key-A"})
 	if _, err := p.Complete(ctxA, []Message{{Role: "user", Content: "hi"}}, Options{}); err != nil {
@@ -74,7 +74,7 @@ func TestKeyedProviderLocalFailRule(t *testing.T) {
 
 	// Empty key + loopback URL (httptest is 127.0.0.1): request goes
 	// through with NO Authorization header — local llama.cpp behavior.
-	p := NewOpenAIKeyed(srv.URL, func(context.Context) string { return "" }, "m", false)
+	p := NewOpenAIKeyed("openai", srv.URL, func(context.Context) string { return "" }, "m", false)
 	if _, err := p.Complete(context.Background(), []Message{{Role: "user", Content: "hi"}}, Options{}); err != nil {
 		t.Fatalf("loopback empty key: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestKeyedProviderLocalFailRule(t *testing.T) {
 	// Empty key + non-loopback host: fail BEFORE any request.
 	// A hostname that cannot resolve stands in for a remote provider;
 	// the call must fail with ErrNoKey, not a transport error.
-	remote := NewOpenAIKeyed("https://api.invalid.example/v1", func(context.Context) string { return "" }, "m", false)
+	remote := NewOpenAIKeyed("openai", "https://api.invalid.example/v1", func(context.Context) string { return "" }, "m", false)
 	_, err := remote.Complete(context.Background(), []Message{{Role: "user", Content: "hi"}}, Options{})
 	if !errors.Is(err, ErrNoKey) {
 		t.Fatalf("remote empty key: got %v, want ErrNoKey", err)
@@ -121,7 +121,7 @@ func TestStaticProviderBehaviorUnchanged(t *testing.T) {
 	}
 
 	// Static key: header present.
-	p2 := NewOpenAIWith(srv.URL, "sk-static", "m", true)
+	p2 := NewOpenAIWith("openai", srv.URL, "sk-static", "m", true)
 	if _, err := p2.Complete(context.Background(), []Message{{Role: "user", Content: "hi"}}, Options{}); err != nil {
 		t.Fatalf("static key: %v", err)
 	}
@@ -142,11 +142,25 @@ func TestIsLoopbackURL(t *testing.T) {
 		{"http:///v1", true}, // empty host (unix-style)
 		{"https://api.openrouter.example/v1", false},
 		{"http://10.0.0.5:8080", false},
-		{"http://192.168.1.2:13308/v1", false},
+		{"http://198.51.100.2:13308/v1", false},
 	}
 	for _, c := range cases {
 		if got := isLoopbackURL(c.url); got != c.want {
 			t.Errorf("isLoopbackURL(%q) = %v, want %v", c.url, got, c.want)
 		}
+	}
+}
+
+func TestProviderNameIsConfigID(t *testing.T) {
+	// Audit 5.7: Name() reports the config-declared provider id, and
+	// legacy constructors keep the "openai" fallback.
+	named := NewOpenAIKeyed("flashy", "http://127.0.0.1:1/v1",
+		func(context.Context) string { return "k" }, "m", false)
+	if got := named.Name(); got != "flashy" {
+		t.Fatalf("named provider Name() = %q, want %q", got, "flashy")
+	}
+	legacy := NewOpenAI("http://127.0.0.1:1/v1", "", "m")
+	if got := legacy.Name(); got != "openai" {
+		t.Fatalf("legacy provider Name() = %q, want %q", got, "openai")
 	}
 }
