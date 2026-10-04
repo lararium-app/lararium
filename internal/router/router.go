@@ -208,12 +208,9 @@ func (r *Router) streamTarget(ctx context.Context, target Target, msgs []Message
 	return s.StreamComplete(ctx, msgs, opts, model, onDelta)
 }
 
-// streamComplete handles SSE streaming for openAI-compatible providers.
-func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Options, model string, onDelta StreamHandler) (*Completion, error) {
-	key, err := o.resolveKey(ctx)
-	if err != nil {
-		return nil, err
-	}
+// buildRequestBody converts Messages/Options to the wire request (the
+// stream variant; non-stream callers set Stream themselves).
+func (o *openAI) buildRequestBody(msgs []Message, opts Options, model string) openAIRequest {
 	reqMsgs := make([]openAIMessage, 0, len(msgs))
 	for _, m := range msgs {
 		om := openAIMessage{Role: string(m.Role), Content: m.Content}
@@ -255,6 +252,16 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 	if o.disableThink {
 		body.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
 	}
+	return body
+}
+
+// streamComplete handles SSE streaming for openAI-compatible providers.
+func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Options, model string, onDelta StreamHandler) (*Completion, error) {
+	key, err := o.resolveKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	body := o.buildRequestBody(msgs, opts, model)
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
