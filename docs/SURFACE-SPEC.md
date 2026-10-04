@@ -3,7 +3,10 @@
 Status: FROZEN — G1 approved by the Product Owner 2026-10-02 (port,
 serving, model_pin, timeout decisions in §10). Freezes the transport between
 the hearth (hearthd) and its clients, and the first client: a built-in web
-chat. Changelog at bottom.
+chat. Changelog at bottom. Post-freeze amendments A1, A2, A4–A7 (approval
+channels, audit enums, cancel semantics, MarkUndeliverable) and K-A1 (the
+three /v1/keys routes) applied 2026-10-04 as approved at NUNTIUS-SPEC/
+KEYS-SPEC G1 pass — see changelog.
 Companion specs: PENATUS-SPEC (the file layer — this API never contradicts
 it), ARCHITECTURE §2.7 (surfaces), CELL-SPEC (execution stays sandboxed).
 
@@ -47,7 +50,9 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
   `allowed_hosts` (documented in the serve help). Proxy caveat: the
   ready-URL fragment never reaches a proxy log (fragments are not sent to
   servers), but the bearer token DOES appear in `Authorization` headers —
-  proxies must be configured not to log request headers.
+  proxies must be configured not to log request headers. Proxies must also
+  not log **request bodies** for `PUT /v1/keys/{name}`: those bodies carry
+  provider keys (K-A1, KEYS-SPEC).
 - **Concurrency gate:** an atomic per-session check-and-set performed at
   request acceptance, before any I/O: at most one in-flight
   `POST …/messages` per session; a second concurrent POST gets 409. The
@@ -96,6 +101,9 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
 | POST | /v1/sessions/{id}/messages | `{text}` → SSE stream (§5) |
 | POST | /v1/sessions/{id}/cancel | abort the in-flight turn: engine stops, gate released, NO assistant event persisted; 404 if none in flight |
 | POST | /v1/sessions/{id}/approvals/{approval_id} | `{decision:"allow"|"deny"}` → 200; 410 if already resolved/expired |
+| GET  | /v1/keys | `[{"name","status","sha256_8"}]` — provider-key inventory; names = config ∪ keys.json computed at request time (K-A1, KEYS-SPEC K4) |
+| PUT  | /v1/keys/{name} | `{"key":"…"}` → 204; 404 unknown provider unless `?force=true`; body ≤ 4 KiB; `{name}` gate per S4, 404 `{"error":"invalid provider name"}` (K-A1, KEYS-SPEC K4) |
+| DELETE | /v1/keys/{name} | 204 — removes the keys.json entry only; idempotent (K-A1, KEYS-SPEC K4) |
 | GET  | / | embedded page HTML — static, unauthenticated (it contains no secret; every API call it makes needs the token) |
 | GET  | /app.js, /app.css | embedded page assets — static, unauthenticated, immutable (same rule: no secret in them) |
 
@@ -140,9 +148,31 @@ event is `event: <type>` + `data: <json>`. Types (frozen):
   | timed_out | shutdown`, transitions guarded by a mutex, first-wins.
   Approval ids are session-scoped: `{id}` in the URL must belong to the
   session in the URL — unknown or foreign → 404; known-but-resolved →
-  410 (no double-resolve, no false 200). Timeout =
-  `serve.approval_timeout` (default 5 min, PO-set; tests may shorten) →
-  `timed_out` (logged `denied:timeout`).
+  410 (no double-resolve, no false 200). Timeout is chosen at creation
+  from the live approver channel set (A6): a web SSE listener is live →
+  `serve.approval_timeout` (web wins ties); a paired nuntius bridge is the
+  only live channel → `nuntius.approval_timeout` (default 5 min, same
+  bounds and test-shortening rule). (A1: "live approver channel"
+  generalizes "SSE listener" — a paired nuntius bridge counts, unless
+  that approval's card was marked undeliverable (`card_dead`,
+  NUNTIUS-SPEC §7.1); web-only behavior is unchanged when nuntius is
+  disabled.) Timeout → `timed_out` (logged `denied:timeout`).
+- **Cancel resolves pending approvals (A5):** when a turn is cancelled
+  (`POST …/cancel` or nuntius `/cancel`), every approval still pending on
+  that turn resolves to `denied` immediately, same mutex, same
+  410-after-terminal semantics; the hub's internal transition event
+  carries cause `cancelled` (`denied:cancelled`) so fan-out subscribers
+  can render it distinctly. No audit `reason` value is needed: like every
+  cancelled turn (V15), this writes no audit record — the tool never ran,
+  and the absence of a tool_result IS the record. An approval whose turn
+  no longer exists is meaningless; leaving it pending would invite a late
+  click to authorize a tool call for a dead turn.
+- **MarkUndeliverable (A7):** `MarkUndeliverable(approval_id)` —
+  in-process bridge call — either resolves `pending → denied` with
+  `source:"hub"`, `reason:"undeliverable"` when no other live approver
+  channel exists for that approval, or marks the card dead (`card_dead`)
+  and leaves the state pending. `denied:undeliverable` is terminal like
+  every denial; the mutex and first-wins rules are unchanged.
 - **Disconnect policy:** an approval can only be pending while a client is
   listening — if the SSE connection is not open at the moment an approval
   would be created, or drops while one is pending, it resolves
@@ -179,7 +209,12 @@ restart kills the turn; the log shows the tool never ran).
 
 **Audit schema (frozen):** every tool_result event carries
 `"approval": {"decision": "allowed"|"denied", "reason": "ok"|"timeout"|
-"disconnected"|"shutdown"|"not_required", "source": "repl"|"web"}`. Both
+"disconnected"|"shutdown"|"undeliverable"|"not_required", "source":
+"repl"|"web"|"telegram"|"timer"|"shutdown"|"hub"}` (A2: `timer` and
+`shutdown` are hub-caused terminal states, not client surfaces; `hub`
+covers hub-initiated denials with a policy cause, e.g. `undeliverable`.
+A4: `reason:"undeliverable"` pairs with `source:"hub"` so a delivery-
+failure denial is schema-valid and self-describing). Both
 clients write through the same engine; verification diffs each client's
 log lines against THIS schema (field set + types), not against each
 other's bytes — `source` is the only field allowed to differ.
@@ -285,6 +320,9 @@ V14. Catch-up: fake-LLM turn with slow deltas; disconnect mid-turn, reload
 V15. Cancel: mid-turn `POST …/cancel` → stream closes with `error`, no
     assistant event persisted, immediate follow-up POST to same session →
     200 (gate released); cancel with no in-flight turn → 404. (S9)
+    Hub-side assertion (A5): a cancel with an approval pending on that
+    turn resolves it to `denied` (internal cause `cancelled`) before the
+    turn's own terminal event; a later decision POST → 410.
 V15b. Turn timeout: config `turn_timeout` shortened, fake model that never
     finishes → turn aborts with `error`, gate released (follow-up POST →
     200). (S9)
@@ -305,6 +343,17 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5 (amendments, 2026-10-04).** Applied the amendments approved at
+NUNTIUS-SPEC G1 (A1, A2, A4–A7) and KEYS-SPEC G1 (K-A1): §5 presence rule
+generalized to live approver channels incl. paired nuntius bridge, with
+per-approval `card_dead` refinement (A1); §6 audit `source` enum extended
+`telegram|timer|shutdown|hub` (A2) and `reason` enum `undeliverable` (A4);
+§5 cancel resolves the turn's pending approvals before its terminal event,
+V15 gains the hub-side assertion (A5); §5 timeout selection by live channel
+set (A6); §5 `MarkUndeliverable` transition (A7); §4 route table gains the
+three `/v1/keys` routes and §2 proxy note gains request-body logging for
+them (K-A1). No frozen web-only behavior changed.
 
 **v4 (freeze).** Second-opinion reviewer (fresh context) verified all
 round-1 areas FIXED and added: catch-up protocol was undefined — now
