@@ -33,6 +33,9 @@ type SessionSource interface {
 type TurnHub interface {
 	InFlight(sessionID string) bool
 	Cancel(sessionID string) bool
+	// Shutdown resolves every pending approval denied:shutdown and
+	// cancels every running turn (V12).
+	Shutdown()
 }
 
 // Server wires the HTTP surface: config, token store, session storage,

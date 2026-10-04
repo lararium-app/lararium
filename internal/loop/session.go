@@ -37,6 +37,19 @@ type Session struct {
 	// start its snapshot is pinned to the turn context so a mid-turn
 	// key edit cannot split one turn across two keys (KEYS-SPEC K6).
 	Keys *keystore.Registry
+	// SrcChannel names the msg src channel (PENATUS-SPEC §2: "api"
+	// default; "telegram" for nuntius-initiated turns).
+	SrcChannel string
+	// UpdateID tags BOTH msg events (user and assistant) of this turn
+	// with the Telegram update id (NUNTIUS-SPEC A3); 0 omits the field,
+	// so web/repl logs validate against the pre-A3 schema unchanged.
+	UpdateID int64
+	// AuditApproval, if set, decorates every tool_result event with the
+	// SURFACE-SPEC §6 audit object {"decision","reason","source"}. It
+	// maps the engine approval string ("approved:<id>" | "denied:<id>"
+	// | "auto" | "denied:no-approver") to the frozen triple; ok=false
+	// omits the field (pre-schema callers).
+	AuditApproval func(approval string) (obj json.RawMessage, ok bool)
 
 	// lastUsage carries In/Out tokens from the most recent completion so
 	// the trigger check uses real counts when available.
@@ -181,11 +194,19 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 	if s.Keys != nil {
 		ctx = keystore.WithSnapshot(ctx, s.Keys.Snapshot())
 	}
+	ch := s.SrcChannel
+	if ch == "" {
+		ch = "api"
+	}
 	//nolint:errchkjson // all-string map always marshals
-	src, _ := json.Marshal(map[string]string{"channel": "api", "device": ""})
-	if err := s.appendEvent("msg", map[string]json.RawMessage{
+	src, _ := json.Marshal(map[string]string{"channel": ch, "device": ""})
+	userFields := map[string]json.RawMessage{
 		"role": raw("user"), "text": raw(userText), "src": src,
-	}); err != nil {
+	}
+	if s.UpdateID != 0 {
+		userFields["update_id"] = mustJSON(s.UpdateID)
+	}
+	if err := s.appendEvent("msg", userFields); err != nil {
 		return "", fmt.Errorf("log user msg: %w", err)
 	}
 
@@ -225,10 +246,14 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 
 		if len(comp.ToolCalls) == 0 {
 			// Final answer for this user turn.
-			if err := s.appendEvent("msg", map[string]json.RawMessage{
+			assistantFields := map[string]json.RawMessage{
 				"role": raw("assistant"), "text": raw(text), "model": raw(comp.Model),
 				"usage": mustJSON(map[string]int{"in": comp.InTokens, "out": comp.OutTokens}),
-			}); err != nil {
+			}
+			if s.UpdateID != 0 {
+				assistantFields["update_id"] = mustJSON(s.UpdateID)
+			}
+			if err := s.appendEvent("msg", assistantFields); err != nil {
 				return text, fmt.Errorf("log assistant msg: %w", err)
 			}
 			return text, nil
@@ -243,6 +268,13 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 				args = raw(tc.ArgsJSON)
 			}
 			approval, tool, denyText := eng.Gate(tc)
+			// A5/V7: a cancelled turn commits NOTHING for the gated
+			// call — the tool never ran and the absence of records IS
+			// the record. Bail before tool_call so no dispatch line
+			// outlives the cancellation either.
+			if ctx.Err() != nil {
+				return final, ctx.Err()
+			}
 			if err := s.appendEvent("tool_call", map[string]json.RawMessage{
 				"call_id": raw(tc.ID), "name": raw(tc.Name), "args": args,
 				"approval": raw(approval),
@@ -265,6 +297,11 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			resFields := map[string]json.RawMessage{
 				"call_id": raw(tc.ID), "ok": mustJSON(out.OK),
 				"result_digest": raw(out.Digest),
+			}
+			if s.AuditApproval != nil {
+				if obj, okAudit := s.AuditApproval(approval); okAudit {
+					resFields["approval"] = obj
+				}
 			}
 			if out.ResultRef != "" {
 				resFields["result_ref"] = raw(out.ResultRef)
