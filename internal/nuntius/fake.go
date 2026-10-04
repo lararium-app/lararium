@@ -27,6 +27,11 @@ type Fake struct {
 	SendErrs []error
 	sendIdx  int
 
+	// EditErrs optionally fails EditMessageText for the first N
+	// calls (stream 3-failure rule tests).
+	EditErrs []error
+	editIdx  int
+
 	// GetUpdatesCalls counts polls (V9: polling continues during a
 	// send-bucket pause).
 	GetUpdatesCalls int
@@ -113,6 +118,15 @@ func (f *Fake) SendMessage(_ context.Context, chatID, text string, kb *Keyboard)
 func (f *Fake) EditMessageText(_ context.Context, chatID string, messageID int64, text string, kb *Keyboard) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.EditErrs != nil && f.editIdx < len(f.EditErrs) {
+		err := f.EditErrs[f.editIdx]
+		f.editIdx++
+		if err != nil {
+			return err
+		}
+	} else if f.EditErrs != nil {
+		f.editIdx++
+	}
 	f.Edits = append(f.Edits, FakeEdit{ChatID: chatID, MessageID: messageID, Text: text, Keyboard: kb})
 	return nil
 }
