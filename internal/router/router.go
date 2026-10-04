@@ -210,6 +210,10 @@ func (r *Router) streamTarget(ctx context.Context, target Target, msgs []Message
 
 // streamComplete handles SSE streaming for openAI-compatible providers.
 func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Options, model string, onDelta StreamHandler) (*Completion, error) {
+	key, err := o.resolveKey(ctx)
+	if err != nil {
+		return nil, err
+	}
 	reqMsgs := make([]openAIMessage, 0, len(msgs))
 	for _, m := range msgs {
 		om := openAIMessage{Role: string(m.Role), Content: m.Content}
@@ -262,8 +266,8 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
