@@ -60,6 +60,22 @@ func NewRouter(def Profile) *Router {
 	}
 }
 
+// ActiveTarget reports the first target of the named profile as
+// "provider/model" (the /status line NUNTIUS-SPEC §5 reads; the
+// fallback chain beyond the head is invisible there by design). ok is
+// false for an unknown or empty profile.
+func (r *Router) ActiveTarget(profile string) (string, bool) {
+	p, ok := r.profiles[profile]
+	if !ok || len(p.Chain) == 0 {
+		return "", false
+	}
+	t := p.Chain[0]
+	if t.Provider == nil {
+		return "", false
+	}
+	return t.Provider.Name() + "/" + t.Model, true
+}
+
 // SetProfile adds or replaces a named profile.
 func (r *Router) SetProfile(name string, p Profile) {
 	r.profiles[name] = p
