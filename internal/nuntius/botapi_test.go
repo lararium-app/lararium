@@ -252,6 +252,45 @@ func TestBotAPI404NeverLeaksToken(t *testing.T) {
 	}
 }
 
+func TestBotAPIRefusesRedirects(t *testing.T) {
+	// A redirect would replay the token-bearing URL to the target
+	// host; the client must not follow it (N4).
+	var followed bool
+	api := newTestAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if !followed {
+			followed = true
+			http.Redirect(w, r, "http://127.0.0.1:9/stolen", http.StatusFound)
+			return
+		}
+		t.Error("redirect was followed")
+	})
+	_, err := api.SendMessage(context.Background(), "42", "x", nil)
+	if err == nil {
+		t.Fatal("expected error on 302")
+	}
+	if strings.Contains(err.Error(), testToken) {
+		t.Fatalf("error leaks token: %v", err)
+	}
+}
+
+func TestBotAPITransportErrorNeverLeaksToken(t *testing.T) {
+	// Point at a dead port: client.Do fails with a *url.Error whose
+	// text embeds the full URL — token included (N4).
+	fc := NewFloodControl(nil, nil)
+	api := NewBotAPI(testToken, fc)
+	api.base = "http://127.0.0.1:9" // port 9: connection refused
+	_, err := api.SendMessage(context.Background(), "42", "x", nil)
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if strings.Contains(err.Error(), testToken) {
+		t.Fatalf("transport error leaks the token: %v", err)
+	}
+	if strings.Contains(err.Error(), "/bot"+testToken) {
+		t.Fatalf("transport error leaks the token path: %v", err)
+	}
+}
+
 func TestBotAPIErrorDescriptionSanitized(t *testing.T) {
 	long := strings.Repeat("d", 500)
 	api := newTestAPI(t, func(w http.ResponseWriter, r *http.Request) {
