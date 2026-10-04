@@ -52,6 +52,11 @@ func cleanPathGate(next http.Handler) http.Handler {
 
 // dispatch routes authenticated /v1/ requests.
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/keys" || strings.HasPrefix(r.URL.Path, "/v1/keys/") {
+		if s.dispatchKeys(w, r) {
+			return
+		}
+	}
 	if r.URL.Path == "/v1/sessions" {
 		switch r.Method {
 		case http.MethodGet:
