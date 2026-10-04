@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lararium-app/lararium/internal/loop"
+	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
 )
@@ -24,6 +26,8 @@ type Config struct {
 	Models    ModelsConfig        `yaml:"models"`
 	Providers []ProviderConf      `yaml:"providers"`
 	Serve     surface.ServeConfig `yaml:"serve"`
+	// Nuntius is the Telegram bridge configuration (NUNTIUS-SPEC §4).
+	Nuntius nuntius.Config `yaml:"nuntius"`
 }
 
 type HearthConfig struct {
@@ -316,13 +320,29 @@ func serve(cfgPath string) {
 		os.Exit(1)
 	}
 
+	_, stopBridge, err := startNuntius(context.Background(), cfg, home, hub, sessions, ap)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		sock.Close()
+		os.Exit(1)
+	}
+	if stopBridge != nil {
+		srv.OnShutdown = stopBridge
+	}
+
 	fmt.Printf("hearthd serve: web chat + API on http://%s\n", serveHostPort(cfg))
 	fmt.Printf("  open a door:  hearthd token create <label>   (prints a ready URL, shown once)\n")
 
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		sock.Close()
+		if stopBridge != nil {
+			stopBridge()
+		}
 		os.Exit(1)
 	}
 	sock.Close()
+	if stopBridge != nil {
+		stopBridge()
+	}
 }

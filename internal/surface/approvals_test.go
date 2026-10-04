@@ -162,3 +162,22 @@ func TestApprovalHub_PendingCount(t *testing.T) {
 		t.Fatalf("count after deny all = %d, want 0", h.PendingCount("s_123"))
 	}
 }
+
+func TestSessionOf(t *testing.T) {
+	h := NewApprovalHub(5 * time.Minute)
+
+	id, _ := h.Register("s_123", "echo", `{"v":"1"}`, func(string) {})
+	if id == "" {
+		t.Fatal("empty approval id")
+	}
+
+	sess, ok := h.SessionOf(id)
+	if !ok || sess != "s_123" {
+		t.Fatalf("SessionOf(%q) = (%q, %v), want (%q, true)", id, sess, ok, "s_123")
+	}
+
+	_, ok = h.SessionOf("a_unknown")
+	if ok {
+		t.Fatal("SessionOf for unknown approval id should return false")
+	}
+}

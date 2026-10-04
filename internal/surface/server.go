@@ -168,6 +168,9 @@ func (s *Server) ListenAndServe() error {
 		return err
 	case <-sigs:
 	}
+	if s.OnShutdown != nil {
+		s.OnShutdown()
+	}
 	if s.Hub != nil {
 		s.Hub.Shutdown()
 	}
