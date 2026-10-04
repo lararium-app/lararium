@@ -3,6 +3,7 @@ package surface
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -644,4 +645,184 @@ func TestHub_HandleApprovalForeignSession(t *testing.T) {
 	if w.Code != 404 {
 		t.Fatalf("foreign session status = %d, want 404", w.Code)
 	}
+}
+
+func TestHeadlessTurnSharesGate(t *testing.T) {
+	startedCh := make(chan struct{})
+	unblockCh := make(chan struct{})
+
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: false, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			// Signal turn has entered engine
+			select {
+			case startedCh <- struct{}{}:
+			default:
+			}
+			<-unblockCh
+			return &router.Completion{Text: "web turn reply", Model: "stub"}, nil
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	// Create session s1
+	if _, err := penatus.CreateSession(hub.hearthHome, "s1", "side"); err != nil {
+		t.Fatal(err)
+	}
+	log1, err := penatus.OpenLog(hub.SessionDir("s1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = log1.Append(penatus.Event{T: "msg", TS: time.Now().UTC().Format(time.RFC3339), Fields: map[string]json.RawMessage{
+		"role": raw(t, "assistant"), "text": raw(t, "system prompt"), "model": raw(t, "test"),
+		"usage": mustJSON(t, map[string]int{"in": 10, "out": 5}),
+	}})
+
+	// Start web turn on s1
+	webDone := make(chan struct{})
+	go func() {
+		defer close(webDone)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/s1/messages", strings.NewReader(`{"text":"hello web"}`))
+		req.Header.Set("Content-Type", "application/json")
+		hub.HandleMessage(w, req, "s1")
+	}()
+
+	// Wait until s1 is running
+	select {
+	case <-startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("web turn did not start in time")
+	}
+
+	// s1 is in flight: RunHeadlessTurn on s1 must return ErrTurnInFlight
+	err = hub.RunHeadlessTurn(context.Background(), "s1", "headless text", "telegram", 0, nil)
+	if !errors.Is(err, ErrTurnInFlight) {
+		t.Fatalf("RunHeadlessTurn on running session: got %v, want ErrTurnInFlight", err)
+	}
+
+	// Release web turn
+	close(unblockCh)
+	<-webDone
+
+	// Setup fake replies for headless turn
+	sp.replies = func(n int, msgs []router.Message) (*router.Completion, error) {
+		return &router.Completion{Text: "headless reply", Model: "stub"}, nil
+	}
+
+	// Create session s2
+	if _, err := penatus.CreateSession(hub.hearthHome, "s2", "side"); err != nil {
+		t.Fatal(err)
+	}
+	log2, err := penatus.OpenLog(hub.SessionDir("s2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = log2.Append(penatus.Event{T: "msg", TS: time.Now().UTC().Format(time.RFC3339), Fields: map[string]json.RawMessage{
+		"role": raw(t, "assistant"), "text": raw(t, "system prompt"), "model": raw(t, "test"),
+		"usage": mustJSON(t, map[string]int{"in": 10, "out": 5}),
+	}})
+
+	// Headless turn on s2 succeeds
+	var deltas []string
+	err = hub.RunHeadlessTurn(context.Background(), "s2", "hello from headless", "telegram", 42, func(d string) {
+		deltas = append(deltas, d)
+	})
+	if err != nil {
+		t.Fatalf("RunHeadlessTurn on s2 failed: %v", err)
+	}
+
+	// Check penatus log for s2
+	log2Reloaded, err := penatus.OpenLog(hub.SessionDir("s2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var userFound, assistantFound bool
+	for _, ev := range log2Reloaded.Live() {
+		if ev.T != "msg" {
+			continue
+		}
+		var f struct {
+			Role     string `json:"role"`
+			Text     string `json:"text"`
+			UpdateID *int64 `json:"update_id"`
+			Src      struct {
+				Channel string `json:"channel"`
+			} `json:"src"`
+		}
+		b, _ := ev.MarshalJSON()
+		_ = json.Unmarshal(b, &f)
+		if f.Role == "user" && f.Text == "hello from headless" {
+			userFound = true
+			// A3 + PENATUS-SPEC §2: nuntius turns tag BOTH msg
+			// events with update_id and carry src.channel telegram.
+			if f.UpdateID == nil || *f.UpdateID != 42 {
+				t.Fatalf("user event update_id = %v, want 42", f.UpdateID)
+			}
+			if f.Src.Channel != "telegram" {
+				t.Fatalf("user event src.channel = %q, want telegram", f.Src.Channel)
+			}
+		}
+		if f.Role == "assistant" && f.Text == "headless reply" {
+			assistantFound = true
+			// A3 freezes update_id on BOTH events. src stays on the
+			// user event only — loop's provenance convention for
+			// every channel ("where did this instruction come from").
+			if f.UpdateID == nil || *f.UpdateID != 42 {
+				t.Fatalf("assistant event update_id = %v, want 42", f.UpdateID)
+			}
+		}
+	}
+	if !userFound {
+		t.Fatal("user event not found in s2 log")
+	}
+	if !assistantFound {
+		t.Fatal("assistant event not found in s2 log")
+	}
+}
+
+func TestHeadlessTurnNoWriter(t *testing.T) {
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: false, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			return &router.Completion{Text: "no writer reply", Model: "stub"}, nil
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	// Run headless turn without ResponseWriter — must not panic and must return nil error
+	err := hub.RunHeadlessTurn(context.Background(), "main", "test no writer", "telegram", 0, nil)
+	if err != nil {
+		t.Fatalf("RunHeadlessTurn returned unexpected error: %v", err)
+	}
+
+	// Verify quiet turnStream terminal bookkeeping and terminalOnce
+	disconnectedFired := false
+	ts := newQuietTurnStream(func() { disconnectedFired = true })
+	if ts.started {
+		t.Fatal("new quiet stream should not have started=true")
+	}
+	ts.terminal("turn_done", `{"seq":1}`)
+	if !ts.started {
+		t.Fatal("terminal should have marked started=true")
+	}
+	// Calling terminal again should not panic and terminalOnce ensures exactly-once execution
+	ts.terminal("error", `{"error":"second"}`)
+
+	ts.disconnected()
+	if !disconnectedFired {
+		t.Fatal("disconnected should invoke denyAll callback")
+	}
+	// Calling disconnected again should not fire denyAll again
+	disconnectedFired = false
+	ts.disconnected()
+	if disconnectedFired {
+		t.Fatal("second disconnected call should be no-op")
+	}
+	// end should not block or panic
+	ts.end()
 }
