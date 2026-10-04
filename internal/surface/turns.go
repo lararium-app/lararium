@@ -3,6 +3,7 @@ package surface
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	stdlog "log"
 	"net/http"
 	"os"
@@ -16,6 +17,10 @@ import (
 	"github.com/lararium-app/lararium/internal/penatus"
 	"github.com/lararium-app/lararium/internal/router"
 )
+
+// ErrTurnInFlight is returned when a turn is already running for the
+// session (spec §5 concurrency gate).
+var ErrTurnInFlight = errors.New("turn in flight")
 
 // runawayCapBytes aborts a turn that generates this many streamed bytes
 // (spec §5: cap enforced engine-side so a disconnected client cannot let
@@ -46,6 +51,16 @@ type Hub struct {
 
 // AttachKeys gives the hub the live key registry (KEYS-SPEC K6).
 func (h *Hub) AttachKeys(r *keystore.Registry) { h.keys = r }
+
+// Approvals returns the hub's approval coordinator (NUNTIUS-SPEC §7.1).
+func (h *Hub) Approvals() *ApprovalHub { return h.ap }
+
+// AuditApprovalFor maps an engine approval string to the frozen
+// SURFACE-SPEC §6 audit object with the "telegram" fallback channel
+// (NUNTIUS-SPEC §7.1).
+func (h *Hub) AuditApprovalFor(sessionID, approval string) (json.RawMessage, bool) {
+	return auditApprovalFor(h.ap, sessionID, approval, "telegram")
+}
 
 // NewHub builds the turn hub. hearthHome is the persona root; session
 // logs live under <hearthHome>/sessions/<id> exactly where repl.go puts
@@ -101,9 +116,15 @@ func (h *Hub) Shutdown() {
 // POST answers 410. Like every cancelled turn no audit record is written
 // — the tool never ran, and the absence of a tool_result IS the record.
 func (h *Hub) Cancel(sessionID string) bool {
+	// The turn handle is snapshotted under h.mu, but the fan-out and
+	// cancellation run OUTSIDE it: CancelAllFor fires the bridge's
+	// terminal hook, whose Telegram card edit can take ~15 s — holding
+	// the hub lock across it would freeze every other session. A turn
+	// that completes in the window makes both calls no-ops (cancel
+	// funcs are idempotent, CancelAllFor sees nothing pending).
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	t, ok := h.running[sessionID]
+	h.mu.Unlock()
 	if !ok {
 		return false
 	}
@@ -152,9 +173,9 @@ func payloadJSON(v any) string {
 	return string(b)
 }
 
-// sessionDir is where repl.go keeps every session log: <home>/sessions/<id>
+// SessionDir is where repl.go keeps every session log: <home>/sessions/<id>
 // (main included — it is NOT the hearth root).
-func (h *Hub) sessionDir(sessionID string) string {
+func (h *Hub) SessionDir(sessionID string) string {
 	return filepath.Join(h.hearthHome, "sessions", sessionID)
 }
 
@@ -164,6 +185,7 @@ func (h *Hub) sessionDir(sessionID string) string {
 type turnStream struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
+	quiet   bool
 
 	writeMu      sync.Mutex
 	started      bool
@@ -175,6 +197,17 @@ type turnStream struct {
 
 	denyAll       func()
 	disconnectOnc sync.Once
+}
+
+// newQuietTurnStream builds a quiet turnStream for headless execution
+// (NUNTIUS-SPEC §7.1): no heartbeat goroutine is started, writeEvent/terminal
+// update bookkeeping without writing bytes or touching w/flusher, and denyAll
+// fires if disconnected is called.
+func newQuietTurnStream(denyAll func()) *turnStream {
+	return &turnStream{
+		quiet:   true,
+		denyAll: denyAll,
+	}
 }
 
 // newTurnStream starts the heartbeat (a `: ping` comment every 5 s so
@@ -207,6 +240,9 @@ func (ts *turnStream) writeEvent(event, data string) {
 	ts.writeMu.Lock()
 	defer ts.writeMu.Unlock()
 	ts.started = true
+	if ts.quiet {
+		return
+	}
 	_, _ = ts.w.Write([]byte("event: " + event + "\n"))
 	_, _ = ts.w.Write([]byte("data: " + data + "\n\n"))
 	ts.flusher.Flush()
@@ -232,6 +268,10 @@ func (ts *turnStream) failPreStream(w http.ResponseWriter) {
 		ts.fail()
 		return
 	}
+	if ts.quiet || w == nil {
+		ts.fail()
+		return
+	}
 	writeJSONBody(w, http.StatusInternalServerError, `{"error":"turn failed"}`)
 }
 
@@ -243,6 +283,9 @@ func (ts *turnStream) disconnected() {
 
 // end stops the heartbeat and waits for the writer goroutine to drain.
 func (ts *turnStream) end() {
+	if ts.quiet {
+		return
+	}
 	ts.stopHBOnce.Do(func() { close(ts.hbStop) })
 	<-ts.hbDone
 }
@@ -314,16 +357,68 @@ func (h *Hub) HandleMessage(w http.ResponseWriter, r *http.Request, sessionID st
 	h.runTurn(engineCtx, reqCtx, w, ts, t, sessionID, req.Text)
 }
 
+// RunHeadlessTurn runs one turn with no SSE listener (NUNTIUS-SPEC
+// §7.1): events are dropped, persistence and approvals are unchanged.
+// channel names the src channel for msg events and audit fallback
+// ("telegram"). The running-map gate is shared with web turns: a
+// session already in flight returns ErrTurnInFlight. ctx bounds the
+// engine like turn_timeout does for web (use min of ctx and
+// h.cfg.TurnTimeout).
+func (h *Hub) RunHeadlessTurn(ctx context.Context, sessionID, text, channel string, updateID int64, onDelta func(string)) error {
+	timeout := h.cfg.TurnTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	engineCtx, cancelEngine := context.WithTimeout(ctx, timeout)
+	defer cancelEngine()
+
+	reqCtx := engineCtx
+	t := &turn{cancel: cancelEngine}
+
+	h.mu.Lock()
+	if _, ok := h.running[sessionID]; ok {
+		h.mu.Unlock()
+		return ErrTurnInFlight
+	}
+	h.running[sessionID] = t
+	h.mu.Unlock()
+
+	defer func() {
+		h.mu.Lock()
+		delete(h.running, sessionID)
+		h.mu.Unlock()
+	}()
+
+	ts := newQuietTurnStream(func() {
+		h.ap.DisconnectFor(sessionID)
+	})
+	defer ts.end()
+
+	return h.executeTurn(engineCtx, reqCtx, nil, ts, t, sessionID, text, channel, channel, updateID, onDelta)
+}
+
 // runTurn executes one engine loop and streams its events; when it
 // returns, exactly one terminal event has left the stream.
 func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, ts *turnStream, t *turn, sessionID, text string) {
+	_ = h.executeTurn(engineCtx, reqCtx, w, ts, t, sessionID, text, "api", "web", 0, nil)
+}
+
+func (h *Hub) executeTurn(
+	engineCtx, reqCtx context.Context,
+	w http.ResponseWriter,
+	ts *turnStream,
+	t *turn,
+	sessionID, text, srcChannel, turnFallback string,
+	updateID int64,
+	userOnDelta func(string),
+) error {
 	approver := func(name, argsSummary string) (bool, string) {
 		// Spec §5 + NUNTIUS-SPEC A1: an approval needs at least one
 		// live approver channel — this SSE listener or the polling
 		// bridge. The hub probes presence and applies the deny rule.
 		// The decision is awaited from ANY channel; reqCtx no longer
 		// short-circuits it.
-		webLive := reqCtx.Err() == nil
+		webLive := !ts.quiet && reqCtx.Err() == nil
 		id, decisionCh := h.ap.RegisterOn(sessionID, name, argsSummary, webLive, func(approvalID string) {
 			ts.writeEvent("approval_request", payloadJSON(approvalPayload{
 				ApprovalID:  approvalID,
@@ -350,6 +445,9 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 			return
 		}
 		ts.writeEvent("delta", payloadJSON(deltaPayload{Text: delta}))
+		if userOnDelta != nil {
+			userOnDelta(delta)
+		}
 	}
 
 	// loop's OnTool carries no call id; the approval string is unique per
@@ -369,16 +467,16 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 		}
 	}
 
-	sessDir := h.sessionDir(sessionID)
+	sessDir := h.SessionDir(sessionID)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		ts.failPreStream(w)
-		return
+		return err
 	}
 
 	log, err := penatus.OpenLog(sessDir)
 	if err != nil {
 		ts.failPreStream(w)
-		return
+		return err
 	}
 
 	sys, _, _ := loop.SystemPrompt(h.hearthHome)
@@ -392,9 +490,10 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 		CompactProfile: "compact",
 		TriggerPct:     h.compactionTriggerPct,
 		Keys:           h.keys,
-		SrcChannel:     "api",
+		SrcChannel:     srcChannel,
+		UpdateID:       updateID,
 		AuditApproval: func(approval string) (json.RawMessage, bool) {
-			return auditApprovalFor(h.ap, sessionID, approval, "web")
+			return auditApprovalFor(h.ap, sessionID, approval, turnFallback)
 		},
 	}
 
@@ -404,7 +503,7 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 	if err != nil {
 		stdlog.Printf("hearthd serve: turn on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours
 		ts.fail()
-		return
+		return err
 	}
 
 	// seq + token usage come from the assistant msg event loop just
@@ -416,6 +515,7 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 		InTokens:  inTok,
 		OutTokens: outTok,
 	}))
+	return nil
 }
 
 // lastAssistantUsage reads seq and token usage off the newest assistant
