@@ -119,6 +119,25 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 			Router:         rt,
 			CompactProfile: "compact",
 			TriggerPct:     cfg.Hearth.CompactionTriggerPct,
+			SrcChannel:     "api",
+			// SURFACE-SPEC §6 audit schema, REPL flavor: the y/N
+			// prompt is the decision; source is always "repl"
+			// (the only field allowed to differ from a web run).
+			AuditApproval: func(approval string) (json.RawMessage, bool) {
+				decision, reason := "allowed", "ok"
+				if strings.HasPrefix(approval, "denied:") {
+					decision, reason = "denied", "ok"
+				}
+				if approval == "auto" || approval == "" {
+					reason = "not_required"
+				}
+				obj, _ := json.Marshal(struct {
+					Decision string `json:"decision"`
+					Reason   string `json:"reason"`
+					Source   string `json:"source"`
+				}{decision, reason, "repl"})
+				return obj, true
+			},
 		},
 	}, nil
 }

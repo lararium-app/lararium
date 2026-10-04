@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +77,23 @@ func (h *Hub) InFlight(sessionID string) bool {
 	return ok
 }
 
+// Shutdown resolves every pending approval denied:shutdown (source
+// "shutdown", A2) and cancels every running turn (V12): a cancelled
+// turn commits no partial assistant event, and pending approvals never
+// outlive the process.
+func (h *Hub) Shutdown() {
+	h.ap.DenyAllAll("shutdown", "shutdown")
+	h.mu.Lock()
+	turns := make([]*turn, 0, len(h.running))
+	for _, t := range h.running {
+		turns = append(turns, t)
+	}
+	h.mu.Unlock()
+	for _, t := range turns {
+		t.cancel()
+	}
+}
+
 // Cancel aborts the running turn for the session, if any. Per
 // SURFACE-SPEC §5 (A5): every approval still pending on that turn
 // resolves to denied (internal cause "cancelled") BEFORE the turn's own
@@ -89,7 +107,7 @@ func (h *Hub) Cancel(sessionID string) bool {
 	if !ok {
 		return false
 	}
-	h.ap.DenyAllFor(sessionID, "cancelled")
+	h.ap.CancelAllFor(sessionID, "web")
 	t.cancel()
 	return true
 }
@@ -280,7 +298,9 @@ func (h *Hub) HandleMessage(w http.ResponseWriter, r *http.Request, sessionID st
 	}
 
 	ts := newTurnStream(w, flusher, func() {
-		h.ap.DenyAllFor(sessionID, "disconnected")
+		// A1 presence: the web channel dies; each pending approval
+		// survives only if a live Telegram card covers it.
+		h.ap.DisconnectFor(sessionID)
 	})
 	defer ts.end()
 
@@ -298,12 +318,11 @@ func (h *Hub) HandleMessage(w http.ResponseWriter, r *http.Request, sessionID st
 // returns, exactly one terminal event has left the stream.
 func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, ts *turnStream, t *turn, sessionID, text string) {
 	approver := func(name, argsSummary string) (bool, string) {
-		// Spec §5: an approval can only be pending while a client is
-		// listening. No listener at creation time → denied immediately.
-		if reqCtx.Err() != nil {
-			return false, "disconnected"
-		}
-		id, decisionCh := h.ap.Register(sessionID, name, argsSummary, func(approvalID string) {
+		// Spec §5 + NUNTIUS-SPEC A1: an approval needs at least one
+		// live approver channel — this SSE listener or the polling
+		// bridge. The hub probes presence and applies the deny rule.
+		webLive := reqCtx.Err() == nil
+		id, decisionCh := h.ap.RegisterOn(sessionID, name, argsSummary, webLive, func(approvalID string) {
 			ts.writeEvent("approval_request", payloadJSON(approvalPayload{
 				ApprovalID:  approvalID,
 				Name:        name,
@@ -371,6 +390,10 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 		CompactProfile: "compact",
 		TriggerPct:     h.compactionTriggerPct,
 		Keys:           h.keys,
+		SrcChannel:     "api",
+		AuditApproval: func(approval string) (json.RawMessage, bool) {
+			return auditApprovalFor(h.ap, sessionID, approval, "web")
+		},
 	}
 
 	// engineCtx is intentionally not r.Context(): the turn persists after
@@ -419,6 +442,63 @@ func lastAssistantUsage(log *penatus.Log) (seq int64, inTok, outTok int) {
 		}
 	}
 	return seq, inTok, outTok
+}
+
+// auditApprovalFor maps the engine approval string ("auto" |
+// "approved:<id>" | "denied:<id>") to the frozen SURFACE-SPEC §6 audit
+// object. decision/reason/source come from the hub's terminal record
+// (A2 attribution), never from the caller: explicit decisions carry
+// reason "ok" with the deciding surface as source; timer/shutdown/hub
+// causes carry their own. turnFallback names the turn's channel
+// ("web" here, "telegram" for nuntius, "repl" for the REPL) and covers
+// trusted tools (reason "not_required").
+func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string) (json.RawMessage, bool) {
+	decision, reason, source := "allowed", "not_required", turnFallback
+	switch {
+	case approval == "auto" || approval == "":
+	case strings.HasPrefix(approval, "approved:"):
+		reason, source = auditHubPair(ap, sessionID, strings.TrimPrefix(approval, "approved:"), turnFallback)
+		if reason == "" { // approved outside a hub (REPL nick): explicit allow
+			reason = "ok"
+		}
+	case strings.HasPrefix(approval, "denied:"):
+		decision = "denied"
+		reason, source = auditHubPair(ap, sessionID, strings.TrimPrefix(approval, "denied:"), turnFallback)
+		if reason == "" { // no hub record: "no-approver" and friends
+			reason = "disconnected"
+		}
+	}
+	obj, err := json.Marshal(struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+		Source   string `json:"source"`
+	}{decision, reason, source})
+	if err != nil {
+		return nil, false
+	}
+	return obj, true
+}
+
+// auditHubPair reads the hub's terminal attribution for an approval id
+// and maps it onto the frozen reason enum (V7: explicit decisions —
+// allow or deny — carry reason "ok"; the timer carries "timeout").
+func auditHubPair(ap *ApprovalHub, sessionID, id, turnFallback string) (string, string) {
+	hubReason := ap.Reason(sessionID, id)
+	if hubReason == "" {
+		return "", turnFallback
+	}
+	reason := hubReason
+	switch hubReason {
+	case "ok", "denied", "cancelled":
+		reason = "ok"
+	case "timed_out":
+		reason = "timeout"
+	}
+	source := ap.Source(sessionID, id)
+	if source == "" {
+		source = turnFallback
+	}
+	return reason, source
 }
 
 // HandleApproval serves POST /v1/sessions/{id}/approvals/{aid}: resolves

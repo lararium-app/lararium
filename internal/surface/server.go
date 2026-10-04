@@ -6,8 +6,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lararium-app/lararium/web"
@@ -150,5 +153,28 @@ func (s *Server) ListenAndServe() error {
 		ReadTimeout:       0, // request bodies stream; capped by body limit
 		IdleTimeout:       120 * time.Second,
 	}
-	return srv.Serve(ln)
+
+	// V12 (SURFACE-SPEC): SIGTERM/SIGINT resolves every pending
+	// approval denied:shutdown, cancels running turns (append-only
+	// integrity: a cancelled turn commits no partial assistant event),
+	// and drains within 60 s.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, os.Interrupt)
+	defer signal.Stop(sigs)
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+	select {
+	case err := <-serveErr:
+		return err
+	case <-sigs:
+	}
+	if s.Hub != nil {
+		s.Hub.Shutdown()
+	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(drainCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	return nil
 }
