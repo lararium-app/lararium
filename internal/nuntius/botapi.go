@@ -170,6 +170,14 @@ func (b *BotAPI) GetUpdates(ctx context.Context, offset int64) ([]Update, error)
 	}
 	var updates []Update
 	if err := b.call(ctx, "getUpdates", params, &updates); err != nil {
+		if Is429(err) {
+			// N9: the pause lands on the bucket the 429 came from —
+			// for polling that is the poll bucket, never the send
+			// buckets.
+			if d := RetryAfter(err); d > 0 {
+				b.poll.Pause(d)
+			}
+		}
 		return nil, err
 	}
 	return updates, nil
@@ -201,7 +209,11 @@ func (b *BotAPI) sendCall(ctx context.Context, chatID, method string, params map
 func (b *BotAPI) SendMessage(ctx context.Context, chatID, text string, kb *Keyboard) (*Message, error) {
 	params := map[string]string{"chat_id": chatID, "text": text}
 	if kb != nil {
-		params["reply_markup"] = kbJSON(kb)
+		markup, ok := kbJSON(kb)
+		if !ok {
+			return nil, errors.New("nuntius: unmarshalable keyboard")
+		}
+		params["reply_markup"] = markup
 	}
 	var msg Message
 	if err := b.sendCall(ctx, chatID, "sendMessage", params, &msg); err != nil {
@@ -218,7 +230,11 @@ func (b *BotAPI) EditMessageText(ctx context.Context, chatID string, messageID i
 		"text":       text,
 	}
 	if kb != nil {
-		params["reply_markup"] = kbJSON(kb)
+		markup, ok := kbJSON(kb)
+		if !ok {
+			return errors.New("nuntius: unmarshalable keyboard")
+		}
+		params["reply_markup"] = markup
 	} else {
 		params["reply_markup"] = `{"inline_keyboard":[]}`
 	}
@@ -248,16 +264,16 @@ func (b *BotAPI) DeleteMessageReplyMarkup(ctx context.Context, chatID string, me
 	}, nil)
 }
 
-// kbJSON renders the inline keyboard for reply_markup.
-func kbJSON(kb *Keyboard) string {
+// kbJSON renders the inline keyboard for reply_markup. ok is false
+// only if marshalling fails — callers must then refuse the send, not
+// silently drop the buttons (an approval card the user cannot act on
+// is worse than a visible failure).
+func kbJSON(kb *Keyboard) (string, bool) {
 	data, err := json.Marshal(kb)
 	if err != nil {
-		// Keyboards are built from frozen strings; unmarshalable is
-		// impossible. Fail closed rather than send a card without
-		// its buttons.
-		return ""
+		return "", false
 	}
-	return string(data)
+	return string(data), true
 }
 
 // truncate cuts s to n bytes at a rune boundary.

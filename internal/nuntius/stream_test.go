@@ -250,7 +250,7 @@ func TestStreamAbortedSuffix(t *testing.T) {
 	s := NewStream(f, "42", 2*time.Second, clk.now)
 
 	s.Delta(context.Background(), "Partial outp")
-	s.TurnAborted(context.Background(), "model stream error")
+	s.TurnAborted(context.Background(), "Partial outp", "model stream error")
 
 	if len(f.Edits) != 1 {
 		t.Fatalf("aborted final edits = %d, want 1", len(f.Edits))
@@ -268,7 +268,7 @@ func TestStreamAbortedBeforeFirstSend(t *testing.T) {
 
 	// Nothing streamed yet; abort with a reason must still tell the
 	// user something went wrong.
-	s.TurnAborted(context.Background(), "upstream 500")
+	s.TurnAborted(context.Background(), "", "upstream 500")
 	if len(f.Sent) != 1 {
 		t.Fatalf("sends = %d, want 1 (abort notice fresh-sent)", len(f.Sent))
 	}
@@ -284,5 +284,131 @@ func TestStreamEmptyTurnSendsNothing(t *testing.T) {
 	s.TurnDone(context.Background(), "")
 	if len(f.Sent) != 0 || len(f.Edits) != 0 {
 		t.Fatal("empty turn must not touch Telegram")
+	}
+}
+
+// --- frontier integrity: failed renders must never skip text ---
+
+// visibleChain reassembles each message's final visible text in send
+// order (markers stripped) — the user-facing rendering.
+func visibleChain(f *Fake) string {
+	visible := map[int64]string{}
+	var order []int64
+	for _, m := range f.Sent {
+		if _, seen := visible[m.MsgID]; !seen {
+			order = append(order, m.MsgID)
+		}
+		visible[m.MsgID] = m.Text
+	}
+	for _, e := range f.Edits {
+		visible[e.MessageID] = e.Text
+	}
+	var b strings.Builder
+	for _, id := range order {
+		tx := visible[id]
+		tx = strings.TrimSuffix(tx, " "+doneMarker)
+		tx = strings.TrimSuffix(tx, " "+abortedSuffix+"model boom")
+		b.WriteString(tx)
+	}
+	return b.String()
+}
+
+func TestStreamFailedEditDoesNotSkipText(t *testing.T) {
+	f := &Fake{}
+	boom := errors.New("telegram 400")
+	f.EditErrs = []error{boom} // only the mid-stream edit fails
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	s := NewStream(f, "42", 2*time.Second, clk.now)
+
+	s.Delta(context.Background(), "One. ")
+	clk.advance(2 * time.Second)
+	s.Delta(context.Background(), "One. Two. ") // this edit fails
+	s.TurnDone(context.Background(), "One. Two. Three.")
+
+	if got := visibleChain(f); got != "One. Two. Three." {
+		t.Fatalf("failed edit skipped text: chain=%q", got)
+	}
+}
+
+func TestStreamFailedRollDoesNotSkipText(t *testing.T) {
+	f := &Fake{}
+	boom := errors.New("telegram 500")
+	// Sends: first (ok), roll at cap (fails), final fresh send (ok).
+	f.SendErrs = []error{nil, boom, nil}
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	s := NewStream(f, "42", 2*time.Second, clk.now)
+
+	sentence := strings.Repeat("a", msgCap-1) + ". "
+	full := strings.Repeat(sentence, 2) + "tail end."
+	s.Delta(context.Background(), full[:100])
+	s.TurnDone(context.Background(), full)
+
+	chain := visibleChain(f)
+	cleaned := strings.ReplaceAll(chain, retriedPrefix+"\n", "")
+	if cleaned != full {
+		t.Fatalf("failed roll lost/duplicated text: chain len=%d full len=%d\ntail: %q",
+			len(cleaned), len(full), cleaned[max(0, len(cleaned)-60):])
+	}
+	if !strings.Contains(chain, retriedPrefix) {
+		t.Fatal("roll failure after finalize must go out via the retried fallback")
+	}
+}
+
+func TestStreamTerminalIsIdempotent(t *testing.T) {
+	f := &Fake{}
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	s := NewStream(f, "42", 2*time.Second, clk.now)
+
+	s.Delta(context.Background(), "One. ")
+	s.TurnDone(context.Background(), "One. Two.")
+	sends, edits := len(f.Sent), len(f.Edits)
+	s.TurnDone(context.Background(), "One. Two.")
+	s.TurnAborted(context.Background(), "", "late error")
+	s.Delta(context.Background(), "One. Two. Three.")
+
+	if len(f.Sent) != sends || len(f.Edits) != edits {
+		t.Fatalf("terminal call not idempotent: sends %d->%d edits %d->%d",
+			sends, len(f.Sent), edits, len(f.Edits))
+	}
+}
+
+func TestStreamShorterDeltaIgnored(t *testing.T) {
+	f := &Fake{}
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	s := NewStream(f, "42", 2*time.Second, clk.now)
+
+	s.Delta(context.Background(), "Long sentence one. Long sentence two.")
+	editsBefore := len(f.Edits)
+	clk.advance(2 * time.Second)
+	s.Delta(context.Background(), "shor") // must be ignored, not panic
+	if len(f.Edits) != editsBefore {
+		t.Fatalf("shorter delta triggered renders: %v", f.Edits[editsBefore:])
+	}
+	s.TurnDone(context.Background(), "Long sentence one. Long sentence two.")
+	if got := visibleChain(f); got != "Long sentence one. Long sentence two." {
+		t.Fatalf("chain = %q", got)
+	}
+}
+
+func TestStreamAbortedAfterFailedRollStillDelivers(t *testing.T) {
+	f := &Fake{}
+	boom := errors.New("telegram 500")
+	f.SendErrs = []error{nil, boom, nil} // roll fails, fresh send ok
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	s := NewStream(f, "42", 2*time.Second, clk.now)
+
+	sentence := strings.Repeat("b", msgCap-1) + ". "
+	full := strings.Repeat(sentence, 2) + "partial"
+	s.Delta(context.Background(), full[:100])
+	s.TurnAborted(context.Background(), full, "model boom")
+
+	chain := visibleChain(f)
+	cleaned := strings.ReplaceAll(chain, retriedPrefix+"\n", "")
+	if !strings.HasSuffix(cleaned, "partial") {
+		t.Fatalf("abort after failed roll lost the partial: tail=%q",
+			cleaned[max(0, len(cleaned)-60):])
+	}
+	if len(cleaned) != len(full) {
+		t.Fatalf("abort chain len=%d, want %d", len(cleaned), len(full))
 	}
 }
