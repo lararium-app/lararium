@@ -137,6 +137,9 @@ func main() {
 		case "keys":
 			keysCmd(*cfgPath, args[1:])
 			return
+		case "pair":
+			pairCmd(*cfgPath, args[1:])
+			return
 		}
 	}
 
