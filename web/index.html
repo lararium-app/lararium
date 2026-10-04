@@ -11,6 +11,7 @@
 <aside id="rail">
 <ul id="sessions"></ul>
 <button id="new-session">+ session</button>
+<button id="keys-button">keys</button>
 </aside>
 <main>
 <div id="transcript"></div>
@@ -20,5 +21,26 @@
 </form>
 <div id="status"></div>
 </main>
+<div id="keys-backdrop" hidden></div>
+<aside id="keys-drawer" hidden aria-label="Provider keys">
+<div class="drawer-head">
+<h2>Provider keys</h2>
+<button id="keys-close" title="Close">✕</button>
+</div>
+<div id="keys-transport-warn" hidden>
+This page is served over plain HTTP from a non-local address: keys typed
+here cross the network unencrypted. Use <code>hearthd keys set</code> on
+the daemon host, or connect over HTTPS or loopback, instead.
+</div>
+<p class="drawer-hint">Keys are stored on the daemon host (mode 0600) and
+never sent back to this page. Values show as a display fingerprint only.</p>
+<ul id="keys-list"></ul>
+<form id="keys-form">
+<input id="keys-name" placeholder="provider (e.g. openai)" autocomplete="off" spellcheck="false">
+<input id="keys-value" type="password" placeholder="api key" autocomplete="new-password">
+<button type="submit">save</button>
+</form>
+<div id="keys-status"></div>
+</aside>
 </body>
 </html>

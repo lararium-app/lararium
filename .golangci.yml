@@ -93,6 +93,11 @@ linters:
     rules:
       - path: _test\.go
         linters: [funlen, gocyclo, revive, noctx, errcheck]
+      # Tests exec the freshly built hearthd binary to assert the CLI's
+      # frozen strings/exit codes: the "tainted" path is t.TempDir().
+      - path: _test\.go
+        linters: [gosec]
+        text: G204
       # CmdRunner execs argv slices with NO shell (execve): CLI-provided
       # values cannot inject commands by construction — that IS the
       # product interface (cell run -- cmd...). gosec's taint analysis

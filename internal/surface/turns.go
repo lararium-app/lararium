@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/penatus"
 	"github.com/lararium-app/lararium/internal/router"
@@ -36,9 +37,14 @@ type Hub struct {
 	tools                []loop.Tool
 	router               *router.Router
 	ap                   *ApprovalHub
-	mu                   sync.Mutex
-	running              map[string]*turn
+	// keys is the live key registry handed to every Session (nil-safe).
+	keys    *keystore.Registry
+	mu      sync.Mutex
+	running map[string]*turn
 }
+
+// AttachKeys gives the hub the live key registry (KEYS-SPEC K6).
+func (h *Hub) AttachKeys(r *keystore.Registry) { h.keys = r }
 
 // NewHub builds the turn hub. hearthHome is the persona root; session
 // logs live under <hearthHome>/sessions/<id> exactly where repl.go puts
@@ -358,6 +364,7 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 		Router:         h.router,
 		CompactProfile: "compact",
 		TriggerPct:     h.compactionTriggerPct,
+		Keys:           h.keys,
 	}
 
 	// engineCtx is intentionally not r.Context(): the turn persists after
