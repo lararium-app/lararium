@@ -4,20 +4,33 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
+
+// ErrNoKey is the sentinel for a provider that resolved to no key
+// while pointing at a remote host (KEYS-SPEC K6 local-fail rule: a
+// removed key must never produce a keyless request to a remote
+// provider). Doors render their own sentence from this text.
+var ErrNoKey = errors.New("has no key — hearthd keys set")
 
 // openAI implements Provider for OpenAI-compatible APIs.
 type openAI struct {
 	baseURL      string
-	apiKey       string
+	keyFn        func(ctx context.Context) string
 	defaultModel string
 	// disableThink sends chat_template_kwargs{enable_thinking:false} to
 	// llama.cpp-style servers (measured 2.5–15× faster non-reasoning turns).
 	disableThink bool
+	// enforceKey applies the K6 local-fail rule: empty key + non-loopback
+	// host => error before the request. Set only by NewOpenAIKeyed;
+	// static-key constructors keep the legacy keyless behavior.
+	enforceKey bool
 }
 
 // NewOpenAI creates an OpenAI-compatible provider.
@@ -28,13 +41,77 @@ func NewOpenAI(baseURL, apiKey, defaultModel string) Provider {
 
 // NewOpenAIWith additionally disables model-side reasoning chains
 // (Qwen3-style thinking) when supported by the server template.
+// Static key: legacy behavior preserved — an empty key sends no
+// Authorization header without the K6 local-fail check.
 func NewOpenAIWith(baseURL, apiKey, defaultModel string, disableThink bool) Provider {
 	return &openAI{
 		baseURL:      strings.TrimRight(baseURL, "/"),
-		apiKey:       apiKey,
+		keyFn:        func(context.Context) string { return apiKey },
 		defaultModel: defaultModel,
 		disableThink: disableThink,
 	}
+}
+
+// NewOpenAIKeyed creates a provider whose key is resolved per call
+// from keyFn (turn-pinned snapshot first, registry fallback — the
+// caller owns that ordering). Enforces the K6 local-fail rule: an
+// empty key against a non-loopback host fails before any request.
+func NewOpenAIKeyed(baseURL string, keyFn func(context.Context) string, defaultModel string, disableThink bool) Provider {
+	return &openAI{
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		keyFn:        keyFn,
+		defaultModel: defaultModel,
+		disableThink: disableThink,
+		enforceKey:   true,
+	}
+}
+
+// resolveKey applies the K6 local-fail rule and returns the key for
+// this call. Empty key on a loopback host is allowed (local llama.cpp
+// needs no Authorization header).
+func (o *openAI) resolveKey(ctx context.Context) (string, error) {
+	key := o.keyFn(ctx)
+	if key == "" && o.enforceKey && !isLoopbackURL(o.baseURL) {
+		return "", fmt.Errorf("provider %w %s", ErrNoKey, o.baseURLHost())
+	}
+	return key, nil
+}
+
+// baseURLHost returns the URL host for error messages (raw on parse
+// failure — the request path will surface the real error).
+func (o *openAI) baseURLHost() string {
+	u, err := url.Parse(o.baseURL)
+	if err != nil {
+		return o.baseURL
+	}
+	return u.Host
+}
+
+// isLoopbackURL reports whether the URL host is loopback: 127.0.0.0/8,
+// ::1, "localhost", or an empty/unparseable host (unix sockets).
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return true // unparseable: treat as local, never worse than today
+	}
+	host := u.Hostname()
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false // remote hostname
+	}
+	return ip.IsLoopback() || ip.Equal(net.IPv4zero) || ip4In127(ip)
+}
+
+// ip4In127 covers 127.0.0.0/8 explicitly (IsLoopback already does on
+// Linux; belt-and-braces for IPv4-in-IPv6 mapped forms).
+func ip4In127(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		return v4[0] == 127
+	}
+	return false
 }
 
 // Name returns the provider id.
@@ -44,7 +121,11 @@ func (o *openAI) Name() string {
 
 // Capabilities probes the backend (GET /models) and reports what it supports.
 func (o *openAI) Capabilities(ctx context.Context) (Caps, error) {
-	return ProbeOpenAI(ctx, o.baseURL, o.apiKey, o.defaultModel)
+	key, err := o.resolveKey(ctx)
+	if err != nil {
+		return Caps{}, err
+	}
+	return ProbeOpenAI(ctx, o.baseURL, key, o.defaultModel)
 }
 
 // schemaOrNull returns raw JSON for a tool schema, defaulting to an empty object.
@@ -139,6 +220,10 @@ func (e *inBandError) Error() string {
 
 // Complete issues one non-streaming chat completion.
 func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*Completion, error) {
+	key, err := o.resolveKey(ctx)
+	if err != nil {
+		return nil, err
+	}
 	model := opts.Model
 	if model == "" {
 		model = o.defaultModel
@@ -194,8 +279,8 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
