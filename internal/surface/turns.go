@@ -321,6 +321,8 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 		// Spec §5 + NUNTIUS-SPEC A1: an approval needs at least one
 		// live approver channel — this SSE listener or the polling
 		// bridge. The hub probes presence and applies the deny rule.
+		// The decision is awaited from ANY channel; reqCtx no longer
+		// short-circuits it.
 		webLive := reqCtx.Err() == nil
 		id, decisionCh := h.ap.RegisterOn(sessionID, name, argsSummary, webLive, func(approvalID string) {
 			ts.writeEvent("approval_request", payloadJSON(approvalPayload{
@@ -332,7 +334,7 @@ func (h *Hub) runTurn(engineCtx, reqCtx context.Context, w http.ResponseWriter, 
 		select {
 		case decision := <-decisionCh:
 			return decision, id
-		case <-reqCtx.Done():
+		case <-engineCtx.Done():
 			return false, id
 		}
 	}

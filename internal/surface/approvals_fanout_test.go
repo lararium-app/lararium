@@ -305,3 +305,79 @@ func TestAuditApprovalForMapping(t *testing.T) {
 		t.Fatalf("no-approver: %q/%q/%q", d, r, s)
 	}
 }
+
+func TestDisconnectForLiveTelegramResolves(t *testing.T) {
+	// A1: web disconnect must not deny approvals covered by a live Telegram bridge.
+	ap := NewApprovalHub(time.Hour)
+	ap.SetBridgeLive(func() bool { return true })
+	fan := &recordingFanout{}
+	ap.SetFanout(fan)
+
+	id, decision := ap.RegisterOn("s1", "echo", "args", true, func(string) {})
+	if fan.pendingCount() != 1 {
+		t.Fatalf("pending fan-out count = %d, want 1", fan.pendingCount())
+	}
+
+	// Web listener drops; bridge is still live.
+	ap.DisconnectFor("s1")
+
+	// Approval must remain pending, NOT settled.
+	if count := ap.PendingCount("s1"); count != 1 {
+		t.Fatalf("pending count after disconnect = %d, want 1", count)
+	}
+	if r := ap.Reason("s1", id); r != "" {
+		t.Fatalf("reason after disconnect = %q, want empty (unsettled)", r)
+	}
+	select {
+	case <-decision:
+		t.Fatal("decision channel yielded before Telegram resolve")
+	default:
+	}
+
+	// Resolve from Telegram: returns 200, decision channel yields true.
+	if code := ap.ResolveFrom("s1", id, true, "telegram"); code != 200 {
+		t.Fatalf("ResolveFrom code = %d, want 200", code)
+	}
+	select {
+	case got := <-decision:
+		if !got {
+			t.Fatal("decision channel yielded false, want true")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("decision channel did not yield after Telegram resolve")
+	}
+
+	if count := ap.PendingCount("s1"); count != 0 {
+		t.Fatalf("pending count after resolve = %d, want 0", count)
+	}
+	if r, s := ap.Reason("s1", id), ap.Source("s1", id); r != "ok" || s != "telegram" {
+		t.Fatalf("reason/source = %q/%q, want ok/telegram", r, s)
+	}
+}
+
+func TestDisconnectForBridgeDeadDeniesDisconnected(t *testing.T) {
+	// A1 symmetry: if the bridge is not live, DisconnectFor settles denied:disconnected
+	// and the decision channel yields false immediately.
+	ap := NewApprovalHub(time.Hour)
+	ap.SetBridgeLive(func() bool { return false })
+	fan := &recordingFanout{}
+	ap.SetFanout(fan)
+
+	id, decision := ap.RegisterOn("s1", "echo", "args", true, func(string) {})
+	ap.DisconnectFor("s1")
+
+	if count := ap.PendingCount("s1"); count != 0 {
+		t.Fatalf("pending count = %d, want 0", count)
+	}
+	select {
+	case got := <-decision:
+		if got {
+			t.Fatal("decision channel yielded true, want false")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("decision channel did not yield after disconnect with dead bridge")
+	}
+	if r, s := ap.Reason("s1", id), ap.Source("s1", id); r != "disconnected" || s != "web" {
+		t.Fatalf("reason/source = %q/%q, want disconnected/web", r, s)
+	}
+}
