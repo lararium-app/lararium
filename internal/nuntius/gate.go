@@ -91,6 +91,7 @@ type Envelope struct {
 	FromID     string
 	ChatType   string // "private" | "group" | "supergroup" | "channel"
 	Text       string // message text or callback data
+	ChatID     string // where refusals are answered
 }
 
 // Decide applies the §3 gate. owners is the state re-read from disk
