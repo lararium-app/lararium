@@ -57,6 +57,7 @@ func (u Update) Envelope() Envelope {
 			FromID:     u.CallbackQuery.From.ID,
 			ChatType:   u.CallbackQuery.Message.Chat.Type,
 			Text:       u.CallbackQuery.Data,
+			ChatID:     u.CallbackQuery.Message.Chat.ID,
 		}
 	}
 	if u.Message != nil {
@@ -69,12 +70,13 @@ func (u Update) Envelope() Envelope {
 			FromID:   from,
 			ChatType: u.Message.Chat.Type,
 			Text:     u.Message.Text,
+			ChatID:   u.Message.Chat.ID,
 		}
 	}
 	// Anything the spec has not decided that arrives on the wire:
 	// refuse and log (P4). An empty envelope fails the private-chat
 	// check and drops.
-	return Envelope{UpdateID: u.UpdateID, ChatType: "unknown"}
+	return Envelope{UpdateID: u.UpdateID, ChatType: "unknown", ChatID: ""}
 }
 
 // Transport is the Bot API surface this bridge needs — six calls, all

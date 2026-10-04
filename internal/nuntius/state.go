@@ -18,6 +18,9 @@ const stateFileName = "state.json"
 type State struct {
 	Offset        int64  `json:"offset"`
 	ActiveSession string `json:"active_session"`
+	// OwnerChat is the Telegram chat the owner paired from (§2: replay
+	// routing and shutdown notices need it; v1 has exactly one chat).
+	OwnerChat string `json:"owner_chat,omitempty"`
 }
 
 // StateFile owns state.json (0600, atomic replace, fsync — §2).
