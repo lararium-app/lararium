@@ -47,9 +47,16 @@ func NewBotAPI(token string, fc *FloodControl) *BotAPI {
 		base:  "https://api.telegram.org",
 		token: token,
 		// Long poll is timeout=30s; the client must outlast it.
-		client: &http.Client{Timeout: 75 * time.Second},
-		fc:     fc,
-		poll:   NewBucket(1, 1, nil, nil),
+		// Redirects are refused: a redirect would replay the
+		// token-bearing URL to another host (N4).
+		client: &http.Client{
+			Timeout: 75 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		fc:   fc,
+		poll: NewBucket(1, 1, nil, nil),
 	}
 }
 
@@ -98,7 +105,9 @@ func (b *BotAPI) call(ctx context.Context, method string, params map[string]stri
 
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("nuntius: %s: %w", method, err)
+		// url.Error embeds the full URL — token included (N4). The
+		// reason (net error) is kept, the URL is not.
+		return fmt.Errorf("nuntius: %s: %s", method, transportReason(err))
 	}
 	defer resp.Body.Close()
 
@@ -129,6 +138,17 @@ func (b *BotAPI) call(ctx context.Context, method string, params map[string]stri
 		}
 	}
 	return nil
+}
+
+// transportReason strips the URL out of a transport error: net/http
+// wraps request failures in *url.Error whose text embeds the full
+// URL — which carries the token (N4). Only the inner reason survives.
+func transportReason(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err.Error()
+	}
+	return err.Error()
 }
 
 // sanitizeDesc keeps a Telegram description from smuggling the token
