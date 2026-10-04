@@ -21,6 +21,10 @@ var ErrNoKey = errors.New("has no key — hearthd keys set")
 
 // openAI implements Provider for OpenAI-compatible APIs.
 type openAI struct {
+	// name is the config-declared provider id (audit 5.7): it labels
+	// chain legs, audit lines, and /status — the wire protocol is not
+	// an identity. "openai" is the fallback for legacy constructors.
+	name         string
 	baseURL      string
 	keyFn        func(ctx context.Context) string
 	defaultModel string
@@ -36,15 +40,17 @@ type openAI struct {
 // NewOpenAI creates an OpenAI-compatible provider.
 // Pass an empty apiKey for local llama.cpp (no Authorization header).
 func NewOpenAI(baseURL, apiKey, defaultModel string) Provider {
-	return NewOpenAIWith(baseURL, apiKey, defaultModel, false)
+	return NewOpenAIWith("", baseURL, apiKey, defaultModel, false)
 }
 
 // NewOpenAIWith additionally disables model-side reasoning chains
 // (Qwen3-style thinking) when supported by the server template.
 // Static key: legacy behavior preserved — an empty key sends no
-// Authorization header without the K6 local-fail check.
-func NewOpenAIWith(baseURL, apiKey, defaultModel string, disableThink bool) Provider {
+// Authorization header without the K6 local-fail check. name is the
+// config-declared provider id (audit 5.7); "" keeps "openai".
+func NewOpenAIWith(name, baseURL, apiKey, defaultModel string, disableThink bool) Provider {
 	return &openAI{
+		name:         name,
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		keyFn:        func(context.Context) string { return apiKey },
 		defaultModel: defaultModel,
@@ -56,8 +62,11 @@ func NewOpenAIWith(baseURL, apiKey, defaultModel string, disableThink bool) Prov
 // from keyFn (turn-pinned snapshot first, registry fallback — the
 // caller owns that ordering). Enforces the K6 local-fail rule: an
 // empty key against a non-loopback host fails before any request.
-func NewOpenAIKeyed(baseURL string, keyFn func(context.Context) string, defaultModel string, disableThink bool) Provider {
+// name is the config-declared provider id shown on chain legs, audit
+// lines, and /status (audit 5.7); "" keeps "openai".
+func NewOpenAIKeyed(name, baseURL string, keyFn func(context.Context) string, defaultModel string, disableThink bool) Provider {
 	return &openAI{
+		name:         name,
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		keyFn:        keyFn,
 		defaultModel: defaultModel,
@@ -114,8 +123,12 @@ func ip4In127(ip net.IP) bool {
 	return false
 }
 
-// Name returns the provider id.
+// Name returns the config-declared provider id (audit 5.7), or
+// "openai" when a legacy constructor left it unset.
 func (o *openAI) Name() string {
+	if o.name != "" {
+		return o.name
+	}
 	return "openai"
 }
 
