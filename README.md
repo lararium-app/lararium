@@ -124,7 +124,7 @@ see [CELL-SPEC.md](docs/CELL-SPEC.md) for the host requirements and
 ## Contributing
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and feature
-proposals go through the [issue templates](../../issues/new/choose).
+proposals go through the [issue templates](https://github.com/lararium-app/lararium/issues/new/choose).
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
