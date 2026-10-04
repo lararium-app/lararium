@@ -73,6 +73,8 @@ func (f *fakeHub) Cancel(id string) bool {
 	return false
 }
 
+func (f *fakeHub) Shutdown() {}
+
 func TestHealthHandler(t *testing.T) {
 	store, _ := OpenTokenStore(t.TempDir() + "/tokens.json")
 	srv := &Server{Store: store, Sessions: &fakeSessionSource{}, Hub: &fakeHub{}}
