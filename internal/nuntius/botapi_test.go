@@ -252,6 +252,30 @@ func TestBotAPI404NeverLeaksToken(t *testing.T) {
 	}
 }
 
+func TestBotAPIPolling429PausesPollNotSends(t *testing.T) {
+	// N9: a 429 pauses the bucket it came from. A polling 429 must
+	// pause the poll bucket and leave the send buckets untouched.
+	api := newTestAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"ok":false,"description":"slow down","parameters":{"retry_after":5}}`))
+	})
+	_, err := api.GetUpdates(context.Background(), 0)
+	if !Is429(err) {
+		t.Fatalf("err = %v", err)
+	}
+	// Send buckets must still be at full burst: a send goes free.
+	done := make(chan error, 1)
+	go func() { done <- api.fc.Send(context.Background(), "42") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("polling 429 blocked the send buckets")
+	}
+}
+
 func TestBotAPIRefusesRedirects(t *testing.T) {
 	// A redirect would replay the token-bearing URL to the target
 	// host; the client must not follow it (N4).
