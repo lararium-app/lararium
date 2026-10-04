@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -13,7 +12,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
@@ -237,71 +235,17 @@ func serve(cfgPath string) {
 		os.Exit(1)
 	}
 
-	// Build router (same as repl.go)
-	firstModel := map[string]string{}
-	for _, ref := range append(append([]string{}, cfg.Models.Default...), cfg.Models.Compact...) {
-		p := providerOf(ref)
-		if _, ok := firstModel[p]; !ok {
-			firstModel[p] = modelOf(ref)
-		}
-	}
-	byName := map[string]router.Provider{}
-	// Provider key plumbing (KEYS-SPEC K5/K6): keys.json + registry +
-	// control socket. Resolution order env -> keys.json -> literal is
-	// computed at startup for the K2 warnings and on every reload;
-	// providers read the live registry per request, turns pin a
-	// snapshot at start.
-	kstore := keystore.New(home)
-	provInfos := func() []keystore.ProviderInfo {
-		infos := make([]keystore.ProviderInfo, 0, len(cfg.Providers))
-		for _, p := range cfg.Providers {
-			infos = append(infos, keystore.ProviderInfo{
-				Name: p.Name, EnvVar: p.APIKeyEnv, Literal: p.APIKey,
-			})
-		}
-		return infos
-	}
-	keyReg := keystore.NewRegistry(nil)
-	reloadKeys := func() error {
-		m, err := kstore.Read()
-		if err != nil {
-			return err
-		}
-		keyReg.Swap(m)
-		if _, warns := keystore.ResolveAll(kstore, provInfos(), os.Getenv); len(warns) > 0 {
-			for _, w := range warns {
-				fmt.Fprintln(os.Stderr, w)
-			}
-		}
-		return nil
-	}
-	if err := reloadKeys(); err != nil {
+	// Build router (shared plumbing with the REPL — audit 5.3/5.7:
+	// one K2 resolver, one provider builder, provider id = config name).
+	kp, err := newKeyPlumbing(cfg)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	for _, p := range cfg.Providers {
-		provName, envVar, literal := p.Name, p.APIKeyEnv, p.APIKey
-		// K2 order: env -> keys.json (turn snapshot, else live
-		// registry) -> config literal. Each layer counts only when
-		// non-empty after trimming.
-		keyFn := func(ctx context.Context) string {
-			if envVar != "" {
-				if k := os.Getenv(envVar); strings.TrimSpace(k) != "" {
-					return k
-				}
-			}
-			if snap, ok := keystore.SnapshotFrom(ctx); ok {
-				if k := snap[provName]; k != "" {
-					return k
-				}
-			} else if k := keyReg.Key(provName); k != "" {
-				return k
-			}
-			return literal
-		}
-		disableThink := p.Think != nil && !*p.Think
-		byName[provName] = router.NewOpenAIKeyed(p.BaseURL, keyFn, firstModel[provName], disableThink)
-	}
+	byName := kp.BuildProviders(cfg)
+	keyReg := kp.Registry
+	kstore := kp.Store
+	reloadKeys := kp.Reload
 
 	targets := func(refs []string) ([]router.Target, error) {
 		var ts []router.Target
@@ -361,7 +305,7 @@ func serve(cfgPath string) {
 	srv.AttachKeys(&surface.KeysDeps{
 		Store:     kstore,
 		Registry:  keyReg,
-		Providers: provInfos,
+		Providers: kp.ProviderInfos,
 		Reload:    reloadKeys,
 	})
 

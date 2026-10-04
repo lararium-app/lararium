@@ -31,24 +31,13 @@ type runtime struct {
 const userNick = "you"
 
 func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
-	// Build provider instances by name. defaultModel per provider = the
-	// model from its first chain ref (targets override per-request).
-	firstModel := map[string]string{}
-	for _, ref := range append(append([]string{}, cfg.Models.Default...), cfg.Models.Compact...) {
-		p := providerOf(ref)
-		if _, ok := firstModel[p]; !ok {
-			firstModel[p] = modelOf(ref)
-		}
+	// Provider keys come from the SAME plumbing as serve (audit 5.3):
+	// keys.json + registry + K2 order, not bare config literals.
+	kp, err := newKeyPlumbing(cfg)
+	if err != nil {
+		return nil, err
 	}
-	byName := map[string]router.Provider{}
-	for _, p := range cfg.Providers {
-		key := p.APIKey
-		if p.APIKeyEnv != "" {
-			key = os.Getenv(p.APIKeyEnv)
-		}
-		disableThink := p.Think != nil && !*p.Think
-		byName[p.Name] = router.NewOpenAIWith(p.BaseURL, key, firstModel[p.Name], disableThink)
-	}
+	byName := kp.BuildProviders(cfg)
 
 	targets := func(refs []string) ([]router.Target, error) {
 		var ts []router.Target

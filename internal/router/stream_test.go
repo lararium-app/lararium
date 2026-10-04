@@ -134,7 +134,7 @@ func TestDisableThinkSendsChatTemplateKwargs(t *testing.T) {
 
 	// disabled thinking: field present with false
 	sawBody = false
-	p := NewOpenAIWith(srv.URL+"/v1", "", "m", true)
+	p := NewOpenAIWith("openai", srv.URL+"/v1", "", "m", true)
 	if _, err := p.Complete(context.Background(), nil, Options{}); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestDisableThinkOnStreamingPath(t *testing.T) {
 		fmt.Fprint(w, "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer srv.Close()
-	r := NewRouter(Profile{Chain: []Target{{Provider: NewOpenAIWith(srv.URL+"/v1", "", "m", true)}}})
+	r := NewRouter(Profile{Chain: []Target{{Provider: NewOpenAIWith("openai", srv.URL+"/v1", "", "m", true)}}})
 	if _, err := r.CompleteStream(context.Background(), "chat", nil, Options{}, nil); err != nil {
 		t.Fatal(err)
 	}
