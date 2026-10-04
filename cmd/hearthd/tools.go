@@ -157,7 +157,29 @@ func loadMemory(home string) (penatus.Doc, error) {
 }
 
 func saveMemory(home string, doc penatus.Doc) error {
-	return os.WriteFile(memoryPath(home), doc.Marshal(), 0o600)
+	target := memoryPath(home)
+	tmp, err := os.CreateTemp(filepath.Dir(target), "memory-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(doc.Marshal()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, target)
 }
 
 func appendMemoryLine(home, text, priority string) error {
