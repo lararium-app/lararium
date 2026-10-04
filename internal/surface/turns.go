@@ -76,7 +76,12 @@ func (h *Hub) InFlight(sessionID string) bool {
 	return ok
 }
 
-// Cancel aborts the running turn for the session, if any.
+// Cancel aborts the running turn for the session, if any. Per
+// SURFACE-SPEC §5 (A5): every approval still pending on that turn
+// resolves to denied (internal cause "cancelled") BEFORE the turn's own
+// cancellation, so no approval can outlive its turn and a late decision
+// POST answers 410. Like every cancelled turn no audit record is written
+// — the tool never ran, and the absence of a tool_result IS the record.
 func (h *Hub) Cancel(sessionID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -84,6 +89,7 @@ func (h *Hub) Cancel(sessionID string) bool {
 	if !ok {
 		return false
 	}
+	h.ap.DenyAllFor(sessionID, "cancelled")
 	t.cancel()
 	return true
 }

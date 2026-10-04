@@ -6,6 +6,8 @@
 
 Status: **APPROVED — frozen 2026-09-28.** §6 records the resolved decisions;
 this document is the frozen contract. Changes require a version bump discussion.
+Amendment A3 (approved at NUNTIUS-SPEC G1 pass, applied 2026-10-04): the §2
+`msg` event gains optional `update_id` — additive, parsers unchanged.
 Format version: `penatus/1`. Every bundle, file header, and event carries this tag.
 
 Design rules (from ARCHITECTURE.md §1, restated as format law):
@@ -160,7 +162,7 @@ Core event types (v1):
 
 | `t` | Payload fields | Meaning |
 |---|---|---|
-| `msg` | `role` (`user\|assistant\|tool`), `text`, `src` (provenance, below), `model`, `usage` | a completed message (streaming deltas are NOT persisted) |
+| `msg` | `role` (`user\|assistant\|tool`), `text`, `src` (provenance, below), `model`, `usage`, `update_id` (optional; A3, NUNTIUS-SPEC §7.4: integer, present on both `msg` events — user and assistant — of a nuntius-initiated turn; absent for web/repl. Additive: parsers and field-set verification treat it as optional) | a completed message (streaming deltas are NOT persisted) |
 | `tool_call` | `call_id`, `name`, `args`, `approval` (`auto\|approved:<id>\|denied:<id>`) | dispatch record |
 | `tool_result` | `call_id`, `ok`, `result_digest`, `result_ref` (path under `sessions/<id>/blobs/` if > 8 KB) | outcome |
 | `compact` | see §3 | compaction checkpoint |
