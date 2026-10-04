@@ -476,6 +476,82 @@ func TestHub_Cancel(t *testing.T) {
 	}
 }
 
+// V15 hub-side assertion (SURFACE-SPEC A5): a cancel with an approval
+// pending on the turn resolves it to denied (cause "cancelled") before
+// the turn's terminal event; a later decision POST answers 410.
+func TestHub_CancelResolvesPendingApproval(t *testing.T) {
+	gate := make(chan struct{})
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: true, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			if n == 1 {
+				return &router.Completion{
+					ToolCalls: []router.ToolCall{{ID: "call_1", Name: "echo", ArgsJSON: `{"v":"hi"}`}},
+					Model:     "stub",
+				}, nil
+			}
+			// Never reached: the turn is cancelled while the approval
+			// waiter blocks.
+			<-gate
+			return nil, context.Canceled
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	done := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+		req.Header.Set("Content-Type", "application/json")
+		hub.HandleMessage(httptest.NewRecorder(), req, "main")
+		close(done)
+	}()
+
+	// Wait until an approval is pending (the untrusted echo tool gates).
+	deadline := time.Now().Add(3 * time.Second)
+	for hub.ap.PendingCount("main") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no approval became pending")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !hub.Cancel("main") {
+		t.Fatal("Cancel should return true while a turn is in flight")
+	}
+	close(gate)
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not finish after cancel")
+	}
+
+	// The pending approval must be denied with cause "cancelled" and a
+	// late decision POST must answer 410 (already resolved).
+	hub.ap.mu.Lock()
+	var id, reason, state string
+	for sid, m := range hub.ap.bySession {
+		if sid != "main" {
+			continue
+		}
+		for aid, ap := range m {
+			id, reason, state = aid, ap.reason, ap.state
+		}
+	}
+	hub.ap.mu.Unlock()
+	if id == "" {
+		t.Fatal("approval record missing after cancel")
+	}
+	if state != "denied" || reason != "cancelled" {
+		t.Fatalf("approval after cancel: state=%q reason=%q, want denied/cancelled", state, reason)
+	}
+	if code := hub.ap.Resolve("main", id, true); code != 410 {
+		t.Fatalf("late decision after cancel: code=%d, want 410", code)
+	}
+}
+
 func TestHub_CancelNoInFlight(t *testing.T) {
 	sp := &stubProvider{
 		name: "stub",
