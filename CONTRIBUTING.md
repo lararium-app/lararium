@@ -21,7 +21,7 @@ contributions work here.
 
 ## Development setup
 
-- Go 1.24+ (the version in `go.mod` is authoritative)
+- Go 1.25+ (the version in `go.mod` is authoritative)
 - Linux for anything touching `internal/cell` (systemd-nspawn, cgroup2);
   everything else runs anywhere Go runs
 - No secrets, endpoints, or personal infrastructure in tests — unit tests
