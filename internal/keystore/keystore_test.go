@@ -1,6 +1,8 @@
 package keystore
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,30 +80,30 @@ func TestValidName(t *testing.T) {
 
 func TestSetValidation(t *testing.T) {
 	s := New(t.TempDir())
-	if err := s.Set("__proto__", "v"); err != ErrBadName {
+	if err := s.Set("__proto__", "v"); !errors.Is(err, ErrBadName) {
 		t.Errorf("bad name: got %v, want ErrBadName", err)
 	}
-	if err := s.Set("ok", "   "); err != ErrEmpty {
+	if err := s.Set("ok", "   "); !errors.Is(err, ErrEmpty) {
 		t.Errorf("whitespace key: got %v, want ErrEmpty", err)
 	}
-	if err := s.Set("ok", ""); err != ErrEmpty {
+	if err := s.Set("ok", ""); !errors.Is(err, ErrEmpty) {
 		t.Errorf("empty key: got %v, want ErrEmpty", err)
 	}
 }
 
 func TestCap(t *testing.T) {
 	s := New(t.TempDir())
-	for i := 0; i < MaxKeys; i++ {
-		name := string(rune('a'+i/26)) + string(rune('a'+i%26))
+	for i := range MaxKeys {
+		name := fmt.Sprintf("k%02d", i)
 		if err := s.Set(name, "v"); err != nil {
 			t.Fatalf("fill %d: %v", i, err)
 		}
 	}
-	if err := s.Set("overflow", "v"); err != ErrFull {
+	if err := s.Set("overflow", "v"); !errors.Is(err, ErrFull) {
 		t.Fatalf("65th new name: got %v, want ErrFull", err)
 	}
 	// Overwrite at cap is always allowed.
-	if err := s.Set("aa", "v2"); err != nil {
+	if err := s.Set("k00", "v2"); err != nil {
 		t.Fatalf("overwrite at cap: got %v, want nil", err)
 	}
 }
@@ -139,12 +141,12 @@ func TestModes(t *testing.T) {
 func TestConcurrentSets(t *testing.T) {
 	s := New(t.TempDir())
 	done := make(chan error, 8)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		go func(i int) {
-			done <- s.Set(string(rune('a'+i)), "v")
+			done <- s.Set(fmt.Sprintf("c%d", i), "v")
 		}(i)
 	}
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		if err := <-done; err != nil {
 			t.Fatalf("concurrent Set: %v", err)
 		}
