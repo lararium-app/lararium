@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // killPointHook is the test kill-point injection seam for crash-matrix verification (V25).
@@ -30,6 +32,7 @@ type Vault struct {
 	audit             *AuditLogger
 	snapshots         *SnapshotManager
 	policy            *PolicyEngine
+	hub               *surface.ApprovalHub
 	instanceKey       []byte
 	loadedDoc         *VaultDoc
 	loadedRegistry    *SurrogateRegistry
@@ -59,6 +62,20 @@ func (v *Vault) SetDegradedHook(hook func(reason string)) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.degradedHook = hook
+}
+
+// SetApprovalHub connects the surface ApprovalHub for CA-3 lock settlement and revocation.
+func (v *Vault) SetApprovalHub(hub *surface.ApprovalHub) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.hub = hub
+}
+
+// ApprovalHub returns the attached ApprovalHub, if any.
+func (v *Vault) ApprovalHub() *surface.ApprovalHub {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.hub
 }
 
 // StateDir returns the state root path.
@@ -463,6 +480,10 @@ func (v *Vault) Lock() error {
 		v.derivedKey = nil
 	}
 	v.isUnlocked = false
+	hub := v.hub
+	if hub != nil {
+		hub.SettleCustosLocked("custos")
+	}
 	return nil
 }
 
@@ -471,6 +492,17 @@ func (v *Vault) IsUnlocked() bool {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.isUnlocked
+}
+
+// GetCredential returns a copy of the credential by name if the vault is unlocked.
+func (v *Vault) GetCredential(name string) (Credential, bool) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if !v.isUnlocked || v.loadedDoc == nil {
+		return Credential{}, false
+	}
+	c, ok := v.loadedDoc.Credentials[name]
+	return c, ok
 }
 
 // Status returns the current status JSON per CUSTOS-SPEC §11.
@@ -904,7 +936,8 @@ func (v *Vault) RevokeSurrogate(passphrase string, id8 string, actor string) err
 		return ErrCustosLocked
 	}
 
-	return v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
+	var revokedCred string
+	err := v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
 		var targetToken string
 		var targetRec SurrogateRecord
 		found := false
@@ -921,6 +954,7 @@ func (v *Vault) RevokeSurrogate(passphrase string, id8 string, actor string) err
 		}
 
 		delete(surDoc.Surrogates, targetToken)
+		revokedCred = targetRec.Credential
 
 		event := AuditRecord{
 			Kind:  AuditKindSurrogateRevoked,
@@ -930,6 +964,13 @@ func (v *Vault) RevokeSurrogate(passphrase string, id8 string, actor string) err
 		}
 		return []string{targetRec.Credential}, []AuditRecord{event}, nil
 	}, false)
+	if err != nil {
+		return err
+	}
+	if hub := v.ApprovalHub(); hub != nil && revokedCred != "" {
+		hub.CancelByCredential(revokedCred, "")
+	}
+	return nil
 }
 
 // RevokeCredential removes a credential and atomically revokes all its surrogates per CUSTOS §4.4, §5.3.
@@ -943,7 +984,7 @@ func (v *Vault) RevokeCredential(passphrase string, credName string, actor strin
 		return ErrCustosLocked
 	}
 
-	return v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
+	err := v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
 		if _, exists := doc.Credentials[credName]; !exists {
 			return nil, nil, fmt.Errorf("credential %q not found", credName)
 		}
@@ -974,6 +1015,13 @@ func (v *Vault) RevokeCredential(passphrase string, credName string, actor strin
 
 		return []string{credName}, events, nil
 	}, false)
+	if err != nil {
+		return err
+	}
+	if hub := v.ApprovalHub(); hub != nil {
+		hub.CancelByCredential(credName, "")
+	}
+	return nil
 }
 
 // ListSurrogates returns all registered surrogates or ErrCustosLocked if locked per CUSTOS §11.

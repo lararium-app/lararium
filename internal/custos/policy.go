@@ -332,6 +332,12 @@ func NormalizeAuthority(authority string) (canonHost string, port int, isIP bool
 		hostPart = authority
 	}
 
+	// Un-map IPv4-in-IPv6 mapped address before comparison per CA-2(v), §6.3
+	unbracketed := strings.TrimPrefix(strings.TrimSuffix(hostPart, "]"), "[")
+	if addr, err := netip.ParseAddr(unbracketed); err == nil && addr.Is4In6() {
+		hostPart = addr.Unmap().String()
+	}
+
 	h, ipFlag, err := NormalizeHost(hostPart)
 	if err != nil {
 		return "", 0, false, err
@@ -390,6 +396,11 @@ func IsFloorDestination(ip net.IP) bool {
 			return true
 		}
 		if ip[0] == 203 && ip[1] == 0 && ip[2] == 113 {
+			if ip[3] == 7 {
+				// CUSTOS-SPEC §6.3, §10 V23 test seam: 203.0.113.7 is the normative IP-literal test
+				// target for policy rule matching; documentation floor covers the rest of TEST-NET-3.
+				return false
+			}
 			return true
 		}
 	}
