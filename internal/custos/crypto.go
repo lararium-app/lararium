@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"unsafe"
 
 	"filippo.io/age"
 	"golang.org/x/crypto/hkdf"
@@ -137,6 +139,48 @@ func DecryptAge(ciphertext []byte, passphrase string) ([]byte, error) {
 		return nil, fmt.Errorf("age read: %w", err)
 	}
 	return out, nil
+}
+
+// EncryptAgeWithKey encrypts plaintext using the retained derived secret key per CUSTOS-SPEC §4.1, §C3.
+func EncryptAgeWithKey(plaintext []byte, key []byte) ([]byte, error) {
+	return EncryptAge(plaintext, string(key))
+}
+
+// DecryptAgeWithKey decrypts age ciphertext using the retained derived secret key per CUSTOS-SPEC §4.1, §C3.
+func DecryptAgeWithKey(ciphertext []byte, key []byte) ([]byte, error) {
+	return DecryptAge(ciphertext, string(key))
+}
+
+var devZero *os.File
+
+func init() {
+	if f, err := os.Open("/dev/zero"); err == nil {
+		devZero = f
+	}
+}
+
+// zeroString attempts best-effort overwrite of the underlying bytes of a string per CUSTOS-SPEC §C3.
+// If /dev/zero is unavailable the probe cannot run, so we never write blindly (a read-only
+// string page would be a fatal SIGSEGV): the zeroing is skipped instead.
+func zeroString(s string) {
+	if len(s) == 0 || devZero == nil {
+		return
+	}
+	b := unsafe.Slice(unsafe.StringData(s), len(s))
+	// Probe writability using /dev/zero read to avoid fatal SIGSEGV on rodata
+	if _, err := devZero.Read(b[:1]); err != nil {
+		return // memory is not writable (e.g. rodata string constant)
+	}
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// zeroBytes overwrites a byte slice with zeros per CUSTOS-SPEC §C3.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // SHA256Hex8 returns the first 8 hex characters of the SHA-256 hash of value.

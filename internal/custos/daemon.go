@@ -57,6 +57,8 @@ func (d *Daemon) Start() error {
 			return fmt.Errorf("read unlock keyfile %s: %w", d.cfg.UnlockKeyfile, err)
 		}
 		passphrase := strings.TrimSpace(string(keyBytes))
+		// CUSTOS-SPEC §C3: keyfile doctrine — read once at spawn and zeroed
+		zeroBytes(keyBytes)
 		if passphrase == "" {
 			return fmt.Errorf("empty unlock keyfile %s", d.cfg.UnlockKeyfile)
 		}
