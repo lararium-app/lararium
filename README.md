@@ -51,10 +51,12 @@ the screens you already carry.
 compaction, memory tools) · model routing with fallback chains (any
 OpenAI-compatible endpoint, Anthropic) · Penatus memory · `hearthd
 serve` — HTTP/SSE API + built-in web chat with streaming and clickable
-tool approvals · the `cell` sandbox, proven by a C1–C12 containment
+tool approvals · **Telegram** (`nuntius`): one-owner bridge with
+pairing codes, streaming replies, and approval cards that resolve
+from the phone · the `cell` sandbox, proven by a C1–C12 containment
 suite on five hosts across two architectures.
 
-**Not built yet:** messaging channels (Telegram, Signal, …) and the
+**Not built yet:** other messaging channels (Signal, …) and the
 credential vault (`custos`). [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 maps the whole shape.
 
