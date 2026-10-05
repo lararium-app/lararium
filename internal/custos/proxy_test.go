@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,6 +51,14 @@ func setupProxyHarness(t *testing.T, cfg *custos.Config) *proxyHarness {
 	hub := surface.NewApprovalHub(cfg.AskHoldTimeout)
 	v.SetApprovalHub(hub)
 	p := custos.NewProxy(v, hub, cfg)
+
+	// Default DNS seam: fake hosts in these tests (revoke.example.com,
+	// fg.example.com, ...) resolve to a fixed non-floored public IP so
+	// admission reaches the policy gate; forwards use the echo-server
+	// dial seam. Tests probing floor/rebinding override per-test.
+	p.SetResolveFn(func(ctx context.Context, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	})
 
 	if err := p.BindListener("127.0.0.1:0", "cell-1", "127.0.0.1", ""); err != nil {
 		t.Fatalf("BindListener: %v", err)
@@ -180,7 +190,10 @@ func TestV10_ConnectPassthrough(t *testing.T) {
 	if rawAuth == nil {
 		t.Fatalf("origin received nothing")
 	}
-	authStr := rawAuth.(string)
+	authStr, ok := rawAuth.(string)
+	if !ok {
+		t.Fatalf("origin Authorization is %T, want string", rawAuth)
+	}
 	expectedAuth := "Bearer " + surToken
 	if authStr != expectedAuth {
 		t.Fatalf("origin auth header = %q, want %q (surrogate untouched)", authStr, expectedAuth)
@@ -213,7 +226,7 @@ func TestV10_ConnectPassthrough(t *testing.T) {
 
 	floorRd := bufio.NewReader(floorConn)
 	floorStatus, err := floorRd.ReadString('\n')
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("read floor response: %v", err)
 	}
 	if !strings.Contains(floorStatus, "403") {
@@ -227,7 +240,7 @@ func TestV10_ConnectPassthrough(t *testing.T) {
 func TestV16_RebindingGuardBothDirections(t *testing.T) {
 	h := setupProxyHarness(t, nil)
 
-	credSecret := "sk-rebind-secret-45678"
+	credSecret := "sk-rebind-secret-45678" //nolint:gosec // test fixture, not a live credential
 	err := h.v.Mutate(h.passphrase, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["rebind-cred"] = custos.Credential{Kind: "api_key", Secret: credSecret}
 		return []string{"rebind-cred"}, nil
@@ -294,8 +307,8 @@ func TestV16_RebindingGuardBothDirections(t *testing.T) {
 	dnsFlipped.Store(true)
 
 	// Approve card on hub
-	if n := h.hub.ResolveFrom(card.ID, "cell-1", true, "allow-once"); n != 1 {
-		t.Fatalf("resolve card: expected 1 resolved, got %d", n)
+	if code := h.hub.ResolveFrom("cell-1", card.ID, true, "custos"); code != 200 {
+		t.Fatalf("resolve card: expected 200, got %d", code)
 	}
 
 	// Proxy re-resolves DNS at forward time -> hits 169.254.169.254 -> floor refuses!
@@ -348,7 +361,7 @@ func TestV16_RebindingGuardBothDirections(t *testing.T) {
 func TestV23_FloorFamilyHonesty(t *testing.T) {
 	h := setupProxyHarness(t, nil)
 
-	credSecret := "sk-v23-secret-7890"
+	credSecret := "sk-v23-secret-7890" //nolint:gosec // test fixture, not a live credential
 	err := h.v.Mutate(h.passphrase, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["v23-cred"] = custos.Credential{Kind: "api_key", Secret: credSecret}
 		return []string{"v23-cred"}, nil
@@ -410,7 +423,7 @@ func TestV23_FloorFamilyHonesty(t *testing.T) {
 
 	v6Rd := bufio.NewReader(v6Conn)
 	v6Line, err := v6Rd.ReadString('\n')
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("read v6: %v", err)
 	}
 	if !strings.Contains(v6Line, "403") {
@@ -431,7 +444,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 	}
 	h := setupProxyHarness(t, cfg)
 
-	credSecret := "sk-v26-secret-00000"
+	credSecret := "sk-v26-secret-00000" //nolint:gosec // test fixture, not a live credential
 	_ = h.v.Mutate(h.passphrase, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["v26-cred"] = custos.Credential{Kind: "api_key", Secret: credSecret}
 		return []string{"v26-cred"}, nil
@@ -463,14 +476,14 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 		t.Fatalf("dial A1: %v", err)
 	}
 	defer connA1.Close()
-	_, _ = connA1.Write([]byte(fmt.Sprintf("GET /a1 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)))
+	_, _ = fmt.Fprintf(connA1, "GET /a1 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)
 
 	connA2, err := net.Dial("tcp", cell1Addr)
 	if err != nil {
 		t.Fatalf("dial A2: %v", err)
 	}
 	defer connA2.Close()
-	_, _ = connA2.Write([]byte(fmt.Sprintf("GET /a2 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)))
+	_, _ = fmt.Fprintf(connA2, "GET /a2 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)
 
 	// Wait for 2 cards
 	deadline := time.Now().Add(2 * time.Second)
@@ -487,7 +500,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 		t.Fatalf("dial A3: %v", err)
 	}
 	defer connA3.Close()
-	_, _ = connA3.Write([]byte(fmt.Sprintf("GET /a3 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)))
+	_, _ = fmt.Fprintf(connA3, "GET /a3 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)
 
 	rdA3 := bufio.NewReader(connA3)
 	respLine, _ := rdA3.ReadString('\n')
@@ -506,7 +519,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 		t.Fatalf("dial B1: %v", err)
 	}
 	defer connB1.Close()
-	_, _ = connB1.Write([]byte(fmt.Sprintf("GET /b1 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)))
+	_, _ = fmt.Fprintf(connB1, "GET /b1 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)
 
 	for time.Now().Before(deadline) && len(h.hub.Pending()) < 3 {
 		time.Sleep(20 * time.Millisecond)
@@ -522,7 +535,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 		t.Fatalf("dial B2: %v", err)
 	}
 	defer connB2.Close()
-	_, _ = connB2.Write([]byte(fmt.Sprintf("GET /b2 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)))
+	_, _ = fmt.Fprintf(connB2, "GET /b2 HTTP/1.1\r\nHost: park.example.com\r\nAuthorization: Bearer %s\r\n\r\n", surToken)
 
 	// One of Cell A's connections (connA1 or connA2) should receive 403 surrogate too_many_asks
 	readChan := make(chan string, 2)
@@ -565,7 +578,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 		}
 		defer conn.Close()
 
-		_, _ = conn.Write([]byte(fmt.Sprintf("GET /timeout HTTP/1.1\r\nHost: to.example.com\r\nAuthorization: Bearer %s\r\n\r\n", toToken)))
+		_, _ = fmt.Fprintf(conn, "GET /timeout HTTP/1.1\r\nHost: to.example.com\r\nAuthorization: Bearer %s\r\n\r\n", toToken)
 
 		// Wait for hold timeout to fire
 		rd := bufio.NewReader(conn)
@@ -581,7 +594,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 		// Find settled card
 		hTimeout.proxy.SetDialFn(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			t.Fatalf("dial called on timed-out flow!")
-			return nil, nil
+			return nil, errors.New("dial called on timed-out flow")
 		})
 
 		// Give time for settlement
@@ -643,8 +656,8 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 		}
 
 		// Deny the request while body is unread
-		if n := hDrain.hub.ResolveFrom(cardID, "cell-1", false, "deny"); n != 1 {
-			t.Fatalf("resolve deny: expected 1 resolved, got %d", n)
+		if code := hDrain.hub.ResolveFrom("cell-1", cardID, false, "custos"); code != 200 {
+			t.Fatalf("resolve deny: expected 200, got %d", code)
 		}
 
 		// Read response: Must receive 403, NOT ECONNRESET
@@ -669,7 +682,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 func TestV20_ResponseScrub(t *testing.T) {
 	h := setupProxyHarness(t, nil)
 
-	credSecret := "sk-live-super-secret-key-9999"
+	credSecret := "sk-live-super-secret-key-9999" //nolint:gosec // test fixture, not a live credential
 	_ = h.v.Mutate(h.passphrase, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["scrub-cred"] = custos.Credential{Kind: "api_key", Secret: credSecret}
 		return []string{"scrub-cred"}, nil
@@ -677,13 +690,26 @@ func TestV20_ResponseScrub(t *testing.T) {
 
 	surToken, _ := h.v.AddSurrogate(h.passphrase, "scrub-cred", "echo.example.com", 80, "/", false, "test")
 	surTokenBin, _ := h.v.AddSurrogate(h.passphrase, "scrub-cred", "echo.example.com", 80, "/", true, "test")
+	// Card suppression per §6.1: credential-bearing actions default to
+	// ask; auto on the credential pattern *is* the suppressing verdict
+	// (the egress auto alone does not suppress the swap card).
+	_, _ = h.v.Policy().AddCredentialRule("scrub-cred", custos.VerdictAuto, false, "cli", "cli")
 	_, _ = h.v.Policy().AddEgressRule("echo.example.com/*", "auto", false, "cli", "cli")
 
 	// Upstream test server
+	var upstreamMu sync.Mutex
 	var upstreamHandler http.HandlerFunc
+	setUpstream := func(h func(http.ResponseWriter, *http.Request)) {
+		upstreamMu.Lock()
+		defer upstreamMu.Unlock()
+		upstreamHandler = h
+	}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if upstreamHandler != nil {
-			upstreamHandler(w, r)
+		upstreamMu.Lock()
+		h := upstreamHandler
+		upstreamMu.Unlock()
+		if h != nil {
+			h(w, r)
 		}
 	}))
 	defer ts.Close()
@@ -697,12 +723,13 @@ func TestV20_ResponseScrub(t *testing.T) {
 
 	// 1. Text response echoing secret is redacted
 	t.Run("TextEchoRedacted", func(t *testing.T) {
-		upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		setUpstream(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain")
 			// Echo the secret sent by proxy
 			auth := r.Header.Get("Authorization")
+			//nolint:gosec // test echo server writes text/plain, no HTML context
 			_, _ = fmt.Fprintf(w, "Echoing back authorization: %s", auth)
-		}
+		})
 
 		conn, err := net.Dial("tcp", h.listenerAddr)
 		if err != nil {
@@ -731,7 +758,7 @@ func TestV20_ResponseScrub(t *testing.T) {
 
 	// 2. Split-echo across chunk boundaries
 	t.Run("SplitEchoAcrossChunks", func(t *testing.T) {
-		upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		setUpstream(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain")
 			flusher, ok := w.(http.Flusher)
 			if !ok {
@@ -747,7 +774,7 @@ func TestV20_ResponseScrub(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 			_, _ = w.Write([]byte(part2 + "-suffix"))
 			flusher.Flush()
-		}
+		})
 
 		conn, err := net.Dial("tcp", h.listenerAddr)
 		if err != nil {
@@ -776,11 +803,11 @@ func TestV20_ResponseScrub(t *testing.T) {
 
 	// 3. Forced Content-Encoding: gzip is refused as binary-typed
 	t.Run("ContentEncodingGzipRefused", func(t *testing.T) {
-		upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		setUpstream(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Encoding", "gzip")
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write([]byte("fake-gzip-content"))
-		}
+		})
 
 		conn, err := net.Dial("tcp", h.listenerAddr)
 		if err != nil {
@@ -797,7 +824,7 @@ func TestV20_ResponseScrub(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != 403 {
+		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected 403 on Content-Encoding: gzip, got %d", resp.StatusCode)
 		}
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -808,17 +835,17 @@ func TestV20_ResponseScrub(t *testing.T) {
 
 	// 4. Large text response (>1 MiB) closed without partial framing
 	t.Run("LargeTextClosed", func(t *testing.T) {
-		upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		setUpstream(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain")
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", 2*1024*1024))
 			chunk := bytes.Repeat([]byte("X"), 64*1024)
-			for i := 0; i < 32; i++ {
+			for range 32 {
 				_, err := w.Write(chunk)
 				if err != nil {
 					return
 				}
 			}
-		}
+		})
 
 		conn, err := net.Dial("tcp", h.listenerAddr)
 		if err != nil {
@@ -833,6 +860,7 @@ func TestV20_ResponseScrub(t *testing.T) {
 		// Connection should close or be terminated with response_size error
 		resp, err := http.ReadResponse(rd, nil)
 		if err == nil && resp != nil {
+			defer resp.Body.Close()
 			// If headers were parsed, reading body should error or fail before delivering 2MB
 			b, err := io.ReadAll(resp.Body)
 			if err == nil && len(b) >= 2*1024*1024 {
@@ -844,11 +872,11 @@ func TestV20_ResponseScrub(t *testing.T) {
 	// 5. allow_binary allows binary types through untouched
 	t.Run("AllowBinaryPassthrough", func(t *testing.T) {
 		binaryPayload := []byte{0x00, 0xFF, 0x01, 0xFE, 0x02, 0xFD}
-		upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		setUpstream(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(binaryPayload)))
 			_, _ = w.Write(binaryPayload)
-		}
+		})
 
 		conn, err := net.Dial("tcp", h.listenerAddr)
 		if err != nil {
@@ -865,7 +893,7 @@ func TestV20_ResponseScrub(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != 200 {
+		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("expected 200 on allow_binary, got %d", resp.StatusCode)
 		}
 		b, _ := io.ReadAll(resp.Body)
@@ -879,7 +907,7 @@ func TestV20_ResponseScrub(t *testing.T) {
 func TestProxy_PolicyRmDuringPark(t *testing.T) {
 	h := setupProxyHarness(t, nil)
 
-	credSecret := "sk-policy-rm-secret"
+	credSecret := "sk-policy-rm-secret" //nolint:gosec // test fixture, not a live credential
 	_ = h.v.Mutate(h.passphrase, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["rm-cred"] = custos.Credential{Kind: "api_key", Secret: credSecret}
 		return []string{"rm-cred"}, nil
@@ -930,8 +958,8 @@ func TestProxy_PolicyRmDuringPark(t *testing.T) {
 	_, _ = h.v.Policy().AddEgressRule("policy-rm.example.com/*", "deny", false, "cli", "cli")
 
 	// Human approves card
-	if n := h.hub.ResolveFrom(cardID, "cell-1", true, "allow-once"); n != 1 {
-		t.Fatalf("resolve: expected 1 resolved, got %d", n)
+	if code := h.hub.ResolveFrom("cell-1", cardID, true, "custos"); code != 200 {
+		t.Fatalf("resolve: expected 200, got %d", code)
 	}
 
 	// Decision-time re-validation must reject flow!
@@ -997,8 +1025,9 @@ func TestProxy_RevokeDuringPark(t *testing.T) {
 	}
 
 	// Late Allow must fail and dial counter must remain zero
-	if n := h.hub.ResolveFrom(cardID, "cell-1", true, "allow-once"); n != 0 {
-		t.Fatalf("expected late allow on cancelled card to resolve nothing, got %d", n)
+	// Late allow on a cancelled card: no settle (410 stale-verdict path).
+	if code := h.hub.ResolveFrom("cell-1", cardID, true, "custos"); code == 200 {
+		t.Fatalf("expected late allow on cancelled card to not settle, got 200")
 	}
 	if h.proxy.DialCount() != 0 {
 		t.Fatalf("dial count = %d, want 0", h.proxy.DialCount())
@@ -1009,7 +1038,7 @@ func TestProxy_RevokeDuringPark(t *testing.T) {
 func TestProxy_DisconnectMidPark_FlowGone(t *testing.T) {
 	h := setupProxyHarness(t, nil)
 
-	credSecret := "sk-flow-gone-secret"
+	credSecret := "sk-flow-gone-secret" //nolint:gosec // test fixture, not a live credential
 	_ = h.v.Mutate(h.passphrase, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["fg-cred"] = custos.Credential{Kind: "api_key", Secret: credSecret}
 		return []string{"fg-cred"}, nil
@@ -1067,8 +1096,9 @@ func TestProxy_DisconnectMidPark_FlowGone(t *testing.T) {
 	}
 
 	// Late Allow click: must trigger stale_verdict and dial count must remain 0
-	if n := h.hub.ResolveFrom(cardID, "cell-1", true, "allow-once"); n != 0 {
-		t.Fatalf("expected late allow on flow_gone to resolve nothing, got %d", n)
+	// Late allow after flow_gone: recorded as stale verdict, nothing dials.
+	if code := h.hub.ResolveFrom("cell-1", cardID, true, "custos"); code == 200 {
+		t.Fatalf("expected late allow on flow_gone to not settle, got 200")
 	}
 	if h.proxy.DialCount() != 0 {
 		t.Fatalf("dial counter = %d, want 0", h.proxy.DialCount())
@@ -1100,7 +1130,7 @@ func TestProxy_ParkingGateHTTP10(t *testing.T) {
 
 	rd := bufio.NewReader(conn)
 	line, err := rd.ReadString('\n')
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("read error: %v", err)
 	}
 	// Gate must close immediately with refusal or closed connection

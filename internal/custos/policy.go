@@ -332,6 +332,12 @@ func NormalizeAuthority(authority string) (canonHost string, port int, isIP bool
 		hostPart = authority
 	}
 
+	// Un-map IPv4-in-IPv6 mapped address before comparison per CA-2(v), §6.3
+	unbracketed := strings.TrimPrefix(strings.TrimSuffix(hostPart, "]"), "[")
+	if addr, err := netip.ParseAddr(unbracketed); err == nil && addr.Is4In6() {
+		hostPart = addr.Unmap().String()
+	}
+
 	h, ipFlag, err := NormalizeHost(hostPart)
 	if err != nil {
 		return "", 0, false, err

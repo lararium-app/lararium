@@ -780,8 +780,8 @@ func (s *Server) logEntry(remote fmt.Stringer, method, host, outcome string) {
 		time.Now().UTC().Format(time.RFC3339), ipOnly(remote.String()), method, host, outcome)
 }
 
-// IpOnly strips the port from an address string.
-func IpOnly(addr string) string {
+// IPOnly strips the port from an address string.
+func IPOnly(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr
@@ -790,7 +790,7 @@ func IpOnly(addr string) string {
 }
 
 func ipOnly(addr string) string {
-	return IpOnly(addr)
+	return IPOnly(addr)
 }
 
 // RstHangup forces an immediate RST on close (SO_LINGER 0). Used for

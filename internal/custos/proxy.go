@@ -1,7 +1,7 @@
-// Package custos implements the credential custody vault core per CUSTOS-SPEC.
-// This file implements the egress proxy custody and bearer lane per CUSTOS-SPEC §7,
-// CA-2 amendments, §5.2 (bearer lane pipeline), §6.4 (ask wiring for egress),
-// and §8.1 (audit events).
+// Egress proxy custody and bearer lane per CUSTOS-SPEC §7, CA-2
+// amendments, §5.2 (bearer lane pipeline), §6.4 (ask wiring for
+// egress), and §8.1 (audit events).
+
 package custos
 
 import (
@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path"
@@ -82,6 +83,8 @@ type cellListener struct {
 	done    chan struct{}
 	conns   int
 	mu      sync.Mutex
+	stopped bool
+	wg      sync.WaitGroup
 }
 
 // parkedFlow tracks an in-flight HTTP request parked in ask state per CUSTOS-SPEC §7.
@@ -229,16 +232,17 @@ func derivePeerAndCell(listenAddr, cellID, peer string) (derivedCellID, derivedP
 		host = listenAddr
 	}
 	if peer == "" {
-		if strings.HasPrefix(host, "10.91.") {
+		switch {
+		case strings.HasPrefix(host, "10.91."):
 			parts := strings.Split(host, ".")
 			if len(parts) == 4 && parts[3] == "1" {
 				peer = fmt.Sprintf("10.91.%s.2", parts[2])
 			} else {
 				peer = host
 			}
-		} else if host == "127.0.0.1" || host == "localhost" {
+		case host == "127.0.0.1" || host == "localhost":
 			peer = "127.0.0.1"
-		} else {
+		default:
 			peer = host
 		}
 	}
@@ -283,7 +287,7 @@ func (p *Proxy) BindListener(addr string, cellID, peer, logPath string) error {
 	// Retry the bind briefly before auditing listener_bind_failed per CA-2(iv)
 	var ln net.Listener
 	var bindErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		var lc net.ListenConfig
 		ln, bindErr = lc.Listen(context.Background(), "tcp", addr)
 		if bindErr == nil {
@@ -321,7 +325,7 @@ func (p *Proxy) BindListener(addr string, cellID, peer, logPath string) error {
 
 	p.mu.Lock()
 	p.listeners[boundAddr] = cl
-	if addr != boundAddr {
+	if addr != boundAddr && !strings.HasSuffix(addr, ":0") {
 		p.listeners[addr] = cl
 	}
 	p.mu.Unlock()
@@ -338,9 +342,10 @@ func (p *Proxy) CloseListener(addr string) error {
 		p.mu.Unlock()
 		return nil
 	}
-	delete(p.listeners, addr)
-	if cl.ln != nil {
-		delete(p.listeners, cl.ln.Addr().String())
+	for k, v := range p.listeners {
+		if v == cl {
+			delete(p.listeners, k)
+		}
 	}
 	p.mu.Unlock()
 
@@ -355,9 +360,13 @@ func (p *Proxy) Close() error {
 		return nil
 	}
 	p.closed = true
-	listeners := make([]*cellListener, 0, len(p.listeners))
+	seen := make(map[*cellListener]struct{})
+	var listeners []*cellListener
 	for _, l := range p.listeners {
-		listeners = append(listeners, l)
+		if _, ok := seen[l]; !ok {
+			seen[l] = struct{}{}
+			listeners = append(listeners, l)
+		}
 	}
 	p.listeners = make(map[string]*cellListener)
 	p.mu.Unlock()
@@ -373,11 +382,15 @@ func (p *Proxy) Close() error {
 
 func (cl *cellListener) close() error {
 	err := cl.ln.Close()
-	select {
-	case <-cl.done:
-	default:
+	cl.mu.Lock()
+	if !cl.stopped {
+		cl.stopped = true
 		close(cl.done)
 	}
+	cl.mu.Unlock()
+	// Wait for in-flight handlers so their final audit writes land
+	// before the process/caller tears state down (temp dirs, log tails).
+	cl.wg.Wait()
 	return err
 }
 
@@ -392,16 +405,28 @@ func (cl *cellListener) serve() {
 				return
 			}
 		}
+		cl.mu.Lock()
+		if cl.stopped {
+			cl.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		cl.wg.Add(1)
+		cl.mu.Unlock()
 		if !cl.admit(conn) {
+			cl.wg.Done()
 			continue
 		}
-		go cl.handle(conn)
+		go func() {
+			defer cl.wg.Done()
+			cl.handle(conn)
+		}()
 	}
 }
 
 // admit validates the peer address and per-cell connection limit per CELL-SPEC §4.
 func (cl *cellListener) admit(conn net.Conn) bool {
-	peerIP := proxy.IpOnly(conn.RemoteAddr().String())
+	peerIP := proxy.IPOnly(conn.RemoteAddr().String())
 	if cl.peer != "" && peerIP != cl.peer {
 		proxy.RstHangup(conn)
 		_ = conn.Close()
@@ -441,7 +466,7 @@ func (cl *cellListener) logEntry(remote fmt.Stringer, method, host, outcome stri
 	defer f.Close()
 
 	_, _ = fmt.Fprintf(f, "%s %s %s %s %s\n",
-		time.Now().UTC().Format(time.RFC3339), proxy.IpOnly(remote.String()), method, host, outcome)
+		time.Now().UTC().Format(time.RFC3339), proxy.IPOnly(remote.String()), method, host, outcome)
 }
 
 // handle coordinates request processing on an accepted connection.
@@ -491,13 +516,54 @@ func (cl *cellListener) handle(conn net.Conn) {
 		return
 	}
 
-	// 2. Plaintext HTTP validation: absolute-form URI required
-	u, uerr := url.Parse(target)
-	if uerr != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		cl.logEntry(conn.RemoteAddr(), method, target, "refused-relative")
-		proxy.RstHangup(conn)
-		_ = conn.Close()
-		return
+	// 2. Plaintext HTTP validation: absolute-form URI or origin-form with Host header per §7 parking gate
+	var u *url.URL
+	if strings.HasPrefix(target, "/") {
+		// Origin-form request: take authority from Host header
+		var hostHdr string
+		for _, h := range headers {
+			colon := strings.IndexByte(h, ':')
+			if colon < 0 {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(h[:colon]), "host") {
+				hostHdr = strings.TrimSpace(h[colon+1:])
+				break
+			}
+		}
+		if hostHdr == "" {
+			cl.logEntry(conn.RemoteAddr(), method, target, "refused-missing-host")
+			proxy.RstHangup(conn)
+			_ = conn.Close()
+			return
+		}
+		// Validate host[:port]
+		if _, _, _, err := NormalizeAuthority(hostHdr); err != nil {
+			cl.logEntry(conn.RemoteAddr(), method, target, "refused-invalid-host")
+			proxy.RstHangup(conn)
+			_ = conn.Close()
+			return
+		}
+		reqURL, err := url.ParseRequestURI(target)
+		if err != nil {
+			cl.logEntry(conn.RemoteAddr(), method, target, "refused-relative")
+			proxy.RstHangup(conn)
+			_ = conn.Close()
+			return
+		}
+		reqURL.Scheme = "http"
+		reqURL.Host = hostHdr
+		u = reqURL
+	} else {
+		// Absolute-form URI: take host from URI
+		var uerr error
+		u, uerr = url.Parse(target)
+		if uerr != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			cl.logEntry(conn.RemoteAddr(), method, target, "refused-relative")
+			proxy.RstHangup(conn)
+			_ = conn.Close()
+			return
+		}
 	}
 
 	// Look for surrogate token in headers
@@ -566,7 +632,7 @@ func (cl *cellListener) forwardCONNECT(ctx context.Context, conn net.Conn, br *b
 	ip, err := cl.proxy.resolveFloor(ctx, host)
 	if err != nil {
 		cl.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "refused-floor")
-		proxy.RstHangup(conn)
+		cl.drainAndRefuse(conn, br, "policy denied")
 		return
 	}
 
@@ -603,7 +669,7 @@ func (cl *cellListener) handleBearer(
 	// A. Normalize authority and path per CUSTOS-SPEC §5.2, §6.3
 	canonHost, canonPort, isIP, err := NormalizeAuthority(u.Host)
 	if err != nil {
-		cl.drainAndRefuse(conn, br, "403 surrogate", "surrogate host mismatch")
+		cl.drainAndRefuse(conn, br, "surrogate host mismatch")
 		cl.auditSwapDenied(surToken, "", u.Host, "invalid_host", "deny")
 		return
 	}
@@ -615,7 +681,7 @@ func (cl *cellListener) handleBearer(
 
 	// B. Vault unlock check per CUSTOS-SPEC §C3, §P4
 	if cl.proxy.vault == nil || !cl.proxy.vault.IsUnlocked() {
-		cl.drainAndRefuse(conn, br, "403 surrogate", "credential custody locked")
+		cl.drainAndRefuse(conn, br, "credential custody locked")
 		cl.auditSwapDenied(surToken, "", canonHost, "custos_locked", "deny")
 		return
 	}
@@ -626,7 +692,7 @@ func (cl *cellListener) handleBearer(
 	if err != nil {
 		body := err.Error()
 		reason := reasonFromSurrogateErr(err)
-		cl.drainAndRefuse(conn, br, "403 surrogate", body)
+		cl.drainAndRefuse(conn, br, body)
 		cl.auditSwapDenied(surToken, "", canonHost, reason, "deny")
 		return
 	}
@@ -634,7 +700,7 @@ func (cl *cellListener) handleBearer(
 	// D. Retrieve credential from vault
 	cred, ok := cl.proxy.vault.GetCredential(rec.Credential)
 	if !ok {
-		cl.drainAndRefuse(conn, br, "403 surrogate", "surrogate not found")
+		cl.drainAndRefuse(conn, br, "surrogate not found")
 		cl.auditSwapDenied(surToken, rec.Credential, canonHost, "missing_credential", "deny")
 		return
 	}
@@ -650,7 +716,7 @@ func (cl *cellListener) handleBearer(
 	ip, err := cl.proxy.resolveFloor(ctx, canonHost)
 	if err != nil {
 		cl.logEntry(conn.RemoteAddr(), method, u.Host, "refused-floor")
-		cl.drainAndRefuse(conn, br, "403 surrogate", "surrogate host mismatch")
+		cl.drainAndRefuse(conn, br, "policy denied")
 		cl.auditSwapDenied(surToken, rec.Credential, canonHost, "floor", "deny")
 		return
 	}
@@ -672,7 +738,7 @@ func (cl *cellListener) handleBearer(
 
 	switch verdict {
 	case VerdictDeny:
-		cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+		cl.drainAndRefuse(conn, br, "policy denied")
 		cl.auditSwapDenied(surToken, rec.Credential, canonHost, "policy", "deny")
 		return
 
@@ -680,13 +746,14 @@ func (cl *cellListener) handleBearer(
 		// G. Parking Gate per CUSTOS-SPEC §7:
 		// "only HTTP/1.1 requests with a valid absolute-form URI (or Host) may park; anything else
 		// is closed immediately (a 1.0 client must not hold a 330 s slot)."
+		// "Closed immediately" honors the same wire mechanics as refusals:
+		// drain first, then close — a bare/RST close would surface ECONNRESET.
 		if version != "HTTP/1.1" {
-			proxy.RstHangup(conn)
-			_ = conn.Close()
+			cl.drainAndClose(conn, br)
 			return
 		}
 
-		cl.parkAndServeBearer(ctx, conn, br, method, target, version, u, headers, rec, secret, canonHost, canonPort, ip, surToken, headerName)
+		cl.parkAndServeBearer(ctx, conn, br, method, target, u, headers, rec, canonHost, canonPort, surToken, headerName)
 		return
 
 	case VerdictAuto:
@@ -696,52 +763,33 @@ func (cl *cellListener) handleBearer(
 		return
 
 	default:
-		cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+		cl.drainAndRefuse(conn, br, "policy denied")
 		cl.auditSwapDenied(surToken, rec.Credential, canonHost, "policy", "deny")
 		return
 	}
 }
 
-// parkAndServeBearer manages parking, shedding, approval card wait, and re-validation per CUSTOS-SPEC §7.
-func (cl *cellListener) parkAndServeBearer(
-	ctx context.Context,
-	conn net.Conn,
-	br *bufio.Reader,
-	method, target, version string,
-	u *url.URL,
-	headers []string,
-	rec *SurrogateRecord,
-	secret string,
-	canonHost string,
-	canonPort int,
-	initialIP string,
-	surToken, headerName string,
-) {
+// registerParkFlow applies the §7 capacity gates (per-cell cap; global
+// ceiling shedding the biggest cell first) and registers the §6.4
+// approval card, returning the parked flow. On rejection it returns the
+// frozen reason and the caller delivers the refusal + audit line.
+func (cl *cellListener) registerParkFlow(rec *SurrogateRecord, method, target, canonHost string, canonPort int, surToken string) (*parkedFlow, string) {
 	pm := cl.proxy.parkMgr
-
-	// 1. Check per-cell capacity and global ceiling with shedding per CUSTOS-SPEC §7
 	pm.mu.Lock()
-	cellCount := len(pm.byCell[cl.cellID])
-	if cellCount >= pm.maxPerCell {
-		pm.mu.Unlock()
-		cl.drainAndRefuse(conn, br, "403 surrogate", "too_many_asks")
-		cl.auditSwapDenied(surToken, rec.Credential, canonHost, "too_many_asks", "ask")
-		return
-	}
+	defer pm.mu.Unlock()
 
-	// Global ceiling check: shed from biggest cell first
+	if len(pm.byCell[cl.cellID]) >= pm.maxPerCell {
+		return nil, "too_many_asks"
+	}
 	if pm.totalParked >= pm.maxGlobal {
-		shedFlow := pm.findBiggestCellParkLocked()
-		if shedFlow != nil {
+		if shedFlow := pm.findBiggestCellParkLocked(); shedFlow != nil {
 			pm.removeParkLocked(shedFlow)
 			shedFlow.outcomeCh <- "too_many_asks"
 		}
 	}
 
-	// 2. Register approval card on ApprovalHub per CUSTOS-SPEC §6.4
 	destSummary := fmt.Sprintf("%s:%d%s", canonHost, canonPort, rec.PathPrefix)
 	argDigest := sha256Hex(method + " " + target)
-
 	cardID, decisionCh := cl.proxy.hub.RegisterCustos(
 		cl.cellID,
 		rec.Credential,
@@ -763,9 +811,32 @@ func (cl *cellListener) parkAndServeBearer(
 		outcomeCh:  make(chan string, 1),
 		createdAt:  time.Now(),
 	}
-
 	pm.addParkLocked(flow)
-	pm.mu.Unlock()
+	return flow, ""
+}
+
+// parkAndServeBearer manages parking, shedding, approval card wait, and re-validation per CUSTOS-SPEC §7.
+func (cl *cellListener) parkAndServeBearer(
+	ctx context.Context,
+	conn net.Conn,
+	br *bufio.Reader,
+	method, target string,
+	u *url.URL,
+	headers []string,
+	rec *SurrogateRecord,
+	canonHost string,
+	canonPort int,
+	surToken, headerName string,
+) {
+	pm := cl.proxy.parkMgr
+
+	// 1+2. Capacity gates and approval-card registration per §7/§6.4
+	flow, reject := cl.registerParkFlow(rec, method, target, canonHost, canonPort, surToken)
+	if reject != "" {
+		cl.drainAndRefuse(conn, br, reject)
+		cl.auditSwapDenied(surToken, rec.Credential, canonHost, reject, "ask")
+		return
+	}
 
 	// 3. Client disconnect monitor mid-park per CUSTOS-SPEC §7:
 	// "If the cell closes the connection mid-park, the flow is dropped, its slot released,
@@ -797,10 +868,10 @@ func (cl *cellListener) parkAndServeBearer(
 			cl.proxy.hub.CancelCard(flow.id, "too_many_asks", "custos")
 		}
 		if outcome == "too_many_asks" {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "too_many_asks")
+			cl.drainAndRefuse(conn, br, "too_many_asks")
 			cl.auditSwapDenied(surToken, rec.Credential, canonHost, "too_many_asks", "ask")
 		} else {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+			cl.drainAndRefuse(conn, br, "approval denied by user")
 			cl.auditSwapDenied(surToken, rec.Credential, canonHost, "denied", "ask")
 		}
 		return
@@ -814,8 +885,20 @@ func (cl *cellListener) parkAndServeBearer(
 			pm.mu.Unlock()
 			cl.proxy.hub.CancelCard(flow.id, "timeout", "timer")
 		}
-		cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+		cl.drainAndRefuse(conn, br, "approval denied by user")
 		cl.auditSwapDenied(surToken, rec.Credential, canonHost, "timeout", "ask")
+		return
+
+	case <-cl.done:
+		// Listener closed while parked (proxy/daemon shutdown): settle
+		// like expiry so Close() never blocks on a full hold window.
+		if flow.cancelled.CompareAndSwap(false, true) {
+			pm.mu.Lock()
+			pm.removeParkLocked(flow)
+			pm.mu.Unlock()
+			cl.proxy.hub.CancelCard(flow.id, "timeout", "listener_closed")
+		}
+		cl.drainAndClose(conn, br)
 		return
 
 	case approved := <-flow.decisionCh:
@@ -828,15 +911,18 @@ func (cl *cellListener) parkAndServeBearer(
 			reason := cl.proxy.hub.Reason(cl.cellID, flow.id)
 			switch reason {
 			case "custos_locked":
-				cl.drainAndRefuse(conn, br, "403 surrogate", "credential custody locked")
+				cl.drainAndRefuse(conn, br, "credential custody locked")
 				cl.auditSwapDenied(surToken, rec.Credential, canonHost, "custos_locked", "ask")
 			case "credential_revoked":
 				// Credential revoked while parked: flow closed per §6.4, §7
 				cl.auditSwapDenied(surToken, rec.Credential, canonHost, "credential_revoked", "ask")
 				proxy.RstHangup(conn)
 				_ = conn.Close()
+			case "timeout", "timed_out":
+				cl.drainAndRefuse(conn, br, "approval denied by user")
+				cl.auditSwapDenied(surToken, rec.Credential, canonHost, "timeout", "ask")
 			default:
-				cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+				cl.drainAndRefuse(conn, br, "approval denied by user")
 				cl.auditSwapDenied(surToken, rec.Credential, canonHost, "denied", "ask")
 			}
 			return
@@ -846,21 +932,21 @@ func (cl *cellListener) parkAndServeBearer(
 		// "Allow at decision time RE-VALIDATES vault unlocked + surrogate present + current policy verdict
 		// (policy rm/revoke during park kills flow at dial)"
 		if !cl.proxy.vault.IsUnlocked() {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "credential custody locked")
+			cl.drainAndRefuse(conn, br, "credential custody locked")
 			cl.auditSwapDenied(surToken, rec.Credential, canonHost, "custos_locked", "ask")
 			return
 		}
 
 		curRec, curOK := cl.proxy.vault.Surrogates().Lookup(surToken)
 		if !curOK || curRec.Credential != rec.Credential {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "surrogate not found")
+			cl.drainAndRefuse(conn, br, "surrogate not found")
 			cl.auditSwapDenied(surToken, rec.Credential, canonHost, "surrogate_revoked", "ask")
 			return
 		}
 
 		curCred, credOK := cl.proxy.vault.GetCredential(curRec.Credential)
 		if !credOK {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "surrogate not found")
+			cl.drainAndRefuse(conn, br, "surrogate not found")
 			cl.auditSwapDenied(surToken, rec.Credential, canonHost, "missing_credential", "ask")
 			return
 		}
@@ -874,7 +960,7 @@ func (cl *cellListener) parkAndServeBearer(
 		forwardIP, err := cl.proxy.resolveFloor(ctx, canonHost)
 		if err != nil {
 			cl.logEntry(conn.RemoteAddr(), method, u.Host, "refused-floor")
-			cl.drainAndRefuse(conn, br, "403 surrogate", "surrogate host mismatch")
+			cl.drainAndRefuse(conn, br, "policy denied")
 			cl.auditSwapDenied(surToken, curRec.Credential, canonHost, "floor", "ask")
 			return
 		}
@@ -887,7 +973,7 @@ func (cl *cellListener) parkAndServeBearer(
 			Port:       canonPort,
 		})
 		if curVerdict == VerdictDeny {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+			cl.drainAndRefuse(conn, br, "policy denied")
 			cl.auditSwapDenied(surToken, curRec.Credential, canonHost, "policy", "ask")
 			return
 		}
@@ -961,10 +1047,22 @@ func (cl *cellListener) monitorDisconnect(conn net.Conn, done <-chan struct{}, o
 			var n int
 			var rawErr error
 			err := raw.Read(func(fd uintptr) bool {
-				n, _, rawErr = syscall.Recvfrom(int(fd), buf, syscall.MSG_PEEK)
-				return rawErr != syscall.EAGAIN && rawErr != syscall.EWOULDBLOCK
+				n, _, rawErr = syscall.Recvfrom(int(fd), buf, syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
+				return true
 			})
-			if err != nil || (n == 0 && rawErr == nil) || (rawErr != nil && rawErr != syscall.EAGAIN && rawErr != syscall.EWOULDBLOCK) {
+			// Genuine disconnect only: FIN (n==0), or socket errors.
+			// EAGAIN/EWOULDBLOCK (no data pending) and ETIMEDOUT (a
+			// read deadline — e.g. the bounded denial-drain window
+			// §7) are NOT disconnects; the earlier blanket "any
+			// error != EAGAIN" test misfired on the drain deadline
+			// and closed the socket before refusal delivery.
+			realClose := rawErr != nil && rawErr != syscall.EAGAIN &&
+				rawErr != syscall.EWOULDBLOCK && rawErr != syscall.ETIMEDOUT
+			if err != nil {
+				// RawConn itself broken (conn closed): stop watching.
+				return
+			}
+			if (n == 0 && rawErr == nil) || realClose {
 				select {
 				case <-done:
 					return
@@ -1012,11 +1110,15 @@ func (cl *cellListener) forwardSwapped(
 
 	// Write request line
 	reqPath := u.RequestURI()
+	if reqPath == "" {
+		reqPath = "/"
+	}
 	if _, err := fmt.Fprintf(upstream, "%s %s HTTP/1.1\r\n", method, reqPath); err != nil {
 		return
 	}
 
 	// Forward headers: swap surrogate token with real secret, strip Accept-Encoding per §5.2
+	hasHost := false
 	for _, h := range headers {
 		colon := strings.IndexByte(h, ':')
 		if colon < 0 {
@@ -1027,6 +1129,9 @@ func (cl *cellListener) forwardSwapped(
 
 		if proxy.SkipHopByHop(lowerName) {
 			continue
+		}
+		if lowerName == "host" {
+			hasHost = true
 		}
 		// Strip Accept-Encoding per CUSTOS-SPEC §5.2:
 		// "strip Accept-Encoding (upstream is asked for identity encoding; compression would put secret echoes beyond the scan)"
@@ -1044,6 +1149,12 @@ func (cl *cellListener) forwardSwapped(
 			if _, err := fmt.Fprintf(upstream, "%s\r\n", h); err != nil {
 				return
 			}
+		}
+	}
+
+	if !hasHost && u.Host != "" {
+		if _, err := fmt.Fprintf(upstream, "Host: %s\r\n", u.Host); err != nil {
+			return
 		}
 	}
 
@@ -1087,6 +1198,7 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 	hasContentEncoding := false
 	contentType := ""
 	contentLength := int64(-1)
+	isChunked := false
 
 	for _, h := range respHeaders {
 		colon := strings.IndexByte(h, ':')
@@ -1106,6 +1218,10 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 			if n, err := strconv.ParseInt(val, 10, 64); err == nil {
 				contentLength = n
 			}
+		case "transfer-encoding":
+			if strings.Contains(strings.ToLower(val), "chunked") {
+				isChunked = true
+			}
 		}
 	}
 
@@ -1113,7 +1229,7 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 	// "responses carrying any Content-Encoding are refused as binary-typed ... unless the binding sets allow_binary: true"
 	if hasContentEncoding && !rec.AllowBinary {
 		cl.auditSwapDenied(rec.Token, rec.Credential, host, "response_type", "auto")
-		proxy.RstHangup(conn)
+		cl.drainAndRefuse(conn, nil, "refused binary-typed response")
 		return
 	}
 
@@ -1127,11 +1243,16 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 
 	// 3. allow_binary bypasses scrub per §5.2
 	if rec.AllowBinary && (isBinary || hasContentEncoding) {
-		_, _ = conn.Write([]byte(statusLine))
+		statusLine = strings.TrimRight(statusLine, "\r\n")
+		_, _ = fmt.Fprintf(conn, "%s\r\n", statusLine)
 		for _, h := range respHeaders {
+			colon := strings.IndexByte(h, ':')
+			if colon >= 0 && proxy.SkipHopByHop(strings.ToLower(strings.TrimSpace(h[:colon]))) {
+				continue
+			}
 			_, _ = fmt.Fprintf(conn, "%s\r\n", h)
 		}
-		_, _ = conn.Write([]byte("\r\n"))
+		_, _ = conn.Write([]byte("Connection: close\r\n\r\n"))
 		_, _ = io.Copy(conn, upReader)
 		return
 	}
@@ -1143,14 +1264,24 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 		return
 	}
 
+	var bodyReader io.Reader
+	switch {
+	case isChunked:
+		bodyReader = httputil.NewChunkedReader(upReader)
+	case contentLength >= 0:
+		bodyReader = io.LimitReader(upReader, contentLength)
+	default:
+		bodyReader = upReader
+	}
+
 	// Read body into memory up to maxScannedBody + 1 byte
-	bodyReader := io.LimitReader(upReader, maxScannedBody+1)
-	bodyBytes, err := io.ReadAll(bodyReader)
+	limitReader := io.LimitReader(bodyReader, maxScannedBody+1)
+	bodyBytes, err := io.ReadAll(limitReader)
 	if err != nil {
 		proxy.RstHangup(conn)
 		return
 	}
-	if len(bodyBytes) > maxScannedBody {
+	if int64(len(bodyBytes)) > maxScannedBody {
 		cl.auditSwapDenied(rec.Token, rec.Credential, host, "response_size", "auto")
 		proxy.RstHangup(conn)
 		return
@@ -1165,7 +1296,8 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 	}
 
 	// Write response headers with updated Content-Length and Connection: close
-	_, _ = conn.Write([]byte(statusLine))
+	statusLine = strings.TrimRight(statusLine, "\r\n")
+	_, _ = fmt.Fprintf(conn, "%s\r\n", statusLine)
 	hasCL := false
 	for _, h := range respHeaders {
 		colon := strings.IndexByte(h, ':')
@@ -1173,22 +1305,23 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 			continue
 		}
 		name := strings.ToLower(strings.TrimSpace(h[:colon]))
-		if name == "content-length" {
+		if proxy.SkipHopByHop(name) {
+			continue
+		}
+		switch name {
+		case "content-length":
 			_, _ = fmt.Fprintf(conn, "Content-Length: %d\r\n", len(outBytes))
 			hasCL = true
-		} else if name == "connection" {
-			_, _ = conn.Write([]byte("Connection: close\r\n"))
-		} else if name == "transfer-encoding" {
+		case "transfer-encoding":
 			// Chunk framing removed by buffered scan
-			continue
-		} else {
+		default:
 			_, _ = fmt.Fprintf(conn, "%s\r\n", h)
 		}
 	}
 	if !hasCL {
 		_, _ = fmt.Fprintf(conn, "Content-Length: %d\r\n", len(outBytes))
 	}
-	_, _ = conn.Write([]byte("\r\n"))
+	_, _ = conn.Write([]byte("Connection: close\r\n\r\n"))
 
 	// Deliver redacted body
 	_, _ = conn.Write(outBytes)
@@ -1237,7 +1370,7 @@ func (cl *cellListener) handleCredentialLess(
 	if err != nil {
 		cl.logEntry(conn.RemoteAddr(), method, u.Host, "refused-floor")
 		cl.auditEgressDenied(canonHost, "floor")
-		proxy.RstHangup(conn)
+		cl.drainAndRefuse(conn, br, "policy denied")
 		return
 	}
 
@@ -1257,16 +1390,16 @@ func (cl *cellListener) handleCredentialLess(
 	case VerdictDeny:
 		cl.logEntry(conn.RemoteAddr(), method, u.Host, "refused-policy")
 		cl.auditEgressDenied(canonHost, "policy")
-		cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+		cl.drainAndRefuse(conn, br, "policy denied")
 		return
 
 	case VerdictAsk:
 		if version != "HTTP/1.1" {
-			proxy.RstHangup(conn)
+			cl.drainAndClose(conn, br)
 			return
 		}
 		// Credential-less ask flow uses same parking mechanics
-		cl.parkAndServeCredentialLess(ctx, conn, br, method, target, version, u, headers, canonHost, canonPort, ip)
+		cl.parkAndServeCredentialLess(ctx, conn, br, method, target, u, headers, canonHost, canonPort)
 		return
 
 	case VerdictAuto:
@@ -1276,7 +1409,7 @@ func (cl *cellListener) handleCredentialLess(
 
 	default:
 		cl.auditEgressDenied(canonHost, "policy")
-		cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+		cl.drainAndRefuse(conn, br, "policy denied")
 		return
 	}
 }
@@ -1285,19 +1418,18 @@ func (cl *cellListener) parkAndServeCredentialLess(
 	ctx context.Context,
 	conn net.Conn,
 	br *bufio.Reader,
-	method, target, version string,
+	method, target string,
 	u *url.URL,
 	headers []string,
 	canonHost string,
 	canonPort int,
-	initialIP string,
 ) {
 	pm := cl.proxy.parkMgr
 
 	pm.mu.Lock()
 	if len(pm.byCell[cl.cellID]) >= pm.maxPerCell {
 		pm.mu.Unlock()
-		cl.drainAndRefuse(conn, br, "403 surrogate", "too_many_asks")
+		cl.drainAndRefuse(conn, br, "too_many_asks")
 		cl.auditEgressDenied(canonHost, "too_many_asks")
 		return
 	}
@@ -1358,10 +1490,10 @@ func (cl *cellListener) parkAndServeCredentialLess(
 			cl.proxy.hub.CancelCard(flow.id, "too_many_asks", "custos")
 		}
 		if outcome == "too_many_asks" {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "too_many_asks")
+			cl.drainAndRefuse(conn, br, "too_many_asks")
 			cl.auditEgressDenied(canonHost, "too_many_asks")
 		} else {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+			cl.drainAndRefuse(conn, br, "approval denied by user")
 			cl.auditEgressDenied(canonHost, "denied")
 		}
 		return
@@ -1373,8 +1505,20 @@ func (cl *cellListener) parkAndServeCredentialLess(
 			pm.mu.Unlock()
 			cl.proxy.hub.CancelCard(flow.id, "timeout", "timer")
 		}
-		cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+		cl.drainAndRefuse(conn, br, "approval denied by user")
 		cl.auditEgressDenied(canonHost, "timeout")
+		return
+
+	case <-cl.done:
+		// Listener closed while parked: settle like expiry so Close()
+		// never blocks on a full hold window.
+		if flow.cancelled.CompareAndSwap(false, true) {
+			pm.mu.Lock()
+			pm.removeParkLocked(flow)
+			pm.mu.Unlock()
+			cl.proxy.hub.CancelCard(flow.id, "timeout", "listener_closed")
+		}
+		cl.drainAndClose(conn, br)
 		return
 
 	case approved := <-flow.decisionCh:
@@ -1383,15 +1527,22 @@ func (cl *cellListener) parkAndServeCredentialLess(
 		pm.mu.Unlock()
 
 		if !approved {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
-			cl.auditEgressDenied(canonHost, "denied")
+			reason := cl.proxy.hub.Reason(cl.cellID, flow.id)
+			switch reason {
+			case "timeout", "timed_out":
+				cl.drainAndRefuse(conn, br, "approval denied by user")
+				cl.auditEgressDenied(canonHost, "timeout")
+			default:
+				cl.drainAndRefuse(conn, br, "approval denied by user")
+				cl.auditEgressDenied(canonHost, "denied")
+			}
 			return
 		}
 
 		forwardIP, err := cl.proxy.resolveFloor(ctx, canonHost)
 		if err != nil {
 			cl.logEntry(conn.RemoteAddr(), method, u.Host, "refused-floor")
-			cl.drainAndRefuse(conn, br, "403 surrogate", "surrogate host mismatch")
+			cl.drainAndRefuse(conn, br, "policy denied")
 			cl.auditEgressDenied(canonHost, "floor")
 			return
 		}
@@ -1401,7 +1552,7 @@ func (cl *cellListener) parkAndServeCredentialLess(
 			Port: canonPort,
 		})
 		if curVerdict == VerdictDeny {
-			cl.drainAndRefuse(conn, br, "403 surrogate", "approval denied by user")
+			cl.drainAndRefuse(conn, br, "policy denied")
 			cl.auditEgressDenied(canonHost, "policy")
 			return
 		}
@@ -1432,16 +1583,31 @@ func (cl *cellListener) forwardDirect(
 	defer upstream.Close()
 
 	reqPath := u.RequestURI()
+	if reqPath == "" {
+		reqPath = "/"
+	}
 	if _, err := fmt.Fprintf(upstream, "%s %s HTTP/1.1\r\n", method, reqPath); err != nil {
 		return
 	}
 
+	hasHost := false
 	for _, h := range headers {
 		colon := strings.IndexByte(h, ':')
-		if colon >= 0 && proxy.SkipHopByHop(strings.ToLower(strings.TrimSpace(h[:colon]))) {
-			continue
+		if colon >= 0 {
+			name := strings.ToLower(strings.TrimSpace(h[:colon]))
+			if name == "host" {
+				hasHost = true
+			}
+			if proxy.SkipHopByHop(name) {
+				continue
+			}
+			if _, err := fmt.Fprintf(upstream, "%s\r\n", h); err != nil {
+				return
+			}
 		}
-		if _, err := fmt.Fprintf(upstream, "%s\r\n", h); err != nil {
+	}
+	if !hasHost && u.Host != "" {
+		if _, err := fmt.Fprintf(upstream, "Host: %s\r\n", u.Host); err != nil {
 			return
 		}
 	}
@@ -1464,40 +1630,49 @@ func (cl *cellListener) forwardDirect(
 // drainAndRefuse implements the denial delivery rule per CUSTOS-SPEC §7, §10 V26:
 // drain unread receive buffer (EOF or 64 KiB, 250 ms cap, best-effort) BEFORE writing refusal,
 // then write + close; no pipelined continuation after parked-flow responses.
-func (cl *cellListener) drainAndRefuse(conn net.Conn, br *bufio.Reader, statusLine, body string) {
-	_ = conn.SetReadDeadline(time.Now().Add(drainWindowTimeout))
-	var drained int64
-	buf := make([]byte, 4096)
-
-	for drained < drainWindowBytes {
-		var n int
-		var err error
-		if br != nil && br.Buffered() > 0 {
-			toRead := len(buf)
-			if int64(toRead) > (drainWindowBytes - drained) {
-				toRead = int(drainWindowBytes - drained)
-			}
-			if toRead > br.Buffered() {
-				toRead = br.Buffered()
-			}
-			n, err = br.Read(buf[:toRead])
-		} else {
-			toRead := len(buf)
-			if int64(toRead) > (drainWindowBytes - drained) {
-				toRead = int(drainWindowBytes - drained)
-			}
-			n, err = conn.Read(buf[:toRead])
-		}
-		drained += int64(n)
-		if err != nil {
-			break
-		}
-	}
+func (cl *cellListener) drainAndRefuse(conn net.Conn, br *bufio.Reader, body string) {
+	statusLine := "403 surrogate"
+	cl.drainSocket(conn, br)
 
 	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	resp := fmt.Sprintf("HTTP/1.1 %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		statusLine, len(body), body)
 	_, _ = conn.Write([]byte(resp))
+	_ = conn.Close()
+}
+
+// drainSocket performs the §7 bounded drain (to EOF or 64 KiB, 250 ms
+// cap, best-effort) shared by refusal delivery and the parking-gate
+// close: closing with unread body bytes makes the kernel emit TCP RST
+// (frozen wire mechanics, §7).
+func (cl *cellListener) drainSocket(conn net.Conn, br *bufio.Reader) {
+	_ = conn.SetReadDeadline(time.Now().Add(drainWindowTimeout))
+	var drained int64
+	buf := make([]byte, 4096)
+
+	var r io.Reader = conn
+	if br != nil {
+		r = br
+	}
+	for drained < drainWindowBytes {
+		toRead := len(buf)
+		if int64(toRead) > (drainWindowBytes - drained) {
+			toRead = int(drainWindowBytes - drained)
+		}
+		n, err := r.Read(buf[:toRead])
+		drained += int64(n)
+		if err != nil {
+			break
+		}
+	}
+}
+
+// drainAndClose implements the parking-gate close per §7: drain first
+// (same bounded window as refusal delivery — a bare close with unread
+// bytes would surface as ECONNRESET), then close cleanly with no
+// response (the gate closes the connection; it does not answer).
+func (cl *cellListener) drainAndClose(conn net.Conn, br *bufio.Reader) {
+	cl.drainSocket(conn, br)
 	_ = conn.Close()
 }
 
@@ -1653,12 +1828,11 @@ func cleanRequestPath(reqPath string) string {
 	decoded := reqPath
 	for {
 		lower := strings.ToLower(decoded)
-		if strings.Contains(lower, "%2e") {
-			decoded = strings.ReplaceAll(decoded, "%2e", ".")
-			decoded = strings.ReplaceAll(decoded, "%2E", ".")
-		} else {
+		if !strings.Contains(lower, "%2e") {
 			break
 		}
+		decoded = strings.ReplaceAll(decoded, "%2e", ".")
+		decoded = strings.ReplaceAll(decoded, "%2E", ".")
 	}
 	cleaned := path.Clean(decoded)
 	if !strings.HasPrefix(cleaned, "/") {
