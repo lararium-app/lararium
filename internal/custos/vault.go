@@ -24,26 +24,33 @@ func triggerKillPoint(point string) {
 
 // Vault manages the encrypted vault at <hearth>/custos per CUSTOS-SPEC §4.
 type Vault struct {
-	mu              sync.RWMutex
-	stateDir        string
-	lockFile        *LockFile
-	audit           *AuditLogger
-	snapshots       *SnapshotManager
-	instanceKey     []byte
-	loadedDoc       *VaultDoc
-	isUnlocked      bool
-	isKeyfile       bool
-	firstUnlockDone bool // CUSTOS-SPEC §4.1, §4.2: landedness recovery runs once per boot per Vault instance
-	degradedHook    func(reason string)
+	mu                sync.RWMutex
+	stateDir          string
+	lockFile          *LockFile
+	audit             *AuditLogger
+	snapshots         *SnapshotManager
+	policy            *PolicyEngine
+	instanceKey       []byte
+	loadedDoc         *VaultDoc
+	loadedRegistry    *SurrogateRegistry
+	surrogatesDropped int
+	passphrase        string
+	isUnlocked        bool
+	isKeyfile         bool
+	firstUnlockDone   bool // CUSTOS-SPEC §4.1, §4.2: landedness recovery runs once per boot per Vault instance
+	degradedHook      func(reason string)
 }
 
 // NewVault initializes a Vault instance rooted at stateDir (<hearth>/custos).
 func NewVault(stateDir string, timeout time.Duration) *Vault {
+	lockFile := NewLockFile(stateDir, timeout)
+	audit := NewAuditLogger(stateDir)
 	return &Vault{
 		stateDir:  stateDir,
-		lockFile:  NewLockFile(stateDir, timeout),
-		audit:     NewAuditLogger(stateDir),
+		lockFile:  lockFile,
+		audit:     audit,
 		snapshots: NewSnapshotManager(stateDir),
+		policy:    NewPolicyEngine(stateDir, audit, lockFile),
 	}
 }
 
@@ -67,6 +74,25 @@ func (v *Vault) Audit() *AuditLogger {
 // Snapshots returns the SnapshotManager.
 func (v *Vault) Snapshots() *SnapshotManager {
 	return v.snapshots
+}
+
+// Policy returns the PolicyEngine.
+func (v *Vault) Policy() *PolicyEngine {
+	return v.policy
+}
+
+// Surrogates returns the loaded SurrogateRegistry or nil if locked.
+func (v *Vault) Surrogates() *SurrogateRegistry {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.loadedRegistry
+}
+
+// SurrogatesDropped returns the count of dropped surrogate records per CUSTOS §6.6.
+func (v *Vault) SurrogatesDropped() int {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.surrogatesDropped
 }
 
 // CheckFileLaw validates C2 file inventory and permissions (0700/0600) per CUSTOS §2, §C2.
@@ -319,8 +345,25 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		doc = d
 	}
 
+	// Strict-parse policy.json at startup per CUSTOS §6.1, §6.6
+	_ = v.policy.LoadStrict()
+
+	// Load and reconcile surrogates per CUSTOS §4.3, §6.6, §10 V11
+	reg, dropped, err := LoadAndReconcileSurrogates(v.stateDir, passphrase, doc.Credentials, v.audit, !v.firstUnlockDone)
+	if err != nil {
+		_ = v.audit.Append(AuditRecord{
+			Kind:   AuditKindLockFailed,
+			Actor:  "cli",
+			Reason: err.Error(),
+		})
+		return err
+	}
+
 	v.mu.Lock()
 	v.loadedDoc = doc
+	v.loadedRegistry = reg
+	v.surrogatesDropped = dropped
+	v.passphrase = passphrase
 	v.isUnlocked = true
 	v.isKeyfile = isKeyfile
 	v.mu.Unlock()
@@ -380,6 +423,9 @@ func (v *Vault) Lock() error {
 
 	// CUSTOS §C3, §P4: lock zeroizes loaded state
 	v.loadedDoc = nil
+	v.loadedRegistry = nil
+	v.surrogatesDropped = 0
+	v.passphrase = ""
 	v.isUnlocked = false
 	return nil
 }
@@ -401,9 +447,9 @@ func (v *Vault) Status(isDaemon bool, listenersFailed int) Status {
 		state = StateUnlocked
 	}
 
-	// Check if degraded: WAL recovery unresolved or listeners failed (§11)
+	// Check if degraded: WAL recovery unresolved, listeners failed, surrogates dropped, or policy corrupt (§11, §6.6)
 	dangling, _ := v.audit.FindDanglingIntents()
-	if len(dangling) > 0 || listenersFailed > 0 {
+	if len(dangling) > 0 || listenersFailed > 0 || v.surrogatesDropped > 0 || (v.policy != nil && v.policy.IsCorrupt()) {
 		state = StateDegraded
 	}
 
@@ -418,6 +464,11 @@ func (v *Vault) Status(isDaemon bool, listenersFailed int) Status {
 		}
 	}
 
+	surrogatesCount := 0
+	if v.isUnlocked && v.loadedRegistry != nil {
+		surrogatesCount = v.loadedRegistry.Count()
+	}
+
 	door := "none"
 	if isDaemon {
 		door = "custosd"
@@ -426,20 +477,38 @@ func (v *Vault) Status(isDaemon bool, listenersFailed int) Status {
 	return Status{
 		State:             state,
 		Credentials:       credCount,
-		Surrogates:        0,
-		SurrogatesDropped: 0,
+		Surrogates:        surrogatesCount,
+		SurrogatesDropped: v.surrogatesDropped,
 		Door:              door,
 		ListenersFailed:   listenersFailed,
 	}
 }
 
+// RegistryMutator is the callback signature for mutations touching both vault and registry per CUSTOS §4.2, §5.3.
+type RegistryMutator func(doc *VaultDoc, surDoc *SurrogateDoc) (touchedNames []string, auditEvents []AuditRecord, err error)
+
 // Mutate executes a vault mutation under custos.lock using the §4.2 temp-pair protocol.
 // CUSTOS §4.2: intent -> encrypt -> temps fsynced -> rename mac first, envelope second ->
 // fsync(dir) -> WAL commit fsynced ONLY AFTER rename+dir fsyncs returned.
 func (v *Vault) Mutate(passphrase string, mutateFn func(doc *VaultDoc) ([]string, error), isEphemeral bool) error {
+	return v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
+		names, err := mutateFn(doc)
+		return names, nil, err
+	}, isEphemeral)
+}
+
+// MutateWithRegistry executes a mutation touching vault and/or surrogate registry under flock.
+// CUSTOS §4.2: intent -> encrypt -> temps fsynced -> rename mac first, envelope second ->
+// fsync(dir) -> WAL commit fsynced ONLY AFTER rename+dir fsyncs returned -> registry temp+rename.
+func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, isEphemeral bool) error {
 	passphrase = strings.TrimSpace(passphrase)
 	if passphrase == "" {
-		return ErrEmpty
+		v.mu.RLock()
+		passphrase = v.passphrase
+		v.mu.RUnlock()
+	}
+	if passphrase == "" {
+		return ErrCustosLocked
 	}
 
 	// 1. Acquire flock with timeout
@@ -471,10 +540,26 @@ func (v *Vault) Mutate(passphrase string, mutateFn func(doc *VaultDoc) ([]string
 		doc = d
 	}
 
+	// Decrypt current surrogates document from disk
+	surPath := filepath.Join(v.stateDir, "surrogates.age")
+	var surDoc *SurrogateDoc
+	if surData, err := os.ReadFile(surPath); err == nil {
+		sd, err := DecryptSurrogates(surData, passphrase)
+		if err == nil {
+			surDoc = sd
+		}
+	}
+	if surDoc == nil {
+		surDoc = &SurrogateDoc{
+			Version:    1,
+			Surrogates: make(map[string]SurrogateRecord),
+		}
+	}
+
 	oldGen := doc.Generation
 
-	// 3. Modify document
-	touchedNames, err := mutateFn(doc)
+	// 3. Modify document and registry
+	touchedNames, extraAuditEvents, err := mutateFn(doc, surDoc)
 	if err != nil {
 		return err
 	}
@@ -620,13 +705,165 @@ func (v *Vault) Mutate(passphrase string, mutateFn func(doc *VaultDoc) ([]string
 
 	triggerKillPoint("after_commit")
 
-	// 15. In-memory loaded state swap inside flock (K6 doctrine inherited)
+	// 15. CUSTOS §4.2 vault-first commit order: vault commits, then registry temp+rename
+	if err := WriteSurrogatesFile(v.stateDir, surDoc, passphrase); err != nil {
+		return fmt.Errorf("write surrogates: %w", err)
+	}
+
+	// 16. Append extra action audit events (e.g. surrogate_created, surrogate_revoked, credential_removed)
+	for _, ev := range extraAuditEvents {
+		ev.Gen = newGen
+		_ = v.audit.Append(ev)
+	}
+
+	// 17. In-memory loaded state swap inside flock (K6 doctrine inherited)
 	v.mu.Lock()
 	v.loadedDoc = doc
+	reg := NewSurrogateRegistry()
+	for tok, r := range surDoc.Surrogates {
+		r.Token = tok
+		reg.records[tok] = r
+	}
+	v.loadedRegistry = reg
 	v.isUnlocked = true
+	v.passphrase = passphrase
 	v.mu.Unlock()
 
 	return nil
+}
+
+// AddSurrogate registers a surrogate token bound to host, port, path prefix per CUSTOS §5.3.
+func (v *Vault) AddSurrogate(passphrase string, credName, host string, port int, pathPrefix string, allowBinary bool, actor string) (string, error) {
+	if !v.IsUnlocked() && passphrase == "" && v.passphrase == "" {
+		return "", ErrCustosLocked
+	}
+	canonHost, ports, canonPfx, err := ValidateSurrogateBinding(host, port, pathPrefix)
+	if err != nil {
+		return "", err
+	}
+	token, err := GenerateSurrogateToken()
+	if err != nil {
+		return "", err
+	}
+
+	var surRec SurrogateRecord
+	err = v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
+		if _, exists := doc.Credentials[credName]; !exists {
+			return nil, nil, fmt.Errorf("credential %q not found", credName)
+		}
+		surRec = SurrogateRecord{
+			Token:       token,
+			Credential:  credName,
+			Lane:        "bearer",
+			Host:        canonHost,
+			Ports:       ports,
+			PathPrefix:  canonPfx,
+			AllowBinary: allowBinary,
+			AddedAt:     time.Now().UTC().Format(time.RFC3339),
+		}
+		if surDoc.Surrogates == nil {
+			surDoc.Surrogates = make(map[string]SurrogateRecord)
+		}
+		surDoc.Surrogates[token] = surRec
+
+		event := AuditRecord{
+			Kind:  AuditKindSurrogateCreated,
+			Cred:  credName,
+			Sur:   surRec.Fingerprint(),
+			Host:  canonHost,
+			Actor: actor,
+		}
+		return []string{credName}, []AuditRecord{event}, nil
+	}, false)
+
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// RevokeSurrogate revokes a surrogate by its 8-hex fingerprint per CUSTOS §5.3, §11.
+func (v *Vault) RevokeSurrogate(passphrase string, id8 string, actor string) error {
+	if !v.IsUnlocked() && passphrase == "" && v.passphrase == "" {
+		return ErrCustosLocked
+	}
+
+	return v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
+		var targetToken string
+		var targetRec SurrogateRecord
+		found := false
+		for tok, r := range surDoc.Surrogates {
+			if strings.EqualFold(r.Fingerprint(), id8) || strings.EqualFold(SHA256Hex8(tok), id8) {
+				targetToken = tok
+				targetRec = r
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, nil, ErrSurrogateNotFound
+		}
+
+		delete(surDoc.Surrogates, targetToken)
+
+		event := AuditRecord{
+			Kind:  AuditKindSurrogateRevoked,
+			Cred:  targetRec.Credential,
+			Sur:   targetRec.Fingerprint(),
+			Actor: actor,
+		}
+		return []string{targetRec.Credential}, []AuditRecord{event}, nil
+	}, false)
+}
+
+// RevokeCredential removes a credential and atomically revokes all its surrogates per CUSTOS §4.4, §5.3.
+// Single generation, both audit kinds, one intent/commit pair.
+func (v *Vault) RevokeCredential(passphrase string, credName string, actor string) error {
+	if !v.IsUnlocked() && passphrase == "" && v.passphrase == "" {
+		return ErrCustosLocked
+	}
+
+	return v.MutateWithRegistry(passphrase, func(doc *VaultDoc, surDoc *SurrogateDoc) ([]string, []AuditRecord, error) {
+		if _, exists := doc.Credentials[credName]; !exists {
+			return nil, nil, fmt.Errorf("credential %q not found", credName)
+		}
+		delete(doc.Credentials, credName)
+
+		var revokedSurrogates []SurrogateRecord
+		for tok, r := range surDoc.Surrogates {
+			if r.Credential == credName {
+				revokedSurrogates = append(revokedSurrogates, r)
+				delete(surDoc.Surrogates, tok)
+			}
+		}
+
+		var events []AuditRecord
+		events = append(events, AuditRecord{
+			Kind:  AuditKindCredentialRemoved,
+			Cred:  credName,
+			Actor: actor,
+		})
+		for _, s := range revokedSurrogates {
+			events = append(events, AuditRecord{
+				Kind:  AuditKindSurrogateRevoked,
+				Cred:  credName,
+				Sur:   s.Fingerprint(),
+				Actor: actor,
+			})
+		}
+
+		return []string{credName}, events, nil
+	}, false)
+}
+
+// ListSurrogates returns all registered surrogates or ErrCustosLocked if locked per CUSTOS §11.
+func (v *Vault) ListSurrogates() ([]SurrogateRecord, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if !v.isUnlocked || v.loadedRegistry == nil {
+		return nil, ErrCustosLocked
+	}
+	return v.loadedRegistry.List(), nil
 }
 
 // ChangePassphrase re-encrypts the vault and surrogates under a new passphrase.
@@ -741,6 +978,15 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 
 	_ = WriteFingerprints(v.stateDir, key, doc.Credentials)
 
+	// Re-encrypt surrogates.age if present and non-empty per CUSTOS §8.4, §11
+	surPath := filepath.Join(v.stateDir, "surrogates.age")
+	if surData, err := os.ReadFile(surPath); err == nil && len(surData) > 0 {
+		surDoc, err := DecryptSurrogates(surData, oldPassphrase)
+		if err == nil {
+			_ = WriteSurrogatesFile(v.stateDir, surDoc, newPassphrase)
+		}
+	}
+
 	// Commit line
 	if err := v.audit.Append(AuditRecord{
 		Kind:   AuditKindVaultMutation,
@@ -755,6 +1001,7 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 	v.mu.Lock()
 	v.loadedDoc = doc
 	v.isUnlocked = true
+	v.passphrase = newPassphrase
 	v.mu.Unlock()
 
 	return nil
