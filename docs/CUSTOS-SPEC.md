@@ -1,12 +1,11 @@
 # CUSTOS-SPEC — the security envelope: vault, surrogation, policy, audit
 
-Status: **DRAFT v6 (round-5 folds) — round 5 complete: pass A
-(AGY) 0B/5M CONVERGED; pass B 1B/12M — credential-lane exact/exact
-tie + chain-writer lock-hold folded (tier-1 qualification order now
-total on both lanes; audit appends exclusively inside the §4.2 lock
-hold; commit-less landed intents recover nonce-bearing). All minors
-from both passes folded. Suite V1–V26. Awaiting round 6
-confirmation round.**
+Status: **FROZEN (v7) — round 6 both confirmation passes CONVERGED
+(pass A 0B/0M; pass B 0B/5M, all five minors folded per reviewer
+prescription: WAL-commit-after-rename fsync order, fingerprint mirror
+inside recovery rewrite + snapshot set, migrate-deletion audit lines,
+`--port` grammar, writer-path-only note). Freeze rule met: zero new
+blocking on both passes. Suite V1–V26. Awaiting user sign-off.**
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -356,7 +355,11 @@ encrypt → temps in `<hearth>/custos/` — `vault.age` **and**
 **mac first, envelope second** — so a crash mid-pair leaves (new mac,
 old envelope), which first-unlock recovery resolves (§4.2
 landedness), never a mismatched locked-out state → **fsync(dir)** →
-WAL commit (**flushed, not buffered**) — the
+WAL commit (**flushed, not buffered**, and fsynced only **after** the
+rename-pair and dir fsyncs have returned — the inverse order is
+forbidden: a commit line must never be durable ahead of the renames
+it commits, or a power loss with commit-caching could pair a durable
+`vault_mutation` with a lost envelope, falsifying a chain record) — the
 durability chain inherits KEYS-SPEC's atomic temp+rename doctrine and
 makes every arrow power-loss honest. **The in-memory loaded-state swap
 happens inside the flock, before release** (K6 doctrine inherited):
@@ -418,7 +421,9 @@ for storage and match, §7)**; an **IP-form binding is ask-always**: the
 §6.1/§6.5 write path refuses to store an `auto` rule whose pattern is
 an IP-literal (`ip bindings are ask-only`), no Always, because an IP gives
 the card's human no
-registrable domain to judge); `crypto/rand` values; 0600 enforced at
+registrable domain to judge. Enforcement lives **solely on this write
+path** (v5 removed conflict checking; there is no conflict checker to
+look for)); `crypto/rand` values; 0600 enforced at
 startup like tokens files. Unknown `lane` values on parse: entry
 **refused at load** with audit `surrogate_rejected`, never defaulted to
 bearer. The registry file leaks nothing without unlock (encrypted) and
@@ -435,6 +440,12 @@ so no entry can be "unmigratable"; cap overflow uses the frozen
 one line per move `migrated <name>`; `nothing to migrate` (exit 0) when
 none; any failure mid-list ⇒ already-moved entries stay moved (re-running
 finishes the job; vault-first + delete-after is safe to replay) and the
+**every deletion is audited**: one intent-less `vault_migrated_keys`
+line per `keys.json` entry actually deleted (names only — §8.1), so a
+mid-list crash leaves the audit log able to answer exactly which
+entries left `keys.json` (P5's wholeness covers this external store
+too; re-runs only delete residuals, so replay emits no phantom lines
+for already-deleted entries)**; the
 command exits non-zero with `migrate incomplete: <moved> moved,
 <skipped> skipped` (frozen). Values never print.
 `custos export <name>` prints the value once to a TTY after
@@ -480,7 +491,9 @@ into any worker response or cell-visible byte.
 — names + 8-hex hashes only; updated atomically inside every vault
 mutation (same critical section; a crash between vault rename and
 fingerprint write is reconciled at the first unlock after boot —
-recomputed from the decrypted vault, and `GET /v1/keys` on a locked
+**recomputed from the decrypted vault inside recovery's own
+intent-paired rewrite (§8.1a), so the mirror can never lag a resolved
+intent**, and `GET /v1/keys` on a locked
 instance reports the stored value (null only if the mirror lacks the
 name — the mirror is authoritative for locked reads, CA-1(b)/(d)). It doubles as the **name
 mirror** for CA-1(c): name set and `sha256_8` while locked come from
@@ -563,7 +576,13 @@ eyes-open choice).
 
 **5.3 — Issuance.** `custos surrogate add <credential> --host
 api.example.com [--path /v1/] [--port 8080]`: TTY prints the surrogate
-once. Surface `PUT /v1/keys/{name}/surrogates`: because the requesting
+once. **`--port` grammar (frozen law): an integer `1–65535`; `0`,
+out-of-range, and non-numeric are refused at issuance, and the stored
+port is normalized exactly as §5.2 normalizes request authorities
+(default port stripped) so a binding is always expressed in the same
+form the forward-time match compares against — an unsatisfiable
+binding cannot exist** (the §6.5 Always-construction check therefore
+always sees registrable ports). Surface `PUT /v1/keys/{name}/surrogates`: because the requesting
 surface cannot be distinguished from a prompt-injection-driven mint,
 **every surface mint requires a confirmation card** (source `custos`,
 showing credential name + exact bound destination + path/port) answered
@@ -876,14 +895,18 @@ Prune only ever moves anchors forward (V22). The genesis file is never
 pruned while it is the only file; the newest anchor is never pruned.
 
 **8.4 — Snapshots & restore.** Before every vault mutation: the
-pre-image set (`vault.age`, `vault.age.mac`, `surrogates.age`) is copied
+pre-image set (`vault.age`, `vault.age.mac`, `surrogates.age`,
+`fingerprints.json`) is copied
 to `snapshots/gen-<G>/` (keep 8, G = persisted generation, no collision
 across restarts; **ephemeral access-token refreshes write no snapshot**,
 §4.5 — routine hourly churn can never evict the history that matters).
 `policy.json` is **not** snapshotted (no secret material; §6.6's remedy
 for policy corruption is `custos policy reset` + re-declare, not
-restore — the snapshot set stays exactly the two-file credential set
-plus MAC).
+restore). `fingerprints.json` **is** (plaintext, name-mirror rows):
+a restore that rolled the vault back past a rename while mirror rows
+stood forward would transiently misroute CA-1(d) locked `PUT`s as
+new-name 423s — the snapshot set keeps vault and mirror moving
+together.
 `custos snapshots list` prints generations. `custos restore <gen>
 --yes` runs **offline under the `custos.lock` flock** — it verifies the
 snapshot's `.mac` with `vault.key` (no passphrase needed; the daemon
@@ -1154,6 +1177,20 @@ TTY-only is the fallback if the card path proves awkward in dogfood.
 
 ## Changelog
 
+- v7 (frozen): round 6 — both confirmation passes CONVERGED (pass A
+  0B/0M — first review with no findings at any severity; pass B
+  0B/5M). Pass B minors folded verbatim per its fix sketches: **WAL
+  commit fsynced only after the rename-pair and dir fsyncs return**
+  (forbids a durable commit ahead of lost renames under commit
+  caching); fingerprint mirror recomputed **inside recovery's own
+  intent-paired rewrite** and `fingerprints.json` **added to the
+  snapshot set** (vault and mirror never restore apart — no
+  CA-1(d) locked-PUT misroute); `custos migrate` emits one
+  intent-less `vault_migrated_keys` line per actual `keys.json`
+  deletion (mid-list crash answerable from the chain; replay-safe);
+  **`--port` grammar frozen** (`1–65535`, normalized as §5.2, no
+  unsatisfiable bindings); IP-binding ask-only enforcement declared
+  writer-path-only (no conflict checker exists since v5).
 - v6 (draft): round-5 review folded (pass A 0 blocking / 5 minor —
   first CONVERGED line; pass B 1 / 12). Headlines: **tier-1
   qualification order completes the comparator** (exact `host:port` >
