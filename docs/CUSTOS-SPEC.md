@@ -1,8 +1,10 @@
 # CUSTOS-SPEC — the security envelope: vault, surrogation, policy, audit
 
-Status: **DRAFT v5 — round 4 fully folded (pass A 3B/6M, pass B
-3B/11M; union 5 distinct real + bookkeeping). Suite V1–V26. Awaiting
-round 5 (convergence round).**
+Status: **DRAFT v5 — round 5 in progress. Pass A (AGY): 0 BLOCKING /
+5 MINOR — CONVERGED line delivered; all 5 minors folded (unlock MAC
+check ordering, frozen note shape in V24, `login_denied` kind, drain
+bold-marker fix, 423-on-new-name-under-custody). Awaiting pass B.**
+Suite V1–V26.
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -55,7 +57,10 @@ a locked instance returns entries for mirror names with
 returns 423 with `custos locked — run: custos unlock` (frozen).
 **Custody-managed = vault entry ∪ fingerprint-mirror name** (a name
 that exists only in `config`/`keys.json` layers keeps frozen K4
-behavior, 423 never applies to it).
+behavior, 423 never applies to it; a `PUT ?force=true` **creating a
+brand-new name** while locked also returns 423 — under custody, new
+stored keys route to the vault, and a vault write while locked is
+refused, never silently downgraded to an unmanaged `keys.json` write).
 (e) **Name gate and cap are inherited verbatim from K4**
 (`^[a-z0-9][a-z0-9_-]{0,63}$`, 64 names counting vault ∪ keys.json —
 the `key store full` 409/CLI error counts both stores). The vault
@@ -311,7 +316,12 @@ relevant sits outside. At init, custosd generates `vault.key`: 32
 random bytes, 0600, in the state root — the **instance key**. Every
 write of `vault.age` produces `vault.age.mac` = HMAC-SHA256 over the
 envelope bytes under HKDF(vault.key, "custos-env"); every unlock
-verifies it before decrypting: mismatch ⇒ `vault envelope corrupt`
+verifies it before decrypting (at the **first unlock after a crash**,
+this strict check runs only after §4.2 landedness recovery reconciles
+a mid-pair mismatch — recovery decrypts under the passphrase
+specifically to inspect the generation, so a new-MAC/old-envelope
+crash state is `aborted(crashed_pre_rename)` + MAC re-emit, never a
+false lockout): mismatch ⇒ `vault envelope corrupt`
 (frozen) — this is what makes whole-file substitution (attacker
 re-encrypts their own JSON under a passphrase they cannot read back)
 fail, which age-under-a-shared-passphrase alone does not. Snapshots and
@@ -423,7 +433,7 @@ all inside the vault envelope: `client_id`, `client_secret`,
 `custos login gmail --client-id <id>` (client secret prompted on the
 TTY, never a flag/argv) — prints the consent URL **with a random `state`
 parameter** (generated, stored in memory, validated on callback;
-mismatch ⇒ refused, audited), binds an ephemeral `127.0.0.1:0`
+mismatch ⇒ refused, audited `login_denied` (§8.1)), binds an ephemeral `127.0.0.1:0`
 listener for the redirect, exchanges the code, stores kind `oauth2`.
 **The listener is one-shot** (first callback consumes it, then closes;
 subsequent requests get connection-reset), it validates `state` (§0's
@@ -731,10 +741,10 @@ Parking gate: only HTTP/1.1 requests with a valid absolute-form URI
 (or `Host`) may park; anything else is closed immediately (a 1.0
 client must not hold a 330 s slot). **Denial delivery rule (frozen
 wire mechanics):** before writing any parked-flow refusal the proxy
-must **drain the socket's unread receive buffer (bounded read: to EOF
-or 64 KiB, 250 ms cap; **the drain is best-effort — a flow still
+must **drain the socket's unread receive buffer** (bounded read: to
+EOF or 64 KiB, 250 ms cap; the drain is best-effort — a flow still
 sending past the cap is answered on a best-effort basis and closed,
-and V26 asserts delivery only for bodies within the drain window**)
+and V26 asserts delivery only for bodies within the drain window)
 and only then write the response and close —
 a bare `close()` with unread body bytes makes the kernel emit TCP RST
 and the cell would see `ECONNRESET` instead of the 403. After a
@@ -759,7 +769,8 @@ cell's parks (S6).
 SHA-256; genesis line names vault generation) — surface audit's scheme
 and crash-tail rule, separate file family. Kinds (frozen):
 `custos_started`, `custos_stopped`, `unlocked`, `lock_failed`,
-`vault_migrated_keys`, `credential_added`, `credential_rotated`,
+`vault_migrated_keys`, `credential_added`, `login_denied`,
+`credential_rotated`,
 `credential_removed`, `surrogate_created`, `surrogate_revoked`,
 `surrogate_rejected`, `registry_reconciled`, `vault_mutation_intent`,
 `vault_mutation`, `vault_mutation_recovered`,
@@ -1015,7 +1026,8 @@ by the floor (mapped un-map, CA-2(v)); `deny 203.0.113.7` rule matches
 `http://203.0.113.7:80/` (normalized socket-address match).
 V24. Ordering law over overlap (no conflict rejection): with
 `auto cdn.tracker.com/*` stored, `policy add deny tracker.com/*`
-stores with the `note: overridden by cdn.tracker.com/*` warning
+stores with the full frozen note
+`note: overridden by cdn.tracker.com/* (more-specific match wins)`
 (pairwise domination warning, §6.1); a canonical request to
 `cdn.tracker.com` still resolves `auto` (tier-2 longer match wins)
 while `www.tracker.com` resolves `deny` — the test asserts the
