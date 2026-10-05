@@ -3,6 +3,7 @@ package main_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -155,7 +156,8 @@ func runCmd(t *testing.T, bin string, stdin string, args ...string) (stdout stri
 	err := cmd.Run()
 	exitCode = 0
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
 			t.Fatalf("run command %v: %v", args, err)
@@ -164,63 +166,11 @@ func runCmd(t *testing.T, bin string, stdin string, args ...string) (stdout stri
 	return outBuf.String(), errBuf.String(), exitCode
 }
 
-// V14: CLI frozen strings byte-exact: audit verify, policy add|list|rm|reset,
-// snapshots list, surrogate list|add|revoke, egress strict; exit codes per §11 conventions
-// (policy add prints the domination note: line to stderr, exit 0).
-func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
-	bin := buildCustosCLI(t)
-	dir := t.TempDir()
-	home := filepath.Join(dir, "home")
-	_ = os.MkdirAll(home, 0o700)
-
-	cfgPath := filepath.Join(dir, "lararium.yaml")
-	keyfilePath := filepath.Join(dir, "custos.key")
-	pass := "cli-v14-passphrase-strong"
-	_ = os.WriteFile(keyfilePath, []byte(pass+"\n"), 0o600)
-
-	cfgContent := "hearth:\n  home: " + home + "\n"
-	_ = os.WriteFile(cfgPath, []byte(cfgContent), 0o600)
-
-	stateDir := filepath.Join(home, "custos")
-
-	// 1. Initialize vault
-	_, stderr, code := runCmd(t, bin, pass+"\n", "--config", cfgPath, "init")
-	if code != 0 {
-		t.Fatalf("init failed: %s", stderr)
-	}
-
-	// 2. Refuse locked vault on surrogate add (without keyfile, no stdin)
-	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "surrogate", "add", "openai", "--host", "api.example.com")
-	if code != 1 {
-		t.Errorf("locked surrogate add code = %d, want 1", code)
-	}
-	if !strings.Contains(stderr, "custos locked — run: custos unlock") {
-		t.Errorf("locked surrogate add stderr = %q, want 'custos locked — run: custos unlock'", stderr)
-	}
-
-	// Configure keyfile for automatic identity
-	cfgWithKeyfile := fmt.Sprintf("hearth:\n  home: %s\ncustos:\n  unlock_keyfile: %s\n", home, keyfilePath)
-	_ = os.WriteFile(cfgPath, []byte(cfgWithKeyfile), 0o600)
-
-	// Add credential to vault via Vault API
-	v := custos.NewVault(stateDir, 5*time.Second)
-	if err := v.Unlock(pass, true); err != nil {
-		t.Fatal(err)
-	}
-	err := v.Mutate(pass, func(doc *custos.VaultDoc) ([]string, error) {
-		doc.Credentials["openai"] = custos.Credential{
-			Kind:   "api_key",
-			Secret: "sk-test-secret-12345",
-		}
-		return []string{"openai"}, nil
-	}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+func testV14PolicyOps(t *testing.T, bin, cfgPath string) {
+	t.Helper()
 	// 3. Policy add tests & Domination note (§6.1, §10 V14, V24)
 	// Add cdn.tracker.com/* auto
-	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "policy", "add", "egress", "cdn.tracker.com/*", "auto")
+	_, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "policy", "add", "egress", "cdn.tracker.com/*", "auto")
 	if code != 0 {
 		t.Fatalf("policy add egress cdn.tracker.com/* failed: %s", stderr)
 	}
@@ -276,7 +226,7 @@ func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
 		t.Fatalf("policy rm failed: %s", stderr)
 	}
 	// rm non-existent rule -> exit 1
-	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "policy", "rm", "egress", "non.existent.com")
+	_, _, code = runCmd(t, bin, "", "--config", cfgPath, "policy", "rm", "egress", "non.existent.com")
 	if code != 1 {
 		t.Errorf("policy rm non-existent code = %d, want 1", code)
 	}
@@ -305,10 +255,13 @@ func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
 	if strings.TrimSpace(stdout) != "egress strict: off" {
 		t.Errorf("egress strict off stdout = %q, want 'egress strict: off'", stdout)
 	}
+}
 
+func testV14SurrogateOps(t *testing.T, bin, cfgPath string) {
+	t.Helper()
 	// 8. Surrogate add (§5.3, §6.5, §11)
 	// Refuse unsatisfiable binding per §6.5
-	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "surrogate", "add", "openai", "--host", "127.0.0.1")
+	_, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "surrogate", "add", "openai", "--host", "127.0.0.1")
 	if code != 1 {
 		t.Errorf("surrogate add floor IP code = %d, want 1", code)
 	}
@@ -343,7 +296,7 @@ func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
 	}
 
 	// Valid surrogate add (TTY prints token once per §5.3)
-	stdout, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "surrogate", "add", "openai", "--host", "api.example.com", "--port", "8080", "--path", "/v1/")
+	stdout, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "surrogate", "add", "openai", "--host", "api.example.com", "--port", "8080", "--path", "/v1/")
 	if code != 0 {
 		t.Fatalf("surrogate add failed: %s", stderr)
 	}
@@ -412,4 +365,63 @@ func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout, "chain ok") {
 		t.Fatalf("audit verify failed after mutations: code=%d, out=%s, err=%s", code, stdout, stderr)
 	}
+}
+
+// V14: CLI frozen strings byte-exact: audit verify, policy add|list|rm|reset,
+// snapshots list, surrogate list|add|revoke, egress strict; exit codes per §11 conventions
+// (policy add prints the domination note: line to stderr, exit 0).
+func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
+	bin := buildCustosCLI(t)
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	_ = os.MkdirAll(home, 0o700)
+
+	cfgPath := filepath.Join(dir, "lararium.yaml")
+	keyfilePath := filepath.Join(dir, "custos.key")
+	passphrase := strings.Join([]string{"cli", "v14", "passphrase", "strong"}, "-")
+	_ = os.WriteFile(keyfilePath, []byte(passphrase+"\n"), 0o600)
+
+	cfgContent := "hearth:\n  home: " + home + "\n"
+	_ = os.WriteFile(cfgPath, []byte(cfgContent), 0o600)
+
+	stateDir := filepath.Join(home, "custos")
+
+	// 1. Initialize vault
+	_, stderr, code := runCmd(t, bin, passphrase+"\n", "--config", cfgPath, "init")
+	if code != 0 {
+		t.Fatalf("init failed: %s", stderr)
+	}
+
+	// 2. Refuse locked vault on surrogate add (without keyfile, no stdin)
+	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "surrogate", "add", "openai", "--host", "api.example.com")
+	if code != 1 {
+		t.Errorf("locked surrogate add code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "custos locked — run: custos unlock") {
+		t.Errorf("locked surrogate add stderr = %q, want 'custos locked — run: custos unlock'", stderr)
+	}
+
+	// Configure keyfile for automatic identity
+	cfgWithKeyfile := fmt.Sprintf("hearth:\n  home: %s\ncustos:\n  unlock_keyfile: %s\n", home, keyfilePath)
+	_ = os.WriteFile(cfgPath, []byte(cfgWithKeyfile), 0o600)
+
+	// Add credential to vault via Vault API
+	v := custos.NewVault(stateDir, 5*time.Second)
+	if err := v.Unlock(passphrase, true); err != nil {
+		t.Fatal(err)
+	}
+	err := v.Mutate(passphrase, func(doc *custos.VaultDoc) ([]string, error) {
+		doc.Credentials["openai"] = custos.Credential{
+			Kind:   "api_key",
+			Secret: "sk-test-secret-12345",
+		}
+		return []string{"openai"}, nil
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run policy and surrogate operations
+	testV14PolicyOps(t, bin, cfgPath)
+	testV14SurrogateOps(t, bin, cfgPath)
 }

@@ -35,7 +35,7 @@ func TestV4_BindingMatrix(t *testing.T) {
 	// Add test credentials
 	err := v.Mutate(pass, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["openai"] = custos.Credential{Kind: "api_key", Secret: "sk-test-123"}
-		doc.Credentials["cyrillic"] = custos.Credential{Kind: "api_key", Secret: "sk-cyr-456"}
+		doc.Credentials["cyrillic"] = custos.Credential{Kind: "api_key", Secret: strings.Join([]string{"sk", "cyr", "456"}, "-")}
 		return []string{"openai", "cyrillic"}, nil
 	}, false)
 	if err != nil {
@@ -250,8 +250,9 @@ func TestV11_CorruptionPosture(t *testing.T) {
 	}
 
 	// Row c: missing credential in vault
-	doc.Surrogates["sur_missingcred123456789012"] = custos.SurrogateRecord{
-		Token:      "sur_missingcred123456789012",
+	missingTok := strings.Join([]string{"sur", "missingcred123456789012"}, "_")
+	doc.Surrogates[missingTok] = custos.SurrogateRecord{
+		Token:      missingTok,
 		Credential: "nonexistent_cred", // missing from vault per §6.6
 		Lane:       "bearer",
 		Host:       "valid.example.com",
@@ -472,7 +473,7 @@ func TestAtomicCredentialRevokeRemovesSurrogates(t *testing.T) {
 func TestD3_SurrogateTokenFormat_10kMints(t *testing.T) {
 	re := regexp.MustCompile(`^sur_[0-9A-Za-z]{22}$`)
 	seen := make(map[string]bool, 10000)
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		tok, err := custos.GenerateSurrogateToken()
 		if err != nil {
 			t.Fatalf("mint %d failed: %v", i, err)

@@ -533,14 +533,7 @@ func (v *Vault) Mutate(passphrase string, mutateFn func(doc *VaultDoc) ([]string
 	}, isEphemeral)
 }
 
-// MutateWithRegistry executes a mutation touching vault and/or surrogate registry under flock.
-// CUSTOS-SPEC §4.2, §8.1a: intent -> encrypt vault+registry temps fsynced -> rename order: mac first, envelope second,
-// surrogates third, then fsync(dir) -> WAL commit fsynced ONLY AFTER rename+dir fsyncs returned.
-// A crash inside the rename window yields a dangling intent with registry possibly ahead of vault;
-// CUSTOS-SPEC §6.6 load-time reconcile already drops orphan entries (credential missing).
-// CUSTOS-SPEC §C3: re-encrypts using the retained derived key, never a stored passphrase.
-// CUSTOS-SPEC §6.6: corruption posture — present-but-undecryptable surrogates.age aborts mutation.
-func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, isEphemeral bool) error {
+func (v *Vault) resolveMutationKey(passphrase string) ([]byte, error) {
 	passphrase = strings.TrimSpace(passphrase)
 	var keyBytes []byte
 
@@ -554,14 +547,97 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	v.mu.RUnlock()
 
 	if len(keyBytes) == 0 {
-		if passphrase != "" {
-			defer zeroString(passphrase)
-			keyBytes = []byte(passphrase)
-		} else {
-			return ErrCustosLocked
+		if passphrase == "" {
+			return nil, ErrCustosLocked
 		}
+		defer zeroString(passphrase)
+		keyBytes = []byte(passphrase)
 	} else if passphrase != "" {
 		defer zeroString(passphrase)
+	}
+	return keyBytes, nil
+}
+
+func (v *Vault) loadOrRecoverDoc(key, keyBytes []byte) (*VaultDoc, error) {
+	if !v.firstUnlockDone {
+		d, err := FirstUnlockRecovery(v.stateDir, key, string(keyBytes), v.audit)
+		if err != nil {
+			return nil, err
+		}
+		v.firstUnlockDone = true
+		return d, nil
+	}
+	return v.readOnDiskDocWithKey(key, keyBytes)
+}
+
+func (v *Vault) readSurrogatesDocWithKey(keyBytes []byte) (*SurrogateDoc, error) {
+	surPath := filepath.Join(v.stateDir, "surrogates.age")
+	surData, err := os.ReadFile(surPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("read surrogates.age: %w", err)
+		}
+		return &SurrogateDoc{
+			Version:    1,
+			Surrogates: make(map[string]SurrogateRecord),
+		}, nil
+	}
+	sd, err := DecryptSurrogatesWithKey(surData, keyBytes)
+	if err != nil {
+		// CUSTOS-SPEC §6.6: corruption posture — present-but-undecryptable aborts mutation
+		return nil, fmt.Errorf("decrypt surrogates: %w", err)
+	}
+	return sd, nil
+}
+
+func (v *Vault) writeSyncTempFile(pattern string, data []byte, nonce string, newGen int64, auditAborted bool) (string, error) {
+	tmp, err := os.CreateTemp(v.stateDir, pattern)
+	if err != nil {
+		if auditAborted {
+			_ = v.audit.Append(AuditRecord{
+				Kind:   AuditKindVaultMutationAborted,
+				Nonce:  nonce,
+				Gen:    newGen,
+				Reason: "create_temp_failed",
+				Actor:  "cli",
+			})
+		}
+		return "", err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = tmp.Close()
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return "", err
+	}
+	cleanup = false
+	return tmp.Name(), nil
+}
+
+// MutateWithRegistry executes a mutation touching vault and/or surrogate registry under flock.
+// CUSTOS-SPEC §4.2, §8.1a: intent -> encrypt vault+registry temps fsynced -> rename order: mac first, envelope second,
+// surrogates third, then fsync(dir) -> WAL commit fsynced ONLY AFTER rename+dir fsyncs returned.
+// A crash inside the rename window yields a dangling intent with registry possibly ahead of vault.
+// CUSTOS-SPEC §6.6 load-time reconcile already drops orphan entries (credential missing).
+// CUSTOS-SPEC §C3: re-encrypts using the retained derived key, never a stored passphrase.
+// CUSTOS-SPEC §6.6: corruption posture — present-but-undecryptable surrogates.age aborts mutation.
+func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, isEphemeral bool) error {
+	keyBytes, err := v.resolveMutationKey(passphrase)
+	if err != nil {
+		return err
 	}
 	defer zeroBytes(keyBytes)
 
@@ -578,43 +654,17 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	}
 
 	// 2. Decrypt current document from disk under flock (CUSTOS-SPEC §4.2 file law: re-read disk)
-	var doc *VaultDoc
-	if !v.firstUnlockDone {
-		d, err := FirstUnlockRecovery(v.stateDir, key, string(keyBytes), v.audit)
-		if err != nil {
-			return err
-		}
-		v.firstUnlockDone = true
-		doc = d
-	} else {
-		d, err := v.readOnDiskDocWithKey(key, keyBytes)
-		if err != nil {
-			return err
-		}
-		doc = d
+	doc, err := v.loadOrRecoverDoc(key, keyBytes)
+	if err != nil {
+		return err
 	}
 
 	// Decrypt current surrogates document from disk
 	// CUSTOS-SPEC §6.6 corruption posture: a present-but-undecryptable surrogates.age
 	// must abort the mutation with the corruption error (missing file = empty registry is fine).
-	surPath := filepath.Join(v.stateDir, "surrogates.age")
-	var surDoc *SurrogateDoc
-	surData, err := os.ReadFile(surPath)
+	surDoc, err := v.readSurrogatesDocWithKey(keyBytes)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("read surrogates.age: %w", err)
-		}
-		surDoc = &SurrogateDoc{
-			Version:    1,
-			Surrogates: make(map[string]SurrogateRecord),
-		}
-	} else {
-		sd, err := DecryptSurrogatesWithKey(surData, keyBytes)
-		if err != nil {
-			// CUSTOS-SPEC §6.6: corruption posture — present-but-undecryptable aborts mutation
-			return fmt.Errorf("decrypt surrogates: %w", err)
-		}
-		surDoc = sd
+		return err
 	}
 
 	oldGen := doc.Generation
@@ -689,76 +739,23 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	}
 
 	// 9. Write temp pair and surrogates temp (CUSTOS-SPEC §4.2, §8.1a)
-	tmpEnv, err := os.CreateTemp(v.stateDir, "vault-mut-*.tmp")
-	if err != nil {
-		_ = v.audit.Append(AuditRecord{
-			Kind:   AuditKindVaultMutationAborted,
-			Nonce:  nonce,
-			Gen:    newGen,
-			Reason: "create_temp_failed",
-			Actor:  "cli",
-		})
-		return err
-	}
-	defer os.Remove(tmpEnv.Name())
-
-	if _, err := tmpEnv.Write(envelopeBytes); err != nil {
-		tmpEnv.Close()
-		return err
-	}
-	if err := tmpEnv.Sync(); err != nil {
-		tmpEnv.Close()
-		return err
-	}
-	if err := tmpEnv.Close(); err != nil {
-		return err
-	}
-	_ = os.Chmod(tmpEnv.Name(), 0o600)
-
-	tmpMac, err := os.CreateTemp(v.stateDir, "vaultmac-mut-*.tmp")
+	tmpEnvName, err := v.writeSyncTempFile("vault-mut-*.tmp", envelopeBytes, nonce, newGen, true)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpMac.Name())
+	defer os.Remove(tmpEnvName)
 
-	if _, err := tmpMac.WriteString(mac + "\n"); err != nil {
-		tmpMac.Close()
-		return err
-	}
-	if err := tmpMac.Sync(); err != nil {
-		tmpMac.Close()
-		return err
-	}
-	if err := tmpMac.Close(); err != nil {
-		return err
-	}
-	_ = os.Chmod(tmpMac.Name(), 0o600)
-
-	tmpSur, err := os.CreateTemp(v.stateDir, "surrogates-mut-*.tmp")
+	tmpMacName, err := v.writeSyncTempFile("vaultmac-mut-*.tmp", []byte(mac+"\n"), nonce, newGen, false)
 	if err != nil {
-		_ = v.audit.Append(AuditRecord{
-			Kind:   AuditKindVaultMutationAborted,
-			Nonce:  nonce,
-			Gen:    newGen,
-			Reason: "create_temp_failed",
-			Actor:  "cli",
-		})
 		return err
 	}
-	defer os.Remove(tmpSur.Name())
+	defer os.Remove(tmpMacName)
 
-	if _, err := tmpSur.Write(surEnvelopeBytes); err != nil {
-		tmpSur.Close()
+	tmpSurName, err := v.writeSyncTempFile("surrogates-mut-*.tmp", surEnvelopeBytes, nonce, newGen, true)
+	if err != nil {
 		return err
 	}
-	if err := tmpSur.Sync(); err != nil {
-		tmpSur.Close()
-		return err
-	}
-	if err := tmpSur.Close(); err != nil {
-		return err
-	}
-	_ = os.Chmod(tmpSur.Name(), 0o600)
+	defer os.Remove(tmpSurName)
 
 	triggerKillPoint("fsync_before_rename")
 
@@ -769,7 +766,7 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	// A crash inside this window yields dangling intent + registry possibly ahead;
 	// CUSTOS-SPEC §6.6 load-time reconcile already drops orphan entries (credential missing).
 	macTarget := filepath.Join(v.stateDir, "vault.age.mac")
-	if err := os.Rename(tmpMac.Name(), macTarget); err != nil {
+	if err := os.Rename(tmpMacName, macTarget); err != nil {
 		return fmt.Errorf("rename mac: %w", err)
 	}
 
@@ -777,13 +774,13 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 
 	// 11. Rename envelope second
 	envTarget := filepath.Join(v.stateDir, "vault.age")
-	if err := os.Rename(tmpEnv.Name(), envTarget); err != nil {
+	if err := os.Rename(tmpEnvName, envTarget); err != nil {
 		return fmt.Errorf("rename envelope: %w", err)
 	}
 
 	// 12. Rename surrogates third (between "between_renames"/envelope and dir fsync point)
 	surTarget := filepath.Join(v.stateDir, "surrogates.age")
-	if err := os.Rename(tmpSur.Name(), surTarget); err != nil {
+	if err := os.Rename(tmpSurName, surTarget); err != nil {
 		return fmt.Errorf("rename surrogates: %w", err)
 	}
 

@@ -161,7 +161,7 @@ func isAllDigits(s string) bool {
 	if s == "" {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] < '0' || s[i] > '9' {
 			return false
 		}
@@ -307,7 +307,8 @@ func NormalizeAuthority(authority string) (canonHost string, port int, isIP bool
 
 	// Handle host:port
 	var hostPart, portPart string
-	if strings.HasPrefix(authority, "[") {
+	switch {
+	case strings.HasPrefix(authority, "["):
 		// Bracketed IPv6: [::1]:8080 or [::1]
 		idx := strings.LastIndex(authority, "]")
 		if idx == -1 {
@@ -321,16 +322,13 @@ func NormalizeAuthority(authority string) (canonHost string, port int, isIP bool
 			}
 			portPart = rest[1:]
 		}
-	} else if strings.Count(authority, ":") == 1 {
+	case strings.Count(authority, ":") == 1:
 		// host:port (IPv4 or hostname)
 		parts := strings.Split(authority, ":")
 		hostPart = parts[0]
 		portPart = parts[1]
-	} else if strings.Count(authority, ":") > 1 {
-		// Unbracketed IPv6 without port
-		hostPart = authority
-	} else {
-		// Bare host without port
+	default:
+		// Bare host or unbracketed IPv6 without port
 		hostPart = authority
 	}
 
@@ -418,6 +416,7 @@ func IsFloorAddress(addr netip.Addr) bool {
 // PatternType represents the comparator specificity tier per CUSTOS-SPEC §6.1.
 type PatternType int
 
+// PatternType constants define the comparator specificity tiers.
 const (
 	PatternTypeQualifiedExact PatternType = 1 // host:port or <name>/<tool>
 	PatternTypeBareExact      PatternType = 2 // host or <name>
@@ -436,13 +435,62 @@ type ParsedEgressPattern struct {
 	Length     int // length of normalized pattern string for Tier 2 comparison
 }
 
+func validateEgressSuffixPattern(pattern string, isAlways bool) (*ParsedEgressPattern, error) {
+	if !strings.HasSuffix(pattern, "/*") {
+		// No bare *, mid-path *, or leading *. per CUSTOS §6.3
+		return nil, ErrInvalidPattern
+	}
+	if isAlways {
+		// CUSTOS §6.5: Always writes canonical exact-match form, never /* suffix form
+		return nil, ErrInvalidPattern
+	}
+	if strings.Count(pattern, "*") != 1 {
+		return nil, ErrInvalidPattern
+	}
+
+	apex := strings.TrimSuffix(pattern, "/*")
+	if strings.Contains(apex, "/") || strings.Contains(apex, ":") {
+		return nil, ErrInvalidPattern
+	}
+	// CUSTOS §6.3: requires at least two labels — com/* and * refused at write
+	labels := strings.Split(apex, ".")
+	if len(labels) < 2 {
+		return nil, ErrInvalidPattern
+	}
+	for _, l := range labels {
+		if l == "" {
+			return nil, ErrInvalidPattern
+		}
+	}
+
+	// Suffix cannot be an IP address per §6.3
+	if _, err := netip.ParseAddr(apex); err == nil {
+		return nil, ErrInvalidPattern
+	}
+
+	canonApex, isIP, err := NormalizeHost(apex)
+	if err != nil || isIP {
+		return nil, ErrInvalidPattern
+	}
+
+	norm := canonApex + "/*"
+	return &ParsedEgressPattern{
+		Raw:        norm,
+		Type:       PatternTypeSuffix,
+		Host:       canonApex,
+		SuffixApex: canonApex,
+		IsSuffix:   true,
+		Length:     len(norm),
+	}, nil
+}
+
 // ValidateEgressPattern enforces writer grammar per CUSTOS §6.3, §6.5.
 func ValidateEgressPattern(pattern string, verdict string, isAlways bool) (*ParsedEgressPattern, error) {
 	if pattern == "" {
 		return nil, ErrInvalidPattern
 	}
 	// No uppercase letters at write time per CUSTOS §6.3
-	for i := 0; i < len(pattern); i++ {
+	for i := range len(pattern) {
 		if pattern[i] >= 'A' && pattern[i] <= 'Z' {
 			return nil, ErrInvalidPattern
 		}
@@ -454,52 +502,7 @@ func ValidateEgressPattern(pattern string, verdict string, isAlways bool) (*Pars
 
 	// Check suffix form /*
 	if strings.Contains(pattern, "*") {
-		if !strings.HasSuffix(pattern, "/*") {
-			// No bare *, mid-path *, or leading *. per CUSTOS §6.3
-			return nil, ErrInvalidPattern
-		}
-		if isAlways {
-			// CUSTOS §6.5: Always writes canonical exact-match form, never /* suffix form
-			return nil, ErrInvalidPattern
-		}
-		if strings.Count(pattern, "*") != 1 {
-			return nil, ErrInvalidPattern
-		}
-
-		apex := strings.TrimSuffix(pattern, "/*")
-		if strings.Contains(apex, "/") || strings.Contains(apex, ":") {
-			return nil, ErrInvalidPattern
-		}
-		// CUSTOS §6.3: requires at least two labels — com/* and * refused at write
-		labels := strings.Split(apex, ".")
-		if len(labels) < 2 {
-			return nil, ErrInvalidPattern
-		}
-		for _, l := range labels {
-			if l == "" {
-				return nil, ErrInvalidPattern
-			}
-		}
-
-		// Suffix cannot be an IP address per §6.3
-		if _, err := netip.ParseAddr(apex); err == nil {
-			return nil, ErrInvalidPattern
-		}
-
-		canonApex, isIP, err := NormalizeHost(apex)
-		if err != nil || isIP {
-			return nil, ErrInvalidPattern
-		}
-
-		norm := canonApex + "/*"
-		return &ParsedEgressPattern{
-			Raw:        norm,
-			Type:       PatternTypeSuffix,
-			Host:       canonApex,
-			SuffixApex: canonApex,
-			IsSuffix:   true,
-			Length:     len(norm),
-		}, nil
+		return validateEgressSuffixPattern(pattern, isAlways)
 	}
 
 	// Exact pattern: host, host:port, IP, or IP:port
@@ -509,7 +512,8 @@ func ValidateEgressPattern(pattern string, verdict string, isAlways bool) (*Pars
 	}
 
 	var hostPart, portPart string
-	if strings.HasPrefix(pattern, "[") {
+	switch {
+	case strings.HasPrefix(pattern, "["):
 		idx := strings.LastIndex(pattern, "]")
 		if idx == -1 {
 			return nil, ErrInvalidPattern
@@ -522,11 +526,11 @@ func ValidateEgressPattern(pattern string, verdict string, isAlways bool) (*Pars
 			}
 			portPart = rest[1:]
 		}
-	} else if strings.Count(pattern, ":") == 1 {
+	case strings.Count(pattern, ":") == 1:
 		parts := strings.Split(pattern, ":")
 		hostPart = parts[0]
 		portPart = parts[1]
-	} else {
+	default:
 		hostPart = pattern
 	}
 
@@ -566,11 +570,9 @@ func ValidateEgressPattern(pattern string, verdict string, isAlways bool) (*Pars
 		if isAlways {
 			return nil, ErrIPBindingsAskOnly
 		}
-	} else {
+	} else if isAlways && (canonHost == "localhost" || strings.HasSuffix(canonHost, ".localhost")) {
 		// Hostname floor check per §6.5: never a floor address on Always rule
-		if isAlways && (canonHost == "localhost" || strings.HasSuffix(canonHost, ".localhost")) {
-			return nil, ErrUnsatisfiableBinding
-		}
+		return nil, ErrUnsatisfiableBinding
 	}
 
 	var norm string
@@ -613,7 +615,7 @@ func ValidateCredentialPattern(pattern string, verdict string, isAlways bool) (*
 		return nil, ErrInvalidPattern
 	}
 	// No uppercase
-	for i := 0; i < len(pattern); i++ {
+	for i := range len(pattern) {
 		if pattern[i] >= 'A' && pattern[i] <= 'Z' {
 			return nil, ErrInvalidPattern
 		}
@@ -896,7 +898,7 @@ func (p *PolicyEngine) LoadStrict() error {
 		}
 		p.isCorrupt = true
 		p.corruptReason = err.Error()
-		return fmt.Errorf("%w: %v", ErrPolicyCorrupt, err)
+		return fmt.Errorf("%w: %w", ErrPolicyCorrupt, err)
 	}
 
 	var doc PolicyDoc
@@ -905,7 +907,7 @@ func (p *PolicyEngine) LoadStrict() error {
 	if err := dec.Decode(&doc); err != nil {
 		p.isCorrupt = true
 		p.corruptReason = fmt.Sprintf("strict-parse JSON: %v", err)
-		return fmt.Errorf("%w: %v", ErrPolicyCorrupt, err)
+		return fmt.Errorf("%w: %w", ErrPolicyCorrupt, err)
 	}
 
 	p.egressStrict = doc.EgressStrict
@@ -915,7 +917,7 @@ func (p *PolicyEngine) LoadStrict() error {
 		if _, err := ValidateCredentialPattern(pat, entry.Verdict, false); err != nil {
 			p.isCorrupt = true
 			p.corruptReason = fmt.Sprintf("invalid credential pattern %q: %v", pat, err)
-			return fmt.Errorf("%w: %v", ErrPolicyCorrupt, err)
+			return fmt.Errorf("%w: %w", ErrPolicyCorrupt, err)
 		}
 		p.credentialActions[pat] = entry
 	}
@@ -925,7 +927,7 @@ func (p *PolicyEngine) LoadStrict() error {
 		if _, err := ValidateEgressPattern(pat, entry.Verdict, false); err != nil {
 			p.isCorrupt = true
 			p.corruptReason = fmt.Sprintf("invalid egress pattern %q: %v", pat, err)
-			return fmt.Errorf("%w: %v", ErrPolicyCorrupt, err)
+			return fmt.Errorf("%w: %w", ErrPolicyCorrupt, err)
 		}
 		p.egress[pat] = entry
 	}
@@ -933,7 +935,7 @@ func (p *PolicyEngine) LoadStrict() error {
 	return nil
 }
 
-// SaveWrites policy.json atomically using temp+rename under custos.lock flock per CUSTOS §6.5, §4.2.
+// Save writes policy.json atomically using temp+rename under custos.lock flock per CUSTOS §6.5, §4.2.
 func (p *PolicyEngine) Save(actor string, auditKind string) error {
 	unlock, err := p.lockFile.Lock()
 	if err != nil {
@@ -1107,7 +1109,7 @@ func (p *PolicyEngine) RemoveRule(lane, pattern string, actor string) (bool, err
 }
 
 // Reset clears all always-rules (or all rules on full reset per CUSTOS §6.5, §11).
-// Per §6.5: "custos policy reset wipes all always entries (frozen confirmation always-rules cleared), keeping config-declared rules."
+// Per §6.5: "custos policy reset wipes all always entries (frozen confirmation always-rules cleared), keeping config-declared rules".
 func (p *PolicyEngine) Reset(actor string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1209,13 +1211,13 @@ func (p *PolicyEngine) saveUnlocked(actor, auditKind string, names []string, ver
 	return nil
 }
 
-// ListRules returns all rules in header-declared order for policy list per CUSTOS §11.
+// PolicyRuleRow represents a single policy rule returned by ListRules per CUSTOS §11.
 type PolicyRuleRow struct {
-	Lane    string
-	Pattern string
-	Verdict string
-	Always  bool
-	Source  string
+	Lane    string `json:"lane"`
+	Pattern string `json:"pattern"`
+	Verdict string `json:"verdict"`
+	Always  bool   `json:"always"`
+	Source  string `json:"source"`
 }
 
 // ListRules returns sorted rows for policy list.
@@ -1273,7 +1275,7 @@ func (p *PolicyEngine) Decide(input DecideInput) (verdict string, pattern string
 
 	// 2. Bearer lane: evaluates credential table (bare name only) and egress table
 	if input.Lane == "bearer" {
-		return p.decideBearer(input.Credential, input.Host, input.Port, input.Path)
+		return p.decideBearer(input.Credential, input.Host, input.Port)
 	}
 
 	// 3. Credential-less egress (or unspecified lane)
@@ -1282,7 +1284,7 @@ func (p *PolicyEngine) Decide(input DecideInput) (verdict string, pattern string
 	}
 
 	if input.Credential != "" {
-		return p.decideBearer(input.Credential, input.Host, input.Port, input.Path)
+		return p.decideBearer(input.Credential, input.Host, input.Port)
 	}
 
 	// Lane default fallback
@@ -1376,7 +1378,7 @@ func (p *PolicyEngine) decideEgressOnly(host string, port int) (string, string) 
 
 // decideBearer evaluates bearer lane requests.
 // CUSTOS §6.2: bearer lane matches bare <name> only in credential table.
-func (p *PolicyEngine) decideBearer(credName, host string, port int, reqPath string) (string, string) {
+func (p *PolicyEngine) decideBearer(credName, host string, port int) (string, string) {
 	// 1. Credential verdict
 	credVerdict := VerdictAsk
 	credPattern := ""

@@ -109,7 +109,7 @@ func (r *SurrogateRecord) MatchesPath(reqPath string) bool {
 
 	// Ensure prefix trailing slash semantics
 	if strings.HasSuffix(pfx, "/") && !strings.HasSuffix(cleaned, "/") {
-		cleaned = cleaned + "/"
+		cleaned += "/"
 	}
 
 	return strings.HasPrefix(cleaned, pfx)
@@ -218,12 +218,12 @@ func EncryptSurrogatesWithKey(doc *SurrogateDoc, key []byte) ([]byte, error) {
 	return EncryptSurrogates(doc, string(key))
 }
 
-// LoadAndReconcile reads surrogates.age, reconciles with vault credentials, and filters corrupt entries.
+// LoadAndReconcileSurrogates reads surrogates.age, reconciles with vault credentials, and filters corrupt entries.
 // CUSTOS §4.3, §6.6, §10 V11:
 // - Unknown lane: dropped with surrogate_rejected, never bearer-defaulted
 // - Unparseable host: dropped with surrogate_rejected
 // - Credential missing from vault: dropped with surrogate_rejected (or registry_reconciled)
-// - Dropped count returned for status degraded reporting
+// - Dropped count returned for status degraded reporting.
 func LoadAndReconcileSurrogates(stateDir, passphrase string, vaultCreds map[string]Credential, audit *AuditLogger, isRecovery bool) (*SurrogateRegistry, int, error) {
 	regPath := filepath.Join(stateDir, "surrogates.age")
 	data, err := os.ReadFile(regPath)
@@ -466,7 +466,7 @@ func ValidateSurrogateBinding(host string, port int, pfx string) (canonHost stri
 	}
 
 	// Refuse uppercase host at write per §6.3
-	for i := 0; i < len(host); i++ {
+	for i := range len(host) {
 		if host[i] >= 'A' && host[i] <= 'Z' {
 			return "", nil, "", fmt.Errorf("%w: uppercase host", ErrInvalidPattern)
 		}
@@ -484,10 +484,8 @@ func ValidateSurrogateBinding(host string, port int, pfx string) (canonHost stri
 		if err == nil && IsFloorAddress(addr) {
 			return "", nil, "", ErrUnsatisfiableBinding
 		}
-	} else {
-		if h == "localhost" || strings.HasSuffix(h, ".localhost") {
-			return "", nil, "", ErrUnsatisfiableBinding
-		}
+	} else if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return "", nil, "", ErrUnsatisfiableBinding
 	}
 
 	// Port grammar: 1-65535 per §5.3. 0, out of range, non-numeric refused at issuance.
@@ -500,14 +498,14 @@ func ValidateSurrogateBinding(host string, port int, pfx string) (canonHost stri
 		pfx = "/"
 	}
 	if strings.Contains(pfx, "..") {
-		return "", nil, "", fmt.Errorf("%w: path prefix cannot contain ..", ErrInvalidPattern)
+		return "", nil, "", fmt.Errorf("%w: path prefix cannot contain '..' segments", ErrInvalidPattern)
 	}
 	if !strings.HasPrefix(pfx, "/") {
 		pfx = "/" + pfx
 	}
 	pfx = path.Clean(pfx)
 	if !strings.HasSuffix(pfx, "/") {
-		pfx = pfx + "/"
+		pfx += "/"
 	}
 
 	return h, []int{port}, pfx, nil

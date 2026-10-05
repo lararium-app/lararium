@@ -336,6 +336,176 @@ func getPassphrase(keyfilePath string) string {
 	return ""
 }
 
+func runSurrogateAdd(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
+	var posArgs []string
+	var flagArgs []string
+	for i := 0; i < len(subArgs[1:]); i++ {
+		arg := subArgs[1+i]
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			eqIdx := strings.Index(arg, "=")
+			if eqIdx == -1 {
+				flagName := strings.TrimLeft(arg, "-")
+				if (flagName == "host" || flagName == "path" || flagName == "port") && i+1 < len(subArgs[1:]) {
+					i++
+					flagArgs = append(flagArgs, subArgs[1+i])
+				}
+			}
+		} else {
+			posArgs = append(posArgs, arg)
+		}
+	}
+
+	fs := flag.NewFlagSet("surrogate add", flag.ContinueOnError)
+	hostFlag := fs.String("host", "", "bound destination host")
+	pathFlag := fs.String("path", "/", "bound path prefix")
+	portFlag := fs.Int("port", 80, "bound port")
+	allowBinaryFlag := fs.Bool("allow-binary", false, "allow binary response pass-through")
+
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(posArgs) == 0 || *hostFlag == "" {
+		fmt.Fprintf(os.Stderr, "usage: custos surrogate add <credential> --host <host> [--path <path>] [--port <port>] [--allow-binary]\n")
+		return 2
+	}
+	credName := posArgs[0]
+
+	// Try daemon first
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		req := struct {
+			Credential  string `json:"credential"`
+			Host        string `json:"host"`
+			Port        int    `json:"port"`
+			PathPrefix  string `json:"path_prefix"`
+			AllowBinary bool   `json:"allow_binary"`
+		}{
+			Credential:  credName,
+			Host:        *hostFlag,
+			Port:        *portFlag,
+			PathPrefix:  *pathFlag,
+			AllowBinary: *allowBinaryFlag,
+		}
+		b, err := json.Marshal(req)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		resp, dialErr := client.RoundTripWithArg("SURROGATE-ADD", string(b))
+		if dialErr == nil {
+			fmt.Println(resp)
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+	tok, err := v.AddSurrogate(pass, credName, *hostFlag, *portFlag, *pathFlag, *allowBinaryFlag, "cli")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println(tok)
+	return 0
+}
+
+func runSurrogateList(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTrip("SURROGATE-LIST")
+		if dialErr == nil {
+			var list []custos.SurrogateRecord
+			if err := json.Unmarshal([]byte(resp), &list); err == nil {
+				fmt.Println("name\tfingerprint\tbinding")
+				for _, r := range list {
+					fmt.Printf("%s\t%s\t%s\n", r.Credential, r.Fingerprint(), r.BindingString())
+				}
+				return 0
+			}
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+	list, err := v.ListSurrogates()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println("name\tfingerprint\tbinding")
+	for _, r := range list {
+		fmt.Printf("%s\t%s\t%s\n", r.Credential, r.Fingerprint(), r.BindingString())
+	}
+	return 0
+}
+
+func runSurrogateRevoke(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: custos surrogate revoke <id8>\n")
+		return 2
+	}
+	id8 := subArgs[1]
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTripWithArg("SURROGATE-REVOKE", id8)
+		if dialErr == nil {
+			_ = resp
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+	if err := v.RevokeSurrogate(pass, id8, "cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	return 0
+}
+
 func runSurrogate(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
 	if len(subArgs) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: custos surrogate add|list|revoke [options]\n")
@@ -345,168 +515,11 @@ func runSurrogate(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Con
 	verb := subArgs[0]
 	switch verb {
 	case "add":
-		var posArgs []string
-		var flagArgs []string
-		for i := 0; i < len(subArgs[1:]); i++ {
-			arg := subArgs[1+i]
-			if strings.HasPrefix(arg, "-") {
-				flagArgs = append(flagArgs, arg)
-				eqIdx := strings.Index(arg, "=")
-				if eqIdx == -1 {
-					flagName := strings.TrimLeft(arg, "-")
-					if (flagName == "host" || flagName == "path" || flagName == "port") && i+1 < len(subArgs[1:]) {
-						i++
-						flagArgs = append(flagArgs, subArgs[1+i])
-					}
-				}
-			} else {
-				posArgs = append(posArgs, arg)
-			}
-		}
-
-		fs := flag.NewFlagSet("surrogate add", flag.ContinueOnError)
-		hostFlag := fs.String("host", "", "bound destination host")
-		pathFlag := fs.String("path", "/", "bound path prefix")
-		portFlag := fs.Int("port", 80, "bound port")
-		allowBinaryFlag := fs.Bool("allow-binary", false, "allow binary response pass-through")
-
-		if err := fs.Parse(flagArgs); err != nil {
-			return 2
-		}
-		if len(posArgs) == 0 || *hostFlag == "" {
-			fmt.Fprintf(os.Stderr, "usage: custos surrogate add <credential> --host <host> [--path <path>] [--port <port>] [--allow-binary]\n")
-			return 2
-		}
-		credName := posArgs[0]
-
-		// Try daemon first
-		client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
-		if err == nil {
-			req := struct {
-				Credential  string `json:"credential"`
-				Host        string `json:"host"`
-				Port        int    `json:"port"`
-				PathPrefix  string `json:"path_prefix"`
-				AllowBinary bool   `json:"allow_binary"`
-			}{
-				Credential:  credName,
-				Host:        *hostFlag,
-				Port:        *portFlag,
-				PathPrefix:  *pathFlag,
-				AllowBinary: *allowBinaryFlag,
-			}
-			b, _ := json.Marshal(req)
-			resp, dialErr := client.RoundTripWithArg("SURROGATE-ADD", string(b))
-			if dialErr == nil {
-				fmt.Println(resp)
-				return 0
-			}
-			if !errors.Is(dialErr, custos.ErrCtlNotListening) {
-				fmt.Fprintln(os.Stderr, dialErr.Error())
-				return 1
-			}
-		}
-
-		// File-direct
-		pass := getPassphrase(keyfilePath)
-		if pass == "" {
-			fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
-			return 1
-		}
-		if !v.IsUnlocked() {
-			if err := v.Unlock(pass, keyfilePath != ""); err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-				return 1
-			}
-		}
-		tok, err := v.AddSurrogate(pass, credName, *hostFlag, *portFlag, *pathFlag, *allowBinaryFlag, "cli")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			return 1
-		}
-		fmt.Println(tok)
-		return 0
-
+		return runSurrogateAdd(v, stateDir, keyfilePath, cfg, subArgs)
 	case "list":
-		client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
-		if err == nil {
-			resp, dialErr := client.RoundTrip("SURROGATE-LIST")
-			if dialErr == nil {
-				var list []custos.SurrogateRecord
-				if err := json.Unmarshal([]byte(resp), &list); err == nil {
-					fmt.Println("name\tfingerprint\tbinding")
-					for _, r := range list {
-						fmt.Printf("%s\t%s\t%s\n", r.Credential, r.Fingerprint(), r.BindingString())
-					}
-					return 0
-				}
-			}
-			if !errors.Is(dialErr, custos.ErrCtlNotListening) {
-				fmt.Fprintln(os.Stderr, dialErr.Error())
-				return 1
-			}
-		}
-
-		// File-direct
-		pass := getPassphrase(keyfilePath)
-		if pass == "" {
-			fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
-			return 1
-		}
-		if !v.IsUnlocked() {
-			if err := v.Unlock(pass, keyfilePath != ""); err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-				return 1
-			}
-		}
-		list, err := v.ListSurrogates()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			return 1
-		}
-		fmt.Println("name\tfingerprint\tbinding")
-		for _, r := range list {
-			fmt.Printf("%s\t%s\t%s\n", r.Credential, r.Fingerprint(), r.BindingString())
-		}
-		return 0
-
+		return runSurrogateList(v, stateDir, keyfilePath, cfg)
 	case "revoke":
-		if len(subArgs) < 2 {
-			fmt.Fprintf(os.Stderr, "usage: custos surrogate revoke <id8>\n")
-			return 2
-		}
-		id8 := subArgs[1]
-		client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
-		if err == nil {
-			resp, dialErr := client.RoundTripWithArg("SURROGATE-REVOKE", id8)
-			if dialErr == nil {
-				_ = resp
-				return 0
-			}
-			if !errors.Is(dialErr, custos.ErrCtlNotListening) {
-				fmt.Fprintln(os.Stderr, dialErr.Error())
-				return 1
-			}
-		}
-
-		// File-direct
-		pass := getPassphrase(keyfilePath)
-		if pass == "" {
-			fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
-			return 1
-		}
-		if !v.IsUnlocked() {
-			if err := v.Unlock(pass, keyfilePath != ""); err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-				return 1
-			}
-		}
-		if err := v.RevokeSurrogate(pass, id8, "cli"); err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			return 1
-		}
-		return 0
-
+		return runSurrogateRevoke(v, stateDir, keyfilePath, cfg, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown surrogate subcommand %q\n", verb)
 		return 2
@@ -522,13 +535,14 @@ func parsePolicyAddArgs(args []string) (lane, pattern, verdict string, err error
 			return args[1], args[2], args[0], nil
 		}
 	} else if len(args) == 2 {
-		if custos.ValidVerdict(args[1]) {
+		switch {
+		case custos.ValidVerdict(args[1]):
 			pattern = args[0]
 			verdict = args[1]
-		} else if custos.ValidVerdict(args[0]) {
+		case custos.ValidVerdict(args[0]):
 			verdict = args[0]
 			pattern = args[1]
-		} else {
+		default:
 			return "", "", "", errors.New("missing valid verdict")
 		}
 
@@ -551,6 +565,155 @@ func parsePolicyAddArgs(args []string) (lane, pattern, verdict string, err error
 	return "", "", "", errors.New("invalid arguments for policy add")
 }
 
+func runPolicyAdd(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
+	lane, pattern, verdict, err := parsePolicyAddArgs(subArgs[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "usage: custos policy add [<lane>] <pattern> <verdict>\n")
+		return 2
+	}
+
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		req := struct {
+			Lane    string `json:"lane"`
+			Pattern string `json:"pattern"`
+			Verdict string `json:"verdict"`
+		}{Lane: lane, Pattern: pattern, Verdict: verdict}
+		b, err := json.Marshal(req)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		resp, dialErr := client.RoundTripWithArg("POLICY-ADD", string(b))
+		if dialErr == nil {
+			if resp != "" {
+				notes := strings.Split(resp, "\x00")
+				for _, n := range notes {
+					if strings.TrimSpace(n) != "" {
+						fmt.Fprintln(os.Stderr, n)
+					}
+				}
+			}
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	_ = v.Policy().LoadStrict()
+	var notes []string
+	var addErr error
+	if lane == "egress" {
+		notes, addErr = v.Policy().AddEgressRule(pattern, verdict, false, "cli", "cli")
+	} else {
+		notes, addErr = v.Policy().AddCredentialRule(pattern, verdict, false, "cli", "cli")
+	}
+	if addErr != nil {
+		fmt.Fprintln(os.Stderr, addErr.Error())
+		return 1
+	}
+	for _, n := range notes {
+		fmt.Fprintln(os.Stderr, n)
+	}
+	return 0
+}
+
+func runPolicyList(v *custos.Vault, stateDir string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTrip("POLICY-LIST")
+		if dialErr == nil {
+			var rows []custos.PolicyRuleRow
+			if err := json.Unmarshal([]byte(resp), &rows); err == nil {
+				fmt.Println("lane\tpattern\tverdict\talways\tsource")
+				for _, r := range rows {
+					fmt.Printf("%s\t%s\t%s\t%t\t%s\n", r.Lane, r.Pattern, r.Verdict, r.Always, r.Source)
+				}
+				return 0
+			}
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	_ = v.Policy().LoadStrict()
+	rows := v.Policy().ListRules()
+	fmt.Println("lane\tpattern\tverdict\talways\tsource")
+	for _, r := range rows {
+		fmt.Printf("%s\t%s\t%s\t%t\t%s\n", r.Lane, r.Pattern, r.Verdict, r.Always, r.Source)
+	}
+	return 0
+}
+
+func runPolicyRm(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: custos policy rm [<lane>] <pattern>\n")
+		return 2
+	}
+	lane := ""
+	pat := subArgs[1]
+	if len(subArgs) >= 3 {
+		lane = subArgs[1]
+		pat = subArgs[2]
+	}
+
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		arg := pat
+		if lane != "" {
+			arg = lane + "\x00" + pat
+		}
+		_, dialErr := client.RoundTripWithArg("POLICY-RM", arg)
+		if dialErr == nil {
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	_ = v.Policy().LoadStrict()
+	removed, rmErr := v.Policy().RemoveRule(lane, pat, "cli")
+	if rmErr != nil {
+		fmt.Fprintln(os.Stderr, rmErr.Error())
+		return 1
+	}
+	if !removed {
+		fmt.Fprintln(os.Stderr, "rule not found")
+		return 1
+	}
+	return 0
+}
+
+func runPolicyReset(v *custos.Vault, stateDir string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTrip("POLICY-RESET")
+		if dialErr == nil {
+			fmt.Println(resp)
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	_ = v.Policy().LoadStrict()
+	if err := v.Policy().Reset("cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println("always-rules cleared")
+	return 0
+}
+
 func runPolicy(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
 	if len(subArgs) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: custos policy add|list|rm|reset [options]\n")
@@ -560,146 +723,13 @@ func runPolicy(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []s
 	verb := subArgs[0]
 	switch verb {
 	case "add":
-		lane, pattern, verdict, err := parsePolicyAddArgs(subArgs[1:])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "usage: custos policy add [<lane>] <pattern> <verdict>\n")
-			return 2
-		}
-
-		client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
-		if err == nil {
-			req := struct {
-				Lane    string `json:"lane"`
-				Pattern string `json:"pattern"`
-				Verdict string `json:"verdict"`
-			}{Lane: lane, Pattern: pattern, Verdict: verdict}
-			b, _ := json.Marshal(req)
-			resp, dialErr := client.RoundTripWithArg("POLICY-ADD", string(b))
-			if dialErr == nil {
-				if resp != "" {
-					notes := strings.Split(resp, "\x00")
-					for _, n := range notes {
-						if strings.TrimSpace(n) != "" {
-							fmt.Fprintln(os.Stderr, n)
-						}
-					}
-				}
-				return 0
-			}
-			if !errors.Is(dialErr, custos.ErrCtlNotListening) {
-				fmt.Fprintln(os.Stderr, dialErr.Error())
-				return 1
-			}
-		}
-
-		// File-direct
-		_ = v.Policy().LoadStrict()
-		var notes []string
-		var addErr error
-		if lane == "egress" {
-			notes, addErr = v.Policy().AddEgressRule(pattern, verdict, false, "cli", "cli")
-		} else {
-			notes, addErr = v.Policy().AddCredentialRule(pattern, verdict, false, "cli", "cli")
-		}
-		if addErr != nil {
-			fmt.Fprintln(os.Stderr, addErr.Error())
-			return 1
-		}
-		for _, n := range notes {
-			fmt.Fprintln(os.Stderr, n)
-		}
-		return 0
-
+		return runPolicyAdd(v, stateDir, cfg, subArgs)
 	case "list":
-		client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
-		if err == nil {
-			resp, dialErr := client.RoundTrip("POLICY-LIST")
-			if dialErr == nil {
-				var rows []custos.PolicyRuleRow
-				if err := json.Unmarshal([]byte(resp), &rows); err == nil {
-					fmt.Println("lane\tpattern\tverdict\talways\tsource")
-					for _, r := range rows {
-						fmt.Printf("%s\t%s\t%s\t%t\t%s\n", r.Lane, r.Pattern, r.Verdict, r.Always, r.Source)
-					}
-					return 0
-				}
-			}
-			if !errors.Is(dialErr, custos.ErrCtlNotListening) {
-				fmt.Fprintln(os.Stderr, dialErr.Error())
-				return 1
-			}
-		}
-
-		_ = v.Policy().LoadStrict()
-		rows := v.Policy().ListRules()
-		fmt.Println("lane\tpattern\tverdict\talways\tsource")
-		for _, r := range rows {
-			fmt.Printf("%s\t%s\t%s\t%t\t%s\n", r.Lane, r.Pattern, r.Verdict, r.Always, r.Source)
-		}
-		return 0
-
+		return runPolicyList(v, stateDir, cfg)
 	case "rm":
-		if len(subArgs) < 2 {
-			fmt.Fprintf(os.Stderr, "usage: custos policy rm [<lane>] <pattern>\n")
-			return 2
-		}
-		lane := ""
-		pat := subArgs[1]
-		if len(subArgs) >= 3 {
-			lane = subArgs[1]
-			pat = subArgs[2]
-		}
-
-		client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
-		if err == nil {
-			arg := pat
-			if lane != "" {
-				arg = lane + "\x00" + pat
-			}
-			_, dialErr := client.RoundTripWithArg("POLICY-RM", arg)
-			if dialErr == nil {
-				return 0
-			}
-			if !errors.Is(dialErr, custos.ErrCtlNotListening) {
-				fmt.Fprintln(os.Stderr, dialErr.Error())
-				return 1
-			}
-		}
-
-		_ = v.Policy().LoadStrict()
-		removed, rmErr := v.Policy().RemoveRule(lane, pat, "cli")
-		if rmErr != nil {
-			fmt.Fprintln(os.Stderr, rmErr.Error())
-			return 1
-		}
-		if !removed {
-			fmt.Fprintln(os.Stderr, "rule not found")
-			return 1
-		}
-		return 0
-
+		return runPolicyRm(v, stateDir, cfg, subArgs)
 	case "reset":
-		client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
-		if err == nil {
-			resp, dialErr := client.RoundTrip("POLICY-RESET")
-			if dialErr == nil {
-				fmt.Println(resp)
-				return 0
-			}
-			if !errors.Is(dialErr, custos.ErrCtlNotListening) {
-				fmt.Fprintln(os.Stderr, dialErr.Error())
-				return 1
-			}
-		}
-
-		_ = v.Policy().LoadStrict()
-		if err := v.Policy().Reset("cli"); err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			return 1
-		}
-		fmt.Println("always-rules cleared")
-		return 0
-
+		return runPolicyReset(v, stateDir, cfg)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown policy subcommand %q\n", verb)
 		return 2

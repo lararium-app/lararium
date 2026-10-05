@@ -30,18 +30,8 @@ import (
 //   - domination warning note: overridden by <p2> (more-specific match wins)
 //
 // All per CUSTOS-SPEC §6.1, §6.2, §6.3, §6.5, §10 V6, V24.
-func TestV6_WriterGrammarGate(t *testing.T) {
-	v, _, pass := setupTestVault(t)
-	if err := v.Init(pass); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.Unlock(pass, false); err != nil {
-		t.Fatal(err)
-	}
-
-	pe := v.Policy()
-
-	// 1. Illegal pattern classes refused at construction:
+func testV6IllegalEgress(t *testing.T, pe *custos.PolicyEngine) {
+	t.Helper()
 	illegalEgress := []struct {
 		pattern string
 		verdict string
@@ -99,8 +89,10 @@ func TestV6_WriterGrammarGate(t *testing.T) {
 			t.Errorf("AddEgressRule(%q) error = %v, want %v", tc.pattern, err, tc.wantErr)
 		}
 	}
+}
 
-	// Illegal credential patterns:
+func testV6IllegalCred(t *testing.T, pe *custos.PolicyEngine) {
+	t.Helper()
 	illegalCred := []struct {
 		pattern string
 		always  bool
@@ -118,46 +110,15 @@ func TestV6_WriterGrammarGate(t *testing.T) {
 			t.Errorf("AddCredentialRule(%q) expected error, got nil", tc.pattern)
 		}
 	}
+}
 
-	// 2. Written rules re-validate and policy.json re-reads strictly:
-	legalRules := []struct {
-		lane    string
-		pattern string
-		verdict string
-	}{
-		{"egress", "api.example.com", custos.VerdictAuto},
-		{"egress", "api.example.com:8080", custos.VerdictDeny},
-		{"egress", "example.org/*", custos.VerdictAsk},
-		{"egress", "203.0.113.7", custos.VerdictAsk},
-		{"egress", "2001:db8::1", custos.VerdictDeny},
-		{"credential", "openai", custos.VerdictAsk},
-		{"credential", "gmail/send", custos.VerdictAuto},
-		{"credential", "gmail/*", custos.VerdictAsk},
-	}
-
-	for _, r := range legalRules {
-		var err error
-		if r.lane == "egress" {
-			_, err = pe.AddEgressRule(r.pattern, r.verdict, false, "cli", "cli")
-		} else {
-			_, err = pe.AddCredentialRule(r.pattern, r.verdict, false, "cli", "cli")
-		}
-		if err != nil {
-			t.Fatalf("add legal rule %s %s: %v", r.lane, r.pattern, err)
-		}
-	}
-
-	// Re-read file strictly
-	if err := pe.LoadStrict(); err != nil {
-		t.Fatalf("LoadStrict re-reading written rules failed: %v", err)
-	}
-
-	// 3. Comparator ordering cases from §6.1 / §10 V24:
+func testV6ComparatorOrdering(t *testing.T) {
+	t.Helper()
 	// Case A: Suffix dominance warning
 	// Existing: cdn.tracker.com/* auto
 	// Adding: tracker.com/* deny
 	// New pattern tracker.com/* is strictly dominated by existing cdn.tracker.com/*
-	// Stored with full frozen note: note: overridden by cdn.tracker.com/* (more-specific match wins)
+	// Stored with full frozen note: overridden by cdn.tracker.com/* (more-specific match wins)
 	vA, _, passA := setupTestVault(t)
 	_ = vA.Init(passA)
 	_ = vA.Unlock(passA, false)
@@ -298,11 +259,63 @@ func TestV6_WriterGrammarGate(t *testing.T) {
 	}
 }
 
+func TestV6_WriterGrammarGate(t *testing.T) {
+	v, _, pass := setupTestVault(t)
+	if err := v.Init(pass); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Unlock(pass, false); err != nil {
+		t.Fatal(err)
+	}
+
+	pe := v.Policy()
+
+	// 1. Illegal pattern classes refused at construction:
+	testV6IllegalEgress(t, pe)
+	testV6IllegalCred(t, pe)
+
+	// 2. Written rules re-validate and policy.json re-reads strictly:
+	legalRules := []struct {
+		lane    string
+		pattern string
+		verdict string
+	}{
+		{"egress", "api.example.com", custos.VerdictAuto},
+		{"egress", "api.example.com:8080", custos.VerdictDeny},
+		{"egress", "example.org/*", custos.VerdictAsk},
+		{"egress", "203.0.113.7", custos.VerdictAsk},
+		{"egress", "2001:db8::1", custos.VerdictDeny},
+		{"credential", "openai", custos.VerdictAsk},
+		{"credential", "gmail/send", custos.VerdictAuto},
+		{"credential", "gmail/*", custos.VerdictAsk},
+	}
+
+	for _, r := range legalRules {
+		var err error
+		if r.lane == "egress" {
+			_, err = pe.AddEgressRule(r.pattern, r.verdict, false, "cli", "cli")
+		} else {
+			_, err = pe.AddCredentialRule(r.pattern, r.verdict, false, "cli", "cli")
+		}
+		if err != nil {
+			t.Fatalf("add legal rule %s %s: %v", r.lane, r.pattern, err)
+		}
+	}
+
+	// Re-read file strictly
+	if err := pe.LoadStrict(); err != nil {
+		t.Fatalf("LoadStrict re-reading written rules failed: %v", err)
+	}
+
+	// 3. Comparator ordering cases from §6.1 / §10 V24:
+	testV6ComparatorOrdering(t)
+}
+
 // Egress strict toggle flips only the no-match default to ask per CUSTOS-SPEC §6.1:
-// - strict off: credential-less egress defaults to auto
-// - strict on: credential-less egress defaults to ask
-// - rules still apply in both modes
-// - floor and credential actions unaffected
+// - strict off: credential-less egress defaults to auto.
+// - strict on: credential-less egress defaults to ask.
+// - rules still apply in both modes.
+// - floor and credential actions unaffected.
 func TestEgressStrictToggle(t *testing.T) {
 	v, _, pass := setupTestVault(t)
 	_ = v.Init(pass)
@@ -365,10 +378,10 @@ func TestEgressStrictToggle(t *testing.T) {
 }
 
 // Two-tier comparator totality & IP-literal separation per CUSTOS §6.1, §6.3:
-// - Host rules never match IP targets
-// - IP rules never match Host targets
-// - Exact host:port outranks exact host
-// - Longest suffix wins among suffix rules
+// - Host rules never match IP targets.
+// - IP rules never match Host targets.
+// - Exact host:port outranks exact host.
+// - Longest suffix wins among suffix rules.
 func TestTwoTierComparatorTotality(t *testing.T) {
 	v, _, pass := setupTestVault(t)
 	_ = v.Init(pass)
@@ -429,8 +442,8 @@ func TestTwoTierComparatorTotality(t *testing.T) {
 }
 
 // Worker vs bearer lane qualification per CUSTOS §6.2:
-// - /tool-suffixed patterns match worker-lane calls ONLY
-// - bearer-lane matches bare <name> only
+// - /tool-suffixed patterns match worker-lane calls ONLY.
+// - bearer-lane matches bare <name> only.
 func TestWorkerVsBearerLaneQualification(t *testing.T) {
 	v, _, pass := setupTestVault(t)
 	_ = v.Init(pass)
