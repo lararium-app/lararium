@@ -24,16 +24,17 @@ func triggerKillPoint(point string) {
 
 // Vault manages the encrypted vault at <hearth>/custos per CUSTOS-SPEC §4.
 type Vault struct {
-	mu           sync.RWMutex
-	stateDir     string
-	lockFile     *LockFile
-	audit        *AuditLogger
-	snapshots    *SnapshotManager
-	instanceKey  []byte
-	loadedDoc    *VaultDoc
-	isUnlocked   bool
-	isKeyfile    bool
-	degradedHook func(reason string)
+	mu              sync.RWMutex
+	stateDir        string
+	lockFile        *LockFile
+	audit           *AuditLogger
+	snapshots       *SnapshotManager
+	instanceKey     []byte
+	loadedDoc       *VaultDoc
+	isUnlocked      bool
+	isKeyfile       bool
+	firstUnlockDone bool // CUSTOS-SPEC §4.1, §4.2: landedness recovery runs once per boot per Vault instance
+	degradedHook    func(reason string)
 }
 
 // NewVault initializes a Vault instance rooted at stateDir (<hearth>/custos).
@@ -286,17 +287,36 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		return err
 	}
 
-	// CUSTOS §4.2 landedness recovery:
-	// Runs at first unlock under flock; inspects generation to resolve any dangling intent
-	doc, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
-	if err != nil {
-		// CUSTOS §8.1: audit lock_failed on failure
-		_ = v.audit.Append(AuditRecord{
-			Kind:   AuditKindLockFailed,
-			Actor:  "cli",
-			Reason: err.Error(),
-		})
-		return err
+	var doc *VaultDoc
+	if !v.firstUnlockDone {
+		// CUSTOS-SPEC §4.1, §4.2: First-unlock landedness pass runs once per boot per Vault instance,
+		// under flock, serialized exactly-once, BEFORE envelope MAC verification.
+		// Resolves mid-pair crash state (new-MAC/old-envelope or landed-lagging-MAC)
+		// by inspecting the generation under passphrase, re-emitting MAC, and resolving intents.
+		d, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
+		if err != nil {
+			// CUSTOS §8.1: audit lock_failed on failure
+			_ = v.audit.Append(AuditRecord{
+				Kind:   AuditKindLockFailed,
+				Actor:  "cli",
+				Reason: err.Error(),
+			})
+			return err
+		}
+		doc = d
+		v.firstUnlockDone = true
+	} else {
+		// Subsequent unlock on same instance: strict envelope MAC verification runs before decryption
+		d, err := v.readOnDiskDoc(key, passphrase)
+		if err != nil {
+			_ = v.audit.Append(AuditRecord{
+				Kind:   AuditKindLockFailed,
+				Actor:  "cli",
+				Reason: err.Error(),
+			})
+			return err
+		}
+		doc = d
 	}
 
 	v.mu.Lock()
@@ -313,6 +333,38 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	})
 
 	return nil
+}
+
+// readOnDiskDoc reads and authenticates vault.age under flock with strict envelope MAC verification per CUSTOS-SPEC §4.1, §4.2.
+func (v *Vault) readOnDiskDoc(key []byte, passphrase string) (*VaultDoc, error) {
+	vaultAgePath := filepath.Join(v.stateDir, "vault.age")
+	macPath := filepath.Join(v.stateDir, "vault.age.mac")
+
+	macBytes, err := os.ReadFile(macPath)
+	if err != nil {
+		return nil, ErrVaultEnvelopeCorrupt
+	}
+	expectedMAC := strings.TrimSpace(string(macBytes))
+
+	envelopeBytes, err := os.ReadFile(vaultAgePath)
+	if err != nil {
+		return nil, fmt.Errorf("read vault.age: %w", err)
+	}
+
+	if !VerifyEnvelopeMAC(key, envelopeBytes, expectedMAC) {
+		return nil, ErrVaultEnvelopeCorrupt
+	}
+
+	docBytes, err := DecryptAge(envelopeBytes, passphrase)
+	if err != nil {
+		return nil, err
+	}
+
+	var doc VaultDoc
+	if err := json.Unmarshal(docBytes, &doc); err != nil {
+		return nil, fmt.Errorf("unmarshal vault doc: %w", err)
+	}
+	return &doc, nil
 }
 
 // Lock clears loaded state and marks the vault locked per CUSTOS-SPEC §3, §C3.
@@ -402,10 +454,21 @@ func (v *Vault) Mutate(passphrase string, mutateFn func(doc *VaultDoc) ([]string
 		return err
 	}
 
-	// 2. Decrypt current document from disk under flock (CUSTOS §4.2 file law: re-read disk)
-	doc, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
-	if err != nil {
-		return err
+	// 2. Decrypt current document from disk under flock (CUSTOS-SPEC §4.2 file law: re-read disk)
+	var doc *VaultDoc
+	if !v.firstUnlockDone {
+		d, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
+		if err != nil {
+			return err
+		}
+		v.firstUnlockDone = true
+		doc = d
+	} else {
+		d, err := v.readOnDiskDoc(key, passphrase)
+		if err != nil {
+			return err
+		}
+		doc = d
 	}
 
 	oldGen := doc.Generation
@@ -586,10 +649,21 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 		return err
 	}
 
-	// Decrypt document with old passphrase
-	doc, err := FirstUnlockRecovery(v.stateDir, key, oldPassphrase, v.audit)
-	if err != nil {
-		return err
+	// Decrypt document with old passphrase (CUSTOS-SPEC §4.2 file law: re-read disk)
+	var doc *VaultDoc
+	if !v.firstUnlockDone {
+		d, err := FirstUnlockRecovery(v.stateDir, key, oldPassphrase, v.audit)
+		if err != nil {
+			return err
+		}
+		v.firstUnlockDone = true
+		doc = d
+	} else {
+		d, err := v.readOnDiskDoc(key, oldPassphrase)
+		if err != nil {
+			return err
+		}
+		doc = d
 	}
 
 	oldGen := doc.Generation

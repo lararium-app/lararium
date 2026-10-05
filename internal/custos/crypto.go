@@ -15,12 +15,12 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// HKDF info labels per CUSTOS-SPEC §4.1, §8.3 and Slice 1 Brief.
+// HKDF info labels per CUSTOS-SPEC §4.1, §8.3.
 const (
-	HKDFInfoCustosMac      = "custos-mac"      // Slice 1 brief: vault.age.mac
-	HKDFInfoCustosEnv      = "custos-env"      // CUSTOS §4.1: vault.age.mac
-	HKDFInfoCustosEnvelope = "custos-envelope" // Slice 1 brief: envelope key
-	HKDFInfoCustosAnchor   = "custos-anchor"   // CUSTOS §8.3: anchor MAC
+	HKDFInfoCustosMac      = "custos-mac"      // Deprecated: superseded by HKDFInfoCustosEnv per CUSTOS-SPEC §4.1
+	HKDFInfoCustosEnv      = "custos-env"      // CUSTOS-SPEC §4.1: vault.age.mac
+	HKDFInfoCustosEnvelope = "custos-envelope" // Deprecated
+	HKDFInfoCustosAnchor   = "custos-anchor"   // CUSTOS-SPEC §8.3: anchor MAC
 )
 
 // ageWorkFactor allows tests to lower scrypt work factor for execution speed.
@@ -70,23 +70,18 @@ func VerifyMAC(key []byte, data []byte, expectedHex string) bool {
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 
-// ComputeEnvelopeMAC generates vault.age.mac under HKDF(vault.key, "custos-mac").
+// ComputeEnvelopeMAC generates vault.age.mac under HKDF(vault.key, "custos-env") per CUSTOS-SPEC §4.1.
 func ComputeEnvelopeMAC(instanceKey []byte, envelopeBytes []byte) string {
-	// CUSTOS §4.2: HMAC-SHA256 over envelope bytes under HKDF(vault.key, "custos-mac")
-	macKey := DeriveHKDF(instanceKey, HKDFInfoCustosMac)
+	// CUSTOS-SPEC §4.1: HMAC-SHA256 over envelope bytes under HKDF(vault.key, "custos-env")
+	macKey := DeriveHKDF(instanceKey, HKDFInfoCustosEnv)
 	return ComputeMAC(macKey, envelopeBytes)
 }
 
-// VerifyEnvelopeMAC verifies vault.age.mac, accepting either "custos-mac" or "custos-env" info labels.
+// VerifyEnvelopeMAC verifies vault.age.mac under HKDF(vault.key, "custos-env") per CUSTOS-SPEC §4.1.
+// Accepts ONLY "custos-env" (no dual-label leniency).
 func VerifyEnvelopeMAC(instanceKey []byte, envelopeBytes []byte, expectedMAC string) bool {
-	// Check primary label from brief: "custos-mac"
-	macKeyBrief := DeriveHKDF(instanceKey, HKDFInfoCustosMac)
-	if VerifyMAC(macKeyBrief, envelopeBytes, expectedMAC) {
-		return true
-	}
-	// Fallback to spec text label: "custos-env" (§4.1)
-	macKeySpec := DeriveHKDF(instanceKey, HKDFInfoCustosEnv)
-	return VerifyMAC(macKeySpec, envelopeBytes, expectedMAC)
+	macKey := DeriveHKDF(instanceKey, HKDFInfoCustosEnv)
+	return VerifyMAC(macKey, envelopeBytes, expectedMAC)
 }
 
 // EncryptAge encrypts plaintext under passphrase using age scrypt recipient per CUSTOS §4.1.

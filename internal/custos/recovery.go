@@ -157,10 +157,18 @@ func FirstUnlockRecovery(stateDir string, instanceKey []byte, passphrase string,
 		return &doc, nil
 	}
 
-	// CUSTOS §4.2 landedness doctrine:
+	// CUSTOS-SPEC §4.2 landedness doctrine:
 	// Decrypt specifically to inspect the generation
 	docBytes, err := DecryptAge(envelopeBytes, passphrase)
 	if err != nil {
+		// CUSTOS-SPEC §4.1: If envelope is tampered (MAC mismatch), report ErrVaultEnvelopeCorrupt
+		macBytes, macErr := os.ReadFile(filepath.Join(stateDir, "vault.age.mac"))
+		if macErr == nil {
+			expectedMAC := strings.TrimSpace(string(macBytes))
+			if !VerifyEnvelopeMAC(instanceKey, envelopeBytes, expectedMAC) {
+				return nil, ErrVaultEnvelopeCorrupt
+			}
+		}
 		// Wrong passphrase returns directly without modifying state
 		return nil, err
 	}

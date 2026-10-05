@@ -86,7 +86,8 @@ func (a *AuditLogger) ListLogFiles() ([]string, error) {
 }
 
 // ReadTailLine finds the last line across all audit log files and returns (lineBytes, filePath, lineNum, error).
-// CUSTOS §8.1: each appender re-reads current tail line under flock to compute prev_hash.
+// CUSTOS-SPEC §8.1: prev_hash (SHA-256 of the previous line, day boundaries included) — ONE chain across files.
+// Files in lex order form one stream; each appender re-reads current tail line under flock to compute prev_hash.
 func (a *AuditLogger) ReadTailLine() ([]byte, string, int, error) {
 	files, err := a.ListLogFiles()
 	if err != nil {
@@ -443,7 +444,7 @@ func (a *AuditLogger) Verify(instanceKey []byte) (*VerifyResult, error) {
 	}
 
 	// Walk from startIndex (or 0) to end
-	// If starting at 0, genesis record must have rec.PrevHash == ""
+	// CUSTOS-SPEC §8.1, §8.3: genesis check applies to the first file only; all files in lex order form ONE stream.
 	if startIndex == 0 {
 		if allRecords[0].rec.PrevHash != "" {
 			return &VerifyResult{
