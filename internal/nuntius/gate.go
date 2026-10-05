@@ -89,6 +89,7 @@ type Envelope struct {
 	UpdateID   int64
 	IsCallback bool
 	FromID     string
+	FirstName  string
 	ChatType   string // "private" | "group" | "supergroup" | "channel"
 	Text       string // message text or callback data
 	ChatID     string // where refusals are answered

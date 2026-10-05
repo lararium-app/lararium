@@ -371,7 +371,6 @@ func (t *fakeTransport) FinalMessageTexts(chatID string) []string {
 	return res
 }
 
-//nolint:unparam // chatType receives "group" in TestV3GateMatrix
 func makeMsgUpdate(updateID int64, fromID, chatID, chatType, text string) nuntius.Update {
 	return nuntius.Update{
 		UpdateID: updateID,
@@ -665,8 +664,6 @@ func TestV1PairingFlow(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestV2CodeHygiene(t *testing.T) {
-	t.Skip("SPEC-BUG V2: bridge fails to log invalid pairing attempts to bridge log buffer (spec §3/§10)")
-
 	durPtr := func(d time.Duration) *time.Duration { return &d }
 
 	env := setupVSuite(t, vsuiteOpts{
@@ -748,8 +745,6 @@ func TestV2CodeHygiene(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestV3GateMatrix(t *testing.T) {
-	t.Skip("SPEC-BUG V3: gate drop on group update emits no log line despite spec §10 requirement")
-
 	env := setupVSuite(t, vsuiteOpts{
 		ownerID: "owner_v3",
 		chatID:  "chat_owner_v3",
@@ -1237,8 +1232,6 @@ func TestV6ApprovalCardRace(t *testing.T) {
 
 //nolint:maintidx // comprehensive matrix covers 5 resolution paths and audit contracts
 func TestV7TerminalCleanupMatrix(t *testing.T) {
-	t.Skip("SPEC-BUG V7: cancel path commits tool_result audit event despite spec §7.4 A5 / §10 V7 requirement that absence is the record")
-
 	makeTool := func(toolRan *int, mu *sync.Mutex) loop.Tool {
 		return loop.Tool{
 			Spec: router.ToolSpec{

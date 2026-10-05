@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lararium-app/lararium/internal/keystore"
@@ -289,6 +290,9 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			if tool != nil {
 				out = eng.Execute(ctx, tc, tool, approval)
 			} else {
+				if ctx.Err() != nil {
+					return final, ctx.Err()
+				}
 				out = ToolOutcome{Approval: approval, OK: false, Text: denyText, Digest: digest(tc.ArgsJSON)}
 			}
 			if s.OnTool != nil {
@@ -307,6 +311,9 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 				resFields["result_ref"] = raw(out.ResultRef)
 			} else {
 				resFields["text"] = raw(out.Text)
+			}
+			if strings.HasPrefix(approval, "denied:") && ctx.Err() != nil {
+				return final, ctx.Err()
 			}
 			if err := s.appendEvent("tool_result", resFields); err != nil {
 				return final, fmt.Errorf("log tool_result: %w", err)

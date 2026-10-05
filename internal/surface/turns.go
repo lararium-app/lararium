@@ -128,8 +128,8 @@ func (h *Hub) Cancel(sessionID string) bool {
 	if !ok {
 		return false
 	}
-	h.ap.CancelAllFor(sessionID, "web")
 	t.cancel()
+	h.ap.CancelAllFor(sessionID, "web")
 	return true
 }
 
