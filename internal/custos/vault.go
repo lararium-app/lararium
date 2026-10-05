@@ -891,7 +891,6 @@ func (v *Vault) AddSurrogate(passphrase string, credName, host string, port int,
 		}
 		return []string{credName}, []AuditRecord{event}, nil
 	}, false)
-
 	if err != nil {
 		return "", err
 	}

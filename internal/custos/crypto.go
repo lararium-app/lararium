@@ -10,11 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"unsafe"
 
 	"filippo.io/age"
 	"golang.org/x/crypto/hkdf"
-	"os"
-	"unsafe"
 )
 
 // HKDF info labels per CUSTOS-SPEC §4.1, §8.3.
