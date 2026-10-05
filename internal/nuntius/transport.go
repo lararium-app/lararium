@@ -62,15 +62,18 @@ func (u Update) Envelope() Envelope {
 	}
 	if u.Message != nil {
 		from := ""
+		firstName := ""
 		if u.Message.From != nil {
 			from = u.Message.From.ID
+			firstName = u.Message.From.FirstName
 		}
 		return Envelope{
-			UpdateID: u.UpdateID,
-			FromID:   from,
-			ChatType: u.Message.Chat.Type,
-			Text:     u.Message.Text,
-			ChatID:   u.Message.Chat.ID,
+			UpdateID:  u.UpdateID,
+			FromID:    from,
+			FirstName: firstName,
+			ChatType:  u.Message.Chat.Type,
+			Text:      u.Message.Text,
+			ChatID:    u.Message.Chat.ID,
 		}
 	}
 	// Anything the spec has not decided that arrives on the wire:
