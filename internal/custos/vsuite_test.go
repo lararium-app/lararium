@@ -548,6 +548,7 @@ func TestD1_CrossDayChainStream(t *testing.T) {
 			}
 			// Tamper last line of earlier file
 			lines[len(lines)-1] = lines[len(lines)-1] + " "
+			//nolint:gosec // earlierFile is a path from ReadDir over this test's own temp dir
 			if err := os.WriteFile(earlierFile, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
