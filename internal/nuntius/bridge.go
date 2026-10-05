@@ -651,6 +651,7 @@ func (b *Bridge) process(ctx context.Context, u Update, rec Record, owners Owner
 	switch Decide(env, owners) {
 	case Drop:
 		b.markDone(rec, nil)
+		b.log.Printf("nuntius: dropped update %d (%s) from %s", env.UpdateID, env.ChatType, env.FromID)
 	case ReplyPairingRequired:
 		b.markDone(rec, nil)
 		b.log.Printf("nuntius: refused unpaired update %d from %s (%s)", env.UpdateID, env.FromID, env.Text)
@@ -676,9 +677,10 @@ func (b *Bridge) process(ctx context.Context, u Update, rec Record, owners Owner
 // never persisted, so a replay never reaches here with a live code:
 // processPairReplay answers the redaction rule instead.
 func (b *Bridge) handlePair(ctx context.Context, u Update, rec Record) {
-	userID := u.Message.From.ID
-	chatID := u.Message.Chat.ID
-	res, err := b.pair.Redeem(userID, PairCode(u.Message.Text), b.deps.now())
+	env := u.Envelope()
+	userID := env.FromID
+	chatID := env.ChatID
+	res, err := b.pair.Redeem(userID, PairCode(env.Text), b.deps.now())
 	if err != nil {
 		b.log.Printf("nuntius: pair redeem failed: %v", err)
 		b.markDone(rec, nil)
@@ -694,8 +696,10 @@ func (b *Bridge) handlePair(ctx context.Context, u Update, rec Record) {
 		// already-paired owner path.
 		b.replyText(ctx, chatID, MsgAlreadyPaired)
 	case RedeemInvalid:
+		b.log.Printf("nuntius: invalid pairing attempt from %s (name %q, update %d)", env.FromID, env.FirstName, env.UpdateID)
+		muted := b.muter.Muted(userID)
 		b.muter.RecordFail(userID)
-		if !b.muter.Muted(userID) && b.pairRL.Allow(userID) {
+		if !muted && b.pairRL.Allow(userID) {
 			b.replyText(ctx, chatID, MsgInvalidCode)
 		}
 	}
