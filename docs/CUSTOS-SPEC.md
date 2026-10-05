@@ -1,11 +1,12 @@
 # CUSTOS-SPEC — the security envelope: vault, surrogation, policy, audit
 
-Status: **FROZEN (v7) — round 6 both confirmation passes CONVERGED
-(pass A 0B/0M; pass B 0B/5M, all five minors folded per reviewer
-prescription: WAL-commit-after-rename fsync order, fingerprint mirror
-inside recovery rewrite + snapshot set, migrate-deletion audit lines,
-`--port` grammar, writer-path-only note). Freeze rule met: zero new
-blocking on both passes. Suite V1–V26. Awaiting user sign-off.**
+Status: **FROZEN (v7) + PO SIGN-OFF (2026-10-05) — round 6 both
+confirmation passes CONVERGED (pass A 0B/0M; pass B 0B/5M, all five
+minors folded per reviewer prescription: WAL-commit-after-rename fsync
+order, fingerprint mirror inside recovery rewrite + snapshot set,
+migrate-deletion audit lines, `--port` grammar, writer-path-only
+note). All six open questions decided by the PO (§12). Suite V1–V26.
+Implementation may begin.**
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -623,6 +624,10 @@ refusing overlaps deadlocks the Always mechanism. Defaults:
 credential-bearing actions
 **ask** (no rule required);
 credential-less egress **auto** (today's dumb-proxy behavior, PO Q4);
+`custos egress strict on|off` (persisted, audited `policy_written`)
+flips that default to **ask** for credential-less destinations with
+no matching rule — floor and rule behavior are untouched (strict
+mode changes only the no-match default; no new decision machinery);
 the CA-2 destination floor is evaluated before policy and is not a
 rule.
 `policy.json` strict-parses at startup; empty-but-valid tables mean
@@ -882,7 +887,7 @@ upstream response content.
 **8.3 — Verify, rotation, prune anchors.** `custos audit verify` walks
 the chain from the newest anchor; prints `chain ok (<n> records)` or
 first-break `file:line` (frozen shapes). Daily rotation;
-`audit_retention_days` (default 90, PO Q5). **Prune writes an
+`audit_retention_days` (default 365 — PO Q5 resolved). **Prune writes an
 authenticated anchor checkpoint** `audit/anchors.json`:
 `[{file, line, hash}]`, each entry `anchor_mac`-ed under
 HKDF(vault.key, "custos-anchor") — a root-elsewhere attacker who edits
@@ -1151,32 +1156,45 @@ exit 0 on success/ack, non-zero on refusal/parse — the same
 conventions KEYS-SPEC established (stdout data / stderr errors / exit
 codes).
 
-## 12. Open questions (PO)
+## 12. Open questions — RESOLVED (PO sign-off, 2026-10-05)
 
-Q1. **Unlock friction.** v1 requires unlock after every restart
-(P4/C4). Keyfile mode is the documented opt-in comfort path
-("protection level: file-permissions-only", honest framing per
-KEYS-SPEC §0). Recommend: ship keyfile well-documented, no auto-default.
-Q2. **Gmail as v1 built-in** — right horse? Alternatives: IMAP/SMTP
-(every user has it, uglier OAuth) or Calendar (smaller scopes).
-Recommend Gmail: biggest wow, biggest scary-proof; the OAuth tax gets
-paid now either way.
-Q3. **Bearer lane TLS.** Honest passthrough (this draft) vs MITM CA
-lane in v1 (user-CA wizard + trust enrollment + support load).
-Recommend roadmap; worker lane covers the sensitive majors meanwhile.
-Q4. **Egress default for credential-less flows.** default-auto (this
-draft; zero migration surprise) vs default-ask on new destinations.
-Recommend auto + a prominent `custos egress strict` toggle in
-onboarding.
-Q5. **Audit retention 90d** — short for the moat story? Recommend 365d
-(names + hashes are cheap).
-Q6. **Surface-mint confirmation card (§5.3)** — right posture, or
-should surface minting be TTY-only (no card path)? Recommend the card:
-it keeps headless ops workable while keeping the human in the loop;
-TTY-only is the fallback if the card path proves awkward in dogfood.
+Q1. **Unlock friction — DECIDED.** Passphrase mode is the zero-trust
+default (unlock after every restart, P4/C4); `custos.unlock_keyfile`
+is the documented opt-in for headless homelab environments, framed
+honestly in docs and `custos status` as a **file-permission security
+boundary** (protection level: file-permissions-only), never silently
+defaulted. (Unlocked-from-boot mechanics: §4.1, pre-declared.)
+Q2. **Gmail as v1 built-in — DECIDED.** The OAuth2 login/refresh/
+review-field machinery (§4.5, §7) is validated end-to-end against
+Gmail first; IMAP/SMTP and Calendar are follow-on connectors with no
+new machinery.
+Q3. **Bearer lane TLS — DECIDED.** Blind passthrough for v1 (§5.2);
+dynamic MITM CA interception is phase 2 (browser trust-store friction
+deferred); the worker lane covers the sensitive majors meanwhile.
+Q4. **Credential-less egress default — DECIDED.** `auto` (today's
+dumb-proxy behavior, §6.3) plus an onboarding strictness toggle
+(`custos egress strict`) that flips the default to explicit-allowlist
+for operators locking cells down; package managers work out of the
+box, strict mode is one command away.
+Q5. **Audit retention — DECIDED.** `audit_retention_days` default
+**365** (§8.3): metadata-only, hash-chained JSONL is cheap; anchors
+keep verify O(recent) regardless (§8.3, V22).
+Q6. **Surface-mint confirmation cards — DECIDED.** Cards stay
+mandatory for web/surface minting (§5.3) — remote requests cannot
+silently mint surrogates even from a prompt-injected tool flow;
+authenticated-TTY CLI issuance skips the card (you are at the
+keyboard). No TTY-only fallback needed unless dogfood says otherwise.
 
 ## Changelog
 
+- v7.1 (frozen, signed off): PO sign-off received 2026-10-05. §12
+  converted from open questions to **decisions**: passphrase-default
+  + documented keyfile opt-in (file-permission boundary, never
+  silent); Gmail as the v1 built-in connector; blind passthrough
+  for v1 bearer TLS (MITM = phase 2); credential-less egress `auto`
+  + `custos egress strict` onboarding toggle; **audit retention
+  default 90 → 365 days** (§8.3 body updated); surface-mint
+  confirmation cards retained. No other text changed.
 - v7 (frozen): round 6 — both confirmation passes CONVERGED (pass A
   0B/0M — first review with no findings at any severity; pass B
   0B/5M). Pass B minors folded verbatim per its fix sketches: **WAL
