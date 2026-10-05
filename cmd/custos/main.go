@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -174,6 +175,107 @@ func runLock(stateDir, keyfilePath string, cfg *custos.Config) int {
 	}
 	// Daemon not running: already locked
 	fmt.Println("locked")
+	return 0
+}
+
+// runLogin implements `custos login gmail --client-id <id> [--manual]` per
+// CUSTOS-SPEC §4.5, §11: the client secret is prompted (hidden echo) and
+// never taken from argv; the consent URL is printed; on success the kind
+// oauth2 credential is stored through the Mutate path (audit
+// credential_added, actor cli). A refused consent (state mismatch/missing/
+// denied/timeout) audits login_denied and stores nothing.
+func runLogin(v *custos.Vault, stateDir, keyfilePath string, subArgs []string) int {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	clientID := fs.String("client-id", "", "oauth2 client id")
+	manual := fs.Bool("manual", false, "headless paste-back mode")
+	credName := fs.String("cred", "", "vault credential name (default: connector name)")
+	tokenURI := fs.String("token-uri", "", "token endpoint override (tests)")
+	authURI := fs.String("auth-uri", "", "authorization endpoint override (tests)")
+	connector := "gmail"
+	rest := subArgs
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		connector = rest[0]
+		rest = rest[1:]
+	}
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	if connector != "gmail" {
+		fmt.Fprintf(os.Stderr, "unknown connector %q\n", connector)
+		return 2
+	}
+	if *clientID == "" {
+		fmt.Fprintln(os.Stderr, "usage: custos login gmail --client-id <id> [--manual]")
+		return 2
+	}
+
+	// Client secret: prompted, never a flag/argv (§4.5).
+	secret, err := readPassphrase("client secret (input hidden): ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+
+	// The vault must be available: unlock the direct handle under custos.lock.
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+
+	ctx := context.Background()
+	opts := &custos.LoginOptions{
+		Connector:    connector,
+		ClientID:     *clientID,
+		ClientSecret: secret,
+		Manual:       *manual,
+		Out:          os.Stdout,
+	}
+	if *credName != "" {
+		opts.CredName = *credName
+	}
+	if *tokenURI != "" {
+		opts.TokenURI = *tokenURI
+	}
+	if *authURI != "" {
+		opts.AuthURI = *authURI
+	}
+	if *manual {
+		opts.PasteBack = func() (string, error) {
+			fmt.Fprint(os.Stderr, "paste redirect URL or code: ")
+			line, rerr := stdinReader.ReadString('\n')
+			if rerr != nil && strings.TrimSpace(line) == "" {
+				return "", rerr
+			}
+			return line, nil
+		}
+	}
+
+	res, err := custos.OAuthLogin(ctx, opts)
+	if err != nil {
+		if reason := custos.LoginDeniedReason(err); reason != "" {
+			_ = v.Audit().Append(custos.AuditRecord{
+				Kind:   custos.AuditKindLoginDenied,
+				Actor:  "cli",
+				Reason: reason,
+			})
+		}
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+
+	if err := v.StoreOAuthGrant("", res.Name, res.Credential, "cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Printf("stored oauth2 credential %q\n", res.Name)
 	return 0
 }
 
@@ -867,6 +969,8 @@ func main() {
 		exitCode = runEgress(v, stateDir, cfg, subArgs)
 	case "revoke":
 		exitCode = runRevokeCredential(v, stateDir, keyfilePath, cfg, subArgs)
+	case "login":
+		exitCode = runLogin(v, stateDir, keyfilePath, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb %q\n", verb)
 		exitCode = 2
