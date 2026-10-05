@@ -50,7 +50,12 @@ type approval struct {
 	channels    ChannelSet // live at creation (A6 timer selection)
 	webLive     bool       // SSE listener still attached (A1 presence)
 	cardDead    bool       // Telegram card undeliverable (A7)
+	cred        string     // CUSTOS CA-3: credential name
+	cell        string     // CUSTOS CA-3: requesting cell id
 }
+
+// StaleVerdictHook is invoked when an Allow verdict arrives for an already settled/dead approval.
+type StaleVerdictHook func(id, sessionID, cred, cell, reason string)
 
 // ApprovalHub tracks pending tool approvals across sessions: one
 // pending approval per (session, id), resolved by the HTTP approver or
@@ -58,12 +63,13 @@ type approval struct {
 // approver channel remains (spec §5 approval state machine plus
 // NUNTIUS-SPEC §7 amendments A1/A5/A6/A7: first-wins, mutex-guarded).
 type ApprovalHub struct {
-	mu            sync.Mutex
-	bySession     map[string]map[string]*approval
-	timeout       time.Duration
-	bridgeTimeout time.Duration
-	fanout        ApprovalFanout
-	bridgeLive    func() bool
+	mu               sync.Mutex
+	bySession        map[string]map[string]*approval
+	timeout          time.Duration
+	bridgeTimeout    time.Duration
+	fanout           ApprovalFanout
+	bridgeLive       func() bool
+	staleVerdictHook StaleVerdictHook
 }
 
 // NewApprovalHub builds the hub; timeout is serve.approval_timeout —
@@ -100,6 +106,52 @@ func (h *ApprovalHub) SetBridgeLive(f func() bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.bridgeLive = f
+}
+
+// SetStaleVerdictHook installs a callback invoked when an Allow arrives for a settled/dead approval.
+func (h *ApprovalHub) SetStaleVerdictHook(hook StaleVerdictHook) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.staleVerdictHook = hook
+}
+
+// RegisterCustos registers a pending approval card for a custos request per CUSTOS-SPEC §6.4.
+func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeout time.Duration, onEvent func(approvalID string)) (id string, decision <-chan bool) {
+	h.mu.Lock()
+	id = generateApprovalID()
+	ch := make(chan bool, 1)
+	ap := &approval{
+		id:          id,
+		ch:          ch,
+		state:       "pending",
+		sessionID:   cell,
+		name:        cred,
+		argsSummary: dest,
+		cred:        cred,
+		cell:        cell,
+		source:      "custos",
+		channels:    ChannelWeb,
+		webLive:     true,
+	}
+	if h.bridgeLive != nil && h.bridgeLive() {
+		ap.channels |= ChannelTelegram
+	}
+	if h.bySession[cell] == nil {
+		h.bySession[cell] = make(map[string]*approval)
+	}
+	h.bySession[cell][id] = ap
+
+	if timeout <= 0 {
+		timeout = h.timeout
+	}
+	ap.timer = time.AfterFunc(timeout, func() { h.resolveTimeout(id) })
+	h.mu.Unlock()
+
+	if onEvent != nil {
+		onEvent(id)
+	}
+	h.fanPending(id, cell, cred, dest)
+	return id, ch
 }
 
 func generateApprovalID() string {
@@ -217,13 +269,17 @@ func (ap *approval) settle(state, reason, source string) bool {
 func (h *ApprovalHub) resolveTimeout(id string) {
 	h.mu.Lock()
 	ap, ok := h.findLocked(id)
-	if !ok || !ap.settle("timed_out", "timed_out", "timer") {
+	reason := "timed_out"
+	if ap != nil && ap.source == "custos" {
+		reason = "timeout"
+	}
+	if !ok || !ap.settle("timed_out", reason, "timer") {
 		h.mu.Unlock()
 		return
 	}
 	sid := ap.sessionID
 	h.mu.Unlock()
-	h.fanTerminal(id, sid, "timed_out", "timed_out", "timer")
+	h.fanTerminal(id, sid, "timed_out", reason, "timer")
 }
 
 // findLocked locates an approval by its globally unique id. Callers
@@ -249,6 +305,14 @@ func (h *ApprovalHub) Resolve(sessionID, id string, allow bool) int {
 // click answers 410 with zero state change (§7.2 race: first wins).
 func (h *ApprovalHub) ResolveFrom(sessionID, id string, allow bool, source string) int {
 	h.mu.Lock()
+	if sessionID == "" {
+		ap, ok2 := h.findLocked(id)
+		if !ok2 {
+			h.mu.Unlock()
+			return 404
+		}
+		sessionID = ap.sessionID
+	}
 	session, ok := h.bySession[sessionID]
 	if !ok {
 		h.mu.Unlock()
@@ -264,12 +328,85 @@ func (h *ApprovalHub) ResolveFrom(sessionID, id string, allow bool, source strin
 		state, reason = "approved", "ok"
 	}
 	if !ap.settle(state, reason, source) {
+		hook := h.staleVerdictHook
+		cred := ap.cred
+		cell := ap.cell
+		origReason := ap.reason
 		h.mu.Unlock()
+		if allow && hook != nil {
+			hook(id, sessionID, cred, cell, origReason)
+		}
 		return 410
 	}
 	h.mu.Unlock()
 	h.fanTerminal(id, sessionID, state, reason, source)
 	return 200
+}
+
+// CancelByCredential cancels every pending card for cred (and optional cell) with reason credential_revoked per CUSTOS CA-3, §6.4.
+// Cancel, not settle: no user verdict is implied.
+func (h *ApprovalHub) CancelByCredential(cred, cell string) int {
+	h.mu.Lock()
+	var cancelled []*approval
+	for _, session := range h.bySession {
+		for _, ap := range session {
+			if ap.state != "pending" {
+				continue
+			}
+			if ap.cred != cred && ap.name != cred {
+				continue
+			}
+			if cell != "" && ap.cell != "" && ap.cell != cell {
+				continue
+			}
+			if ap.settle("denied", "credential_revoked", "custos") {
+				cancelled = append(cancelled, ap)
+			}
+		}
+	}
+	h.mu.Unlock()
+	for _, ap := range cancelled {
+		h.fanTerminal(ap.id, ap.sessionID, "denied", "credential_revoked", "custos")
+	}
+	return len(cancelled)
+}
+
+// CancelCard cancels a specific approval with reason and source per CUSTOS CA-3 (e.g. flow_gone).
+func (h *ApprovalHub) CancelCard(id, reason, source string) bool {
+	h.mu.Lock()
+	ap, ok := h.findLocked(id)
+	if !ok || !ap.settle("denied", reason, source) {
+		h.mu.Unlock()
+		return false
+	}
+	sid := ap.sessionID
+	h.mu.Unlock()
+	h.fanTerminal(id, sid, "denied", reason, source)
+	return true
+}
+
+// SettleCustosLocked settles every pending card for custos with reason custos_locked per CUSTOS §C3, CA-3.
+func (h *ApprovalHub) SettleCustosLocked(source string) int {
+	h.mu.Lock()
+	var settled []*approval
+	for _, session := range h.bySession {
+		for _, ap := range session {
+			if ap.state != "pending" {
+				continue
+			}
+			if ap.cred == "" && ap.source != "custos" {
+				continue
+			}
+			if ap.settle("denied", "custos_locked", source) {
+				settled = append(settled, ap)
+			}
+		}
+	}
+	h.mu.Unlock()
+	for _, ap := range settled {
+		h.fanTerminal(ap.id, ap.sessionID, "denied", "custos_locked", source)
+	}
+	return len(settled)
 }
 
 // DenyAllFor denies every pending approval of a session unconditionally
@@ -383,6 +520,36 @@ func (h *ApprovalHub) PendingCount(sessionID string) int {
 		}
 	}
 	return count
+}
+
+// ApprovalCard is a read-only snapshot of an approval entry
+// (CUSTOS CA-3: carries the custody fields).
+type ApprovalCard struct {
+	ID        string
+	SessionID string
+	Cred      string
+	Cell      string
+	State     string
+}
+
+// Pending returns snapshots of all pending cards across sessions
+// (CUSTOS V26/V16 test seam: parked-flow observation).
+func (h *ApprovalHub) Pending() []ApprovalCard {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var out []ApprovalCard
+	for _, byID := range h.bySession {
+		for _, ap := range byID {
+			if ap.state == "pending" {
+				out = append(out, ApprovalCard{
+					ID: ap.id, SessionID: ap.sessionID,
+					Cred: ap.cred, Cell: ap.cell, State: ap.state,
+				})
+			}
+		}
+	}
+	return out
 }
 
 // Reason is why an approval resolved (ok|denied|timed_out|disconnected|

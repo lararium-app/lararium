@@ -124,6 +124,34 @@ func (a *AuditLogger) ReadTailRecord() (*AuditRecord, error) {
 	return &rec, nil
 }
 
+// ReadTailRecords returns the last n records across all audit files in
+// stream order (oldest first), walking files in lex order as one stream
+// per the §8.1 single-chain doctrine. Malformed lines are skipped.
+func (a *AuditLogger) ReadTailRecords(n int) ([]AuditRecord, error) {
+	files, err := a.ListLogFiles()
+	if err != nil {
+		return nil, err
+	}
+	var all []AuditRecord
+	for _, filePath := range files {
+		lines, err := readNonEmptyLines(filePath)
+		if err != nil {
+			return nil, err
+		}
+		for _, ln := range lines {
+			var rec AuditRecord
+			if err := json.Unmarshal(ln.raw, &rec); err != nil {
+				continue // malformed line: skip, verify suite reports it
+			}
+			all = append(all, rec)
+		}
+	}
+	if n > 0 && len(all) > n {
+		all = all[len(all)-n:]
+	}
+	return all, nil
+}
+
 type lineInfo struct {
 	num int
 	raw []byte
