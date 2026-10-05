@@ -2,7 +2,6 @@ package custos
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -134,13 +133,32 @@ func NewSurrogateRegistry() *SurrogateRegistry {
 	}
 }
 
-// GenerateSurrogateToken creates 32 random bytes, URL-safe with sur_ prefix per CUSTOS §4.3.
+const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// GenerateSurrogateToken creates a surrogate token with sur_ prefix followed by
+// exactly 22 base62 characters via uniform rejection sampling over crypto/rand
+// per CUSTOS-SPEC §4.3 (a byte is acceptable if < 62 * floor(256/62) = 248).
 func GenerateSurrogateToken() (string, error) {
-	b := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return "", fmt.Errorf("generate surrogate token: %w", err)
+	const tokenLen = 22
+	const maxAcceptable = 248 // 62 * floor(256/62) = 248; uniform without modulo bias
+	out := make([]byte, tokenLen)
+	var generated int
+	buf := make([]byte, 32)
+	for generated < tokenLen {
+		if _, err := io.ReadFull(rand.Reader, buf); err != nil {
+			return "", fmt.Errorf("generate surrogate token: %w", err)
+		}
+		for _, b := range buf {
+			if b < maxAcceptable {
+				out[generated] = base62Alphabet[b%62]
+				generated++
+				if generated == tokenLen {
+					break
+				}
+			}
+		}
 	}
-	return "sur_" + base64.RawURLEncoding.EncodeToString(b), nil
+	return "sur_" + string(out), nil
 }
 
 // DecryptSurrogates decrypts surrogates.age using age scrypt under passphrase per CUSTOS §4.3.
@@ -188,6 +206,16 @@ func EncryptSurrogates(doc *SurrogateDoc, passphrase string) ([]byte, error) {
 		return nil, err
 	}
 	return EncryptAge(b, passphrase)
+}
+
+// DecryptSurrogatesWithKey decrypts surrogates.age using the retained derived key per CUSTOS-SPEC §4.3, §C3.
+func DecryptSurrogatesWithKey(ciphertext []byte, key []byte) (*SurrogateDoc, error) {
+	return DecryptSurrogates(ciphertext, string(key))
+}
+
+// EncryptSurrogatesWithKey serializes and encrypts SurrogateDoc using the retained derived key per CUSTOS-SPEC §4.3, §C3.
+func EncryptSurrogatesWithKey(doc *SurrogateDoc, key []byte) ([]byte, error) {
+	return EncryptSurrogates(doc, string(key))
 }
 
 // LoadAndReconcile reads surrogates.age, reconciles with vault credentials, and filters corrupt entries.

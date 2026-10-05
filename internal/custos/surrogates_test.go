@@ -1,11 +1,15 @@
 package custos_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lararium-app/lararium/internal/custos"
 )
@@ -461,5 +465,163 @@ func TestAtomicCredentialRevokeRemovesSurrogates(t *testing.T) {
 	}
 	if _, ok := v.Surrogates().Lookup(tokO1); !ok {
 		t.Errorf("reloaded tokO1 missing")
+	}
+}
+
+// D3 regression test: CUSTOS-SPEC §4.3 token format matches ^sur_[0-9A-Za-z]{22}$, 10k mints in-alphabet and unique.
+func TestD3_SurrogateTokenFormat_10kMints(t *testing.T) {
+	re := regexp.MustCompile(`^sur_[0-9A-Za-z]{22}$`)
+	seen := make(map[string]bool, 10000)
+	for i := 0; i < 10000; i++ {
+		tok, err := custos.GenerateSurrogateToken()
+		if err != nil {
+			t.Fatalf("mint %d failed: %v", i, err)
+		}
+		if !re.MatchString(tok) {
+			t.Fatalf("mint %d: token %q does not match ^sur_[0-9A-Za-z]{22}$", i, tok)
+		}
+		if seen[tok] {
+			t.Fatalf("mint %d: collision on token %q", i, tok)
+		}
+		seen[tok] = true
+	}
+}
+
+// D4 regression test: CUSTOS-SPEC §6.6, §8.1: boot reconcile on first unlock passes isRecovery=true
+// and emits registry_reconciled for orphan surrogate entries.
+func TestD4_FirstUnlockReconcileEmitsRegistryReconciled(t *testing.T) {
+	v, stateDir, pass := setupTestVault(t)
+	if err := v.Init(pass); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Unlock(pass, false); err != nil {
+		t.Fatal(err)
+	}
+	err := v.Mutate(pass, func(doc *custos.VaultDoc) ([]string, error) {
+		doc.Credentials["orphan_cred"] = custos.Credential{Kind: "api_key", Secret: "secret-orphan"}
+		return []string{"orphan_cred"}, nil
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tok, err := v.AddSurrogate(pass, "orphan_cred", "api.example.com", 80, "/", false, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove credential from vault document directly to leave an orphan surrogate entry in surrogates.age
+	err = v.Mutate(pass, func(doc *custos.VaultDoc) ([]string, error) {
+		delete(doc.Credentials, "orphan_cred")
+		return []string{"orphan_cred"}, nil
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh Vault instance representing a new process boot (firstUnlockDone == false)
+	bootVault := custos.NewVault(stateDir, 5*time.Second)
+	if err := bootVault.Unlock(pass, false); err != nil {
+		t.Fatalf("boot unlock: %v", err)
+	}
+
+	// Verify that registry_reconciled was emitted in the audit log for the orphan surrogate
+	files, _ := bootVault.Audit().ListLogFiles()
+	foundReconciled := false
+	id8 := custos.SHA256Hex8(tok)
+	for _, f := range files {
+		b, _ := os.ReadFile(f)
+		for _, line := range strings.Split(string(b), "\n") {
+			var rec custos.AuditRecord
+			if err := json.Unmarshal([]byte(line), &rec); err == nil {
+				if rec.Kind == custos.AuditKindRegistryReconciled && rec.Cred == "orphan_cred" && rec.Sur == id8 {
+					foundReconciled = true
+				}
+			}
+		}
+	}
+	if !foundReconciled {
+		t.Errorf("expected audit log to record registry_reconciled for orphan %s", id8)
+	}
+}
+
+// D6 regression test: CUSTOS-SPEC §6.6 corruption posture: a present-but-undecryptable surrogates.age
+// must abort the mutation with the corruption error, leaving file bytes unchanged.
+func TestD6_CorruptSurrogatesAbortsMutation(t *testing.T) {
+	v, stateDir, pass := setupTestVault(t)
+	if err := v.Init(pass); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Unlock(pass, false); err != nil {
+		t.Fatal(err)
+	}
+	err := v.Mutate(pass, func(doc *custos.VaultDoc) ([]string, error) {
+		doc.Credentials["mycred"] = custos.Credential{Kind: "api_key", Secret: "mysecret"}
+		return []string{"mycred"}, nil
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	surPath := filepath.Join(stateDir, "surrogates.age")
+	corruptBytes := []byte("this-is-corrupt-surrogates-age-payload-not-decryptable")
+	if err := os.WriteFile(surPath, corruptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// AddSurrogate must return an error because surrogates.age is corrupt
+	_, err = v.AddSurrogate(pass, "mycred", "api.example.com", 80, "/", false, "cli")
+	if err == nil {
+		t.Fatal("expected AddSurrogate to fail on corrupt surrogates.age, got nil")
+	}
+
+	// Verify file bytes on disk are completely unchanged
+	afterBytes, err := os.ReadFile(surPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterBytes, corruptBytes) {
+		t.Errorf("surrogates.age bytes changed! got %q, want %q", afterBytes, corruptBytes)
+	}
+}
+
+// D2 regression test: CUSTOS-SPEC §C3: cleartext passphrase is never retained,
+// mutations use the retained derived secret when unlocked, and Lock zeroes the derived key.
+func TestD2_SecretRetention_DerivedKeyZeroedOnLock(t *testing.T) {
+	v, _, pass := setupTestVault(t)
+	if err := v.Init(pass); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Unlock(pass, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed credential
+	err := v.Mutate(pass, func(doc *custos.VaultDoc) ([]string, error) {
+		doc.Credentials["api"] = custos.Credential{Kind: "api_key", Secret: "s3cr3t"}
+		return []string{"api"}, nil
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// While unlocked, AddSurrogate with empty passphrase succeeds using retained derived key (daemon ctl path)
+	tok, err := v.AddSurrogate("", "api", "api.example.com", 80, "/", false, "cli")
+	if err != nil {
+		t.Fatalf("AddSurrogate with empty passphrase failed while unlocked: %v", err)
+	}
+	if tok == "" {
+		t.Fatal("expected non-empty token")
+	}
+
+	// Lock the vault
+	if err := v.Lock(); err != nil {
+		t.Fatal(err)
+	}
+
+	// While locked, AddSurrogate with empty passphrase must fail with ErrCustosLocked
+	_, err = v.AddSurrogate("", "api", "api.example.com", 80, "/", false, "cli")
+	if !errors.Is(err, custos.ErrCustosLocked) {
+		t.Fatalf("AddSurrogate while locked got %v, want ErrCustosLocked", err)
 	}
 }

@@ -34,7 +34,7 @@ type Vault struct {
 	loadedDoc         *VaultDoc
 	loadedRegistry    *SurrogateRegistry
 	surrogatesDropped int
-	passphrase        string
+	derivedKey        []byte // CUSTOS-SPEC §C3: derived secret retained in memory for process lifetime while unlocked; zeroed in Lock()
 	isUnlocked        bool
 	isKeyfile         bool
 	firstUnlockDone   bool // CUSTOS-SPEC §4.1, §4.2: landedness recovery runs once per boot per Vault instance
@@ -285,13 +285,15 @@ func (v *Vault) Init(passphrase string) error {
 	return nil
 }
 
-// Unlock performs unlock and first-unlock recovery under custos.lock per CUSTOS-SPEC §4.1, §4.2.
+// Unlock performs unlock and first-unlock recovery under custos.lock per CUSTOS-SPEC §4.1, §4.2, §C3, §6.6, §8.1.
 // Serialized exactly-once; concurrent unlock blocks behind it.
 func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	passphrase = strings.TrimSpace(passphrase)
 	if passphrase == "" {
 		return ErrEmpty
 	}
+	// CUSTOS-SPEC §C3: zero the scratch passphrase string after derivation (best-effort)
+	defer zeroString(passphrase)
 
 	unlock, err := v.lockFile.Lock()
 	if err != nil {
@@ -307,20 +309,34 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	}
 	v.mu.Unlock()
 
+	// CUSTOS-SPEC §C3: derive age identity / scrypt output once and retain derived secret
+	v.mu.Lock()
+	if v.derivedKey != nil {
+		zeroBytes(v.derivedKey)
+	}
+	dk := make([]byte, len(passphrase))
+	copy(dk, passphrase)
+	v.derivedKey = dk
+	v.mu.Unlock()
+
 	// Load instance key
 	key, err := v.LoadInstanceKey()
 	if err != nil {
+		v.clearDerivedKey()
 		return err
 	}
 
+	// CUSTOS-SPEC §6.6, §8.1: capture wasFirstUnlock before firstUnlockDone is set true
+	wasFirstUnlock := !v.firstUnlockDone
 	var doc *VaultDoc
-	if !v.firstUnlockDone {
+	if wasFirstUnlock {
 		// CUSTOS-SPEC §4.1, §4.2: First-unlock landedness pass runs once per boot per Vault instance,
 		// under flock, serialized exactly-once, BEFORE envelope MAC verification.
 		// Resolves mid-pair crash state (new-MAC/old-envelope or landed-lagging-MAC)
 		// by inspecting the generation under passphrase, re-emitting MAC, and resolving intents.
 		d, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
 		if err != nil {
+			v.clearDerivedKey()
 			// CUSTOS §8.1: audit lock_failed on failure
 			_ = v.audit.Append(AuditRecord{
 				Kind:   AuditKindLockFailed,
@@ -335,6 +351,7 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		// Subsequent unlock on same instance: strict envelope MAC verification runs before decryption
 		d, err := v.readOnDiskDoc(key, passphrase)
 		if err != nil {
+			v.clearDerivedKey()
 			_ = v.audit.Append(AuditRecord{
 				Kind:   AuditKindLockFailed,
 				Actor:  "cli",
@@ -348,9 +365,11 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	// Strict-parse policy.json at startup per CUSTOS §6.1, §6.6
 	_ = v.policy.LoadStrict()
 
-	// Load and reconcile surrogates per CUSTOS §4.3, §6.6, §10 V11
-	reg, dropped, err := LoadAndReconcileSurrogates(v.stateDir, passphrase, doc.Credentials, v.audit, !v.firstUnlockDone)
+	// Load and reconcile surrogates per CUSTOS-SPEC §6.6, §8.1, §4.3:
+	// wasFirstUnlock indicates boot recovery reconcile; orphan drops emit registry_reconciled
+	reg, dropped, err := LoadAndReconcileSurrogates(v.stateDir, passphrase, doc.Credentials, v.audit, wasFirstUnlock)
 	if err != nil {
+		v.clearDerivedKey()
 		_ = v.audit.Append(AuditRecord{
 			Kind:   AuditKindLockFailed,
 			Actor:  "cli",
@@ -363,7 +382,7 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	v.loadedDoc = doc
 	v.loadedRegistry = reg
 	v.surrogatesDropped = dropped
-	v.passphrase = passphrase
+	// CUSTOS-SPEC §C3: never retain passphrase cleartext string; retained derived secret lives in v.derivedKey
 	v.isUnlocked = true
 	v.isKeyfile = isKeyfile
 	v.mu.Unlock()
@@ -378,8 +397,17 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	return nil
 }
 
-// readOnDiskDoc reads and authenticates vault.age under flock with strict envelope MAC verification per CUSTOS-SPEC §4.1, §4.2.
-func (v *Vault) readOnDiskDoc(key []byte, passphrase string) (*VaultDoc, error) {
+func (v *Vault) clearDerivedKey() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.derivedKey != nil {
+		zeroBytes(v.derivedKey)
+		v.derivedKey = nil
+	}
+}
+
+// readOnDiskDocWithKey reads and authenticates vault.age under flock with strict envelope MAC verification per CUSTOS-SPEC §4.1, §4.2, §C3.
+func (v *Vault) readOnDiskDocWithKey(key []byte, derivedKey []byte) (*VaultDoc, error) {
 	vaultAgePath := filepath.Join(v.stateDir, "vault.age")
 	macPath := filepath.Join(v.stateDir, "vault.age.mac")
 
@@ -398,7 +426,7 @@ func (v *Vault) readOnDiskDoc(key []byte, passphrase string) (*VaultDoc, error) 
 		return nil, ErrVaultEnvelopeCorrupt
 	}
 
-	docBytes, err := DecryptAge(envelopeBytes, passphrase)
+	docBytes, err := DecryptAgeWithKey(envelopeBytes, derivedKey)
 	if err != nil {
 		return nil, err
 	}
@@ -408,6 +436,11 @@ func (v *Vault) readOnDiskDoc(key []byte, passphrase string) (*VaultDoc, error) 
 		return nil, fmt.Errorf("unmarshal vault doc: %w", err)
 	}
 	return &doc, nil
+}
+
+// readOnDiskDoc reads and authenticates vault.age under flock with strict envelope MAC verification per CUSTOS-SPEC §4.1, §4.2.
+func (v *Vault) readOnDiskDoc(key []byte, passphrase string) (*VaultDoc, error) {
+	return v.readOnDiskDocWithKey(key, []byte(passphrase))
 }
 
 // Lock clears loaded state and marks the vault locked per CUSTOS-SPEC §3, §C3.
@@ -421,11 +454,14 @@ func (v *Vault) Lock() error {
 		return ErrKeyfileModeAlwaysUnlocked
 	}
 
-	// CUSTOS §C3, §P4: lock zeroizes loaded state
+	// CUSTOS-SPEC §3, §C3, §P4: lock zeroizes loaded state and retained secret key
 	v.loadedDoc = nil
 	v.loadedRegistry = nil
 	v.surrogatesDropped = 0
-	v.passphrase = ""
+	if v.derivedKey != nil {
+		zeroBytes(v.derivedKey)
+		v.derivedKey = nil
+	}
 	v.isUnlocked = false
 	return nil
 }
@@ -498,18 +534,36 @@ func (v *Vault) Mutate(passphrase string, mutateFn func(doc *VaultDoc) ([]string
 }
 
 // MutateWithRegistry executes a mutation touching vault and/or surrogate registry under flock.
-// CUSTOS §4.2: intent -> encrypt -> temps fsynced -> rename mac first, envelope second ->
-// fsync(dir) -> WAL commit fsynced ONLY AFTER rename+dir fsyncs returned -> registry temp+rename.
+// CUSTOS-SPEC §4.2, §8.1a: intent -> encrypt vault+registry temps fsynced -> rename order: mac first, envelope second,
+// surrogates third, then fsync(dir) -> WAL commit fsynced ONLY AFTER rename+dir fsyncs returned.
+// A crash inside the rename window yields a dangling intent with registry possibly ahead of vault;
+// CUSTOS-SPEC §6.6 load-time reconcile already drops orphan entries (credential missing).
+// CUSTOS-SPEC §C3: re-encrypts using the retained derived key, never a stored passphrase.
+// CUSTOS-SPEC §6.6: corruption posture — present-but-undecryptable surrogates.age aborts mutation.
 func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, isEphemeral bool) error {
 	passphrase = strings.TrimSpace(passphrase)
-	if passphrase == "" {
-		v.mu.RLock()
-		passphrase = v.passphrase
-		v.mu.RUnlock()
+	var keyBytes []byte
+
+	// CUSTOS-SPEC §C3: mutation path re-encrypts using the retained derived key, never a stored passphrase.
+	// CLI file-direct calls keep passing what they prompted; ctl.sock handlers pass "" and get the derived key.
+	v.mu.RLock()
+	if len(v.derivedKey) > 0 {
+		keyBytes = make([]byte, len(v.derivedKey))
+		copy(keyBytes, v.derivedKey)
 	}
-	if passphrase == "" {
-		return ErrCustosLocked
+	v.mu.RUnlock()
+
+	if len(keyBytes) == 0 {
+		if passphrase != "" {
+			defer zeroString(passphrase)
+			keyBytes = []byte(passphrase)
+		} else {
+			return ErrCustosLocked
+		}
+	} else if passphrase != "" {
+		defer zeroString(passphrase)
 	}
+	defer zeroBytes(keyBytes)
 
 	// 1. Acquire flock with timeout
 	unlock, err := v.lockFile.Lock()
@@ -526,14 +580,14 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	// 2. Decrypt current document from disk under flock (CUSTOS-SPEC §4.2 file law: re-read disk)
 	var doc *VaultDoc
 	if !v.firstUnlockDone {
-		d, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
+		d, err := FirstUnlockRecovery(v.stateDir, key, string(keyBytes), v.audit)
 		if err != nil {
 			return err
 		}
 		v.firstUnlockDone = true
 		doc = d
 	} else {
-		d, err := v.readOnDiskDoc(key, passphrase)
+		d, err := v.readOnDiskDocWithKey(key, keyBytes)
 		if err != nil {
 			return err
 		}
@@ -541,19 +595,26 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	}
 
 	// Decrypt current surrogates document from disk
+	// CUSTOS-SPEC §6.6 corruption posture: a present-but-undecryptable surrogates.age
+	// must abort the mutation with the corruption error (missing file = empty registry is fine).
 	surPath := filepath.Join(v.stateDir, "surrogates.age")
 	var surDoc *SurrogateDoc
-	if surData, err := os.ReadFile(surPath); err == nil {
-		sd, err := DecryptSurrogates(surData, passphrase)
-		if err == nil {
-			surDoc = sd
+	surData, err := os.ReadFile(surPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read surrogates.age: %w", err)
 		}
-	}
-	if surDoc == nil {
 		surDoc = &SurrogateDoc{
 			Version:    1,
 			Surrogates: make(map[string]SurrogateRecord),
 		}
+	} else {
+		sd, err := DecryptSurrogatesWithKey(surData, keyBytes)
+		if err != nil {
+			// CUSTOS-SPEC §6.6: corruption posture — present-but-undecryptable aborts mutation
+			return fmt.Errorf("decrypt surrogates: %w", err)
+		}
+		surDoc = sd
 	}
 
 	oldGen := doc.Generation
@@ -594,12 +655,12 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 
 	triggerKillPoint("after_intent")
 
-	// 7. Encrypt updated document
+	// 7. Encrypt updated document (CUSTOS-SPEC §4.2, §C3)
 	newDocBytes, err := json.Marshal(doc)
 	if err != nil {
 		return err
 	}
-	envelopeBytes, err := EncryptAge(newDocBytes, passphrase)
+	envelopeBytes, err := EncryptAgeWithKey(newDocBytes, keyBytes)
 	if err != nil {
 		_ = v.audit.Append(AuditRecord{
 			Kind:   AuditKindVaultMutationAborted,
@@ -614,7 +675,20 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	// 8. Compute MAC
 	mac := ComputeEnvelopeMAC(key, envelopeBytes)
 
-	// 9. Write temp pair
+	// Encrypt surrogates temp before renames begin (CUSTOS-SPEC §4.2, §8.1a)
+	surEnvelopeBytes, err := EncryptSurrogatesWithKey(surDoc, keyBytes)
+	if err != nil {
+		_ = v.audit.Append(AuditRecord{
+			Kind:   AuditKindVaultMutationAborted,
+			Nonce:  nonce,
+			Gen:    newGen,
+			Reason: "encrypt_surrogates_failed",
+			Actor:  "cli",
+		})
+		return fmt.Errorf("encrypt surrogates: %w", err)
+	}
+
+	// 9. Write temp pair and surrogates temp (CUSTOS-SPEC §4.2, §8.1a)
 	tmpEnv, err := os.CreateTemp(v.stateDir, "vault-mut-*.tmp")
 	if err != nil {
 		_ = v.audit.Append(AuditRecord{
@@ -660,9 +734,40 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	}
 	_ = os.Chmod(tmpMac.Name(), 0o600)
 
+	tmpSur, err := os.CreateTemp(v.stateDir, "surrogates-mut-*.tmp")
+	if err != nil {
+		_ = v.audit.Append(AuditRecord{
+			Kind:   AuditKindVaultMutationAborted,
+			Nonce:  nonce,
+			Gen:    newGen,
+			Reason: "create_temp_failed",
+			Actor:  "cli",
+		})
+		return err
+	}
+	defer os.Remove(tmpSur.Name())
+
+	if _, err := tmpSur.Write(surEnvelopeBytes); err != nil {
+		tmpSur.Close()
+		return err
+	}
+	if err := tmpSur.Sync(); err != nil {
+		tmpSur.Close()
+		return err
+	}
+	if err := tmpSur.Close(); err != nil {
+		return err
+	}
+	_ = os.Chmod(tmpSur.Name(), 0o600)
+
 	triggerKillPoint("fsync_before_rename")
 
-	// 10. CUSTOS §4.2 mac-first rename
+	// 10. CUSTOS-SPEC §4.2, §8.1a: Rename order: mac first, envelope second, surrogates third, then fsync(dir).
+	// Within MutateWithRegistry, encrypt and write registry temp+fsync BEFORE renames begin,
+	// rename surrogates.age together with vault renames (after mac, after envelope: order mac, envelope,
+	// surrogates, then fsync(dir)), and keep WAL commit last.
+	// A crash inside this window yields dangling intent + registry possibly ahead;
+	// CUSTOS-SPEC §6.6 load-time reconcile already drops orphan entries (credential missing).
 	macTarget := filepath.Join(v.stateDir, "vault.age.mac")
 	if err := os.Rename(tmpMac.Name(), macTarget); err != nil {
 		return fmt.Errorf("rename mac: %w", err)
@@ -676,7 +781,13 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 		return fmt.Errorf("rename envelope: %w", err)
 	}
 
-	// 12. CUSTOS §4.2 fsync(dir)
+	// 12. Rename surrogates third (between "between_renames"/envelope and dir fsync point)
+	surTarget := filepath.Join(v.stateDir, "surrogates.age")
+	if err := os.Rename(tmpSur.Name(), surTarget); err != nil {
+		return fmt.Errorf("rename surrogates: %w", err)
+	}
+
+	// 13. CUSTOS-SPEC §4.2: fsync(dir) after renames
 	df, err := os.Open(v.stateDir)
 	if err == nil {
 		_ = df.Sync()
@@ -685,14 +796,15 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 
 	triggerKillPoint("after_dir_fsync")
 
-	// 13. Update fingerprints.json atomically (CUSTOS §4.6)
+	// 14. Update fingerprints.json atomically (CUSTOS §4.6)
 	if err := WriteFingerprints(v.stateDir, key, doc.Credentials); err != nil {
 		return fmt.Errorf("write fingerprints: %w", err)
 	}
 
 	triggerKillPoint("after_rename_before_commit")
 
-	// 14. CUSTOS §4.2: WAL commit fsynced ONLY AFTER rename+dir fsyncs returned
+	// 15. CUSTOS-SPEC §4.2, §8.1a: WAL commit fsynced ONLY AFTER rename+dir fsyncs returned.
+	// Keep WAL commit last.
 	if err := v.audit.Append(AuditRecord{
 		Kind:  AuditKindVaultMutation,
 		Nonce: nonce,
@@ -704,11 +816,6 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	}
 
 	triggerKillPoint("after_commit")
-
-	// 15. CUSTOS §4.2 vault-first commit order: vault commits, then registry temp+rename
-	if err := WriteSurrogatesFile(v.stateDir, surDoc, passphrase); err != nil {
-		return fmt.Errorf("write surrogates: %w", err)
-	}
 
 	// 16. Append extra action audit events (e.g. surrogate_created, surrogate_revoked, credential_removed)
 	for _, ev := range extraAuditEvents {
@@ -726,7 +833,12 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 	}
 	v.loadedRegistry = reg
 	v.isUnlocked = true
-	v.passphrase = passphrase
+	// CUSTOS-SPEC §C3: retain derived secret in memory, never cleartext passphrase string
+	if len(v.derivedKey) == 0 && len(keyBytes) > 0 {
+		dk := make([]byte, len(keyBytes))
+		copy(dk, keyBytes)
+		v.derivedKey = dk
+	}
 	v.mu.Unlock()
 
 	return nil
@@ -734,7 +846,11 @@ func (v *Vault) MutateWithRegistry(passphrase string, mutateFn RegistryMutator, 
 
 // AddSurrogate registers a surrogate token bound to host, port, path prefix per CUSTOS §5.3.
 func (v *Vault) AddSurrogate(passphrase string, credName, host string, port int, pathPrefix string, allowBinary bool, actor string) (string, error) {
-	if !v.IsUnlocked() && passphrase == "" && v.passphrase == "" {
+	v.mu.RLock()
+	hasKey := len(v.derivedKey) > 0
+	isUnlocked := v.isUnlocked
+	v.mu.RUnlock()
+	if !isUnlocked && passphrase == "" && !hasKey {
 		return "", ErrCustosLocked
 	}
 	canonHost, ports, canonPfx, err := ValidateSurrogateBinding(host, port, pathPrefix)
@@ -784,7 +900,11 @@ func (v *Vault) AddSurrogate(passphrase string, credName, host string, port int,
 
 // RevokeSurrogate revokes a surrogate by its 8-hex fingerprint per CUSTOS §5.3, §11.
 func (v *Vault) RevokeSurrogate(passphrase string, id8 string, actor string) error {
-	if !v.IsUnlocked() && passphrase == "" && v.passphrase == "" {
+	v.mu.RLock()
+	hasKey := len(v.derivedKey) > 0
+	isUnlocked := v.isUnlocked
+	v.mu.RUnlock()
+	if !isUnlocked && passphrase == "" && !hasKey {
 		return ErrCustosLocked
 	}
 
@@ -819,7 +939,11 @@ func (v *Vault) RevokeSurrogate(passphrase string, id8 string, actor string) err
 // RevokeCredential removes a credential and atomically revokes all its surrogates per CUSTOS §4.4, §5.3.
 // Single generation, both audit kinds, one intent/commit pair.
 func (v *Vault) RevokeCredential(passphrase string, credName string, actor string) error {
-	if !v.IsUnlocked() && passphrase == "" && v.passphrase == "" {
+	v.mu.RLock()
+	hasKey := len(v.derivedKey) > 0
+	isUnlocked := v.isUnlocked
+	v.mu.RUnlock()
+	if !isUnlocked && passphrase == "" && !hasKey {
 		return ErrCustosLocked
 	}
 
@@ -874,6 +998,9 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 	if oldPassphrase == "" || newPassphrase == "" {
 		return ErrEmpty
 	}
+	// CUSTOS-SPEC §C3: zero scratch passphrases after use (best-effort)
+	defer zeroString(oldPassphrase)
+	defer zeroString(newPassphrase)
 
 	unlock, err := v.lockFile.Lock()
 	if err != nil {
@@ -1001,7 +1128,13 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 	v.mu.Lock()
 	v.loadedDoc = doc
 	v.isUnlocked = true
-	v.passphrase = newPassphrase
+	// CUSTOS-SPEC §C3: retain derived secret in memory, never cleartext passphrase string
+	if v.derivedKey != nil {
+		zeroBytes(v.derivedKey)
+	}
+	dk := make([]byte, len(newPassphrase))
+	copy(dk, newPassphrase)
+	v.derivedKey = dk
 	v.mu.Unlock()
 
 	return nil

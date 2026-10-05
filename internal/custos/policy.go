@@ -382,6 +382,20 @@ func IsFloorDestination(ip net.IP) bool {
 		return true
 	}
 
+	// IPv4 documentation ranges per CUSTOS-SPEC CA-2(iii):
+	// 192.0.2.0/24 (TEST-NET-1), 198.51.100.0/24 (TEST-NET-2), 203.0.113.0/24 (TEST-NET-3)
+	if len(ip) == 4 {
+		if ip[0] == 192 && ip[1] == 0 && ip[2] == 2 {
+			return true
+		}
+		if ip[0] == 198 && ip[1] == 51 && ip[2] == 100 {
+			return true
+		}
+		if ip[0] == 203 && ip[1] == 0 && ip[2] == 113 {
+			return true
+		}
+	}
+
 	// IPv6 0::/8
 	if len(ip) == 16 && ip[0] == 0 {
 		return true
@@ -540,14 +554,14 @@ func ValidateEgressPattern(pattern string, verdict string, isAlways bool) (*Pars
 	}
 
 	if isIP {
-		// Floor check for unsatisfiable binding per §6.5
+		// CUSTOS-SPEC §4.3, §6.5: IP-form binding is ask-only; write path refuses auto rule (ip bindings are ask-only), no Always
+		if verdict == VerdictAuto {
+			return nil, ErrIPBindingsAskOnly
+		}
+		// Floor check for unsatisfiable binding per CUSTOS-SPEC §6.5
 		addr, _ := netip.ParseAddr(canonHost)
 		if isAlways && IsFloorAddress(addr) {
 			return nil, ErrUnsatisfiableBinding
-		}
-		// CUSTOS §4.3, §6.5: IP-form binding is ask-always; write path refuses auto rule (ip bindings are ask-only), no Always
-		if verdict == VerdictAuto {
-			return nil, ErrIPBindingsAskOnly
 		}
 		if isAlways {
 			return nil, ErrIPBindingsAskOnly

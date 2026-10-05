@@ -2,6 +2,7 @@ package custos_test
 
 import (
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/lararium-app/lararium/internal/custos"
@@ -490,5 +491,29 @@ func TestWorkerVsBearerLaneQualification(t *testing.T) {
 	})
 	if verdict != custos.VerdictAuto || matched != "gmail/send" {
 		t.Errorf("worker send decided %s (%s), want auto (gmail/send)", verdict, matched)
+	}
+}
+
+// D5 regression test: CUSTOS-SPEC CA-2(iii) documentation ranges plus non-floor public IP allowed.
+func TestFloorDestination_DocumentationRangesAndPublicIP(t *testing.T) {
+	docRanges := []string{
+		"192.0.2.1",    // TEST-NET-1 (192.0.2.0/24)
+		"198.51.100.1", // TEST-NET-2 (198.51.100.0/24)
+		"203.0.113.1",  // TEST-NET-3 (203.0.113.0/24)
+	}
+	for _, ipStr := range docRanges {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			t.Fatalf("failed to parse IP %q", ipStr)
+		}
+		if !custos.IsFloorDestination(ip) {
+			t.Errorf("IP %s must be floored per CUSTOS-SPEC CA-2(iii)", ipStr)
+		}
+	}
+
+	// Non-floor public IP still allowed
+	publicIP := net.ParseIP("93.184.216.34")
+	if custos.IsFloorDestination(publicIP) {
+		t.Errorf("public IP %s must NOT be floored", publicIP)
 	}
 }
