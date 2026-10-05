@@ -3,7 +3,11 @@
 # sessions/). API keys come from the host environment only; nothing secret
 # is baked into the image.
 #
-#   OPENROUTER_API_KEY=sk-or-... docker compose up --build
+#   # talk to a model server on your own machine (llama.cpp et al):
+#   docker compose up --build
+#   # ...or any hosted endpoint: uncomment one provider in
+#   # docker/config/lararium.yaml and pass its key through:
+#   OPENAI_API_KEY=*** docker compose up --build
 #
 # Starts the web chat + API on http://127.0.0.1:7717; open a door with:
 #   docker compose exec hearthd hearthd token create me
@@ -24,8 +28,17 @@ services:
     ports:
       - "127.0.0.1:7717:7717"
     environment:
+      # Provider keys: whatever your lararium.yaml references via
+      # api_key_env. Uncomment what you use (add more freely — a
+      # provider with no key in the environment simply stays unused).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LARARIUM_CONFIG: /etc/lararium/lararium.yaml
+    # Lets the container reach a model server on the host
+    # (http://host.docker.internal:PORT); harmless where it is built in.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./config:/etc/lararium:ro
       # Bind (not named volume): persona files are required at startup and
