@@ -314,6 +314,498 @@ func runChangePassphrase(v *custos.Vault, stateDir string, cfg *custos.Config) i
 	return 0
 }
 
+func getPassphrase(keyfilePath string) string {
+	if keyfilePath != "" {
+		if b, err := os.ReadFile(keyfilePath); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		line, err := stdinReader.ReadString('\n')
+		if err == nil {
+			return strings.TrimSpace(line)
+		}
+	} else {
+		fmt.Fprint(os.Stderr, "passphrase (input hidden): ")
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
+func runSurrogateAdd(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
+	var posArgs []string
+	var flagArgs []string
+	for i := 0; i < len(subArgs[1:]); i++ {
+		arg := subArgs[1+i]
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			eqIdx := strings.Index(arg, "=")
+			if eqIdx == -1 {
+				flagName := strings.TrimLeft(arg, "-")
+				if (flagName == "host" || flagName == "path" || flagName == "port") && i+1 < len(subArgs[1:]) {
+					i++
+					flagArgs = append(flagArgs, subArgs[1+i])
+				}
+			}
+		} else {
+			posArgs = append(posArgs, arg)
+		}
+	}
+
+	fs := flag.NewFlagSet("surrogate add", flag.ContinueOnError)
+	hostFlag := fs.String("host", "", "bound destination host")
+	pathFlag := fs.String("path", "/", "bound path prefix")
+	portFlag := fs.Int("port", 80, "bound port")
+	allowBinaryFlag := fs.Bool("allow-binary", false, "allow binary response pass-through")
+
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(posArgs) == 0 || *hostFlag == "" {
+		fmt.Fprintf(os.Stderr, "usage: custos surrogate add <credential> --host <host> [--path <path>] [--port <port>] [--allow-binary]\n")
+		return 2
+	}
+	credName := posArgs[0]
+
+	// Try daemon first
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		req := struct {
+			Credential  string `json:"credential"`
+			Host        string `json:"host"`
+			Port        int    `json:"port"`
+			PathPrefix  string `json:"path_prefix"`
+			AllowBinary bool   `json:"allow_binary"`
+		}{
+			Credential:  credName,
+			Host:        *hostFlag,
+			Port:        *portFlag,
+			PathPrefix:  *pathFlag,
+			AllowBinary: *allowBinaryFlag,
+		}
+		b, err := json.Marshal(req)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		resp, dialErr := client.RoundTripWithArg("SURROGATE-ADD", string(b))
+		if dialErr == nil {
+			fmt.Println(resp)
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+	tok, err := v.AddSurrogate(pass, credName, *hostFlag, *portFlag, *pathFlag, *allowBinaryFlag, "cli")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println(tok)
+	return 0
+}
+
+func runSurrogateList(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTrip("SURROGATE-LIST")
+		if dialErr == nil {
+			var list []custos.SurrogateRecord
+			if err := json.Unmarshal([]byte(resp), &list); err == nil {
+				fmt.Println("name\tfingerprint\tbinding")
+				for _, r := range list {
+					fmt.Printf("%s\t%s\t%s\n", r.Credential, r.Fingerprint(), r.BindingString())
+				}
+				return 0
+			}
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+	list, err := v.ListSurrogates()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println("name\tfingerprint\tbinding")
+	for _, r := range list {
+		fmt.Printf("%s\t%s\t%s\n", r.Credential, r.Fingerprint(), r.BindingString())
+	}
+	return 0
+}
+
+func runSurrogateRevoke(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: custos surrogate revoke <id8>\n")
+		return 2
+	}
+	id8 := subArgs[1]
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTripWithArg("SURROGATE-REVOKE", id8)
+		if dialErr == nil {
+			_ = resp
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+	if err := v.RevokeSurrogate(pass, id8, "cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	return 0
+}
+
+func runSurrogate(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: custos surrogate add|list|revoke [options]\n")
+		return 2
+	}
+
+	verb := subArgs[0]
+	switch verb {
+	case "add":
+		return runSurrogateAdd(v, stateDir, keyfilePath, cfg, subArgs)
+	case "list":
+		return runSurrogateList(v, stateDir, keyfilePath, cfg)
+	case "revoke":
+		return runSurrogateRevoke(v, stateDir, keyfilePath, cfg, subArgs)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown surrogate subcommand %q\n", verb)
+		return 2
+	}
+}
+
+func parsePolicyAddArgs(args []string) (lane, pattern, verdict string, err error) {
+	if len(args) == 3 {
+		if custos.ValidVerdict(args[2]) {
+			return args[0], args[1], args[2], nil
+		}
+		if custos.ValidVerdict(args[0]) {
+			return args[1], args[2], args[0], nil
+		}
+	} else if len(args) == 2 {
+		switch {
+		case custos.ValidVerdict(args[1]):
+			pattern = args[0]
+			verdict = args[1]
+		case custos.ValidVerdict(args[0]):
+			verdict = args[0]
+			pattern = args[1]
+		default:
+			return "", "", "", errors.New("missing valid verdict")
+		}
+
+		// Infer lane from pattern
+		if strings.Contains(pattern, ".") || strings.HasPrefix(pattern, "[") || (strings.HasSuffix(pattern, "/*") && strings.Contains(pattern[:len(pattern)-2], ".")) {
+			lane = "egress"
+		} else {
+			hostPart := pattern
+			if idx := strings.Index(pattern, ":"); idx != -1 {
+				hostPart = pattern[:idx]
+			}
+			if _, isIP, _ := custos.NormalizeHost(hostPart); isIP {
+				lane = "egress"
+			} else {
+				lane = "credential"
+			}
+		}
+		return lane, pattern, verdict, nil
+	}
+	return "", "", "", errors.New("invalid arguments for policy add")
+}
+
+func runPolicyAdd(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
+	lane, pattern, verdict, err := parsePolicyAddArgs(subArgs[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "usage: custos policy add [<lane>] <pattern> <verdict>\n")
+		return 2
+	}
+
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		req := struct {
+			Lane    string `json:"lane"`
+			Pattern string `json:"pattern"`
+			Verdict string `json:"verdict"`
+		}{Lane: lane, Pattern: pattern, Verdict: verdict}
+		b, err := json.Marshal(req)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+		resp, dialErr := client.RoundTripWithArg("POLICY-ADD", string(b))
+		if dialErr == nil {
+			if resp != "" {
+				notes := strings.Split(resp, "\x00")
+				for _, n := range notes {
+					if strings.TrimSpace(n) != "" {
+						fmt.Fprintln(os.Stderr, n)
+					}
+				}
+			}
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	// File-direct
+	_ = v.Policy().LoadStrict()
+	var notes []string
+	var addErr error
+	if lane == "egress" {
+		notes, addErr = v.Policy().AddEgressRule(pattern, verdict, false, "cli", "cli")
+	} else {
+		notes, addErr = v.Policy().AddCredentialRule(pattern, verdict, false, "cli", "cli")
+	}
+	if addErr != nil {
+		fmt.Fprintln(os.Stderr, addErr.Error())
+		return 1
+	}
+	for _, n := range notes {
+		fmt.Fprintln(os.Stderr, n)
+	}
+	return 0
+}
+
+func runPolicyList(v *custos.Vault, stateDir string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTrip("POLICY-LIST")
+		if dialErr == nil {
+			var rows []custos.PolicyRuleRow
+			if err := json.Unmarshal([]byte(resp), &rows); err == nil {
+				fmt.Println("lane\tpattern\tverdict\talways\tsource")
+				for _, r := range rows {
+					fmt.Printf("%s\t%s\t%s\t%t\t%s\n", r.Lane, r.Pattern, r.Verdict, r.Always, r.Source)
+				}
+				return 0
+			}
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	_ = v.Policy().LoadStrict()
+	rows := v.Policy().ListRules()
+	fmt.Println("lane\tpattern\tverdict\talways\tsource")
+	for _, r := range rows {
+		fmt.Printf("%s\t%s\t%s\t%t\t%s\n", r.Lane, r.Pattern, r.Verdict, r.Always, r.Source)
+	}
+	return 0
+}
+
+func runPolicyRm(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: custos policy rm [<lane>] <pattern>\n")
+		return 2
+	}
+	lane := ""
+	pat := subArgs[1]
+	if len(subArgs) >= 3 {
+		lane = subArgs[1]
+		pat = subArgs[2]
+	}
+
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		arg := pat
+		if lane != "" {
+			arg = lane + "\x00" + pat
+		}
+		_, dialErr := client.RoundTripWithArg("POLICY-RM", arg)
+		if dialErr == nil {
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	_ = v.Policy().LoadStrict()
+	removed, rmErr := v.Policy().RemoveRule(lane, pat, "cli")
+	if rmErr != nil {
+		fmt.Fprintln(os.Stderr, rmErr.Error())
+		return 1
+	}
+	if !removed {
+		fmt.Fprintln(os.Stderr, "rule not found")
+		return 1
+	}
+	return 0
+}
+
+func runPolicyReset(v *custos.Vault, stateDir string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTrip("POLICY-RESET")
+		if dialErr == nil {
+			fmt.Println(resp)
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	_ = v.Policy().LoadStrict()
+	if err := v.Policy().Reset("cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println("always-rules cleared")
+	return 0
+}
+
+func runPolicy(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: custos policy add|list|rm|reset [options]\n")
+		return 2
+	}
+
+	verb := subArgs[0]
+	switch verb {
+	case "add":
+		return runPolicyAdd(v, stateDir, cfg, subArgs)
+	case "list":
+		return runPolicyList(v, stateDir, cfg)
+	case "rm":
+		return runPolicyRm(v, stateDir, cfg, subArgs)
+	case "reset":
+		return runPolicyReset(v, stateDir, cfg)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown policy subcommand %q\n", verb)
+		return 2
+	}
+}
+
+func runEgress(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) < 2 || subArgs[0] != "strict" {
+		fmt.Fprintf(os.Stderr, "usage: custos egress strict on|off\n")
+		return 2
+	}
+	val := subArgs[1]
+	if val != "on" && val != "off" {
+		fmt.Fprintf(os.Stderr, "usage: custos egress strict on|off\n")
+		return 2
+	}
+
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTripWithArg("EGRESS-STRICT", val)
+		if dialErr == nil {
+			fmt.Println(resp)
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	_ = v.Policy().LoadStrict()
+	if err := v.Policy().SetEgressStrict(val == "on", "cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Printf("egress strict: %s\n", val)
+	return 0
+}
+
+func runRevokeCredential(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: custos revoke <name>\n")
+		return 2
+	}
+	credName := subArgs[0]
+
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		_, dialErr := client.RoundTripWithArg("REVOKE-CREDENTIAL", credName)
+		if dialErr == nil {
+			return 0
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			fmt.Fprintln(os.Stderr, dialErr.Error())
+			return 1
+		}
+	}
+
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return 1
+		}
+	}
+	if err := v.RevokeCredential(pass, credName, "cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	return 0
+}
+
 func main() {
 	defaultCfg := "lararium.yaml"
 	if e := os.Getenv("LARARIUM_CONFIG"); e != "" {
@@ -367,6 +859,14 @@ func main() {
 		exitCode = runRestore(v, stateDir, cfg, subArgs, *yesFlag)
 	case "change-passphrase":
 		exitCode = runChangePassphrase(v, stateDir, cfg)
+	case "surrogate":
+		exitCode = runSurrogate(v, stateDir, keyfilePath, cfg, subArgs)
+	case "policy":
+		exitCode = runPolicy(v, stateDir, cfg, subArgs)
+	case "egress":
+		exitCode = runEgress(v, stateDir, cfg, subArgs)
+	case "revoke":
+		exitCode = runRevokeCredential(v, stateDir, keyfilePath, cfg, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb %q\n", verb)
 		exitCode = 2
