@@ -1,8 +1,8 @@
 # CUSTOS-SPEC — the security envelope: vault, surrogation, policy, audit
 
-Status: **DRAFT v4 — round 3 fully folded (pass A 7B/4M, pass B
-3B/9M+; union ~11 distinct, incl. the conflict-parse deadlock both
-passes caught). Suite V1–V26. Awaiting round 4.**
+Status: **DRAFT v5 — round 4 fully folded (pass A 3B/6M, pass B
+3B/11M; union 5 distinct real + bookkeeping). Suite V1–V26. Awaiting
+round 5 (convergence round).**
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -30,7 +30,13 @@ custos-owned startup line `custos: vault entry wins over keys.json for
 env-specific and must not be repurposed), (3) config. Env still
 outranks the vault; when env shadows a vault-resident name, K2's
 frozen shadow warning fires with the vault copy as the shadowed one —
-K2's mechanics are inherited, not inverted.
+K2's mechanics are inherited, not inverted. **Name-layer-only while
+locked:** the warning is comparison-free — it fires from the *name
+sets* (env-declared name ∈ vault fingerprint mirror ∪ keys.json),
+never by reading the shadowed value — so a locked instance prints it
+without decrypting anything; layer resolution while locked is a
+name-layer operation only, and any actual secret read stays
+unlock-gated per C3.
 (b) **Status enum gains** `set (custos)`. The other four status strings,
 all CLI commands, all endpoints, and all failure strings are unchanged
 frozen text — except as amended here. `sha256_8` for a `set (custos)`
@@ -92,10 +98,19 @@ DNAT'd 80/443 plus CONNECT only: **the proxy sees ports {80, 443},
 period**; port-qualified rules and bindings exist for the cooperative
 worker-dispatch path and the phase-2 taint plan, and a port-less rule
 matches every observed port. At custosd **start**, custosd pulls the
-live-cell listener set from hearthd (`list_listeners` over the control
-connection) and binds each — `bind_listener` events are then edge
+live-cell listener set from hearthd over **the custosd↔hearthd
+control connection — not `<hearth>/custos/ctl.sock`, which is
+custosd's own CLI/surface control socket (C1)** —
+via `list_listeners`, and the pull **is the connection handshake**:
+event subscription activates atomically with the pull, so no cell
+start can land in a gap between list and subscribe. Custosd binds
+each — `bind_listener` events are then edge
 increments; this pull is what keeps a custosd respawn from leaving
-healthy cells egress-dark (V19). Two retries, named separately:
+healthy cells egress-dark (V19). The bind handler is **idempotent**:
+a `bind_listener` for an address already bound (in-flight event
+racing the start-pull) acks success without a second bind — no
+spurious `listener_bind_failed`, no false `listeners_failed`. Two
+retries, named separately:
 hearthd retries *delivery* of an un-acked `bind_listener` for up to
 30 s; custosd retries the *bind* of a received address briefly before
 auditing `listener_bind_failed`.
@@ -249,8 +264,12 @@ spawn-time read IS the unlock; the derived identity lives in memory for
 the process lifetime (that is the documented trade of the mode), so §4.5
 refreshes and file-direct CLI mutations always have it; `custos lock` in
 keyfile mode refuses (`keyfile mode: always unlocked — remove config to
-change`). **What locked mode may hold** (the complete list; nothing else
-touches process memory): `fingerprints.json`, `vault.key`, and HKDF
+change`). **What locked mode may hold** (the complete list of custody
+and key material; nothing *else secret-bearing* touches process
+memory — plaintext daemon scaffolding it must hold to serve unlock,
+status, and credential-less egress — `ctl.token`, `policy.json`,
+fingerprints.json contents — is configuration, not custody, and is
+listed in §2's file inventory as unencrypted): `fingerprints.json`, `vault.key`, and HKDF
 outputs derived from `vault.key` (envelope + anchor keys — restore needs
 them while locked, §8.4). **Locked is a loaded-state statement:** while
 locked, no credential value, surrogate table row, OAuth token, or
@@ -258,8 +277,9 @@ fingerprints-adjacent key material exists in process memory — the
 surrogate registry is *encrypted* and parsed only at unlock, zeroized
 at lock. A locked daemon cannot swap because it holds nothing to swap
 with. `custos lock` (or SIGTERM) zeroes loaded state and settles every
-pending credential-bearing card with reason `custos_locked` (CA-3). No
-auto-unlock-at-boot ever. **Recovery runs at first unlock, not boot:**
+pending credential-bearing card with reason `custos_locked` (CA-3). In **passphrase mode** there is no
+auto-unlock-at-boot ever (keyfile mode's spawn-time read is the unlock
+by definition, above). **Recovery runs at first unlock, not boot:**
 the daemon cannot read age-encrypted state while locked; startup appends
 `custos_restarted_after_crash` whenever the WAL file exists and is
 non-empty (file-level dirtiness is readable locked — the audit chain
@@ -313,8 +333,12 @@ Mutation protocol for the vault: acquire `custos.lock` flock
 `lock_timeout` error on expiry — no indefinite hangs) → decrypt →
 modify → generation+1 → WAL intent (§8.1a, includes the new generation,
 a **random nonce**, and an ordered list of the names it touches) →
-encrypt → temp in `<hearth>/custos/` (0600) → **fsync(temp)** → rename
-→ **fsync(dir)** → WAL commit (**flushed, not buffered**) — the
+encrypt → temps in `<hearth>/custos/` — `vault.age` **and**
+`vault.age.mac` are written as a temp pair, both fsynced, then renamed
+**mac first, envelope second** — so a crash mid-pair leaves (new mac,
+old envelope), which first-unlock recovery resolves (§4.2
+landedness), never a mismatched locked-out state → **fsync(dir)** →
+WAL commit (**flushed, not buffered**) — the
 durability chain inherits KEYS-SPEC's atomic temp+rename doctrine and
 makes every arrow power-loss honest. **The in-memory loaded-state swap
 happens inside the flock, before release** (K6 doctrine inherited):
@@ -331,9 +355,23 @@ reconciliation (§C3) drops registry entries whose credential no longer
 exists and appends `registry_reconciled` per drop.
 One-way safe: orphan bindings die, credentials never do.
 **WAL recovery is ordered by identity, never file dates:** an intent
-nonce matching a commit nonce closes the pair. A dangling intent is
-*never* auto-applied — `custos restore` is the remedy path (§8.4).
-An intent is closed `vault_mutation_superseded` in exactly two ways:
+nonce matching a commit nonce closes the pair. **Landedness doctrine:**
+because `generation` lives inside the age-authenticated vault
+document, a mutation has **landed** iff the decrypted document's
+generation equals a dangling intent's generation. First unlock
+(passphrase in hand — recovery never runs locked): for each dangling
+intent, landed ⇒ append `vault_mutation_recovered` (the rename was the
+apply point; recognizing it is not auto-applying) and re-emit
+`vault.age.mac` from the surviving envelope bytes if it lags; not
+landed ⇒ append `vault_mutation_aborted` reason `crashed_pre_rename`,
+unlink stale temps, and re-emit `vault.age.mac` over the surviving
+envelope. Either way the intent is **resolved** and the pair on disk
+is consistent before strict MAC verification ever rejects an unlock
+(unlock-time verification runs *after* first-unlock recovery, §4.1);
+nothing is ever *inferred without the pairing or generation-match
+evidence*, and `custos restore` remains the only way to move the vault
+backward (§8.4). An intent is closed `vault_mutation_superseded` in
+exactly two ways:
 the vault's persisted generation is greater than the intent's (a
 later checkpoint rewrote the journal forward), or **`custos restore`
 closes every currently-dangling intent at swap time** (restore runs
@@ -448,10 +486,11 @@ only; transport failures (DNS, refused, no status in `*url.Error`) map
 to `transport` ("connection failed before response"); deadline-exceeded
 maps to `timeout`. **No URL, no upstream body, no wrapped `error`
 chain** (the worker unwraps `*url.Error` and keeps only its class). Before send, `detail`
-is scrubbed against **every secret string in C3's loaded set — each
+is scrubbed against **every loaded credential field — each secret
 field individually** (every `api_key` value, and for `oauth2`:
 `client_secret`, `refresh_token` *and* `access_token` separately, plus
-every loaded surrogate): any equal substring is replaced with
+every loaded surrogate): every maximal occurrence, left-to-right
+non-overlapping, is replaced with
 `[redacted]`. **Scope split (frozen):** the whole-set rule binds
 worker error `detail` (short strings; O(set) is trivial). The §5.2
 bearer **response** scrub scans only **the swapped secret** of that
@@ -478,6 +517,11 @@ binding is checked against the destination the socket actually dials,
 §7). Query-string credential swaps do not exist in v1 (URLs leak through logs and error text — same lesson the surface
 learned with token-bearing URLs). TLS (`CONNECT`) is blind passthrough:
 no swap, documented, asserted by V10 so the honesty claim can't rot.
+**Terminal for v1:** CONNECT gets no card, no policy consult, and no
+terminal audit event beyond the floor check (an `ask`-verdict
+destination reached only via CONNECT is therefore passed through
+blindly — deliberate: parking CONNECT is phase 2; this is the
+documented hole, not an oversight).
 **Response scrub (bearer lane):** responses carrying **any**
 `Content-Encoding` are refused as binary-typed (a compressed body is
 unscannable, whatever the strip asked for). Text bodies up to 1 MiB are
@@ -508,14 +552,20 @@ destinations (§6.3) — each `{ pattern → verdict }` with **verdict ∈
 `auto | ask | deny`, identical in meaning on both lanes: approve-without-
 card / require-a-card / refuse** (frozen; `auto` on a credential
 pattern *is* the card-suppressing verdict — §6.5's Always writes
-exactly this). **One normative comparator: the longest normalized
-pattern string wins** (§6.3), always — more-specific overrides
-general by construction, which is what makes `gmail/send auto` beside
+exactly this). **One normative comparator (two tiers, identical on both lanes):
+an exact canonical pattern strictly outranks any `/*`-suffix pattern;
+among suffix patterns the longest normalized pattern string wins**
+(§6.3), always — more-specific overrides general by construction
+(host:port outranks host, host outranks its apex rule, `gmail/send`
+outranks `gmail/*`), which is what makes `gmail/send auto` beside
 `gmail/* ask` legal and deterministic (send auto, everything else
-asks). Overlap with differing verdicts is therefore **not an error**;
+asks) **and makes an exact-form Always win over an apex wildcard
+covering it** — `example.com/* deny` cannot veto an
+`example.com auto` Always. Overlap with differing verdicts is therefore **not an error**;
 the writer warns when a new pattern is strictly dominated by an
 existing one whose verdict differs and could not take effect
-(`note: overridden by <p2> (longer match wins)` — stored anyway,
+(`note: overridden by <p2> (more-specific match wins)` — frozen
+shape, pattern only, no verdict word — stored anyway,
 `policy add` exit 0). No global conflict rejection: subsumption over
 unbounded continuations is not computable as a write-time check, and
 refusing overlaps deadlocks the Always mechanism. Defaults:
@@ -537,11 +587,12 @@ consult point:** custosd checks §6.2 before executing a worker tool
 call — no host is involved there; connectors additionally declare a
 fixed API host set (gmail → `*.googleapis.com`) validated against §6.3
 at install, printed on the card, and the worker forward refuses any
-destination outside it (error `transport`). Evaluation order per
-request:
-exact request pattern → table longest match → default. An always-rule
+destination outside it (error `transport`). Evaluation order is the
+§6.1 comparator applied to this lane's grammar: exact `<name>` or
+`<name>/<tool>` outranks suffix rules (tier 1), longest suffix string
+wins among those (tier 2), else default. An always-rule
 (§6.5) writes the exact canonical form of *this request* (`openai` for
-bearer, `gmail/send` for worker), which by construction outranks every
+bearer, `gmail/send` for worker), which by tier 1 outranks every
 table pattern — no longest-match trap.
 
 **6.3 — Egress host grammar (canonical, refusal-modeled).** Accepted
@@ -557,8 +608,13 @@ disagree is refused**, default port stripped, trailing FQDN dot stripped (a requ
 `denyhost.com.` matches `denyhost.com` — no dot-bypass), userinfo and
 path rejected outright, `*` accepted only as the exact trailing `/*`
 suffix form, IPv4/IPv6 as exact addresses only. IP-form rule hosts are
-canonically written (non-canonical forms like `203.0.113.007` or `::ffff:0:…`
-rejected at write, `invalid pattern`). **Target side:** a
+canonically written under **RFC 5952 as the single IPv6 canonicalizer
+(write time, target side, and rule storage alike; an IPv4-mapped
+address is un-mapped and compared as v4 text — see CA-2(v))**;
+non-canonical spellings (leading zeros, `203.0.113.007`, mixed-form
+`::ffff:1.2.3.4` where 5952 says hextets) are rejected at write,
+`invalid pattern` — the canonical form is by construction never among
+the rejected strings. **Target side:** a
 request authority whose normalization fails at all (IDNA error, control
 characters) is refused outright (`403 surrogate` when a surrogate rode
 on it, connection closed otherwise — never guessed at). An IP-literal
@@ -581,10 +637,13 @@ request (`аpple.com` → `xn--pple-43d.com`) therefore matches only an
 explicit `xn--pple-43d.com` rule, never `apple.com`, and §6.5 always-
 rules can only write what §6.3 accepts. Invalid patterns are refused at
 write time with the frozen message `invalid pattern`. Match function
-(single ordering law, used by both tables and referenced by §6.1):
+(single ordering law — the §6.1 two-tier comparator, used by both
+tables):
 collect all matching rules (exact host, exact host:port, apex/subdomain
-`/*`); the winner is the **longest normalized pattern string**, ties
-impossible because canonical forms are distinct strings; among
+`/*`); **tier 1: any exact host[:port] match outranks every `/*`
+suffix match, and exact host:port outranks exact host; tier 2: among
+suffix matches the winner is the longest normalized pattern string**,
+ties impossible because canonical forms are distinct strings; among
 non-overlapping canonical strings the ordering is total. The
 match runs **forward-time** (§7).
 
@@ -608,10 +667,10 @@ locked` (CA-3's frozen pair). A denial is a normal, explainable
 outcome, matching the loop contract. **Revocation while parked:** an
 `ask` decision has *not* happened while a flow or worker call is parked
 — parking only enqueues the decision. `keys rm`/`custos revoke`
-settles every pending card for that credential as a deny (reason
-`credential_revoked`) and closes parked flows; the hub exposes a
-`CancelByCredential(cred, cell)` hook (CA-3 amendment — cancel is not
-settle: no user verdict is implied). A user clicking a race-lost card
+**cancels** every pending card for that credential (hub's
+`CancelByCredential(cred, cell)`, reason `credential_revoked` —
+cancel, not settle: no user verdict is implied, CA-3) and closes
+parked flows. A user clicking a race-lost card
 gets the frozen `already answered` hub behavior, same as tool approvals.
 
 **6.5 — Always rules.** Frozen button set: **Allow once / Always /
@@ -620,8 +679,12 @@ Deny**. Always writes the canonical exact-match form of *this request*
 `/*` suffix form, never a floor address — both re-validated against
 §6.3/§6.2 grammar after construction; construction reads the verified
 request fields, never payload bytes). An Always write **always stores**
-— the exact form outranks every overlapping pattern by the §6.1
-comparator, so no conflict path exists for it. `custos policy add
+(the sole exception: an IP-literal destination **degrades the card to
+Allow-once — no Always button, no stored rule**, §4.3's ask-only
+doctrine; construction checks the canonical target form before
+offering the button) — the exact form outranks every overlapping
+pattern by the §6.1 comparator (tier 1), so no conflict path exists
+for it. `custos policy add
 <pattern> <verdict>` is the manual writer (same grammar validation,
 same §6.1 domination warning, audit `policy_written`);
 `custos policy list` shows every
@@ -669,7 +732,10 @@ Parking gate: only HTTP/1.1 requests with a valid absolute-form URI
 client must not hold a 330 s slot). **Denial delivery rule (frozen
 wire mechanics):** before writing any parked-flow refusal the proxy
 must **drain the socket's unread receive buffer (bounded read: to EOF
-or 64 KiB, 250 ms cap)** and only then write the response and close —
+or 64 KiB, 250 ms cap; **the drain is best-effort — a flow still
+sending past the cap is answered on a best-effort basis and closed,
+and V26 asserts delivery only for bodies within the drain window**)
+and only then write the response and close —
 a bare `close()` with unread body bytes makes the kernel emit TCP RST
 and the cell would see `ECONNRESET` instead of the 403. After a
 parked-flow response the connection is closed — no pipelined
@@ -699,7 +765,9 @@ and crash-tail rule, separate file family. Kinds (frozen):
 `vault_mutation`, `vault_mutation_recovered`,
 `vault_mutation_aborted` (emitted when a §4.2 mutation is refused
 after its intent line — `reason: lock_timeout` or a failed
-encrypt/write — so a credential-touching refusal is never absent
+encrypt/write — **or by first-unlock recovery for an intent that
+never landed, reason `crashed_pre_rename` (§4.2 landedness)** — so a
+credential-touching refusal or abandoned mutation is never absent
 from the chain), `vault_mutation_superseded`, `stale_verdict`,
 `listener_bind_failed`,
 `swap_allowed`, `swap_denied`, `egress_allowed`,
@@ -709,8 +777,18 @@ from the chain), `vault_mutation_superseded`, `stale_verdict`,
 emitted by `custos login` success and by `hearthd keys set` under
 custody (the custody-routed write audits it with `actor` surface/cli).
 Fields: `t`, `kind`,
-`cred` (name), `sur` (8-char prefix), `actor` (cell id | `cli` |
+`cred` (name), `sur` (8-hex prefix), `actor` (cell id | `cli` |
 `surface`), `host`, `tool`, `verdict`, `reason`, `gen`, `prev_hash`.
+**Chain-writer serialization (frozen):** the audit append is taken
+under `custos.lock` (already held by every §4.2 mutation and by
+restore), and each appender re-reads the current tail line under the
+flock to compute `prev_hash` — the CLI's restore pair and the daemon's
+lines can never fork the chain. **Break propagation is total:** verify
+walks genesis→end (or anchor→end) and reports the first break;
+`prev_hash` is not self-healing — any edit, insertion, reorder, or
+truncation invalidates every line after it by construction (V7's
+append-after-tamper case detects on the original break, not on the
+appended tail).
 
 **8.1a — Write-ahead rule.** Every vault/registry mutation appends
 `vault_mutation_intent` (with nonce + target generation, §4.2)
@@ -742,7 +820,7 @@ log lines cannot forge a new anchor without the state-root key, so
 validates the newest anchor's MAC **and** its continuity (the anchor's
 predecessor line must be the prune point's recorded `audit_pruned`
 kind) before trusting it, and always validates anchor-hash → chain-end.
-Prune only ever moves anchors forward (V21). The genesis file is never
+Prune only ever moves anchors forward (V22). The genesis file is never
 pruned while it is the only file; the newest anchor is never pruned.
 
 **8.4 — Snapshots & restore.** Before every vault mutation: the
@@ -759,7 +837,10 @@ plus MAC).
 snapshot's `.mac` with `vault.key` (no passphrase needed; the daemon
 being down or locked is exactly when restore exists), renames the set
 into place atomically, and appends the `vault_mutation_intent`/
-`vault_mutation` pair with reason `restore` to the audit chain — the
+`vault_mutation` pair with reason `restore` to the audit chain — **if
+`anchors.json` is missing or empty, restore bootstraps it from the
+genesis line before verifying (an empty anchor file is not "verified
+against nothing")**, the
 next unlock's first-unlock pass reconciles registry and mirror
 afterwards. Restoring the pair means vault and registry land on the
 same generation: no surrogate ever outlives its credential via restore.
@@ -791,7 +872,9 @@ has **no decision yet**; Allow re-validates vault + registry + current
 policy verdict at that
 moment (revoked ⇒ refuse per §6.4, card cancelled). After
 `custos revoke <cred>` commits, no *later commit* can succeed: swap and
-worker decisions re-read the in-memory state under the mutation lock.
+worker decisions re-read the in-memory state under the in-memory
+state lock — **never the §4.2 `custos.lock` flock, which per §4.2
+must never span a forward**.
 A request whose decision landed before the revoke may finish
 transmitting — the network cannot be unsent — and is never re-evaluated
 afterward. Revocation latency is therefore bounded by the decision
@@ -829,11 +912,18 @@ every S1 artifact for the canary — build-failing.
 V4. Binding matrix through the real proxy against a loopback echo:
 right host, wrong host, right host wrong port, `/v1/` prefix vs
 `/v1/../admin` (normalized → mismatch), uppercase Host header,
-`host:80` vs rule without port — all per §6.3 canonical rules.
+`host:80` vs rule without port, **punycode-homograph target
+(`аpple.com` matches only an `xn--pple-43d.com` rule, never
+`apple.com`) — §6.3's unicode rule asserted, not just written** — all
+per §6.3 canonical rules.
 V5. Locked-vault refusal with dial counting (locked: zero dials; swap
 and worker lane both).
 V6. Always-rule writing: payloads containing `*`, newlines, `.evil.com`
-fragments; host fields containing `*`, `@`, `/`; written rules always
+fragments (payloads must never reach a rule — card *display* may show
+them escaped); target host fields — always-rule construction refuses
+`*`, `@`, `/` before the writer is reached (the §6.3 grammar gate
+makes such patterns unwritable directly; the test drives the
+construction path); written rules always
 re-validate against §6.2/§6.3 grammar and the file re-reads strict.
 V7. Audit chain: happy path, byte-flip, truncation, multi-day files,
 prune-with-anchor then verify, WAL intent-without-commit detected;
@@ -888,8 +978,17 @@ V17. Standalone: `custosd serve` without hearthd — CLI over ctl.sock
 works; `keys` CLI is **daemon-first, file-direct only with keyfile
 mode or TTY unlock** (frozen output lines identical; an unlock prompt
 may add TTY lines — it is not part of the frozen output); file-direct
+**refusal is tested in passphrase mode** (file-direct without daemon
+or keyfile ⇒ refusal line; keyfile mode always has the identity, so
+its case asserts the write succeeds); file-direct
 serializes on `custos.lock` flock; daemon + CLI concurrently ⇒ no
-clobber (fuzz interleaving).
+clobber (fuzz interleaving). **File law:** every §4.2 mutation
+re-reads the on-disk envelope under the flock before modifying (the
+in-memory copy is a serving cache, never the mutation base), so a
+file-direct mutation can never be clobbered by a later daemon
+mutation; the daemon's read lane may serve stale-until-reload state,
+and the file-direct CLI prints `note: daemon serving cache — restart
+or lock/unlock to reload` when the daemon is live.
 V18. Docker reference compose: `custos status` reports `locked` at boot
 (not an error); `hearthd serve` with custos present-but-locked keeps
 web + REPL fully alive (refusals only on credential paths).
@@ -916,16 +1015,20 @@ by the floor (mapped un-map, CA-2(v)); `deny 203.0.113.7` rule matches
 `http://203.0.113.7:80/` (normalized socket-address match).
 V24. Ordering law over overlap (no conflict rejection): with
 `auto cdn.tracker.com/*` stored, `policy add deny tracker.com/*`
-stores with the `note: overridden by auto cdn.tracker.com/*` warning
+stores with the `note: overridden by cdn.tracker.com/*` warning
 (pairwise domination warning, §6.1); a canonical request to
-`cdn.tracker.com` still resolves `auto` (longer match wins) while
-`www.tracker.com` resolves `deny` — the test asserts the comparator
-and the warning, never a write refusal. Same-verdict overlap stores
-silently; Always (canonical exact form) always stores and outranks
-(§6.5).
+`cdn.tracker.com` still resolves `auto` (tier-2 longer match wins)
+while `www.tracker.com` resolves `deny` — the test asserts the
+comparator and the warning, never a write refusal. **Tier 1: with
+`deny example.com/*` stored, an Always on apex `example.com` stores
+`example.com auto` and the apex request resolves `auto`** (exact
+outranks suffix); `sub.example.com` still resolves `deny`.
+Same-verdict overlap stores silently.
 V25. Durability + quiescence: crash-injection at each §4.2 arrow
-(intent/commit, fsync-before-rename kill -9) ⇒ first unlock recovery
-⇒ `custos audit verify` exits clean (no dangling-intent alarm); WAL
+(intent/commit, fsync-before-rename kill -9, **rename-pair kill -9
+between the mac and envelope renames**) ⇒ first unlock recovery ⇒
+`custos audit verify` exits clean (no dangling-intent alarm) and the
+mac/envelope pair on disk verifies (landedness doctrine, §4.2); WAL
 lines flushed (kill between intent and rename leaves the intent
 readable). Post-restore quiescence included: crash with a dangling
 intent, `custos restore` a prior gen, first unlock ⇒ verify clean
@@ -987,6 +1090,33 @@ TTY-only is the fallback if the card path proves awkward in dogfood.
 
 ## Changelog
 
+- v5 (draft): round-4 review folded (pass A 3 blocking / 6 minor;
+  pass B 3 / 11 — pass B's apex-Always counterexample was computed on
+  the pre-two-tier bundle text and died with the tier law).
+  Headlines: **two-tier comparator law** (exact forms strictly
+  outrank `/*` suffixes; longest string among suffixes; §6.1/§6.2/
+  §6.3/V24 state one law — apex Always finally beats apex wildcard);
+  **landedness doctrine** (generation-inside-vault decides landed vs
+  pre-rename crash at first unlock — dangling intents always resolve,
+  `vault_mutation_aborted` gains reason `crashed_pre_rename`, V25
+  passes); **mac+envelope written as a fsynced temp pair, mac first**,
+  unlock-time MAC verification runs after first-unlock recovery —
+  no crash wedge; **env-shadow warning is comparison-free** (name
+  sets only; locked instances never decrypt to print it — CA-1(a)
+  vs C3 collision closed); **RFC 5952 is the one IPv6 canonicalizer**
+  (write, target, storage; the old example rejected its own canonical
+  form); IP-literal Always **degrades the card to Allow-once**
+  (construction refuses before the writer); CA-2(iv) pull is the
+  ctl **handshake** (no list/subscribe gap), bind handler idempotent,
+  socket naming corrected; **CONNECT blind passthrough declared
+  terminal for v1** (no card, no consult, no event — documented
+  hole); chain-writer serialization + total break propagation;
+  anchors bootstrap from genesis on restore; file law (mutations
+  re-read disk under flock; stale-until-reload note); S7 decision
+  point uses the in-memory state lock, never the flock; drain cap
+  best-effort wording; V21 prune-ref → V22; V4 homograph, V6
+  construction path, V17 mode-split assertions; note shape frozen
+  (`more-specific match wins`, pattern only).
 - v4 (draft): round-3 review folded (pass A 7 blocking / 4 minor;
   pass B 3 / 9+ — both passes independently caught the v3
   conflict-strict-parse deadlock). Headlines: **conflict rejection is
