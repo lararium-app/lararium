@@ -23,7 +23,7 @@ Prototyping tools stay outside the product — never a runtime dependency.
 
 ## 1. Principles
 
-1. **Model-agnostic by construction.** Every call goes through a router speaking OpenAI-completions/Chat-Completions + Anthropic Messages + OpenRouter. Local llama.cpp/Ollama/vLLM are first-class providers, not a fallback-of-last-resort mode. No feature may depend on a vendor-specific capability without a documented degradation path.
+1. **Model-agnostic by construction.** Every call goes through a router speaking the OpenAI Chat-Completions wire format — which llama.cpp, Ollama, vLLM, LM Studio, OpenRouter, OpenAI, and Anthropic's compatibility endpoint all speak. Local servers are first-class providers, not a fallback-of-last-resort mode. Native Anthropic Messages is on the roadmap. No feature may depend on a vendor-specific capability without a documented degradation path.
 2. **The file layer is the product's memory; the model window is scratch.** Durable state is human-readable markdown + JSONL, per-user, exportable in one `tar`. Trained-compaction is the model's problem; the file layer is ours.
 3. **Single node, boring infra.** SQLite + filesystem + containers. Postgres only if someone ships a multi-tenant host. The whole stack must `docker compose up` on a $20/mo box or a home NUC.
 4. **Trust no transcript.** Assume prompt injection succeeds at the prompt level; enforcement happens below the model: kernel-level egress control, scoped credentials, human approval gates.

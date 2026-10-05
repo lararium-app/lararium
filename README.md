@@ -49,7 +49,8 @@ the screens you already carry.
 
 **Working today:** the `hearthd` REPL (append-only event log, context
 compaction, memory tools) · model routing with fallback chains (any
-OpenAI-compatible endpoint, Anthropic) · Penatus memory · `hearthd
+OpenAI-compatible endpoint — llama.cpp, Ollama, vLLM, OpenRouter, OpenAI,
+Anthropic-compat) · Penatus memory · `hearthd
 serve` — HTTP/SSE API + built-in web chat with streaming and clickable
 tool approvals · **Telegram** (`nuntius`): one-owner bridge with
 pairing codes, streaming replies, and approval cards that resolve
@@ -77,18 +78,31 @@ debootstrap`, and the cell stack behaves exactly as on bare metal.
 
 ## Quick start
 
+**Bring your own model.** Lararium talks to any OpenAI-compatible
+endpoint — a llama.cpp / Ollama / vLLM / LM Studio server on your own
+machine, or a hosted key from OpenRouter, OpenAI, Anthropic, &c. There
+is no default provider and no account of ours in the loop.
+
 The supported way to run the alpha is Docker Compose:
 
 ```bash
 git clone https://github.com/lararium-app/lararium.git
 cd lararium/docker
-OPENROUTER_API_KEY=*** docker compose up --build
+docker compose up --build
+```
+
+The reference config points at a model server on **your** machine
+(`http://host.docker.internal:8080/v1`) — serve any model there with
+llama.cpp (or point the reference config at yourself) and it just works,
+key-free. Prefer a hosted endpoint? Uncomment one provider block in
+`docker/config/lararium.yaml`, export its key, and pass it through:
+
+```bash
+OPENAI_API_KEY=*** docker compose up --build
 ```
 
 Keys come from your environment only — nothing secret is baked into the
-image or committed to this repo. Edit `docker/config/lararium.yaml` to
-point at your own model server instead (any OpenAI-compatible endpoint
-works, e.g. llama.cpp).
+image or committed to this repo.
 
 Compose serves the web chat on `http://127.0.0.1:7717`. To open a door
 to it:
