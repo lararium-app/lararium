@@ -104,9 +104,15 @@ type CtlServer struct {
 	tokenPath string
 	token     string
 	vault     *Vault
+	proxy     *Proxy
 	ln        net.Listener
 	done      chan struct{}
 	onStop    func()
+}
+
+// SetProxy attaches the custody proxy to the control server.
+func (s *CtlServer) SetProxy(p *Proxy) {
+	s.proxy = p
 }
 
 // StartCtlServer starts listening on ctl.sock with token authentication.
@@ -193,7 +199,7 @@ func (s *CtlServer) handleConn(conn net.Conn) {
 		return
 	}
 
-	if s.handleSurrogateCmd(conn, cmd, parts) || s.handlePolicyCmd(conn, cmd, parts) {
+	if s.handleSurrogateCmd(conn, cmd, parts) || s.handlePolicyCmd(conn, cmd, parts) || s.handleListenerCmd(conn, cmd, parts) {
 		return
 	}
 
@@ -202,7 +208,11 @@ func (s *CtlServer) handleConn(conn net.Conn) {
 		fmt.Fprint(conn, "OK PONG\n")
 
 	case "STATUS":
-		st := s.vault.Status(true, 0)
+		failed := 0
+		if s.proxy != nil {
+			failed = s.proxy.ListenersFailed()
+		}
+		st := s.vault.Status(true, failed)
 		b, err := json.Marshal(st)
 		if err != nil {
 			fmt.Fprintf(conn, "ERR %s\n", err)
@@ -414,6 +424,100 @@ func (s *CtlServer) handlePolicyCmd(conn net.Conn, cmd string, parts []string) b
 	}
 }
 
+func (s *CtlServer) handleListenerCmd(conn net.Conn, cmd string, parts []string) bool {
+	switch strings.ToUpper(cmd) {
+	case "BIND-LISTENER", "BIND_LISTENER":
+		if len(parts) < 3 {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		if s.proxy == nil {
+			fmt.Fprint(conn, "ERR proxy_not_configured\n")
+			return true
+		}
+		arg := strings.TrimSpace(parts[2])
+		var addr, cellID, peer, logPath string
+		if strings.HasPrefix(arg, "{") {
+			var req struct {
+				Addr    string `json:"addr"`
+				CellID  string `json:"cell_id"`
+				Peer    string `json:"peer"`
+				LogPath string `json:"log_path"`
+			}
+			if err := json.Unmarshal([]byte(arg), &req); err != nil {
+				fmt.Fprintf(conn, "ERR %s\n", err.Error())
+				return true
+			}
+			addr, cellID, peer, logPath = req.Addr, req.CellID, req.Peer, req.LogPath
+		} else {
+			fields := strings.Fields(arg)
+			addr = fields[0]
+			if len(fields) > 1 {
+				cellID = fields[1]
+			}
+			if len(fields) > 2 {
+				peer = fields[2]
+			}
+			if len(fields) > 3 {
+				logPath = fields[3]
+			}
+		}
+		if err := s.proxy.BindListener(addr, cellID, peer, logPath); err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return true
+		}
+		fmt.Fprint(conn, "OK listener_bound\n")
+		return true
+
+	case "CLOSE-LISTENER", "CLOSE_LISTENER":
+		if len(parts) < 3 {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		if s.proxy == nil {
+			fmt.Fprint(conn, "ERR proxy_not_configured\n")
+			return true
+		}
+		arg := strings.TrimSpace(parts[2])
+		var addr string
+		if strings.HasPrefix(arg, "{") {
+			var req struct {
+				Addr string `json:"addr"`
+			}
+			if err := json.Unmarshal([]byte(arg), &req); err != nil {
+				fmt.Fprintf(conn, "ERR %s\n", err.Error())
+				return true
+			}
+			addr = req.Addr
+		} else {
+			addr = strings.Fields(arg)[0]
+		}
+		if err := s.proxy.CloseListener(addr); err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return true
+		}
+		fmt.Fprint(conn, "OK listener_closed\n")
+		return true
+
+	case "LIST-LISTENERS", "LIST_LISTENERS":
+		if s.proxy == nil {
+			fmt.Fprint(conn, "OK []\n")
+			return true
+		}
+		list := s.proxy.ListListeners()
+		b, err := json.Marshal(list)
+		if err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return true
+		}
+		fmt.Fprintf(conn, "OK %s\n", string(b))
+		return true
+
+	default:
+		return false
+	}
+}
+
 // Close closes the listener and unlinks ctl.sock.
 func (s *CtlServer) Close() error {
 	err := s.ln.Close()
@@ -508,4 +612,29 @@ func (c *CtlClient) RoundTripWithArg(cmd, arg string) (string, error) {
 		return "OK", nil
 	}
 	return resp, nil
+}
+
+// BindListener sends a BIND-LISTENER command to custosd over ctl.sock.
+func (c *CtlClient) BindListener(addr string) error {
+	_, err := c.RoundTripWithArg("BIND-LISTENER", addr)
+	return err
+}
+
+// CloseListener sends a CLOSE-LISTENER command to custosd over ctl.sock.
+func (c *CtlClient) CloseListener(addr string) error {
+	_, err := c.RoundTripWithArg("CLOSE-LISTENER", addr)
+	return err
+}
+
+// ListListeners queries the list of bound per-cell proxy listeners.
+func (c *CtlClient) ListListeners() ([]string, error) {
+	resp, err := c.RoundTrip("LIST-LISTENERS")
+	if err != nil {
+		return nil, err
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(resp), &list); err != nil {
+		return nil, err
+	}
+	return list, nil
 }

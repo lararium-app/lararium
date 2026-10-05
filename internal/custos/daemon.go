@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // Daemon coordinates the background custosd process per CUSTOS-SPEC §3.
 type Daemon struct {
 	cfg       *Config
 	vault     *Vault
+	hub       *surface.ApprovalHub
+	proxy     *Proxy
 	ctlServer *CtlServer
 	stopChan  chan struct{}
 }
@@ -21,9 +25,16 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 	}
 	cfg.Normalize()
 
+	v := NewVault(stateDir, cfg.LockWaitTimeout)
+	hub := surface.NewApprovalHub(cfg.AskHoldTimeout)
+	v.SetApprovalHub(hub)
+	proxy := NewProxy(v, hub, cfg)
+
 	return &Daemon{
 		cfg:      cfg,
-		vault:    NewVault(stateDir, cfg.LockWaitTimeout),
+		vault:    v,
+		hub:      hub,
+		proxy:    proxy,
 		stopChan: make(chan struct{}),
 	}
 }
@@ -31,6 +42,16 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 // Vault returns the internal Vault.
 func (d *Daemon) Vault() *Vault {
 	return d.vault
+}
+
+// Proxy returns the internal Proxy.
+func (d *Daemon) Proxy() *Proxy {
+	return d.proxy
+}
+
+// Hub returns the internal ApprovalHub.
+func (d *Daemon) Hub() *surface.ApprovalHub {
+	return d.hub
 }
 
 // Start boots custosd: checks C2 file law, checks crash doctrine, serves locked (or unlocks in keyfile mode), binds ctl.sock.
@@ -79,6 +100,7 @@ func (d *Daemon) Start() error {
 	if err != nil {
 		return fmt.Errorf("start ctl server: %w", err)
 	}
+	ctlServer.SetProxy(d.proxy)
 	d.ctlServer = ctlServer
 
 	return nil
@@ -88,6 +110,12 @@ func (d *Daemon) Start() error {
 func (d *Daemon) Stop() {
 	if d.ctlServer != nil {
 		_ = d.ctlServer.Close()
+	}
+	if d.proxy != nil {
+		_ = d.proxy.Close()
+	}
+	if d.hub != nil {
+		d.hub.DenyAllAll("shutdown", "shutdown")
 	}
 	_ = d.vault.Audit().Append(AuditRecord{
 		Kind:  AuditKindCustosStopped,

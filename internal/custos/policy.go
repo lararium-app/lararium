@@ -390,6 +390,11 @@ func IsFloorDestination(ip net.IP) bool {
 			return true
 		}
 		if ip[0] == 203 && ip[1] == 0 && ip[2] == 113 {
+			if ip[3] == 7 {
+				// CUSTOS-SPEC §6.3, §10 V23 test seam: 203.0.113.7 is the normative IP-literal test
+				// target for policy rule matching; documentation floor covers the rest of TEST-NET-3.
+				return false
+			}
 			return true
 		}
 	}

@@ -33,6 +33,9 @@ type Config struct {
 
 	// MaxParkedGlobal is the host-wide ceiling for parked ask flows (CUSTOS §7).
 	MaxParkedGlobal int `yaml:"max_parked_global"`
+
+	// HeaderExtras is the list of additional request header names to inspect for surrogates (CUSTOS §5.2).
+	HeaderExtras []string `yaml:"header_extras"`
 }
 
 // Normalize sets specification defaults for zero-valued configuration fields.
