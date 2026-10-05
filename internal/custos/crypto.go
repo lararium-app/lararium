@@ -1,0 +1,151 @@
+package custos
+
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+
+	"filippo.io/age"
+	"golang.org/x/crypto/hkdf"
+)
+
+// HKDF info labels per CUSTOS-SPEC §4.1, §8.3 and Slice 1 Brief.
+const (
+	HKDFInfoCustosMac      = "custos-mac"      // Slice 1 brief: vault.age.mac
+	HKDFInfoCustosEnv      = "custos-env"      // CUSTOS §4.1: vault.age.mac
+	HKDFInfoCustosEnvelope = "custos-envelope" // Slice 1 brief: envelope key
+	HKDFInfoCustosAnchor   = "custos-anchor"   // CUSTOS §8.3: anchor MAC
+)
+
+// ageWorkFactor allows tests to lower scrypt work factor for execution speed.
+// Default 0 uses age's default work factor (18 = 2^18).
+var ageWorkFactor = 0
+
+// SetTestAgeWorkFactor sets scrypt work factor logN for testing.
+func SetTestAgeWorkFactor(logN int) {
+	ageWorkFactor = logN
+}
+
+// GenerateInstanceKey creates 32 random bytes for vault.key per CUSTOS §4.1.
+func GenerateInstanceKey() ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, fmt.Errorf("generate instance key: %w", err)
+	}
+	return key, nil
+}
+
+// DeriveHKDF expands secret using HKDF-SHA256 with the given info label.
+func DeriveHKDF(secret []byte, info string) []byte {
+	r := hkdf.New(sha256.New, secret, nil, []byte(info))
+	out := make([]byte, 32)
+	if _, err := io.ReadFull(r, out); err != nil {
+		panic(fmt.Sprintf("hkdf read: %v", err))
+	}
+	return out
+}
+
+// ComputeMAC returns the hex-encoded HMAC-SHA256 over data using key.
+func ComputeMAC(key []byte, data []byte) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// VerifyMAC constant-time verifies whether expectedHex matches HMAC-SHA256 over data.
+func VerifyMAC(key []byte, data []byte, expectedHex string) bool {
+	expected, err := hex.DecodeString(expectedHex)
+	if err != nil || len(expected) != 32 {
+		return false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	actual := mac.Sum(nil)
+	return subtle.ConstantTimeCompare(actual, expected) == 1
+}
+
+// ComputeEnvelopeMAC generates vault.age.mac under HKDF(vault.key, "custos-mac").
+func ComputeEnvelopeMAC(instanceKey []byte, envelopeBytes []byte) string {
+	// CUSTOS §4.2: HMAC-SHA256 over envelope bytes under HKDF(vault.key, "custos-mac")
+	macKey := DeriveHKDF(instanceKey, HKDFInfoCustosMac)
+	return ComputeMAC(macKey, envelopeBytes)
+}
+
+// VerifyEnvelopeMAC verifies vault.age.mac, accepting either "custos-mac" or "custos-env" info labels.
+func VerifyEnvelopeMAC(instanceKey []byte, envelopeBytes []byte, expectedMAC string) bool {
+	// Check primary label from brief: "custos-mac"
+	macKeyBrief := DeriveHKDF(instanceKey, HKDFInfoCustosMac)
+	if VerifyMAC(macKeyBrief, envelopeBytes, expectedMAC) {
+		return true
+	}
+	// Fallback to spec text label: "custos-env" (§4.1)
+	macKeySpec := DeriveHKDF(instanceKey, HKDFInfoCustosEnv)
+	return VerifyMAC(macKeySpec, envelopeBytes, expectedMAC)
+}
+
+// EncryptAge encrypts plaintext under passphrase using age scrypt recipient per CUSTOS §4.1.
+func EncryptAge(plaintext []byte, passphrase string) ([]byte, error) {
+	// CUSTOS §4.1: scrypt parameters are fixed versioned constants
+	r, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("age scrypt recipient: %w", err)
+	}
+	if ageWorkFactor > 0 {
+		r.SetWorkFactor(ageWorkFactor)
+	}
+
+	var buf bytes.Buffer
+	w, err := age.Encrypt(&buf, r)
+	if err != nil {
+		return nil, fmt.Errorf("age encrypt: %w", err)
+	}
+	if _, err := w.Write(plaintext); err != nil {
+		return nil, fmt.Errorf("age write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("age close: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// DecryptAge decrypts age ciphertext under passphrase using age scrypt identity per CUSTOS §4.1.
+func DecryptAge(ciphertext []byte, passphrase string) ([]byte, error) {
+	id, err := age.NewScryptIdentity(passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("age scrypt identity: %w", err)
+	}
+	if ageWorkFactor > 0 {
+		id.SetMaxWorkFactor(ageWorkFactor)
+	}
+
+	r, err := age.Decrypt(bytes.NewReader(ciphertext), id)
+	if err != nil {
+		var noIDMatch *age.NoIdentityMatchError
+		if errors.Is(err, age.ErrIncorrectIdentity) || errors.As(err, &noIDMatch) {
+			return nil, ErrIncorrectPassphrase
+		}
+		return nil, fmt.Errorf("age decrypt: %w", err)
+	}
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		var noIDMatch *age.NoIdentityMatchError
+		if errors.Is(err, age.ErrIncorrectIdentity) || errors.As(err, &noIDMatch) {
+			return nil, ErrIncorrectPassphrase
+		}
+		return nil, fmt.Errorf("age read: %w", err)
+	}
+	return out, nil
+}
+
+// SHA256Hex8 returns the first 8 hex characters of the SHA-256 hash of value.
+func SHA256Hex8(val string) string {
+	sum := sha256.Sum256([]byte(val))
+	return hex.EncodeToString(sum[:])[:8]
+}
