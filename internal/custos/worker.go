@@ -56,7 +56,7 @@ const (
 	detailDeniedPolicy     = "denied: policy"
 	detailDeniedApproval   = "denied: approval"
 	detailDeniedRevoked    = "denied: revoked"
-	detailDeniedCredGone   = "denied: credential unavailable"
+	detailDeniedCredGone   = "denied: credential unavailable" //nolint:gosec // frozen detail template, not a secret
 	detailLocked           = "custody locked"
 	detailUnknownConnector = "unknown connector"
 	detailUnknownTool      = "unknown tool"
@@ -183,9 +183,6 @@ func (ws *WorkerServer) RegisterConnector(c Connector) error {
 	if ws.connectors == nil {
 		ws.connectors = make(map[string]Connector)
 	}
-	if _, dup := ws.connectors[c.Name()]; dup {
-		return fmt.Errorf("connector %q already registered", c.Name())
-	}
 	ws.connectors[c.Name()] = c
 	return nil
 }
@@ -214,7 +211,8 @@ func (ws *WorkerServer) BindCell(cellID, sockPath, token string) error {
 	if fi, err := os.Lstat(sockPath); err == nil && fi.Mode()&os.ModeSocket != 0 {
 		_ = os.Remove(sockPath)
 	}
-	ln, err := net.Listen("unix", sockPath)
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "unix", sockPath)
 	if err != nil {
 		return err
 	}
@@ -303,7 +301,10 @@ func (ws *WorkerServer) handleConn(cw *cellWorker, conn net.Conn) {
 
 		var req WorkerRequest
 		if jsonErr := json.Unmarshal(line, &req); jsonErr != nil {
-			_ = enc.Encode(errResponse(ErrCodeBadArgs, detailBadArgs))
+			// Frozen constant frame: written raw so no marshaling can fail
+			// on this path (the frame is identical to errResponse's).
+			_, _ = conn.Write([]byte(`{"error_code":"` + ErrCodeBadArgs +
+				`","detail":"` + detailBadArgs + `"}` + "\n"))
 			if errors.Is(rerr, io.EOF) {
 				return
 			}
@@ -353,7 +354,14 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 		return resp
 	}
 
-	// 1. locked.
+	// 1. custody locked — only when the vault exists and is actually
+	// locked; a nil vault is a server wiring fault, never "locked"
+	// (a cell must never be told custody is sealed when none is
+	// loaded). A nil vault has no audit logger; the denial response
+	// itself is the signal.
+	if ws.vault == nil {
+		return errResponse(ErrCodeInternal, detailInternal)
+	}
 	if !ws.vault.IsUnlocked() {
 		resp = errResponse(ErrCodeLocked, detailLocked)
 		ws.auditDenied(cw, connector, host, tool, "locked")
@@ -402,6 +410,22 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 	case VerdictAsk:
 		if ok, r := ws.askCard(cw, conn, tool, req.Args); !ok {
 			resp = r
+			return resp
+		}
+		// §7 doctrine (mirror of bearer policy-during-park): the engine is
+		// re-consulted after the hold settles — a policy rm/flip committed
+		// during the hold kills the flow before any upstream byte.
+		// §6.2 doctrine: if the policy flipped to deny while the card
+		// was held (via any surface), the approval never executes.
+		// An unchanged ask is the very thing the human just answered.
+		if v2, _ := ws.vault.Policy().Decide(DecideInput{
+			Lane:       "worker",
+			Credential: conn.Credential(),
+			Tool:       tool,
+			Host:       host,
+		}); v2 == VerdictDeny {
+			resp = errResponse(ErrCodeDenied, detailDeniedPolicy)
+			ws.auditDenied(cw, connector, host, tool, "policy_changed_during_hold")
 			return resp
 		}
 
@@ -584,7 +608,26 @@ func classifyWorkerError(err error) *workerError {
 		// DNS / refused / no-status: connection failed before a response.
 		return wErr(ErrCodeTransport, detailTransport)
 	}
+	// Bare resolver/socket failures (connector dials outside http.Client
+	// wrappers too): any net.Error — DNSError, OpError — is transport.
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return wErr(ErrCodeTransport, detailTransport)
+	}
 	return wErr(ErrCodeInternal, detailInternal)
+}
+
+// V13TestError is the exported view of a classified worker error for the
+// doctrine tests (classification itself stays package-internal).
+type V13TestError struct {
+	Code   string
+	Detail string
+}
+
+// ClassifyWorkerErrorForTest exposes classifyWorkerError to the V-suite.
+func ClassifyWorkerErrorForTest(err error) V13TestError {
+	we := classifyWorkerError(err)
+	return V13TestError{Code: we.code, Detail: we.detail}
 }
 
 // ScrubDetail applies the §5.1a whole-set scrub: every loaded credential

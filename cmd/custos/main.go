@@ -184,7 +184,7 @@ func runLock(stateDir, keyfilePath string, cfg *custos.Config) int {
 // oauth2 credential is stored through the Mutate path (audit
 // credential_added, actor cli). A refused consent (state mismatch/missing/
 // denied/timeout) audits login_denied and stores nothing.
-func runLogin(v *custos.Vault, stateDir, keyfilePath string, subArgs []string) int {
+func runLogin(v *custos.Vault, keyfilePath string, subArgs []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	clientID := fs.String("client-id", "", "oauth2 client id")
@@ -970,7 +970,7 @@ func main() {
 	case "revoke":
 		exitCode = runRevokeCredential(v, stateDir, keyfilePath, cfg, subArgs)
 	case "login":
-		exitCode = runLogin(v, stateDir, keyfilePath, subArgs)
+		exitCode = runLogin(v, keyfilePath, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb %q\n", verb)
 		exitCode = 2

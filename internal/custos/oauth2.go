@@ -29,7 +29,7 @@ const (
 	// GoogleAuthURI is the production consent endpoint (§4.5).
 	GoogleAuthURI = "https://accounts.google.com/o/oauth2/v2/auth"
 	// GoogleTokenURI is the production token endpoint (§4.5).
-	GoogleTokenURI = "https://oauth2.googleapis.com/token"
+	GoogleTokenURI = "https://oauth2.googleapis.com/token" //nolint:gosec // public endpoint URI, not a credential
 
 	// GmailSendScope is the required scope for the v1 gmail/send tool (§4.5).
 	GmailSendScope = "https://www.googleapis.com/auth/gmail.send"
@@ -407,7 +407,8 @@ type oauthCallback struct {
 // asserted loopback with a non-zero :0-assigned port; the first callback
 // consumes it, then it closes — later attempts get connection-refused.
 func interactiveConsent(ctx context.Context, opts *LoginOptions, out io.Writer, authURI string, scopes []string, state string, timeout time.Duration) (code, redirectURI string, err error) {
-	ln, lerr := net.Listen("tcp", "127.0.0.1:0")
+	lc := net.ListenConfig{}
+	ln, lerr := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if lerr != nil {
 		return "", "", lerr
 	}
@@ -542,6 +543,12 @@ func credentialFresh(cred Credential, now time.Time) bool {
 // mid-forward drops the result). Access-token-only rotation is an ephemeral
 // vault write (no snapshot, §8.4).
 func (v *Vault) AcquireToken(credName string) (string, error) {
+	return v.AcquireTokenCtx(context.Background(), credName)
+}
+
+// AcquireTokenCtx is AcquireToken with caller-cancellation propagation into
+// the refresh forward (the refresh write itself stays detached).
+func (v *Vault) AcquireTokenCtx(ctx context.Context, credName string) (string, error) {
 	cred, ok := v.GetCredential(credName)
 	if !ok {
 		if !v.IsUnlocked() {
@@ -570,7 +577,7 @@ func (v *Vault) AcquireToken(credName string) (string, error) {
 	v.mu.Unlock()
 
 	go func() {
-		token, err := v.performRefresh(credName, cred)
+		token, err := v.performRefresh(ctx, credName, cred)
 		call.token, call.err = token, err
 		v.mu.Lock()
 		delete(v.refreshInflight, credName)
@@ -585,7 +592,7 @@ func (v *Vault) AcquireToken(credName string) (string, error) {
 // performRefresh forwards the refresh grant outside the flock, then takes a
 // brief flock (via MutateWithRegistry) to encrypt + write, revalidating that
 // the credential still exists before committing.
-func (v *Vault) performRefresh(credName string, cred Credential) (string, error) {
+func (v *Vault) performRefresh(ctx context.Context, credName string, cred Credential) (string, error) {
 	tokenURI := cred.TokenURI
 	if tokenURI == "" {
 		tokenURI = GoogleTokenURI
@@ -596,7 +603,7 @@ func (v *Vault) performRefresh(credName string, cred Credential) (string, error)
 	if forward == nil {
 		forward = DefaultTokenForward
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	res, err := forward(ctx, tokenURI, url.Values{
@@ -615,7 +622,9 @@ func (v *Vault) performRefresh(credName string, cred Credential) (string, error)
 	var droppedRevoked bool
 	mErr := v.MutateWithRegistry("", func(doc *VaultDoc, _ *SurrogateDoc) ([]string, []AuditRecord, error) {
 		// §4.5: write-back revalidates existence under the flock. A revoke
-		// committed during the forward must never resurrect the credential.
+		// committed during the forward must never resurrect the credential,
+		// and the drop itself is audited credential_rotated (dropped:
+		// revoked) through the same Mutate path.
 		cur, exists := doc.Credentials[credName]
 		if !exists {
 			droppedRevoked = true
@@ -643,6 +652,15 @@ func (v *Vault) performRefresh(credName string, cred Credential) (string, error)
 	}, !refreshRotated) // access-token-only rotation = ephemeral (§4.5, §8.4)
 	if mErr != nil {
 		if droppedRevoked {
+			// §4.5: the drop itself is audited credential_rotated with
+			// reason "dropped: revoked" (the Mutate error path writes no
+			// records, so this append carries it).
+			_ = v.audit.Append(AuditRecord{
+				Kind:   AuditKindCredentialRotated,
+				Cred:   credName,
+				Actor:  "worker",
+				Reason: "dropped: revoked",
+			})
 			return "", ErrCredentialGone
 		}
 		return "", mErr

@@ -36,9 +36,8 @@ const (
 type GmailConnector struct {
 	vault *Vault
 	// baseURL overrides the REST origin (loopback fake for V13 only).
-	baseURL   string
-	client    *http.Client
-	dialSeams bool
+	baseURL string
+	client  *http.Client
 }
 
 // NewGmailConnector builds the connector; production uses default TLS.
@@ -175,7 +174,7 @@ func (g *GmailConnector) accessToken(ctx context.Context, cred Credential) (stri
 	if g.vault == nil {
 		return "", wErr(ErrCodeInternal, detailInternal)
 	}
-	tok, err := g.vault.AcquireToken(g.Credential())
+	tok, err := g.vault.AcquireTokenCtx(ctx, g.Credential())
 	if err != nil {
 		if errors.Is(err, ErrCredentialGone) {
 			return "", wErr(ErrCodeDenied, detailDeniedCredGone)
@@ -221,7 +220,10 @@ func (g *GmailConnector) execSend(ctx context.Context, a *sendArgs, cred Credent
 		return nil, wErr(ErrCodeInternal, detailInternal)
 	}
 
-	payload, _ := json.Marshal(map[string]string{"raw": raw})
+	payload, perr := json.Marshal(map[string]string{"raw": raw})
+	if perr != nil {
+		return nil, wErr(ErrCodeInternal, detailInternal)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.apiURL(gmailSendPath), bytes.NewReader(payload))
 	if err != nil {
 		return nil, wErr(ErrCodeInternal, detailInternal)
@@ -345,13 +347,18 @@ func upstreamStatusError(status int) *workerError {
 }
 
 // buildRFC2822 assembles the MIME message and base64url-encodes it (§5.1).
+// The error is real: it carries the crypto/rand failure for the Message-ID.
 func buildRFC2822(a *sendArgs) (string, error) {
+	msgID, err := randMessageID()
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	b.WriteString("To: " + strings.Join(a.To, ", ") + "\r\n")
 	b.WriteString("Subject: " + sanitizeHeaderLine(a.Subject) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-	b.WriteString("Message-ID: <" + randMessageID() + ">\r\n")
+	b.WriteString("Message-ID: <" + msgID + ">\r\n")
 	b.WriteString("\r\n")
 	b.WriteString(a.Body)
 
@@ -360,12 +367,12 @@ func buildRFC2822(a *sendArgs) (string, error) {
 }
 
 // randMessageID mints a crypto/rand Message-ID local part.
-func randMessageID() string {
+func randMessageID() (string, error) {
 	buf := make([]byte, 12)
 	if _, err := rand.Read(buf); err != nil {
-		return "unknown"
+		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(buf)
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // sanitizeHeaderLine strips CR/LF from header values (no header injection).
