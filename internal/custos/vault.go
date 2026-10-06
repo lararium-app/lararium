@@ -42,6 +42,19 @@ type Vault struct {
 	isKeyfile         bool
 	firstUnlockDone   bool // CUSTOS-SPEC §4.1, §4.2: landedness recovery runs once per boot per Vault instance
 	degradedHook      func(reason string)
+
+	// Slice 4 (§4.5): per-credential refresh single-flight and the
+	// injectable token-endpoint forward seam (V13 fake servers).
+	refreshInflight map[string]*refreshCall
+	tokenForward    TokenForwardFunc
+}
+
+// SetTokenForward overrides the token-endpoint forward used by refresh
+// (V13 injects a loopback fake; production keeps DefaultTokenForward).
+func (v *Vault) SetTokenForward(f TokenForwardFunc) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.tokenForward = f
 }
 
 // NewVault initializes a Vault instance rooted at stateDir (<hearth>/custos).
@@ -96,6 +109,22 @@ func (v *Vault) Snapshots() *SnapshotManager {
 // Policy returns the PolicyEngine.
 func (v *Vault) Policy() *PolicyEngine {
 	return v.policy
+}
+
+// LoadedCredentials returns copies of all credential records from the
+// in-memory doc, for the §5.1a whole-set detail scrub. Empty when locked
+// (locked custody holds no plaintext to scrub against).
+func (v *Vault) LoadedCredentials() []Credential {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if !v.isUnlocked || v.loadedDoc == nil {
+		return nil
+	}
+	out := make([]Credential, 0, len(v.loadedDoc.Credentials))
+	for _, c := range v.loadedDoc.Credentials {
+		out = append(out, c)
+	}
+	return out
 }
 
 // Surrogates returns the loaded SurrogateRegistry or nil if locked.

@@ -14,6 +14,7 @@ type Daemon struct {
 	vault     *Vault
 	hub       *surface.ApprovalHub
 	proxy     *Proxy
+	workers   *WorkerServer
 	ctlServer *CtlServer
 	stopChan  chan struct{}
 }
@@ -29,12 +30,14 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 	hub := surface.NewApprovalHub(cfg.AskHoldTimeout)
 	v.SetApprovalHub(hub)
 	proxy := NewProxy(v, hub, cfg)
+	workers := NewWorkerServer(v, hub, cfg)
 
 	return &Daemon{
 		cfg:      cfg,
 		vault:    v,
 		hub:      hub,
 		proxy:    proxy,
+		workers:  workers,
 		stopChan: make(chan struct{}),
 	}
 }
@@ -47,6 +50,11 @@ func (d *Daemon) Vault() *Vault {
 // Proxy returns the internal Proxy.
 func (d *Daemon) Proxy() *Proxy {
 	return d.proxy
+}
+
+// Workers returns the internal worker lane server (§5.1).
+func (d *Daemon) Workers() *WorkerServer {
+	return d.workers
 }
 
 // Hub returns the internal ApprovalHub.
@@ -101,6 +109,7 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("start ctl server: %w", err)
 	}
 	ctlServer.SetProxy(d.proxy)
+	ctlServer.SetWorkers(d.workers)
 	d.ctlServer = ctlServer
 
 	return nil
