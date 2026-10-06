@@ -584,8 +584,30 @@ func (s *CtlServer) handleWorkerCmd(conn net.Conn, cmd string, parts []string) b
 			fmt.Fprint(conn, "ERR bad_request\n")
 			return true
 		}
+		// Overwriting an existing credential is a rotation: audit it with
+		// the frozen credential_rotated kind (§8.1) so a same-name replace
+		// is distinguishable from a first store in the chain.
+		_, existed := s.vault.GetCredential(req.Name)
 		if err := s.vault.StoreOAuthGrant("", req.Name, req.Cred, "cli"); err != nil {
-			fmt.Fprint(conn, "ERR store_failed\n")
+			// Name grammar (CA-1(e)) and the store cap surface as distinct
+			// refusals; everything else is a generic store failure.
+			switch {
+			case errors.Is(err, ErrBadName):
+				fmt.Fprint(conn, "ERR bad_name\n")
+			case errors.Is(err, ErrFull):
+				fmt.Fprint(conn, "ERR store_full\n")
+			default:
+				fmt.Fprint(conn, "ERR store_failed\n")
+			}
+			return true
+		}
+		if existed {
+			_ = s.vault.Audit().Append(AuditRecord{
+				Kind:  AuditKindCredentialRotated,
+				Cred:  req.Name,
+				Actor: "cli",
+			})
+			fmt.Fprint(conn, "OK credential_rotated\n")
 			return true
 		}
 		fmt.Fprint(conn, "OK credential_added\n")

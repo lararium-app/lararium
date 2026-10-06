@@ -68,6 +68,25 @@ var (
 	ErrPasteNoCode = errors.New("paste-back contains no code")
 )
 
+// maxCredentialNames is the CA-1(e) name cap (64 names counting vault ∪
+// keys.json). NOTE: this package enforces the vault-side count only; the
+// keys.json side of the union is counted where keys.json is read (slice 1/2
+// code has no keys.json accessor in this package), so the union cap is
+// finalized at the hearthd resolution layer. Grammar refusals use the frozen
+// ErrBadName and cap overflow the frozen ErrFull ("key store full"), per
+// CA-1(e)/K3.
+const maxCredentialNames = 64
+
+// validateCredName enforces the CA-1(e) name grammar (K4, verbatim):
+// ^[a-z0-9][a-z0-9_-]{0,63}$ — enforced via the shared keyNameRe so the
+// worker lane can never store a name the policy engine would refuse.
+func validateCredName(name string) error {
+	if !keyNameRe.MatchString(name) {
+		return ErrBadName
+	}
+	return nil
+}
+
 // tokenResponse is the token-endpoint JSON reply shape (§4.5 exchange/refresh).
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -112,6 +131,18 @@ func classifyTokenTransport(err error) error {
 	return fmt.Errorf("%w: transport", ErrTokenExchange)
 }
 
+// tokenStatusError carries a token-endpoint non-2xx status class. §5.1a:
+// HTTP upstream failures contribute a status class only — never the URL,
+// never the upstream body.
+type tokenStatusError struct{ status int }
+
+func (e *tokenStatusError) Error() string {
+	return fmt.Sprintf("%s: status %d", ErrTokenExchange.Error(), e.status)
+}
+
+// Unwrap keeps ErrTokenExchange membership for callers that match on it.
+func (e *tokenStatusError) Unwrap() error { return ErrTokenExchange }
+
 // DefaultTokenForward performs the token-endpoint POST. Non-loopback http://
 // endpoints are refused (production wiring); loopback http:// is allowed so
 // V13 runs against a local fake OAuth server.
@@ -140,7 +171,7 @@ func DefaultTokenForward(ctx context.Context, tokenURI string, form url.Values) 
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Status class only; the upstream body never surfaces (§5.1a).
-		return nil, fmt.Errorf("%w: status %d", ErrTokenExchange, resp.StatusCode)
+		return nil, &tokenStatusError{status: resp.StatusCode}
 	}
 
 	var tr tokenResponse
@@ -355,6 +386,10 @@ func OAuthLogin(ctx context.Context, opts *LoginOptions) (*LoginResult, error) {
 		if cerr != nil {
 			return nil, cerr
 		}
+		// §4.5: 'state is still validated against the printed value' —
+		// this binds the URL-form paste-back. A bare code carries no
+		// state field at all (documented limit of §4.5's bare-code form):
+		// nothing exists to validate against there.
 		if isURL && pasteState != state {
 			return nil, ErrLoginStateMismatch
 		}
@@ -492,11 +527,21 @@ func LoginDeniedReason(err error) string {
 
 // StoreOAuthGrant stores kind `oauth2` credential material through the §4.2
 // Mutate path (snapshotted, intent-paired) and audits credential_added.
+// CA-1(e): the name must match the inherited K4 grammar and the vault-side
+// count of the 64-name cap (the keys.json side of the union is counted at
+// the resolution layer — see maxCredentialNames). Overwriting an existing
+// name does not grow the set, so it never trips the cap.
 func (v *Vault) StoreOAuthGrant(passphrase, credName string, cred Credential, actor string) error {
+	if err := validateCredName(credName); err != nil {
+		return err
+	}
 	cred.Kind = "oauth2"
 	err := v.Mutate(passphrase, func(doc *VaultDoc) ([]string, error) {
 		if doc.Credentials == nil {
 			doc.Credentials = make(map[string]Credential)
+		}
+		if _, exists := doc.Credentials[credName]; !exists && len(doc.Credentials) >= maxCredentialNames {
+			return nil, ErrFull
 		}
 		doc.Credentials[credName] = cred
 		return []string{credName}, nil
@@ -547,7 +592,9 @@ func (v *Vault) AcquireToken(credName string) (string, error) {
 }
 
 // AcquireTokenCtx is AcquireToken with caller-cancellation propagation into
-// the refresh forward (the refresh write itself stays detached).
+// the wait for the refresh; the shared forward itself runs detached
+// (context.WithoutCancel) so one coalesced caller cancelling never kills the
+// refresh for the others. The refresh write stays detached either way.
 func (v *Vault) AcquireTokenCtx(ctx context.Context, credName string) (string, error) {
 	cred, ok := v.GetCredential(credName)
 	if !ok {
@@ -577,7 +624,11 @@ func (v *Vault) AcquireTokenCtx(ctx context.Context, credName string) (string, e
 	v.mu.Unlock()
 
 	go func() {
-		token, err := v.performRefresh(ctx, credName, cred)
+		// The shared forward must survive any individual caller's cancel:
+		// coalesced callers wait on this one refresh, so it runs detached
+		// from the first caller's context (the 30s cap inside
+		// performRefresh bounds it; §4.5 coalescing doctrine).
+		token, err := v.performRefresh(context.WithoutCancel(ctx), credName, cred)
 		call.token, call.err = token, err
 		v.mu.Lock()
 		delete(v.refreshInflight, credName)

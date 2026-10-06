@@ -44,10 +44,43 @@ const (
 const (
 	workerCellTokenMinLength = 16
 	workerMaxLineBytes       = 1 << 20
-	workerRequestTimeout     = 5 * time.Minute
+	// workerConnDeadlineMargin is the slack added on top of the full ask
+	// hold plus the execution budget for read/write overhead (§7 hold +
+	// per-request execution must both fit inside the conn deadline).
+	workerConnDeadlineMargin = 30 * time.Second
 	scrubMinLength           = 8 // KEYS-SPEC floor: <8-char values never replaced
 	redactedPlaceholder      = "[redacted]"
 )
+
+// errLineTooLong marks an NDJSON request line over workerMaxLineBytes.
+var errLineTooLong = errors.New("worker request line exceeds cap")
+
+// readCappedLine reads one newline-terminated line, refusing to buffer more
+// than workerMaxLineBytes+1 bytes: a peer streaming an endless line can make
+// the custosd read side return errLineTooLong, never grow unboundedly.
+func readCappedLine(br *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		b, err := br.ReadByte()
+		if b == '\n' {
+			return line, err
+		}
+		if err != nil {
+			return line, err
+		}
+		line = append(line, b)
+		if len(line) > workerMaxLineBytes {
+			return nil, errLineTooLong
+		}
+	}
+}
+
+// workerConnDeadline is the per-connection deadline arithmetic: a full ask
+// hold plus the execution budget plus the write-back margin. Kept in a
+// helper so the value is testable without waiting through a real hold.
+func workerConnDeadline(hold, exec time.Duration) time.Duration {
+	return hold + exec + workerConnDeadlineMargin
+}
 
 // Frozen detail templates per §5.1a: closed set, no URL, no upstream body,
 // no wrapped error chain.
@@ -280,7 +313,9 @@ func (ws *WorkerServer) acceptLoop(cw *cellWorker) {
 }
 
 // handleConn serves NDJSON over one cell socket connection: one request per
-// line, one response per line, until EOF.
+// line, one response per line, until EOF. A single request line may not
+// exceed workerMaxLineBytes: an oversized line gets the frozen bad_args
+// frame and the connection closes (read side stays bounded).
 func (ws *WorkerServer) handleConn(cw *cellWorker, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	br := bufio.NewReader(conn)
@@ -292,19 +327,30 @@ func (ws *WorkerServer) handleConn(cw *cellWorker, conn net.Conn) {
 			return
 		default:
 		}
-		_ = conn.SetDeadline(time.Now().Add(workerRequestTimeout))
+		_ = conn.SetDeadline(time.Now().Add(ws.connDeadline()))
 
-		line, rerr := br.ReadBytes('\n')
-		if len(strings.TrimSpace(string(line))) == 0 {
+		// Read one line with a hard cap: bytes are pulled one at a time
+		// from the buffered reader so the per-request buffer can never
+		// exceed workerMaxLineBytes, however long the peer keeps writing.
+		line, rerr := readCappedLine(br)
+		if errors.Is(rerr, errLineTooLong) {
+			// Frozen bad_args frame, then close: a partial-line buffer is
+			// never reused for a second request.
+			ws.writeBadArgsFrame(conn)
 			return
+		}
+		if len(strings.TrimSpace(string(line))) == 0 {
+			if errors.Is(rerr, io.EOF) {
+				return // EOF with no pending request: clean disconnect
+			}
+			continue // blank line between requests: skip, keep serving
 		}
 
 		var req WorkerRequest
 		if jsonErr := json.Unmarshal(line, &req); jsonErr != nil {
 			// Frozen constant frame: written raw so no marshaling can fail
 			// on this path (the frame is identical to errResponse's).
-			_, _ = conn.Write([]byte(`{"error_code":"` + ErrCodeBadArgs +
-				`","detail":"` + detailBadArgs + `"}` + "\n"))
+			ws.writeBadArgsFrame(conn)
 			if errors.Is(rerr, io.EOF) {
 				return
 			}
@@ -318,6 +364,13 @@ func (ws *WorkerServer) handleConn(cw *cellWorker, conn net.Conn) {
 			return
 		}
 	}
+}
+
+// writeBadArgsFrame writes the frozen §5.1a bad_args frame raw (no
+// marshaling can fail on this path).
+func (ws *WorkerServer) writeBadArgsFrame(conn io.Writer) {
+	_, _ = conn.Write([]byte(`{"error_code":"` + ErrCodeBadArgs +
+		`","detail":"` + detailBadArgs + `"}` + "\n"))
 }
 
 // verifyCellToken constant-time compares the request cell_token against the
@@ -448,7 +501,7 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 		return resp
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ws.cfg.AskHoldTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), ws.cfg.WorkerExecTimeout)
 	defer cancel()
 
 	result, execErr := conn.Execute(ctx, tool, req.Args, cred)
@@ -471,6 +524,13 @@ func (ws *WorkerServer) connectorByName(name string) (Connector, bool) {
 	return c, ok
 }
 
+// connDeadline is the per-connection deadline for this server's budgets:
+// full ask hold + execution budget + margin. The arithmetic itself is the
+// contract, asserted by TestWorker_ConnDeadlineArithmetic.
+func (ws *WorkerServer) connDeadline() time.Duration {
+	return workerConnDeadline(ws.cfg.AskHoldTimeout, ws.cfg.WorkerExecTimeout)
+}
+
 // askCard parks the worker call behind an approval card carrying the tool
 // schema's review fields (§7 card contents; hold/shed/timeout mechanics
 // identical to bearer parking via the shared park manager).
@@ -485,6 +545,11 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 		pm.mu.Unlock()
 		return false, errResponse(ErrCodeDenied, detailDeniedApproval)
 	}
+	// Mirror the bearer-lane order (registerParkFlow): register the card
+	// and bind its id to the flow INSIDE the pm.mu critical section, so a
+	// concurrent global-shed can never signal 'too_many_asks' against a
+	// parked flow whose id is still empty (an orphaned card nobody can
+	// cancel). The shed signal is delivered after this lock releases.
 	var shedFlow *parkedFlow
 	if pm.totalParked >= pm.maxGlobal {
 		shedFlow = pm.findBiggestCellParkLocked()
@@ -492,13 +557,18 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 			pm.removeParkLocked(shedFlow)
 		}
 	}
+	review := conn.ReviewFields(tool, args)
+	dest := conn.Host() + ":" + tool
+	id, decisionCh := ws.hub.RegisterCustos(cw.cellID, conn.Credential(), dest, review, ws.cfg.AskHoldTimeout, nil)
 	flow := &parkedFlow{
-		cellID:    cw.cellID,
-		cred:      conn.Credential(),
-		host:      conn.Host(),
-		path:      tool,
-		outcomeCh: make(chan string, 1),
-		createdAt: time.Now(),
+		id:         id,
+		cellID:     cw.cellID,
+		cred:       conn.Credential(),
+		host:       conn.Host(),
+		path:       tool,
+		decisionCh: decisionCh,
+		outcomeCh:  make(chan string, 1),
+		createdAt:  time.Now(),
 	}
 	pm.addParkLocked(flow)
 	pm.mu.Unlock()
@@ -509,11 +579,6 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 		default:
 		}
 	}
-
-	review := conn.ReviewFields(tool, args)
-	dest := conn.Host() + ":" + tool
-	id, decisionCh := ws.hub.RegisterCustos(cw.cellID, conn.Credential(), dest, review, ws.cfg.AskHoldTimeout, nil)
-	flow.id = id
 
 	timer := time.NewTimer(ws.cfg.AskHoldTimeout)
 	defer timer.Stop()
@@ -565,7 +630,12 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 }
 
 // auditAllowed appends worker_call_allowed (§8.1) with the verified actor.
+// A nil vault has no audit logger: the call is a no-op (the response frame
+// is the only signal; nil vault is a wiring fault, never a panic).
 func (ws *WorkerServer) auditAllowed(cw *cellWorker, cred, host, tool string) {
+	if ws.vault == nil {
+		return
+	}
 	_ = ws.vault.Audit().Append(AuditRecord{
 		Kind:    AuditKindWorkerCallAllowed,
 		Cred:    cred,
@@ -577,7 +647,11 @@ func (ws *WorkerServer) auditAllowed(cw *cellWorker, cred, host, tool string) {
 }
 
 // auditDenied appends worker_call_denied (§8.1) with the verified actor.
+// A nil vault has no audit logger: no-op, never a panic.
 func (ws *WorkerServer) auditDenied(cw *cellWorker, cred, host, tool, reason string) {
+	if ws.vault == nil {
+		return
+	}
 	_ = ws.vault.Audit().Append(AuditRecord{
 		Kind:    AuditKindWorkerCallDenied,
 		Cred:    cred,
@@ -596,6 +670,11 @@ func classifyWorkerError(err error) *workerError {
 	var we *workerError
 	if errors.As(err, &we) {
 		return we
+	}
+	// Token-endpoint non-2xx contributes its status class only (§5.1a).
+	var tse *tokenStatusError
+	if errors.As(err, &tse) {
+		return upstreamStatusError(tse.status)
 	}
 	if errors.Is(err, ErrCredentialGone) {
 		return wErr(ErrCodeDenied, detailDeniedCredGone)
@@ -644,8 +723,13 @@ func (ws *WorkerServer) ScrubDetail(detail string) string {
 }
 
 // scrubNeedles collects replacement pairs from the loaded vault state:
-// every credential field individually, every surrogate token.
+// every credential field individually, every surrogate token. A nil vault
+// has nothing loaded: no needles, never a panic (the nil-vault doctrine
+// branch in Dispatch must stay reachable).
 func (ws *WorkerServer) scrubNeedles() []string {
+	if ws.vault == nil {
+		return nil
+	}
 	var vals []string
 	add := func(v string) {
 		if len(v) >= scrubMinLength {

@@ -210,15 +210,19 @@ func runLogin(v *custos.Vault, keyfilePath string, subArgs []string) int {
 		return 2
 	}
 
-	// Client secret: prompted, never a flag/argv (§4.5).
+	// Client secret: prompted, never a flag/argv (§4.5). Zero the local
+	// copy on every exit path once the login flow is done (§C3 hygiene;
+	// LoginOptions may still hand the pointer to the exchange until then).
 	secret, err := readPassphrase("client secret (input hidden): ")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
+	defer custos.ZeroString(secret)
 
 	// The vault must be available: unlock the direct handle under custos.lock.
 	pass := getPassphrase(keyfilePath)
+	defer custos.ZeroString(pass)
 	if pass == "" {
 		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
 		return 1
