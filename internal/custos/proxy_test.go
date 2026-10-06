@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1144,7 +1145,14 @@ func TestProxy_ParkingGateHTTP10(t *testing.T) {
 
 // Unit test: Dynamic listener binding via ctl.sock per CUSTOS-SPEC CA-2(iv).
 func TestProxy_DynamicListenerBindingAndFailureDegraded(t *testing.T) {
-	stateDir := filepath.Join(t.TempDir(), "custos")
+	// ctl.sock lives under the state dir; the UDS path cap is 104 bytes,
+	// so keep the base short (t.TempDir() under a deep TMPDIR overflows).
+	base, berr := os.MkdirTemp("/tmp", "cd") //nolint:usetesting // UDS path cap: t.TempDir() under deep TMPDIR exceeds 104 bytes
+	if berr != nil {
+		t.Fatalf("mkdtemp: %v", berr)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	stateDir := filepath.Join(base, "custos")
 	cfg := &custos.Config{
 		AskHoldTimeout: 5 * time.Second,
 	}

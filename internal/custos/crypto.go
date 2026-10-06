@@ -159,6 +159,11 @@ func init() {
 	}
 }
 
+// ZeroString is the exported form of the §C3 best-effort string zeroing
+// discipline for callers outside this package (the custos CLI clears its
+// prompted client secret and passphrase copies with it).
+func ZeroString(s string) { zeroString(s) }
+
 // zeroString attempts best-effort overwrite of the underlying bytes of a string per CUSTOS-SPEC §C3.
 // If /dev/zero is unavailable the probe cannot run, so we never write blindly (a read-only
 // string page would be a fatal SIGSEGV): the zeroing is skipped instead.
