@@ -536,6 +536,7 @@ func (ws *WorkerServer) connDeadline() time.Duration {
 // identical to bearer parking via the shared park manager).
 func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, args json.RawMessage) (bool, WorkerResponse) {
 	if ws.hub == nil {
+		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "no_approval_door")
 		return false, errResponse(ErrCodeDenied, detailDeniedPolicy)
 	}
 
@@ -543,6 +544,7 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 	pm.mu.Lock()
 	if len(pm.byCell[cw.cellID]) >= pm.maxPerCell {
 		pm.mu.Unlock()
+		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "too_many_asks")
 		return false, errResponse(ErrCodeDenied, detailDeniedApproval)
 	}
 	// Mirror the bearer-lane order (registerParkFlow): register the card
@@ -596,6 +598,7 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 			ws.hub.CancelCard(flow.id, "too_many_asks", "custos")
 		}
 		settle()
+		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "too_many_asks")
 		return false, errResponse(ErrCodeDenied, detailDeniedApproval)
 
 	case <-timer.C:
@@ -603,6 +606,7 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 			settle()
 			ws.hub.CancelCard(flow.id, "timeout", "timer")
 		}
+		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "ask_timeout")
 		return false, errResponse(ErrCodeDenied, detailDeniedApproval)
 
 	case <-ws.done:
@@ -610,6 +614,7 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 			settle()
 			ws.hub.CancelCard(flow.id, "timeout", "server_closed")
 		}
+		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "server_closed")
 		return false, errResponse(ErrCodeLocked, detailLocked)
 
 	case approved := <-decisionCh:
@@ -618,10 +623,13 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 			reason := ws.hub.Reason(cw.cellID, id)
 			switch reason {
 			case "custos_locked":
+				ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "custos_locked")
 				return false, errResponse(ErrCodeLocked, detailLocked)
 			case "credential_revoked":
+				ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "credential_revoked")
 				return false, errResponse(ErrCodeDenied, detailDeniedRevoked)
 			default:
+				ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "denied_by_user")
 				return false, errResponse(ErrCodeDenied, detailDeniedApproval)
 			}
 		}

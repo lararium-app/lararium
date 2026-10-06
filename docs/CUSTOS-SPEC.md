@@ -718,8 +718,10 @@ declares `to` and `subject` so a human can actually judge; declared
 review fields are user-facing UI, never secrets). Requesting cell id.
 Timeout/both-doors rules inherit SURFACE-SPEC §6. Decisions are
 per-request (P3). Deny/timeout propagation: for worker calls the cell
-receives `{ "error_code": "denied", "detail": "approval denied by user"
-}`; for parked egress flows the proxy answers `403 surrogate` with body
+receives `{ "error_code": "denied", "detail": "denied: approval" }`
+(§5.1a's frozen template — erratum 2026-10-06: this sentence previously
+quoted `approval denied by user`, which belongs only to the bearer/
+parked-egress lanes below); for parked egress flows the proxy answers `403 surrogate` with body
 `approval denied by user` (the single typed refusal status for all
 refusal outcomes **on the bearer and parked-egress lanes** — worker
 refusals carry the §5.1a JSON error enum instead; the parked flow itself is held with **no HTTP status** —
