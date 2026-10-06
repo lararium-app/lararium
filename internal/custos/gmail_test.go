@@ -940,3 +940,70 @@ func TestV13_LoginDeniedReasons(t *testing.T) {
 		t.Errorf("non-denial mapped to %q", got)
 	}
 }
+
+// TestFixwaveS4AskSettleAudits asserts the live-dogfood finding of
+// 2026-10-06: every park-settled denial (human deny, ask timeout) must
+// append worker_call_denied (§8.1) — before the fix these four settle
+// branches returned error frames with zero audit trail, while every
+// pre-park denial audited.
+func TestFixwaveS4AskSettleAudits(t *testing.T) {
+	// --- human deny at the card leaves worker_call_denied ---
+	t.Run("card-denied-audited", func(t *testing.T) {
+		fake := &fakeOAuth{}
+		h := setupWorkerHarness(t, fake)
+		h.storeGmail(t)
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			for _, c := range h.hub.Pending() {
+				h.hub.Resolve(c.Cell, c.ID, false)
+			}
+		}()
+		resp := h.send(t, sendReq(t, v13CellToken,
+			map[string]interface{}{"to": []string{"x@example.com"}, "subject": "s", "body": "b"}))
+		if resp.ErrorCode != "denied" {
+			t.Fatalf("card denied: %+v", resp)
+		}
+		recs, _ := h.v.Audit().ReadTailRecords(8)
+		found := false
+		for _, r := range recs {
+			if r.Kind == custos.AuditKindWorkerCallDenied && r.Actor == "cell-1" &&
+				r.Tool == "send" && r.Reason == "denied_by_user" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("card denial left no worker_call_denied(denied_by_user) audit line")
+		}
+	})
+
+	// --- ask hold timeout leaves worker_call_denied(reason=ask_timeout) ---
+	t.Run("ask-timeout-audited", func(t *testing.T) {
+		fake := &fakeOAuth{}
+		h := setupWorkerHarness(t, fake)
+		h.storeGmail(t)
+		// No one resolves the card: hold expires (cfg AskHoldTimeout=5s).
+		resp := h.send(t, sendReq(t, v13CellToken,
+			map[string]interface{}{"to": []string{"x@example.com"}, "subject": "s", "body": "b"}))
+		if resp.ErrorCode != "denied" {
+			t.Fatalf("ask timeout: %+v", resp)
+		}
+		recs, _ := h.v.Audit().ReadTailRecords(8)
+		found := false
+		for _, r := range recs {
+			if r.Kind == custos.AuditKindWorkerCallDenied && r.Actor == "cell-1" &&
+				r.Tool == "send" && r.Reason == "ask_timeout" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("ask timeout left no worker_call_denied(ask_timeout) audit line")
+		}
+		// Denial must have prevented any upstream call.
+		fake.mu.Lock()
+		seen := fake.lastAuth
+		fake.mu.Unlock()
+		if seen != "" {
+			t.Fatalf("upstream called after ask timeout")
+		}
+	})
+}
