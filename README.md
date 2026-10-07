@@ -40,7 +40,7 @@ the screens you already carry.
   threat model assumes prompt injection *succeeds*; the cage makes
   misbehavior physically expensive below the model.
 
-## Status: public preview (v0.4.1-alpha)
+## Status: public preview (v0.5.0-alpha)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
@@ -60,15 +60,18 @@ suite on five hosts across two architectures · **the credential vault
 connector sends through a policy gate (auto / ask / deny) over an
 isolated worker lane the agent can never read from, with an append-only
 audit chain — verified live end-to-end (consent → sealed refresh token
-→ policy-checked send → audit line). See
-[CUSTOS-SPEC.md](docs/CUSTOS-SPEC.md).
+→ policy-checked send → audit line) · **the standalone approval door**:
+`custos approvals` lists pending cards and answers them Allow-once or
+Deny from the owner's terminal, so `ask` verdicts are decidable with no
+`hearthd` running. See [CUSTOS-SPEC.md](docs/CUSTOS-SPEC.md).
 
-**Not built yet:** other messaging channels (Signal, …); approval cards
-for vault asks (today an `ask` verdict in standalone `custosd` holds its
-timeout window and denies with a clean, audited `denied: approval` —
-the doors to answer cards, and the `hearthd`↔`custosd` integration that
-fans them to web/Telegram, are the next track); the Docker quick start
-does not include `custosd` yet.
+**Not built yet:** other messaging channels (Signal, …); the
+`hearthd`↔`custosd` integration that fans vault approval cards to
+web/Telegram (standalone `custosd` answers them on the control socket
+via `custos approvals`, per CUSTOS-SPEC §6.4a; an unanswered `ask`
+still holds its timeout window and denies with a clean, audited
+`denied: approval`); the Docker quick start does not
+include `custosd` yet.
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the whole shape.
 
 ## Platforms

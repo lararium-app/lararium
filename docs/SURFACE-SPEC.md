@@ -6,7 +6,8 @@ the hearth (hearthd) and its clients, and the first client: a built-in web
 chat. Changelog at bottom. Post-freeze amendments A1, A2, A4–A7 (approval
 channels, audit enums, cancel semantics, MarkUndeliverable) and K-A1 (the
 three /v1/keys routes) applied 2026-10-04 as approved at NUNTIUS-SPEC/
-KEYS-SPEC G1 pass — see changelog.
+KEYS-SPEC G1 pass — see changelog; CA-5 (the `ctl` audit source,
+CUSTOS-SPEC amendment v8) applied 2026-10-07 — see changelog v5.1.
 Companion specs: PENATUS-SPEC (the file layer — this API never contradicts
 it), ARCHITECTURE §2.7 (surfaces), CELL-SPEC (execution stays sandboxed).
 
@@ -210,11 +211,13 @@ restart kills the turn; the log shows the tool never ran).
 **Audit schema (frozen):** every tool_result event carries
 `"approval": {"decision": "allowed"|"denied", "reason": "ok"|"timeout"|
 "disconnected"|"shutdown"|"undeliverable"|"not_required", "source":
-"repl"|"web"|"telegram"|"timer"|"shutdown"|"hub"}` (A2: `timer` and
+"repl"|"web"|"telegram"|"ctl"|"timer"|"shutdown"|"hub"}` (A2: `timer` and
 `shutdown` are hub-caused terminal states, not client surfaces; `hub`
 covers hub-initiated denials with a policy cause, e.g. `undeliverable`.
 A4: `reason:"undeliverable"` pairs with `source:"hub"` so a delivery-
-failure denial is schema-valid and self-describing). Both
+failure denial is schema-valid and self-describing. CA-5 (CUSTOS-SPEC
+amendment v8): `ctl` is a verdict delivered through custos' control
+socket — the standalone approval door, CUSTOS-SPEC §6.4a). Both
 clients write through the same engine; verification diffs each client's
 log lines against THIS schema (field set + types), not against each
 other's bytes — `source` is the only field allowed to differ.
@@ -343,6 +346,12 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5.1 (amendment CA-5, 2026-10-07).** §6 audit `source` enum gains
+`ctl` per CUSTOS-SPEC amendment v8 CA-5: a verdict delivered through
+custos' control socket (the standalone approval door, CUSTOS-SPEC
+§6.4a), parallel to `web` and `telegram` — the symmetric completion of
+CA-3. No frozen web behavior changed.
 
 **v5 (amendments, 2026-10-04).** Applied the amendments approved at
 NUNTIUS-SPEC G1 (A1, A2, A4–A7) and KEYS-SPEC G1 (K-A1): §5 presence rule
