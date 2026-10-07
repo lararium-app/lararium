@@ -13,7 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 const (
@@ -97,8 +100,21 @@ func ReadCtlToken(stateDir string) (string, error) {
 	return tok, nil
 }
 
+// ApprovalCardWire is the uniform wire shape for pending approval cards per CUSTOS-SPEC §6.4a.
+type ApprovalCardWire struct {
+	ID         string `json:"id"`
+	Cell       string `json:"cell"`
+	Cred       string `json:"cred"`
+	Dest       string `json:"dest"`
+	Tool       string `json:"tool"`
+	Review     string `json:"review"`
+	AgeS       int    `json:"age_s"`
+	ExpiresInS int    `json:"expires_in_s"`
+}
+
 // CtlServer serves the daemon control socket at ctl.sock (0600) per CUSTOS-SPEC §3, §C1.
 type CtlServer struct {
+	mu        sync.RWMutex
 	stateDir  string
 	sockPath  string
 	tokenPath string
@@ -106,6 +122,7 @@ type CtlServer struct {
 	vault     *Vault
 	proxy     *Proxy
 	workers   *WorkerServer
+	hub       *surface.ApprovalHub
 	ln        net.Listener
 	done      chan struct{}
 	onStop    func()
@@ -113,12 +130,57 @@ type CtlServer struct {
 
 // SetProxy attaches the custody proxy to the control server.
 func (s *CtlServer) SetProxy(p *Proxy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.proxy = p
 }
 
 // SetWorkers attaches the worker lane server to the control server (§5.1).
 func (s *CtlServer) SetWorkers(w *WorkerServer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.workers = w
+}
+
+// SetHub attaches the ApprovalHub to the control server (§6.4a).
+func (s *CtlServer) SetHub(h *surface.ApprovalHub) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hub = h
+	if h != nil && !h.HasStaleVerdictHook() && s.vault != nil && s.vault.Audit() != nil {
+		h.SetStaleVerdictHook(func(id, sessionID, cred, cell, reason string) {
+			_ = s.vault.Audit().Append(AuditRecord{
+				Kind:   AuditKindStaleVerdict,
+				Cred:   cred,
+				Actor:  cell,
+				Reason: reason,
+			})
+		})
+	}
+}
+
+func (s *CtlServer) hubInstance() *surface.ApprovalHub {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.hub != nil {
+		return s.hub
+	}
+	if s.vault != nil {
+		return s.vault.ApprovalHub()
+	}
+	return nil
+}
+
+func (s *CtlServer) proxyInstance() *Proxy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.proxy
+}
+
+func (s *CtlServer) workersInstance() *WorkerServer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.workers
 }
 
 // StartCtlServer starts listening on ctl.sock with token authentication.
@@ -205,7 +267,7 @@ func (s *CtlServer) handleConn(conn net.Conn) {
 		return
 	}
 
-	if s.handleSurrogateCmd(conn, cmd, parts) || s.handlePolicyCmd(conn, cmd, parts) || s.handleListenerCmd(conn, cmd, parts) || s.handleWorkerCmd(conn, cmd, parts) {
+	if s.handleSurrogateCmd(conn, cmd, parts) || s.handlePolicyCmd(conn, cmd, parts) || s.handleListenerCmd(conn, cmd, parts) || s.handleWorkerCmd(conn, cmd, parts) || s.handleApprovalCmd(conn, cmd, parts) {
 		return
 	}
 
@@ -215,8 +277,8 @@ func (s *CtlServer) handleConn(conn net.Conn) {
 
 	case "STATUS":
 		failed := 0
-		if s.proxy != nil {
-			failed = s.proxy.ListenersFailed()
+		if p := s.proxyInstance(); p != nil {
+			failed = p.ListenersFailed()
 		}
 		st := s.vault.Status(true, failed)
 		b, err := json.Marshal(st)
@@ -431,13 +493,14 @@ func (s *CtlServer) handlePolicyCmd(conn net.Conn, cmd string, parts []string) b
 }
 
 func (s *CtlServer) handleListenerCmd(conn net.Conn, cmd string, parts []string) bool {
+	proxy := s.proxyInstance()
 	switch strings.ToUpper(cmd) {
 	case "BIND-LISTENER", "BIND_LISTENER":
 		if len(parts) < 3 {
 			fmt.Fprint(conn, "ERR bad_request\n")
 			return true
 		}
-		if s.proxy == nil {
+		if proxy == nil {
 			fmt.Fprint(conn, "ERR proxy_not_configured\n")
 			return true
 		}
@@ -468,7 +531,7 @@ func (s *CtlServer) handleListenerCmd(conn net.Conn, cmd string, parts []string)
 				logPath = fields[3]
 			}
 		}
-		if err := s.proxy.BindListener(addr, cellID, peer, logPath); err != nil {
+		if err := proxy.BindListener(addr, cellID, peer, logPath); err != nil {
 			fmt.Fprintf(conn, "ERR %s\n", err.Error())
 			return true
 		}
@@ -480,7 +543,7 @@ func (s *CtlServer) handleListenerCmd(conn net.Conn, cmd string, parts []string)
 			fmt.Fprint(conn, "ERR bad_request\n")
 			return true
 		}
-		if s.proxy == nil {
+		if proxy == nil {
 			fmt.Fprint(conn, "ERR proxy_not_configured\n")
 			return true
 		}
@@ -498,7 +561,7 @@ func (s *CtlServer) handleListenerCmd(conn net.Conn, cmd string, parts []string)
 		} else {
 			addr = strings.Fields(arg)[0]
 		}
-		if err := s.proxy.CloseListener(addr); err != nil {
+		if err := proxy.CloseListener(addr); err != nil {
 			fmt.Fprintf(conn, "ERR %s\n", err.Error())
 			return true
 		}
@@ -506,11 +569,11 @@ func (s *CtlServer) handleListenerCmd(conn net.Conn, cmd string, parts []string)
 		return true
 
 	case "LIST-LISTENERS", "LIST_LISTENERS":
-		if s.proxy == nil {
+		if proxy == nil {
 			fmt.Fprint(conn, "OK []\n")
 			return true
 		}
-		list := s.proxy.ListListeners()
+		list := proxy.ListListeners()
 		b, err := json.Marshal(list)
 		if err != nil {
 			fmt.Fprintf(conn, "ERR %s\n", err.Error())
@@ -528,13 +591,14 @@ func (s *CtlServer) handleListenerCmd(conn net.Conn, cmd string, parts []string)
 // BIND-CELL binds a per-cell custos.sock; UNBIND-CELL releases it;
 // LOGIN-STORE stores an exchanged oauth2 grant through the Mutate path.
 func (s *CtlServer) handleWorkerCmd(conn net.Conn, cmd string, parts []string) bool {
+	workers := s.workersInstance()
 	switch strings.ToUpper(cmd) {
 	case "BIND-CELL", "BIND_CELL":
 		if len(parts) < 3 {
 			fmt.Fprint(conn, "ERR bad_request\n")
 			return true
 		}
-		if s.workers == nil {
+		if workers == nil {
 			fmt.Fprint(conn, "ERR workers_not_configured\n")
 			return true
 		}
@@ -547,7 +611,7 @@ func (s *CtlServer) handleWorkerCmd(conn net.Conn, cmd string, parts []string) b
 			fmt.Fprint(conn, "ERR bad_request\n")
 			return true
 		}
-		if err := s.workers.BindCell(req.CellID, req.Sock, req.Token); err != nil {
+		if err := workers.BindCell(req.CellID, req.Sock, req.Token); err != nil {
 			fmt.Fprint(conn, "ERR bind_failed\n")
 			return true
 		}
@@ -559,12 +623,12 @@ func (s *CtlServer) handleWorkerCmd(conn net.Conn, cmd string, parts []string) b
 			fmt.Fprint(conn, "ERR bad_request\n")
 			return true
 		}
-		if s.workers == nil {
+		if workers == nil {
 			fmt.Fprint(conn, "ERR workers_not_configured\n")
 			return true
 		}
 		cellID := strings.TrimSpace(parts[2])
-		if err := s.workers.UnbindCell(cellID); err != nil {
+		if err := workers.UnbindCell(cellID); err != nil {
 			fmt.Fprint(conn, "ERR unbind_failed\n")
 			return true
 		}
@@ -615,6 +679,233 @@ func (s *CtlServer) handleWorkerCmd(conn net.Conn, cmd string, parts []string) b
 
 	default:
 		return false
+	}
+}
+
+// handleApprovalCmd handles standalone approval door verbs: CARDS, APPROVE, DENY per CUSTOS-SPEC §6.4a.
+func (s *CtlServer) handleApprovalCmd(conn net.Conn, cmd string, parts []string) bool {
+	upper := strings.ToUpper(cmd)
+	if upper != "CARDS" && upper != "APPROVE" && upper != "DENY" {
+		return false
+	}
+	if s.vault == nil || !s.vault.IsUnlocked() {
+		fmt.Fprint(conn, "ERR locked\n")
+		return true
+	}
+	switch upper {
+	case "CARDS":
+		s.handleCards(conn)
+		return true
+
+	case "APPROVE":
+		if len(parts) < 3 {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		cardID := strings.TrimSpace(parts[2])
+		if cardID == "" {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		s.handleResolve(conn, cardID, true)
+		return true
+
+	case "DENY":
+		if len(parts) < 3 {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		cardID := strings.TrimSpace(parts[2])
+		if cardID == "" {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		s.handleResolve(conn, cardID, false)
+		return true
+
+	default:
+		return false
+	}
+}
+
+func (s *CtlServer) handleCards(conn net.Conn) {
+	hub := s.hubInstance()
+	if hub == nil {
+		fmt.Fprint(conn, "OK []\n")
+		return
+	}
+
+	pending := hub.Pending()
+	if len(pending) == 0 {
+		fmt.Fprint(conn, "OK []\n")
+		return
+	}
+
+	cards := make([]ApprovalCardWire, 0, len(pending))
+	workers := s.workersInstance()
+	proxy := s.proxyInstance()
+	for _, card := range pending {
+		wire := ApprovalCardWire{
+			ID:     card.ID,
+			Cell:   card.Cell,
+			Cred:   card.Cred,
+			Tool:   "",
+			Dest:   "",
+			Review: "",
+		}
+
+		found := false
+		if workers != nil && workers.parkMgr != nil {
+			workers.parkMgr.mu.Lock()
+			for _, cellParks := range workers.parkMgr.byCell {
+				if flow, ok := cellParks[card.ID]; ok {
+					found = true
+					wire.Tool = flow.path
+					wire.Dest = ""
+					wire.Review = flow.review
+					if flow.cred != "" {
+						wire.Cred = flow.cred
+					}
+					if flow.cellID != "" {
+						wire.Cell = flow.cellID
+					}
+					now := time.Now()
+					wire.AgeS = int(now.Sub(flow.createdAt).Seconds())
+					if wire.AgeS < 0 {
+						wire.AgeS = 0
+					}
+					wire.ExpiresInS = int(flow.createdAt.Add(workers.parkMgr.holdTimeout).Sub(now).Seconds())
+					if wire.ExpiresInS < 0 {
+						wire.ExpiresInS = 0
+					}
+					break
+				}
+			}
+			workers.parkMgr.mu.Unlock()
+		}
+
+		if !found && proxy != nil && proxy.parkMgr != nil {
+			proxy.parkMgr.mu.Lock()
+			for _, cellParks := range proxy.parkMgr.byCell {
+				if flow, ok := cellParks[card.ID]; ok {
+					found = true
+					if flow.cred != "" {
+						wire.Cred = flow.cred
+					} else {
+						wire.Cred = card.Cred
+					}
+					wire.Tool = ""
+					if flow.port > 0 {
+						wire.Dest = fmt.Sprintf("%s:%d%s", flow.host, flow.port, flow.path)
+					} else if flow.host != "" {
+						wire.Dest = fmt.Sprintf("%s%s", flow.host, flow.path)
+					}
+					if flow.cellID != "" {
+						wire.Cell = flow.cellID
+					}
+					wire.Review = flow.review
+					now := time.Now()
+					wire.AgeS = int(now.Sub(flow.createdAt).Seconds())
+					if wire.AgeS < 0 {
+						wire.AgeS = 0
+					}
+					wire.ExpiresInS = int(flow.createdAt.Add(proxy.parkMgr.holdTimeout).Sub(now).Seconds())
+					if wire.ExpiresInS < 0 {
+						wire.ExpiresInS = 0
+					}
+					break
+				}
+			}
+			proxy.parkMgr.mu.Unlock()
+		}
+
+		if !found {
+			continue
+		}
+
+		cards = append(cards, wire)
+	}
+
+	b, err := json.Marshal(cards) //nolint:gosec // ApprovalCardWire.Cred carries provider/credential name, never secret value
+	if err != nil {
+		fmt.Fprintf(conn, "ERR %s\n", err.Error())
+		return
+	}
+	fmt.Fprintf(conn, "OK %s\n", string(b))
+}
+
+func (s *CtlServer) handleResolve(conn net.Conn, cardID string, allow bool) {
+	hub := s.hubInstance()
+	if hub == nil {
+		fmt.Fprint(conn, "ERR no such card\n")
+		return
+	}
+
+	var session, cred string
+	for _, card := range hub.Pending() {
+		if card.ID == cardID {
+			session = card.Cell
+			cred = card.Cred
+			break
+		}
+	}
+
+	if session == "" {
+		if sid, ok := hub.SessionOf(cardID); ok {
+			session = sid
+		}
+	}
+
+	workers := s.workersInstance()
+	if cred == "" && workers != nil && workers.parkMgr != nil {
+		workers.parkMgr.mu.Lock()
+		for _, cellParks := range workers.parkMgr.byCell {
+			if flow, ok := cellParks[cardID]; ok {
+				cred = flow.cred
+				if session == "" {
+					session = flow.cellID
+				}
+				break
+			}
+		}
+		workers.parkMgr.mu.Unlock()
+	}
+
+	proxy := s.proxyInstance()
+	if cred == "" && proxy != nil && proxy.parkMgr != nil {
+		proxy.parkMgr.mu.Lock()
+		for _, cellParks := range proxy.parkMgr.byCell {
+			if flow, ok := cellParks[cardID]; ok {
+				cred = flow.cred
+				if session == "" {
+					session = flow.cellID
+				}
+				break
+			}
+		}
+		proxy.parkMgr.mu.Unlock()
+	}
+
+	status := hub.ResolveFrom(session, cardID, allow, "ctl")
+	switch status {
+	case 200:
+		if allow {
+			if s.vault != nil && s.vault.Audit() != nil {
+				_ = s.vault.Audit().AppendApprovalAnswered(cred, "ok")
+			}
+			fmt.Fprint(conn, "OK approved\n")
+		} else {
+			if s.vault != nil && s.vault.Audit() != nil {
+				_ = s.vault.Audit().AppendApprovalAnswered(cred, "denied")
+			}
+			fmt.Fprint(conn, "OK denied\n")
+		}
+	case 410:
+		fmt.Fprint(conn, "ERR already answered\n")
+	case 404:
+		fmt.Fprint(conn, "ERR no such card\n")
+	default:
+		fmt.Fprintf(conn, "ERR %d\n", status)
 	}
 }
 
@@ -737,4 +1028,27 @@ func (c *CtlClient) ListListeners() ([]string, error) {
 		return nil, err
 	}
 	return list, nil
+}
+
+// Cards queries pending approval cards from custosd over ctl.sock per CUSTOS-SPEC §6.4a.
+func (c *CtlClient) Cards() ([]ApprovalCardWire, error) {
+	resp, err := c.RoundTrip("CARDS")
+	if err != nil {
+		return nil, err
+	}
+	var cards []ApprovalCardWire
+	if err := json.Unmarshal([]byte(resp), &cards); err != nil {
+		return nil, fmt.Errorf("unmarshal cards: %w", err)
+	}
+	return cards, nil
+}
+
+// Approve approves an approval card over ctl.sock per CUSTOS-SPEC §6.4a.
+func (c *CtlClient) Approve(cardID string) (string, error) {
+	return c.RoundTripWithArg("APPROVE", cardID)
+}
+
+// Deny denies an approval card over ctl.sock per CUSTOS-SPEC §6.4a.
+func (c *CtlClient) Deny(cardID string) (string, error) {
+	return c.RoundTripWithArg("DENY", cardID)
 }

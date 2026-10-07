@@ -7,6 +7,13 @@ order, fingerprint mirror inside recovery rewrite + snapshot set,
 migrate-deletion audit lines, `--port` grammar, writer-path-only
 note). All six open questions decided by the PO (§12). Suite V1–V26.
 Implementation may begin.**
+**Amendment v8 (2026-10-07): PENDING PO sign-off.** Adds §6.4a (the
+standalone ctl door: CARDS/APPROVE/DENY + `custos approvals`), CA-5
+(SURFACE-SPEC `source` enum gains `ctl`), the `approval_answered`
+kind, the frozen `worker_call_denied` reason set (erratum: shipped
+v0.4.1 undeclared), and V27. Everything merged to date implements the
+v7 text; v8 is additive — no v7 behavior changes. Implementation of v8
+begins only on sign-off.
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -146,6 +153,17 @@ asserts the rule in the credential direction: a worker-lane tool_result
 persisted to a session carries the typed result (closed schemas, §5.1)
 and a scrubbed error code/detail (§5.1a) — never tokens, refresh
 material, upstream bodies, or URLs containing credentials.
+
+**CA-5 → SURFACE-SPEC (frozen) §6 (amendment v8).** Approval `source`
+enum gains `ctl` — a verdict delivered by the owner through the
+control socket (§6.4a's standalone door), parallel to `web` and
+`telegram`. No other frozen SURFACE-SPEC text changes: state machine,
+both-doors rule, `already answered`, and timeout semantics are
+referenced, not restated, and apply identically to `ctl` verdicts.
+Precedent: CA-3 amended the same enums for `custos` at freeze time;
+this is the symmetric completion — a card that custos registers and
+the web door cannot reach (standalone mode) must still be answerable
+by its owner.
 
 ## 0. The problem
 
@@ -737,6 +755,67 @@ cancel, not settle: no user verdict is implied, CA-3) and closes
 parked flows. A user clicking a race-lost card
 gets the frozen `already answered` hub behavior, same as tool approvals.
 
+**6.4a — The standalone door (amendment v8).** A card is only useful
+if its owner can answer it. With the `hearthd` integration (web +
+Telegram fan-out) unbuilt, standalone `custosd` would otherwise hold
+every `ask` to `ask_hold_timeout` with no human door at all —
+park-then-deny forever, with the audit trail unable to distinguish
+"no one could answer" from "the owner said no." The control socket is
+already the owner's authenticated channel (ctl.token, 0600), so the
+door lives there. Three ctl.sock verbs, gated by `ctl.token` like
+every other ctl op (§3):
+
+- `CARDS` → `OK <json>` with one array, matching the shipped list-verb
+  wire shape (POLICY-LIST): `[{id, cell, cred, dest, tool, review,
+  age_s, expires_in_s}, …]` — `review` carries the §6.4 frozen field
+  set (declared review fields, argument digest); `expires_in_s`
+  counts down the §6.4 park window. Zero pending cards answers
+  `OK []`. Fields a lane does not have (worker cards carry `tool` and
+  no path; parked-egress cards carry `dest` and no `tool`) are the
+  empty string — the field set is uniform, the values lane-accurate.
+  Card metadata comes from custos' own per-card registry (the lane
+  keeps `tool`/`review`/registered-at beside the hub's card id at
+  register time); the hub itself is not required to retain them, and
+  `CARDS` answers `OK []` for ids a restart forgot — a parked call
+  does not survive a daemon restart (§3's restart posture), so its
+  card never outlives its flow.
+- `APPROVE <card-id>` — same effect as Allow-once on a web card:
+  `ResolveFrom` with source `ctl` (CA-5). First-settle-wins is the
+  hub's rule, unchanged: a card already settled answers
+  `already answered`, a nonexistent id answers `no such card`.
+- `DENY <card-id>` — same effect as Deny, source `ctl`.
+
+The buttons on the socket are **Allow-once and Deny only**. `Always`
+is not offered: §6.5's Always construction needs the full verified
+request fields to build the canonical exact form, and a socket
+operator working from the `CARDS` digest is not the UI §6.5
+presupposes. The manual equivalent — `custos policy add
+<credential>/<tool> auto` — is always available and audits
+`policy_written` like any manual rule.
+
+Door semantics inherit the hub entirely: both-doors, `stale_verdict`
+on a late Allow after hold expiry, `CancelByCredential` while parked,
+the frozen deny strings per §5.1a/§6.4. The door adds no new verdict
+states and no new wire outcomes — it only lets a human reach states
+the machine already has. **Attribution:** a web or Telegram verdict is
+carried by surface's audit; standalone has no surface, so a ctl-door
+verdict appends a custos chain line `approval_answered` (amendment v8;
+§8.1 kind list) — `{kind, cred, actor: "cli", reason: "ok"|"denied"}` —
+making the human decision durable in the only chain that exists there.
+One line per settled verdict; `already answered` races append nothing.
+The CLI surface (§11) gains
+`custos approvals [watch]` over these verbs: one line per card,
+`a <id>` / `d <id>` commands, `q` quits; `watch` re-reads every
+second and reprints newly added or removed cards (§11's line-oriented
+list convention, decoration allowed because it is interactive-only
+output — the machine contract is `CARDS`, not the CLI paint).
+The nil-hub refusal reason `no_approval_door` (shipped v0.4.1,
+`worker_call_denied`, §8.1: hub absent — a wiring fault) is now
+specified: it means *no door exists*, never "standalone" — standalone
+has one. Its emit-site stays as shipped: a nil hub cannot register a
+card, so the call denies with `worker_call_denied(no_approval_door)`
+like every other denial path.
+
 **6.5 — Always rules.** Frozen button set: **Allow once / Always /
 Deny**. Always writes the canonical exact-match form of *this request*
 (§6.2's canonical form, or §6.3's exact host[:port] — never the
@@ -829,6 +908,7 @@ and crash-tail rule, separate file family. Kinds (frozen):
 `credential_removed`, `surrogate_created`, `surrogate_revoked`,
 `surrogate_rejected`, `registry_reconciled`, `vault_mutation_intent`,
 `vault_mutation`, `vault_mutation_recovered`,
+`approval_answered` (amendment v8: a ctl-door verdict settled, §6.4a),
 `vault_mutation_aborted` (emitted when a §4.2 mutation is refused
 after its intent line — `reason: lock_timeout` or a failed
 encrypt/write — **or by first-unlock recovery for an intent that
@@ -839,7 +919,17 @@ from the chain), `vault_mutation_superseded`, `stale_verdict`,
 `swap_allowed`, `swap_denied`, `egress_allowed`,
 `egress_denied`, `worker_call_allowed`, `worker_call_denied`,
 `policy_written`, `always_rule_added`, `policy_reset`,
-`custos_restarted_after_crash`, `audit_pruned`. `credential_added` is
+`custos_restarted_after_crash`, `audit_pruned`.
+**`worker_call_denied` reason set (frozen; erratum 2026-10-07 — the
+set shipped in v0.4.1 without appearing in this text):**
+`verdict` (policy says deny), `ask_timeout`, `too_many_asks`,
+`server_closed`, `denied_by_user`, `custos_locked`,
+`credential_revoked`, `no_approval_door`, `policy_changed_during_hold`,
+`cell_token`, `bad_op`, `bad_args`, `unknown_connector`,
+`unknown_tool`, `locked`, `credential_gone`. A new emit-site reason
+requires a spec edit here first (same discipline as the closed worker
+error enum, §5.1a: an undeclared value is a defect at review, not a
+passthrough). `credential_added` is
 emitted by `custos login` success and by `hearthd keys set` under
 custody (the custody-routed write audits it with `actor` surface/cli).
 Fields: `t`, `kind`,
@@ -1134,6 +1224,21 @@ audits `stale_verdict` with the dial counter at zero; a POST parked
 with an unread body receives the 403 (no `ECONNRESET` — denial-drain,
 §7). Custosd respawn mid-cell-life: after restart, booted cells'
 listeners are re-pulled and live again (CA-2(iv), V19-adjacent).
+V27. Standalone door (§6.4a, amendment v8): with an `ask` rule and one
+parked worker call (no hub consumers), ctl `CARDS` lists the card with
+the frozen §6.4 review fields; `APPROVE` settles it and the worker call
+completes (fake upstream dialed exactly once); the chain carries
+`approval_answered` (`reason: "ok"`, `actor: cli`) and the parked
+settle emits **no** `worker_call_denied`; a second `APPROVE` answers
+`already answered` and appends nothing; `DENY` on a fresh park settles
+the call `denied: approval` with `worker_call_denied(denied_by_user)`
+**and** `approval_answered(reason: "denied")`; a `CARDS`-listed card
+whose credential is revoked mid-park disappears from the list
+(`CancelByCredential`, reason `credential_revoked`, no verdict line);
+late `APPROVE` after hold expiry audits `stale_verdict` with the dial
+counter at zero; `custos approvals watch` reprints an added card within
+its poll interval and exits on `q`. Locked vault: `CARDS`/`APPROVE`/
+`DENY` answer the frozen locked refusal, no state change.
 
 ## 11. CLI surface (frozen shapes)
 
@@ -1142,7 +1247,7 @@ listeners are re-pulled and live again (CA-2(iv), V19-adjacent).
 (`keys rm <name>` under custody — one owner; `keys rm` performs,
 `revoke` is its alias, §4.4) | policy
 add|list|rm|reset
-| audit verify | snapshots list | restore <gen> --yes` — all new verbs
+| approvals [watch] | audit verify | snapshots list | restore <gen> --yes` — all new verbs
 live in the `custos` namespace; KEYS-SPEC's frozen `keys` family gains
 nothing (CA-1). `status` is machine-parseable JSON
 (`{state: locked|unlocked|degraded, credentials: n, surrogates: n,
@@ -1189,6 +1294,18 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
 
 ## Changelog
 
+- v8 (amendment, pending PO sign-off, 2026-10-07): standalone
+  approval door. Motivation from the first live dogfooding cycle:
+  with the hearthd integration unbuilt, `ask` in standalone custosd
+  parks 330 s and denies — the owner has no way to answer (verified
+  by experiment during the v0.4.1 fixwave). Adds CA-5 (`source` enum
+  `ctl`), §6.4a (ctl verbs CARDS/APPROVE/DENY, Allow-once + Deny only
+  — Always stays §6.5's UI-privileged construction; `custos approvals
+  [watch]`; `approval_answered` chain line for verdict attribution
+  where no surface audit exists), the frozen `worker_call_denied`
+  reason set closing the v0.4.1 declaration gap (erratum), V27.
+  Nil-hub `no_approval_door` semantics clarified: no door, never
+  "standalone."
 - v7.1 (frozen, signed off): PO sign-off received 2026-10-05. §12
   converted from open questions to **decisions**: passphrase-default
   + documented keyfile opt-in (file-permission boundary, never

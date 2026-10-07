@@ -231,6 +231,16 @@ func (a *AuditLogger) Append(rec AuditRecord) error {
 	return nil
 }
 
+// AppendApprovalAnswered records an approval resolution from the CLI door per CUSTOS-SPEC §6.4a.
+func (a *AuditLogger) AppendApprovalAnswered(cred, reason string) error {
+	return a.Append(AuditRecord{
+		Kind:   AuditKindApprovalAnswered,
+		Cred:   cred,
+		Actor:  "cli",
+		Reason: reason,
+	})
+}
+
 // ComputeAnchorMAC computes HMAC-SHA256 over "file:line:hash" under HKDF(vault.key, "custos-anchor").
 func ComputeAnchorMAC(instanceKey []byte, file string, line int, hash string) string {
 	anchorKey := DeriveHKDF(instanceKey, HKDFInfoCustosAnchor)

@@ -115,6 +115,13 @@ func (h *ApprovalHub) SetStaleVerdictHook(hook StaleVerdictHook) {
 	h.staleVerdictHook = hook
 }
 
+// HasStaleVerdictHook reports whether a stale verdict callback is installed.
+func (h *ApprovalHub) HasStaleVerdictHook() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.staleVerdictHook != nil
+}
+
 // RegisterCustos registers a pending approval card for a custos request per CUSTOS-SPEC §6.4.
 func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeout time.Duration, onEvent func(approvalID string)) (id string, decision <-chan bool) {
 	h.mu.Lock()
