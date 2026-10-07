@@ -96,6 +96,7 @@ type parkedFlow struct {
 	port       int
 	path       string
 	surToken   string
+	review     string
 	decisionCh <-chan bool
 	outcomeCh  chan string
 	createdAt  time.Time
@@ -790,11 +791,12 @@ func (cl *cellListener) registerParkFlow(rec *SurrogateRecord, method, target, c
 
 	destSummary := fmt.Sprintf("%s:%d%s", canonHost, canonPort, rec.PathPrefix)
 	argDigest := sha256Hex(method + " " + target)
+	reviewStr := fmt.Sprintf("sha256:%s", argDigest)
 	cardID, decisionCh := cl.proxy.hub.RegisterCustos(
 		cl.cellID,
 		rec.Credential,
 		destSummary,
-		fmt.Sprintf("sha256:%s", argDigest),
+		reviewStr,
 		pm.holdTimeout,
 		nil,
 	)
@@ -807,6 +809,7 @@ func (cl *cellListener) registerParkFlow(rec *SurrogateRecord, method, target, c
 		port:       canonPort,
 		path:       rec.PathPrefix,
 		surToken:   surToken,
+		review:     reviewStr,
 		decisionCh: decisionCh,
 		outcomeCh:  make(chan string, 1),
 		createdAt:  time.Now(),
@@ -1444,12 +1447,13 @@ func (cl *cellListener) parkAndServeCredentialLess(
 
 	destSummary := fmt.Sprintf("%s:%d", canonHost, canonPort)
 	argDigest := sha256Hex(method + " " + target)
+	reviewStr := fmt.Sprintf("sha256:%s", argDigest)
 
 	cardID, decisionCh := cl.proxy.hub.RegisterCustos(
 		cl.cellID,
 		"",
 		destSummary,
-		fmt.Sprintf("sha256:%s", argDigest),
+		reviewStr,
 		pm.holdTimeout,
 		nil,
 	)
@@ -1459,6 +1463,7 @@ func (cl *cellListener) parkAndServeCredentialLess(
 		cellID:     cl.cellID,
 		host:       canonHost,
 		port:       canonPort,
+		review:     reviewStr,
 		decisionCh: decisionCh,
 		outcomeCh:  make(chan string, 1),
 		createdAt:  time.Now(),

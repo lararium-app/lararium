@@ -568,6 +568,7 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 		cred:       conn.Credential(),
 		host:       conn.Host(),
 		path:       tool,
+		review:     review,
 		decisionCh: decisionCh,
 		outcomeCh:  make(chan string, 1),
 		createdAt:  time.Now(),
@@ -763,4 +764,19 @@ func (ws *WorkerServer) scrubNeedles() []string {
 		pairs = append(pairs, v, redactedPlaceholder)
 	}
 	return pairs
+}
+
+// RegisterParkForTest registers a parked flow in the worker park manager for testing.
+func (ws *WorkerServer) RegisterParkForTest(id, cellID, cred, tool, review string) {
+	ws.parkMgr.mu.Lock()
+	defer ws.parkMgr.mu.Unlock()
+	ws.parkMgr.addParkLocked(&parkedFlow{
+		id:        id,
+		cellID:    cellID,
+		cred:      cred,
+		host:      "gmail.googleapis.com",
+		path:      tool,
+		review:    review,
+		createdAt: time.Now(),
+	})
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/custos"
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 func buildCustosCLI(t *testing.T) string {
@@ -424,4 +426,175 @@ func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
 	// Run policy and surrogate operations
 	testV14PolicyOps(t, bin, cfgPath)
 	testV14SurrogateOps(t, bin, cfgPath)
+}
+
+func TestCustosApprovalsCLI(t *testing.T) {
+	bin := buildCustosCLI(t)
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	_ = os.MkdirAll(home, 0o700)
+
+	cfgPath := filepath.Join(dir, "lararium.yaml")
+	cfgContent := "hearth:\n  home: " + home + "\n"
+	_ = os.WriteFile(cfgPath, []byte(cfgContent), 0o600)
+
+	pass := "cli-passphrase-approvals"
+
+	// 1. custos init
+	_, _, code := runCmd(t, bin, pass+"\n", "--config", cfgPath, "init")
+	if code != 0 {
+		t.Fatalf("init failed")
+	}
+
+	stateDir := filepath.Join(home, "custos")
+	v := custos.NewVault(stateDir, 5*time.Second)
+	if err := v.Unlock(pass, false); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+
+	hub := surface.NewApprovalHub(5 * time.Second)
+	v.SetApprovalHub(hub)
+
+	ws := custos.NewWorkerServer(v, hub, &custos.Config{})
+
+	// Start daemon ctlServer with hub and workers
+	ctlServer, err := custos.StartCtlServer(stateDir, v, nil)
+	if err != nil {
+		t.Fatalf("start ctl server: %v", err)
+	}
+	defer ctlServer.Close()
+	ctlServer.SetHub(hub)
+	ctlServer.SetWorkers(ws)
+
+	// 2. custos approvals (empty list)
+	stdout, _, code := runCmd(t, bin, "", "--config", cfgPath, "approvals")
+	if code != 0 {
+		t.Fatalf("approvals empty exit code = %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("expected empty output, got: %q", stdout)
+	}
+
+	// 3. Phantom hub card (MAJOR 6): card in hub but no park manager must not appear
+	phantomID, _ := hub.RegisterCustos("cell-1", "gmail", "gmail.googleapis.com:send", "review-phantom", 5*time.Second, nil)
+	stdout, _, code = runCmd(t, bin, "", "--config", cfgPath, "approvals", "list")
+	if code != 0 {
+		t.Fatalf("approvals list exit code = %d, want 0", code)
+	}
+	if strings.Contains(stdout, phantomID) {
+		t.Fatalf("phantom hub card appeared in approvals list: %q", stdout)
+	}
+
+	// 4. Properly parked card: appears in approvals list
+	cardID, _ := hub.RegisterCustos("cell-1", "gmail", "gmail.googleapis.com:send", "review-summary", 5*time.Second, nil)
+	ws.RegisterParkForTest(cardID, "cell-1", "gmail", "send", "review-summary")
+
+	stdout, _, code = runCmd(t, bin, "", "--config", cfgPath, "approvals", "list")
+	if code != 0 {
+		t.Fatalf("approvals list exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, cardID) {
+		t.Fatalf("approvals list output missing cardID: %q", stdout)
+	}
+
+	// 5. Nonexistent card error string (BLOCKING 3: "no such card")
+	_, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "approvals", "approve", "nonexistent-card-id")
+	if code != 1 {
+		t.Fatalf("approve nonexistent exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "no such card") {
+		t.Fatalf("approve nonexistent stderr = %q, want 'no such card'", stderr)
+	}
+
+	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "approvals", "deny", "nonexistent-card-id")
+	if code != 1 {
+		t.Fatalf("deny nonexistent exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "no such card") {
+		t.Fatalf("deny nonexistent stderr = %q, want 'no such card'", stderr)
+	}
+
+	// 6. custos approvals approve <id>
+	stdout, _, code = runCmd(t, bin, "", "--config", cfgPath, "approvals", "approve", cardID)
+	if code != 0 {
+		t.Fatalf("approvals approve exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "approved") {
+		t.Fatalf("approvals approve output = %q, want 'approved'", stdout)
+	}
+
+	// 7. second approve -> already answered
+	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "approvals", "approve", cardID)
+	if code != 1 {
+		t.Fatalf("second approve code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "already answered") {
+		t.Fatalf("second approve stderr = %q, want 'already answered'", stderr)
+	}
+
+	// 8. Register another card and deny
+	cardID2, _ := hub.RegisterCustos("cell-1", "gmail", "gmail.googleapis.com:send", "review-summary-2", 5*time.Second, nil)
+	ws.RegisterParkForTest(cardID2, "cell-1", "gmail", "send", "review-summary-2")
+	stdout, _, code = runCmd(t, bin, "", "--config", cfgPath, "approvals", "deny", cardID2)
+	if code != 0 {
+		t.Fatalf("approvals deny exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "denied") {
+		t.Fatalf("approvals deny output = %q, want 'denied'", stdout)
+	}
+
+	// 9. Interactive watch with piped stdin (BLOCKING 5)
+	stdinR, stdinW := io.Pipe()
+	cmdWatch := exec.Command(bin, "--config", cfgPath, "approvals", "watch")
+	cmdWatch.Stdin = stdinR
+	var watchOut, watchErr bytes.Buffer
+	cmdWatch.Stdout = &watchOut
+	cmdWatch.Stderr = &watchErr
+
+	if err := cmdWatch.Start(); err != nil {
+		t.Fatalf("start watch: %v", err)
+	}
+
+	// Park card while watch is running
+	cardID3, _ := hub.RegisterCustos("cell-1", "gmail", "gmail.googleapis.com:send", "review-watch-test", 5*time.Second, nil)
+	ws.RegisterParkForTest(cardID3, "cell-1", "gmail", "send", "review-watch-test")
+
+	// Watch must reprint added card within its poll interval (1s)
+	deadline := time.Now().Add(3 * time.Second)
+	foundCard := false
+	for time.Now().Before(deadline) {
+		if strings.Contains(watchOut.String(), cardID3) {
+			foundCard = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !foundCard {
+		t.Fatalf("watch did not reprint added card within poll interval; stdout=%q, stderr=%q", watchOut.String(), watchErr.String())
+	}
+
+	// Send interactive approve command: "a <id>\n"
+	_, _ = stdinW.Write([]byte(fmt.Sprintf("a %s\n", cardID3)))
+
+	// Wait for approved output
+	deadline = time.Now().Add(3 * time.Second)
+	foundApproved := false
+	for time.Now().Before(deadline) {
+		if strings.Contains(watchOut.String(), "approved") {
+			foundApproved = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !foundApproved {
+		t.Fatalf("watch did not output 'approved'; stdout=%q, stderr=%q", watchOut.String(), watchErr.String())
+	}
+
+	// Send 'q\n' to exit
+	_, _ = stdinW.Write([]byte("q\n"))
+	_ = stdinW.Close()
+
+	if err := cmdWatch.Wait(); err != nil {
+		t.Fatalf("watch command exited with error: %v, stderr=%s", err, watchErr.String())
+	}
 }

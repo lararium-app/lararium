@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -912,6 +913,180 @@ func runRevokeCredential(v *custos.Vault, stateDir, keyfilePath string, cfg *cus
 	return 0
 }
 
+func formatApprovalCard(c custos.ApprovalCardWire) string {
+	return fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d",
+		c.ID, c.Cell, c.Cred, c.Dest, c.Tool, c.Review, c.AgeS, c.ExpiresInS)
+}
+
+func runApprovalsList(stateDir string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ctl client: %v\n", err)
+		return 1
+	}
+	cards, err := client.Cards()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	for _, c := range cards {
+		fmt.Println(formatApprovalCard(c))
+	}
+	return 0
+}
+
+func runApprovalsApprove(stateDir string, cfg *custos.Config, cardID string) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ctl client: %v\n", err)
+		return 1
+	}
+	resp, err := client.Approve(cardID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println(resp)
+	return 0
+}
+
+func runApprovalsDeny(stateDir string, cfg *custos.Config, cardID string) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ctl client: %v\n", err)
+		return 1
+	}
+	resp, err := client.Deny(cardID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println(resp)
+	return 0
+}
+
+func runApprovalsWatch(stateDir string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ctl client: %v\n", err)
+		return 1
+	}
+
+	known := make(map[string]bool)
+
+	poll := func() error {
+		cards, err := client.Cards()
+		if err != nil {
+			return err
+		}
+		current := make(map[string]bool, len(cards))
+		for _, c := range cards {
+			current[c.ID] = true
+			if !known[c.ID] {
+				fmt.Println(formatApprovalCard(c))
+			}
+		}
+		for id := range known {
+			if !current[id] {
+				fmt.Printf("removed %s\n", id)
+			}
+		}
+		known = current
+		return nil
+	}
+
+	if err := poll(); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+
+	linesCh := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			linesCh <- scanner.Text()
+		}
+		close(linesCh)
+	}()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case line, ok := <-linesCh:
+			if !ok {
+				return 0
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if line == "q" {
+				return 0
+			}
+			parts := strings.Fields(line)
+			switch parts[0] {
+			case "a":
+				if len(parts) < 2 {
+					fmt.Fprintln(os.Stderr, "usage: a <id>")
+					continue
+				}
+				resp, err := client.Approve(parts[1])
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err.Error())
+				} else {
+					fmt.Println(resp)
+				}
+			case "d":
+				if len(parts) < 2 {
+					fmt.Fprintln(os.Stderr, "usage: d <id>")
+					continue
+				}
+				resp, err := client.Deny(parts[1])
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err.Error())
+				} else {
+					fmt.Println(resp)
+				}
+			default:
+				fmt.Fprintf(os.Stderr, "unknown command %q\n", line)
+			}
+
+		case <-ticker.C:
+			if err := poll(); err != nil {
+				fmt.Fprintln(os.Stderr, err.Error())
+				return 1
+			}
+		}
+	}
+}
+
+func runApprovals(stateDir string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) == 0 || subArgs[0] == "list" {
+		return runApprovalsList(stateDir, cfg)
+	}
+	switch subArgs[0] {
+	case "watch":
+		return runApprovalsWatch(stateDir, cfg)
+	case "approve":
+		if len(subArgs) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: custos approvals approve <id>")
+			return 2
+		}
+		return runApprovalsApprove(stateDir, cfg, subArgs[1])
+	case "deny":
+		if len(subArgs) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: custos approvals deny <id>")
+			return 2
+		}
+		return runApprovalsDeny(stateDir, cfg, subArgs[1])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown approvals subcommand %q\n", subArgs[0])
+		return 2
+	}
+}
+
 func main() {
 	defaultCfg := "lararium.yaml"
 	if e := os.Getenv("LARARIUM_CONFIG"); e != "" {
@@ -975,6 +1150,8 @@ func main() {
 		exitCode = runRevokeCredential(v, stateDir, keyfilePath, cfg, subArgs)
 	case "login":
 		exitCode = runLogin(v, keyfilePath, subArgs)
+	case "approvals":
+		exitCode = runApprovals(stateDir, cfg, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb %q\n", verb)
 		exitCode = 2
