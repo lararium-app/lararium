@@ -467,12 +467,21 @@ func interactiveConsent(ctx context.Context, opts *LoginOptions, out io.Writer, 
 		ReadHeaderTimeout: 5 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
-			// First callback consumes the listener per §4.5.
+			// Flush the browser-visible reply BEFORE handing the callback
+			// to the consumer: handing it over first lets the deferred
+			// srv.Close() race the response write, and the browser (or a
+			// test GET) can observe EOF instead of the completion page.
+			// One-shot §4.5 semantics hold — only the first callback
+			// reaches cbCh (buffered, sync.Once), and the listener is
+			// closed right after.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("lararium custos: login complete, you may close this tab\n"))
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
 			once.Do(func() {
 				cbCh <- oauthCallback{code: q.Get("code"), state: q.Get("state"), errParam: q.Get("error")}
 			})
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write([]byte("lararium custos: login complete, you may close this tab\n"))
 		}),
 	}
 	go func() { _ = srv.Serve(ln) }()

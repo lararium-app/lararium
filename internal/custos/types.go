@@ -76,6 +76,7 @@ const (
 	AuditKindPolicyReset               = "policy_reset"
 	AuditKindCustosRestartedAfterCrash = "custos_restarted_after_crash"
 	AuditKindAuditPruned               = "audit_pruned"
+	AuditKindApprovalAnswered          = "approval_answered"
 )
 
 // State is the daemon lifecycle state per CUSTOS-SPEC §11.

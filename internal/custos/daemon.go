@@ -110,6 +110,7 @@ func (d *Daemon) Start() error {
 	}
 	ctlServer.SetProxy(d.proxy)
 	ctlServer.SetWorkers(d.workers)
+	ctlServer.SetHub(d.hub)
 	d.ctlServer = ctlServer
 
 	return nil
