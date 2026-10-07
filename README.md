@@ -40,7 +40,7 @@ the screens you already carry.
   threat model assumes prompt injection *succeeds*; the cage makes
   misbehavior physically expensive below the model.
 
-## Status: public preview (v0.3.0-alpha)
+## Status: public preview (v0.4.1-alpha)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
@@ -55,11 +55,21 @@ serve` — HTTP/SSE API + built-in web chat with streaming and clickable
 tool approvals · **Telegram** (`nuntius`): one-owner bridge with
 pairing codes, streaming replies, and approval cards that resolve
 from the phone · the `cell` sandbox, proven by a C1–C12 containment
-suite on five hosts across two architectures.
+suite on five hosts across two architectures · **the credential vault
+(`custos`)**: `custosd` holds OAuth credentials sealed at rest; a Gmail
+connector sends through a policy gate (auto / ask / deny) over an
+isolated worker lane the agent can never read from, with an append-only
+audit chain — verified live end-to-end (consent → sealed refresh token
+→ policy-checked send → audit line). See
+[CUSTOS-SPEC.md](docs/CUSTOS-SPEC.md).
 
-**Not built yet:** other messaging channels (Signal, …) and the
-credential vault (`custos`). [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-maps the whole shape.
+**Not built yet:** other messaging channels (Signal, …); approval cards
+for vault asks (today an `ask` verdict in standalone `custosd` holds its
+timeout window and denies with a clean, audited `denied: approval` —
+the doors to answer cards, and the `hearthd`↔`custosd` integration that
+fans them to web/Telegram, are the next track); the Docker quick start
+does not include `custosd` yet.
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the whole shape.
 
 ## Platforms
 
