@@ -10,12 +10,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/surface"
 )
+
+// lockedWriter serializes writes from an io.Copy goroutine with reads from
+// the test (bytes.Buffer is not safe for concurrent use while a child
+// process's output is still being pumped).
+type lockedWriter struct {
+	mu  *sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
 
 func buildCustosCLI(t *testing.T) string {
 	t.Helper()
@@ -547,9 +562,41 @@ func TestCustosApprovalsCLI(t *testing.T) {
 	stdinR, stdinW := io.Pipe()
 	cmdWatch := exec.Command(bin, "--config", cfgPath, "approvals", "watch")
 	cmdWatch.Stdin = stdinR
-	var watchOut, watchErr bytes.Buffer
-	cmdWatch.Stdout = &watchOut
-	cmdWatch.Stderr = &watchErr
+	// Capture via os.Pipe + own reader goroutine: bytes.Buffer is not safe
+	// for concurrent read while exec's copy goroutine still writes, and
+	// cmd.Wait does not join those copy goroutines.
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	cmdWatch.Stdout = outW
+	cmdWatch.Stderr = errW
+	syncBuf := &lockedWriter{mu: &sync.Mutex{}}
+	errSyncBuf := &lockedWriter{mu: &sync.Mutex{}}
+	stdoutDone := make(chan struct{})
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(syncBuf, outR)
+		close(stdoutDone)
+	}()
+	go func() {
+		_, _ = io.Copy(errSyncBuf, errR)
+		close(stderrDone)
+	}()
+	watchOutStr := func() string {
+		syncBuf.mu.Lock()
+		defer syncBuf.mu.Unlock()
+		return syncBuf.buf.String()
+	}
+	watchErrStr := func() string {
+		errSyncBuf.mu.Lock()
+		defer errSyncBuf.mu.Unlock()
+		return errSyncBuf.buf.String()
+	}
 
 	if err := cmdWatch.Start(); err != nil {
 		t.Fatalf("start watch: %v", err)
@@ -563,14 +610,14 @@ func TestCustosApprovalsCLI(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	foundCard := false
 	for time.Now().Before(deadline) {
-		if strings.Contains(watchOut.String(), cardID3) {
+		if strings.Contains(watchOutStr(), cardID3) {
 			foundCard = true
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	if !foundCard {
-		t.Fatalf("watch did not reprint added card within poll interval; stdout=%q, stderr=%q", watchOut.String(), watchErr.String())
+		t.Fatalf("watch did not reprint added card within poll interval; stdout=%q, stderr=%q", watchOutStr(), watchErrStr())
 	}
 
 	// Send interactive approve command: "a <id>\n"
@@ -580,21 +627,26 @@ func TestCustosApprovalsCLI(t *testing.T) {
 	deadline = time.Now().Add(3 * time.Second)
 	foundApproved := false
 	for time.Now().Before(deadline) {
-		if strings.Contains(watchOut.String(), "approved") {
+		if strings.Contains(watchOutStr(), "approved") {
 			foundApproved = true
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	if !foundApproved {
-		t.Fatalf("watch did not output 'approved'; stdout=%q, stderr=%q", watchOut.String(), watchErr.String())
+		t.Fatalf("watch did not output 'approved'; stdout=%q, stderr=%q", watchOutStr(), watchErrStr())
 	}
 
 	// Send 'q\n' to exit
 	_, _ = stdinW.Write([]byte("q\n"))
 	_ = stdinW.Close()
 
-	if err := cmdWatch.Wait(); err != nil {
-		t.Fatalf("watch command exited with error: %v, stderr=%s", err, watchErr.String())
+	waitErr := cmdWatch.Wait()
+	_ = outW.Close()
+	_ = errW.Close()
+	<-stdoutDone
+	<-stderrDone
+	if waitErr != nil {
+		t.Fatalf("watch command exited with error: %v, stderr=%s", waitErr, watchErrStr())
 	}
 }
