@@ -7,13 +7,14 @@ order, fingerprint mirror inside recovery rewrite + snapshot set,
 migrate-deletion audit lines, `--port` grammar, writer-path-only
 note). All six open questions decided by the PO (§12). Suite V1–V26.
 Implementation may begin.**
-**Amendment v8 (2026-10-07): PENDING PO sign-off.** Adds §6.4a (the
+**Amendment v8 (2026-10-07): PO SIGN-OFF (2026-10-07).** Adds §6.4a (the
 standalone ctl door: CARDS/APPROVE/DENY + `custos approvals`), CA-5
 (SURFACE-SPEC `source` enum gains `ctl`), the `approval_answered`
 kind, the frozen `worker_call_denied` reason set (erratum: shipped
 v0.4.1 undeclared), and V27. Everything merged to date implements the
-v7 text; v8 is additive — no v7 behavior changes. Implementation of v8
-begins only on sign-off.
+v7 text; v8 is additive — no v7 behavior changes. Implemented and
+merged with V27 green (§6.4a door, CA-5, `approval_answered`, frozen
+`worker_call_denied` erratum).
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -1294,7 +1295,7 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
 
 ## Changelog
 
-- v8 (amendment, pending PO sign-off, 2026-10-07): standalone
+- v8 (amendment, PO sign-off + shipped, 2026-10-07): standalone
   approval door. Motivation from the first live dogfooding cycle:
   with the hearthd integration unbuilt, `ask` in standalone custosd
   parks 330 s and denies — the owner has no way to answer (verified
