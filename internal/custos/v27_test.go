@@ -13,6 +13,8 @@ import (
 )
 
 // TestV27_StandaloneApprovalDoor verifies the standalone approval door per CUSTOS-SPEC §6.4a.
+//
+//nolint:maintidx // V-suites are single-spec walkthroughs: one scenario family, sequential subtests, shared harness state.
 func TestV27_StandaloneApprovalDoor(t *testing.T) {
 	fake := &fakeOAuth{}
 	h := setupWorkerHarness(t, fake)
@@ -260,7 +262,7 @@ func assertCardShape(t *testing.T, card custos.ApprovalCardWire) {
 		t.Fatalf("expected expires_in_s > 0, got %d", card.ExpiresInS)
 	}
 
-	b, err := json.Marshal(card)
+	b, err := json.Marshal(card) //nolint:gosec // G117: Cred carries the credential NAME, a fake fixture in tests, never a secret value
 	if err != nil {
 		t.Fatalf("marshal card: %v", err)
 	}

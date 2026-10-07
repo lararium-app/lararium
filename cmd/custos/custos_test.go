@@ -574,7 +574,7 @@ func TestCustosApprovalsCLI(t *testing.T) {
 	}
 
 	// Send interactive approve command: "a <id>\n"
-	_, _ = stdinW.Write([]byte(fmt.Sprintf("a %s\n", cardID3)))
+	fmt.Fprintf(stdinW, "a %s\n", cardID3)
 
 	// Wait for approved output
 	deadline = time.Now().Add(3 * time.Second)
