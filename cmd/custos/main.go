@@ -104,6 +104,10 @@ func runInit(v *custos.Vault, keyfilePath string) int {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
+	if _, err := custos.EnsureDoorToken(v.StateDir()); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
 	return 0
 }
 

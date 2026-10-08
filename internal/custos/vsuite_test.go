@@ -19,7 +19,14 @@ func init() {
 
 func setupTestVault(t *testing.T) (*custos.Vault, string, string) {
 	t.Helper()
-	dir := t.TempDir()
+	// Short-path base: unix sockets (ctl.sock/doors.sock) bind under the
+	// 104-byte sun_path cap; t.TempDir() + a long subtest name can exceed it.
+	base, err := os.MkdirTemp("/tmp", "lrv") //nolint:usetesting // UDS path cap
+	if err != nil {
+		t.Fatalf("short tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	dir := filepath.Join(base, "h")
 	stateDir := filepath.Join(dir, "custos")
 	passphrase := "test-secret-passphrase-1234"
 	v := custos.NewVault(stateDir, 5*time.Second)

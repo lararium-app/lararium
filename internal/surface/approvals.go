@@ -37,6 +37,12 @@ type ApprovalFanout interface {
 	ApprovalTerminal(id, sessionID, state, reason, source string)
 }
 
+// ApprovalTerminalVia is an optional interface that ApprovalFanout implementations
+// may implement to receive the settling door's via attribution per CUSTOS-SPEC §6.4b.
+type ApprovalTerminalVia interface {
+	ApprovalTerminalVia(id, sessionID, state, reason, source, via string)
+}
+
 type approval struct {
 	id          string
 	ch          chan bool
@@ -47,6 +53,7 @@ type approval struct {
 	timer       *time.Timer
 	reason      string
 	source      string
+	via         string
 	channels    ChannelSet // live at creation (A6 timer selection)
 	webLive     bool       // SSE listener still attached (A1 presence)
 	cardDead    bool       // Telegram card undeliverable (A7)
@@ -97,6 +104,13 @@ func (h *ApprovalHub) SetFanout(f ApprovalFanout) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.fanout = f
+}
+
+// Fanout returns the currently installed ApprovalFanout subscriber.
+func (h *ApprovalHub) Fanout() ApprovalFanout {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.fanout
 }
 
 // SetBridgeLive installs the bridge presence probe (A1): a bridge is
@@ -246,11 +260,19 @@ func (h *ApprovalHub) fanPending(id, sessionID, name, argsSummary string) {
 }
 
 func (h *ApprovalHub) fanTerminal(id, sessionID, state, reason, source string) {
+	h.fanTerminalVia(id, sessionID, state, reason, source, "")
+}
+
+func (h *ApprovalHub) fanTerminalVia(id, sessionID, state, reason, source, via string) {
 	h.mu.Lock()
 	f := h.fanout
 	h.mu.Unlock()
 	if f != nil {
-		f.ApprovalTerminal(id, sessionID, state, reason, source)
+		if fv, ok := f.(ApprovalTerminalVia); ok {
+			fv.ApprovalTerminalVia(id, sessionID, state, reason, source, via)
+		} else {
+			f.ApprovalTerminal(id, sessionID, state, reason, source)
+		}
 	}
 }
 
@@ -311,6 +333,12 @@ func (h *ApprovalHub) Resolve(sessionID, id string, allow bool) int {
 // source ("web" | "telegram"). Same status codes as Resolve; a losing
 // click answers 410 with zero state change (§7.2 race: first wins).
 func (h *ApprovalHub) ResolveFrom(sessionID, id string, allow bool, source string) int {
+	return h.ResolveFromVia(sessionID, id, allow, source, "")
+}
+
+// ResolveFromVia settles a pending approval attributing the decision to
+// source and via per CUSTOS-SPEC §6.4b.
+func (h *ApprovalHub) ResolveFromVia(sessionID, id string, allow bool, source, via string) int {
 	h.mu.Lock()
 	if sessionID == "" {
 		ap, ok2 := h.findLocked(id)
@@ -334,6 +362,7 @@ func (h *ApprovalHub) ResolveFrom(sessionID, id string, allow bool, source strin
 	if allow {
 		state, reason = "approved", "ok"
 	}
+	ap.via = via
 	if !ap.settle(state, reason, source) {
 		hook := h.staleVerdictHook
 		cred := ap.cred
@@ -346,7 +375,7 @@ func (h *ApprovalHub) ResolveFrom(sessionID, id string, allow bool, source strin
 		return 410
 	}
 	h.mu.Unlock()
-	h.fanTerminal(id, sessionID, state, reason, source)
+	h.fanTerminalVia(id, sessionID, state, reason, source, via)
 	return 200
 }
 
@@ -539,12 +568,7 @@ type ApprovalCard struct {
 	State     string
 }
 
-// Pending returns snapshots of all pending cards across sessions
-// (CUSTOS V26/V16 test seam: parked-flow observation).
-func (h *ApprovalHub) Pending() []ApprovalCard {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
+func (h *ApprovalHub) pendingLocked() []ApprovalCard {
 	var out []ApprovalCard
 	for _, byID := range h.bySession {
 		for _, ap := range byID {
@@ -557,6 +581,25 @@ func (h *ApprovalHub) Pending() []ApprovalCard {
 		}
 	}
 	return out
+}
+
+// Pending returns snapshots of all pending cards across sessions
+// (CUSTOS V26/V16 test seam: parked-flow observation).
+func (h *ApprovalHub) Pending() []ApprovalCard {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pendingLocked()
+}
+
+// PendingSnapshot returns snapshots of all pending cards across sessions while executing
+// beforeRead under the hub lock (CUSTOS-SPEC §6.4b atomic replay).
+func (h *ApprovalHub) PendingSnapshot(beforeRead func()) []ApprovalCard {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if beforeRead != nil {
+		beforeRead()
+	}
+	return h.pendingLocked()
 }
 
 // Reason is why an approval resolved (ok|denied|timed_out|disconnected|
@@ -584,6 +627,19 @@ func (h *ApprovalHub) Source(sessionID, id string) string {
 		return ""
 	}
 	return ap.source
+}
+
+// Via is which external door channel carried the verdict (web|telegram).
+// Empty for non-door resolutions per CUSTOS-SPEC §6.4b.
+func (h *ApprovalHub) Via(sessionID, id string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	ap, ok := h.bySession[sessionID][id]
+	if !ok {
+		return ""
+	}
+	return ap.via
 }
 
 // SessionOf maps an approval id to its session (§7.2: Telegram

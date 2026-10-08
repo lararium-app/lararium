@@ -170,6 +170,8 @@ func (v *Vault) CheckFileLaw() error {
 		"custos.lock":       true,
 		"ctl.sock":          true,
 		"ctl.token":         true,
+		"doors.sock":        true,
+		"door.token":        true,
 		"audit":             true,
 		"snapshots":         true,
 	}
@@ -500,6 +502,13 @@ func (v *Vault) Lock() error {
 		return ErrKeyfileModeAlwaysUnlocked
 	}
 
+	// CUSTOS-SPEC §6.4b: lock flush pushes GONE {reason: custos_locked}
+	// for every pending card BEFORE the vault drops its state
+	hub := v.hub
+	if hub != nil {
+		hub.SettleCustosLocked("custos")
+	}
+
 	// CUSTOS-SPEC §3, §C3, §P4: lock zeroizes loaded state and retained secret key
 	v.loadedDoc = nil
 	v.loadedRegistry = nil
@@ -509,10 +518,6 @@ func (v *Vault) Lock() error {
 		v.derivedKey = nil
 	}
 	v.isUnlocked = false
-	hub := v.hub
-	if hub != nil {
-		hub.SettleCustosLocked("custos")
-	}
 	return nil
 }
 
