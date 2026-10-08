@@ -8,6 +8,7 @@ import (
 
 	"github.com/lararium-app/lararium/internal/custosdoor"
 	"github.com/lararium-app/lararium/internal/nuntius"
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // CustosConfig is the custody door-client section of lararium.yaml
@@ -23,16 +24,11 @@ type CustosConfig struct {
 }
 
 // startCustosDoor starts the door client as a supervised goroutine and
-// feeds the Nuntius sibling feed (bridge may be nil). It returns nil —
-// having opened no socket, started no goroutine and logged nothing —
-// unless both paths are set. The returned stop closes the door
+// feeds the Nuntius sibling feed and web surface (bridge and srv may be nil).
+// It returns nil — having opened no socket, started no goroutine and logged
+// nothing — unless both paths are set. The returned stop closes the door
 // connection and waits for the goroutine; it is idempotent.
-//
-// Follow-up queued for the slice-3 merge: once internal/surface exports
-// CustosRegistry and Server.SetCustosRegistry, register the client here
-// (srv.SetCustosRegistry(client) via a thin Card/Gone/sentinel adapter);
-// until then the web surface does not see custody cards.
-func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge) (stop func()) {
+func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge, srv *surface.Server) (stop func()) {
 	client, err := custosdoor.New(custosdoor.Options{
 		SockPath:  cfg.DoorsSock,
 		TokenPath: cfg.DoorToken,
@@ -50,6 +46,9 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 	if bridge != nil {
 		//nolint:contextcheck // custodyFeed edits run on the feed goroutine with their own detached 15 s ctx (same posture as nuntius background card edits)
 		bridge.WireCustody(custodyWire(client))
+	}
+	if srv != nil {
+		srv.SetCustosRegistry(NewCustosWebAdapter(client))
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)

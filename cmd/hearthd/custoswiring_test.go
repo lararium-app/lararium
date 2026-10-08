@@ -19,11 +19,11 @@ func shortTmp(t *testing.T) string {
 
 func TestStartCustosDoorUnsetIsInert(t *testing.T) {
 	sock := filepath.Join(shortTmp(t), "doors.sock")
-	if stop := startCustosDoor(t.Context(), CustosConfig{}, nil); stop != nil {
+	if stop := startCustosDoor(t.Context(), CustosConfig{}, nil, nil); stop != nil {
 		t.Fatal("unset config started a door client")
 	}
 	// Half-set: warned and disabled, never started.
-	if stop := startCustosDoor(t.Context(), CustosConfig{DoorsSock: sock}, nil); stop != nil {
+	if stop := startCustosDoor(t.Context(), CustosConfig{DoorsSock: sock}, nil, nil); stop != nil {
 		t.Fatal("half-set config started a door client")
 	}
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
@@ -37,7 +37,7 @@ func TestStartCustosDoorSurvivesAbsentDaemonAndStops(t *testing.T) {
 	if err := os.WriteFile(tok, []byte("ab\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stop := startCustosDoor(t.Context(), CustosConfig{DoorsSock: filepath.Join(dir, "doors.sock"), DoorToken: tok}, nil)
+	stop := startCustosDoor(t.Context(), CustosConfig{DoorsSock: filepath.Join(dir, "doors.sock"), DoorToken: tok}, nil, nil)
 	if stop == nil {
 		t.Fatal("configured door client not started")
 	}
