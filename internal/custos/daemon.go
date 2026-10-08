@@ -10,13 +10,14 @@ import (
 
 // Daemon coordinates the background custosd process per CUSTOS-SPEC §3.
 type Daemon struct {
-	cfg       *Config
-	vault     *Vault
-	hub       *surface.ApprovalHub
-	proxy     *Proxy
-	workers   *WorkerServer
-	ctlServer *CtlServer
-	stopChan  chan struct{}
+	cfg        *Config
+	vault      *Vault
+	hub        *surface.ApprovalHub
+	proxy      *Proxy
+	workers    *WorkerServer
+	ctlServer  *CtlServer
+	doorServer *DoorServer
+	stopChan   chan struct{}
 }
 
 // NewDaemon initializes a Daemon with configuration.
@@ -113,11 +114,26 @@ func (d *Daemon) Start() error {
 	ctlServer.SetHub(d.hub)
 	d.ctlServer = ctlServer
 
+	// 6. Start doors.sock listener per CUSTOS-SPEC §6.4b
+	doorServer, err := StartDoorServer(d.vault.StateDir(), d.hub,
+		WithVault(d.vault),
+		WithWorkers(d.workers),
+		WithProxy(d.proxy),
+	)
+	if err != nil {
+		_ = ctlServer.Close()
+		return fmt.Errorf("start door server: %w", err)
+	}
+	d.doorServer = doorServer
+
 	return nil
 }
 
 // Stop initiates graceful shutdown, auditing custos_stopped per CUSTOS §8.1.
 func (d *Daemon) Stop() {
+	if d.doorServer != nil {
+		_ = d.doorServer.Close()
+	}
 	if d.ctlServer != nil {
 		_ = d.ctlServer.Close()
 	}
@@ -136,6 +152,11 @@ func (d *Daemon) Stop() {
 	default:
 		close(d.stopChan)
 	}
+}
+
+// DoorServer returns the internal DoorServer.
+func (d *Daemon) DoorServer() *DoorServer {
+	return d.doorServer
 }
 
 // Wait blocks until the daemon terminates.

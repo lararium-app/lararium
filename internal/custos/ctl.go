@@ -728,22 +728,19 @@ func (s *CtlServer) handleApprovalCmd(conn net.Conn, cmd string, parts []string)
 	}
 }
 
-func (s *CtlServer) handleCards(conn net.Conn) {
-	hub := s.hubInstance()
+// CardSnapshot produces the uniform ApprovalCardWire list by joining pending hub cards
+// with worker and proxy park managers per CUSTOS-SPEC §6.4a, §6.4b.
+func CardSnapshot(hub *surface.ApprovalHub, workers *WorkerServer, proxy *Proxy) []ApprovalCardWire {
 	if hub == nil {
-		fmt.Fprint(conn, "OK []\n")
-		return
+		return []ApprovalCardWire{}
 	}
 
 	pending := hub.Pending()
 	if len(pending) == 0 {
-		fmt.Fprint(conn, "OK []\n")
-		return
+		return []ApprovalCardWire{}
 	}
 
 	cards := make([]ApprovalCardWire, 0, len(pending))
-	workers := s.workersInstance()
-	proxy := s.proxyInstance()
 	for _, card := range pending {
 		wire := ApprovalCardWire{
 			ID:     card.ID,
@@ -820,12 +817,19 @@ func (s *CtlServer) handleCards(conn net.Conn) {
 		}
 
 		if !found {
+			if (workers == nil || workers.parkMgr == nil) && (proxy == nil || proxy.parkMgr == nil) {
+				cards = append(cards, wire)
+			}
 			continue
 		}
 
 		cards = append(cards, wire)
 	}
+	return cards
+}
 
+func (s *CtlServer) handleCards(conn net.Conn) {
+	cards := CardSnapshot(s.hubInstance(), s.workersInstance(), s.proxyInstance())
 	b, err := json.Marshal(cards) //nolint:gosec // ApprovalCardWire.Cred carries provider/credential name, never secret value
 	if err != nil {
 		fmt.Fprintf(conn, "ERR %s\n", err.Error())
