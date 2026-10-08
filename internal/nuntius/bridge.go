@@ -220,6 +220,10 @@ type Bridge struct {
 	cardsMu sync.Mutex
 	cards   map[string]*card // approval id → live card
 
+	custodyMu sync.Mutex
+	custody   *custodyFeed // custody-card sibling feed (WireCustody)
+	custodyW  CustodyWire
+
 	queuesMu sync.Mutex
 	queues   map[string]*turnQueue // chat id → FIFO
 
@@ -414,6 +418,7 @@ func (b *Bridge) Start(ctx context.Context, token string) {
 // terminal-event rule as their engine calls return.
 func (b *Bridge) Stop() {
 	b.stopOnce.Do(func() { close(b.stop) })
+	b.stopCustody()
 	b.startedMu.Lock()
 	b.started = false
 	b.startedMu.Unlock()
@@ -571,7 +576,7 @@ func recordFor(u Update) (Record, bool) {
 	env := u.Envelope()
 	switch {
 	case u.CallbackQuery != nil:
-		if !strings.HasPrefix(env.Text, "ap:") {
+		if !strings.HasPrefix(env.Text, "ap:") && !strings.HasPrefix(env.Text, "cu:") {
 			return Record{}, false
 		}
 		return Record{UpdateID: u.UpdateID, Kind: KindCallback, Payload: env.Text}, true
