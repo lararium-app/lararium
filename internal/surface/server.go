@@ -60,6 +60,11 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.URL.Path == "/v1/custos/cards" || strings.HasPrefix(r.URL.Path, "/v1/custos/cards/") {
+		if s.dispatchCustos(w, r) {
+			return
+		}
+	}
 	if r.URL.Path == "/v1/sessions" {
 		switch r.Method {
 		case http.MethodGet:

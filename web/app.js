@@ -5,6 +5,7 @@ const statusEl = document.getElementById("status");
 const sessionsEl = document.getElementById("sessions");
 const newSessionBtn = document.getElementById("new-session");
 const transcriptEl = document.getElementById("transcript");
+const custosCardsEl = document.getElementById("custos-cards");
 const composerEl = document.getElementById("composer");
 const inputEl = document.getElementById("input");
 
@@ -479,6 +480,191 @@ function initKeysDrawer() {
   });
 }
 
+// --- Custody cards (CA-6, CUSTOS-SPEC §6.4b) ---------------------------
+
+function renderCustosCard(card) {
+  if (!custosCardsEl) return;
+  if (custosCardsEl.querySelector('[data-card-id="' + card.id + '"]')) return;
+
+  const cardEl = createElement("div", "custos-card");
+  cardEl.dataset.cardId = card.id;
+
+  const header = createElement("div", "custos-card-header");
+  const title = createElement("span", "custos-card-title", "Custody Request");
+  const metaParts = [];
+  if (card.cell) metaParts.push(card.cell);
+  if (card.cred) metaParts.push(card.cred);
+  const meta = createElement("span", "custos-card-meta", metaParts.join(" · "));
+  header.appendChild(title);
+  header.appendChild(meta);
+  cardEl.appendChild(header);
+
+  const body = createElement("div", "custos-card-body");
+  if (card.dest) {
+    const destEl = createElement("div", "custos-card-dest", "dest: " + card.dest);
+    body.appendChild(destEl);
+  }
+  if (card.tool) {
+    const toolEl = createElement("div", "custos-card-tool", "tool: " + card.tool);
+    body.appendChild(toolEl);
+  }
+  if (card.review) {
+    const reviewEl = createElement("div", "custos-card-review", card.review);
+    body.appendChild(reviewEl);
+  }
+  cardEl.appendChild(body);
+
+  const errorEl = createElement("div", "custos-card-error");
+  errorEl.hidden = true;
+  cardEl.appendChild(errorEl);
+
+  const actions = createElement("div", "custos-card-actions");
+  const onceBtn = createElement("button", "custos-btn custos-btn-once", "Allow once");
+  const alwaysBtn = createElement("button", "custos-btn custos-btn-always", "Always");
+  const denyBtn = createElement("button", "custos-btn custos-btn-deny", "Deny");
+
+  let inFlight = false;
+  async function resolveCard(verdict) {
+    if (inFlight) return;
+    inFlight = true;
+    errorEl.hidden = true;
+    errorEl.textContent = "";
+    onceBtn.disabled = true;
+    alwaysBtn.disabled = true;
+    denyBtn.disabled = true;
+
+    try {
+      const resp = await fetch("/v1/custos/cards/" + encodeURIComponent(card.id) + "/resolve", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token
+        },
+        body: JSON.stringify({ verdict: verdict })
+      });
+
+      if (resp.status === 200) {
+        // Resolved: remove only on 200 ack per no-optimistic rule
+        cardEl.remove();
+        return;
+      }
+
+      // Non-200 (409, 423, 400, etc.): keep card, show frozen error state inline
+      let errText = resp.statusText;
+      try {
+        const errJson = await resp.json();
+        if (errJson && errJson.error) {
+          errText = errJson.error;
+        }
+      } catch (_) {}
+
+      errorEl.textContent = errText;
+      errorEl.hidden = false;
+      cardEl.classList.add("custos-card-error-state");
+
+      if (resp.status !== 409) {
+        onceBtn.disabled = false;
+        alwaysBtn.disabled = false;
+        denyBtn.disabled = false;
+      }
+    } catch (e) {
+      errorEl.textContent = e.message;
+      errorEl.hidden = false;
+      onceBtn.disabled = false;
+      alwaysBtn.disabled = false;
+      denyBtn.disabled = false;
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  onceBtn.addEventListener("click", () => resolveCard("once"));
+  alwaysBtn.addEventListener("click", () => resolveCard("always"));
+  denyBtn.addEventListener("click", () => resolveCard("deny"));
+
+  actions.appendChild(onceBtn);
+  actions.appendChild(alwaysBtn);
+  actions.appendChild(denyBtn);
+  cardEl.appendChild(actions);
+
+  custosCardsEl.appendChild(cardEl);
+}
+
+function removeCustosCard(id) {
+  if (!custosCardsEl) return;
+  const existing = custosCardsEl.querySelector('[data-card-id="' + id + '"]');
+  if (existing) {
+    existing.remove();
+  }
+}
+
+async function loadCustosCards() {
+  if (!token) return;
+  try {
+    const data = await fetchJson("GET", "/v1/custos/cards");
+    if (data && Array.isArray(data.cards)) {
+      for (const c of data.cards) {
+        renderCustosCard(c);
+      }
+    }
+  } catch (_) {}
+}
+
+let custosStreamActive = false;
+async function startCustosEventStream() {
+  if (!token || custosStreamActive) return;
+  custosStreamActive = true;
+  try {
+    const resp = await fetch("/v1/custos/cards/events", {
+      method: "GET",
+      headers: {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer " + token
+      }
+    });
+    if (!resp.ok) {
+      custosStreamActive = false;
+      setTimeout(startCustosEventStream, 3000);
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+      for (const part of parts) {
+        if (!part.trim() || part.startsWith(":")) continue;
+        let eventType = null;
+        let eventData = null;
+        for (const line of part.split("\n")) {
+          if (line.startsWith("event:")) eventType = line.slice(6).trim();
+          else if (line.startsWith("data:")) {
+            try {
+              eventData = JSON.parse(line.slice(5).trim());
+            } catch (_) {}
+          }
+        }
+        if (eventType === "custos_card" && eventData) {
+          renderCustosCard(eventData);
+        } else if (eventType === "custos_gone" && eventData) {
+          removeCustosCard(eventData.id);
+        }
+      }
+    }
+  } catch (_) {
+  } finally {
+    custosStreamActive = false;
+    setTimeout(() => {
+      loadCustosCards();
+      startCustosEventStream();
+    }, 2000);
+  }
+}
+
 function init() {
   if (!initToken()) return;
   initKeysDrawer();
@@ -491,10 +677,16 @@ function init() {
     sendMessage(text);
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stopCatchUpPoll();
-    else if (currentSessionId) loadTranscript();
+    if (document.hidden) {
+      stopCatchUpPoll();
+    } else {
+      if (currentSessionId) loadTranscript();
+      loadCustosCards();
+    }
   });
   loadSessions();
+  loadCustosCards();
+  startCustosEventStream();
 }
 
 document.addEventListener("DOMContentLoaded", init);
