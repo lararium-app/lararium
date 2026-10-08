@@ -24,6 +24,7 @@ type AuditRecord struct {
 	Cred     string   `json:"cred,omitempty"`
 	Sur      string   `json:"sur,omitempty"`
 	Actor    string   `json:"actor,omitempty"`
+	Via      string   `json:"via,omitempty"`
 	Host     string   `json:"host,omitempty"`
 	Tool     string   `json:"tool,omitempty"`
 	Verdict  string   `json:"verdict,omitempty"`
@@ -33,6 +34,9 @@ type AuditRecord struct {
 	Nonce    string   `json:"nonce,omitempty"`
 	Names    []string `json:"names,omitempty"`
 }
+
+// AuditEntry is an alias for AuditRecord per CUSTOS-SPEC §8.1 / amendment v9.
+type AuditEntry = AuditRecord
 
 // AnchorEntry represents one checkpoint in audit/anchors.json per CUSTOS-SPEC §8.3.
 type AnchorEntry struct {
@@ -237,6 +241,17 @@ func (a *AuditLogger) AppendApprovalAnswered(cred, reason string) error {
 		Kind:   AuditKindApprovalAnswered,
 		Cred:   cred,
 		Actor:  "cli",
+		Reason: reason,
+	})
+}
+
+// AppendApprovalAnsweredVia records an approval resolution from an external door channel per CUSTOS-SPEC §6.4b.
+func (a *AuditLogger) AppendApprovalAnsweredVia(cred, reason, actor, via string) error {
+	return a.Append(AuditRecord{
+		Kind:   AuditKindApprovalAnswered,
+		Cred:   cred,
+		Actor:  actor,
+		Via:    via,
 		Reason: reason,
 	})
 }

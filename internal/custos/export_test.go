@@ -23,3 +23,24 @@ func (ws *WorkerServer) ConnDeadlineForTest() time.Duration {
 func (ws *WorkerServer) SetExecTimeoutForTest(d time.Duration) {
 	ws.cfg.WorkerExecTimeout = d
 }
+
+// RegisterProxyParkForTest registers a parked proxy flow for tests
+// (V28 wire-parity/IP scenarios); lives in export_test.go per repo
+// convention so production files stay test-seam-free.
+func (p *Proxy) RegisterProxyParkForTest(id, cellID, cred, host string, port int, path, review string) {
+	if p.parkMgr == nil {
+		return
+	}
+	p.parkMgr.mu.Lock()
+	defer p.parkMgr.mu.Unlock()
+	p.parkMgr.addParkLocked(&parkedFlow{
+		id:        id,
+		cellID:    cellID,
+		cred:      cred,
+		host:      host,
+		port:      port,
+		path:      path,
+		review:    review,
+		createdAt: time.Now(),
+	})
+}
