@@ -84,6 +84,8 @@ var custosHeartbeatInterval = 5 * time.Second
 
 // dispatchCustos routes /v1/custos/cards, /v1/custos/cards/events, and
 // /v1/custos/cards/{id}/resolve. Returns true if the path is under /v1/custos/cards.
+//
+//nolint:unparam // always-true by design: every /v1/custos/cards* path is fully handled here (server.go early-returns)
 func (s *Server) dispatchCustos(w http.ResponseWriter, r *http.Request) bool {
 	if r.URL.Path == "/v1/custos/cards" {
 		if r.Method != http.MethodGet {
@@ -240,6 +242,7 @@ func (s *Server) custosEventsHandler(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case ev := <-events:
 			if ev.Card != nil {
+				//nolint:gosec // G117: Cred carries a provider/credential NAME, never a secret value
 				data, err := json.Marshal(ev.Card)
 				if err == nil {
 					_, _ = fmt.Fprintf(w, "event: custos_card\ndata: %s\n\n", data)

@@ -167,13 +167,13 @@ func (r *FakeCustosRegistry) SetResolveHook(hook func(id, verdict string) (strin
 }
 
 // Helper to set up a test server with valid token.
-func setupV16Server(t *testing.T, reg CustosRegistry) (*Server, string, http.Handler) {
+func setupV16Server(t *testing.T, reg CustosRegistry) (string, http.Handler) {
 	t.Helper()
 	store, err := OpenTokenStore(t.TempDir() + "/tokens.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := store.Create("v16-test")
+	tokVal, err := store.Create("v16-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,13 +186,13 @@ func setupV16Server(t *testing.T, reg CustosRegistry) (*Server, string, http.Han
 	if reg != nil {
 		srv.SetCustosRegistry(reg)
 	}
-	return srv, tok, NewServer(srv)
+	return tokVal, NewServer(srv)
 }
 
 // V16: GET /v1/custos/cards -> 200 {"cards":[]} with empty or unset registry.
 func TestV16_GET_Cards_Empty(t *testing.T) {
 	t.Run("unset registry", func(t *testing.T) {
-		_, tok, handler := setupV16Server(t, nil)
+		tok, handler := setupV16Server(t, nil)
 		req := httptest.NewRequest(http.MethodGet, "/v1/custos/cards", nil)
 		req.Host = "127.0.0.1:7717"
 		req.Header.Set("Authorization", "Bearer "+tok)
@@ -221,7 +221,7 @@ func TestV16_GET_Cards_Empty(t *testing.T) {
 
 	t.Run("empty registry", func(t *testing.T) {
 		reg := NewFakeCustosRegistry()
-		_, tok, handler := setupV16Server(t, reg)
+		tok, handler := setupV16Server(t, reg)
 		req := httptest.NewRequest(http.MethodGet, "/v1/custos/cards", nil)
 		req.Host = "127.0.0.1:7717"
 		req.Header.Set("Authorization", "Bearer "+tok)
@@ -256,7 +256,7 @@ func TestV16_GET_Cards_PendingList(t *testing.T) {
 		AgeS:       12,
 		ExpiresInS: 288,
 	}
-	c2 := CustosCard{
+	c2 := CustosCard{ //nolint:gosec // G101: fake test fixture values, not real credentials
 		ID:         "a_card12345678902",
 		Cell:       "cell-beta",
 		Cred:       "cred-anthropic",
@@ -269,7 +269,7 @@ func TestV16_GET_Cards_PendingList(t *testing.T) {
 	reg.PublishCard(c1)
 	reg.PublishCard(c2)
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 	req := httptest.NewRequest(http.MethodGet, "/v1/custos/cards", nil)
 	req.Host = "127.0.0.1:7717"
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -307,7 +307,7 @@ func TestV16_Resolve_HappyPath(t *testing.T) {
 	reg.PublishCard(c2)
 	reg.PublishCard(c3)
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	// 1) Allow once -> 200 {"state":"approved"}
 	{
@@ -374,7 +374,7 @@ func TestV16_Resolve_StatusMatrix(t *testing.T) {
 	cardID := "a_card00000000099"
 	reg.PublishCard(CustosCard{ID: cardID})
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	tests := []struct {
 		name       string
@@ -450,7 +450,7 @@ func TestV16_Resolve_StatusMatrix(t *testing.T) {
 
 	// Unset registry resolve -> 404 no_such_card (spec ambiguity resolution).
 	t.Run("unset registry resolve", func(t *testing.T) {
-		_, nilTok, nilHandler := setupV16Server(t, nil)
+		nilTok, nilHandler := setupV16Server(t, nil)
 		body := `{"verdict":"once"}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/custos/cards/"+cardID+"/resolve", strings.NewReader(body))
 		req.Host = "127.0.0.1:7717"
@@ -499,7 +499,7 @@ func TestV16_Resolve_StatusMatrix(t *testing.T) {
 // V16: ID gate rejects malformed card ids with 404 (S4 gate).
 func TestV16_ID_Gate(t *testing.T) {
 	reg := NewFakeCustosRegistry()
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	malformedIDs := []string{
 		"short",
@@ -538,7 +538,7 @@ func TestV16_GlobalSSE_DataShapes(t *testing.T) {
 		}
 	})
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -627,7 +627,7 @@ func TestV16_GlobalSSE_PingLiveness(t *testing.T) {
 		}
 	})
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -687,7 +687,7 @@ func TestV16_DisconnectExemption(t *testing.T) {
 		}
 	})
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/v1/custos/cards/events", nil).WithContext(ctx)
@@ -853,7 +853,7 @@ func TestV16_SlowClient_OverflowEviction(t *testing.T) {
 		}
 	})
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -877,7 +877,7 @@ func TestV16_SlowClient_OverflowEviction(t *testing.T) {
 	}
 
 	// Flood registry with > 64 events while writer is delayed
-	for i := 0; i < 75; i++ {
+	for i := range 75 {
 		reg.PublishCard(CustosCard{ID: fmt.Sprintf("a_card00000000%03d", i)})
 	}
 
@@ -899,7 +899,7 @@ func TestV16_NoOptimisticResolution_HTTPContract(t *testing.T) {
 	// Configure Resolve to fail with 423 locked
 	reg.SetResolveErr(card.ID, ErrLocked)
 
-	_, tok, handler := setupV16Server(t, reg)
+	tok, handler := setupV16Server(t, reg)
 
 	body := `{"verdict":"once"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/custos/cards/"+card.ID+"/resolve", strings.NewReader(body))
@@ -955,11 +955,12 @@ func readNextSSEEvent(t *testing.T, scanner *bufio.Scanner) (string, string) {
 		if strings.HasPrefix(line, ":") {
 			continue // skip ping comments
 		}
-		if strings.HasPrefix(line, "event: ") {
+		switch {
+		case strings.HasPrefix(line, "event: "):
 			eventType = strings.TrimPrefix(line, "event: ")
-		} else if strings.HasPrefix(line, "data: ") {
+		case strings.HasPrefix(line, "data: "):
 			data.WriteString(strings.TrimPrefix(line, "data: "))
-		} else if line == "" && eventType != "" {
+		case line == "" && eventType != "":
 			return eventType, data.String()
 		}
 	}
