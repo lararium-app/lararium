@@ -15,6 +15,15 @@ v0.4.1 undeclared), and V27. Everything merged to date implements the
 v7 text; v8 is additive — no v7 behavior changes. Implemented and
 merged with V27 green (§6.4a door, CA-5, `approval_answered`, frozen
 `worker_call_denied` erratum).
+**Amendment v9 (2026-10-08): PO SIGN-OFF (2026-10-08).** Adds §6.4b (the
+fan-out door channel: `doors.sock` + `door.token` for hearthd/nuntius
+web+Telegram fan-out), CA-6 (SURFACE-SPEC §4/§5/§6/§9 amendments),
+amended §6.4 (custody cards hosted by custosd hub, not surface
+ApprovalHub), `door.token` 64-char hex encoding, `via` field on
+`approval_answered` (closed enum `web|telegram`), V28 (doors.sock
+contract). Additive to v7/v8 — no behavior change when no door attaches.
+Spec transcription PO-reviewed 2026-10-08 (two fidelity rounds; second
+CONVERGED); implementation of V28 begins on merge.
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -166,6 +175,21 @@ this is the symmetric completion — a card that custos registers and
 the web door cannot reach (standalone mode) must still be answerable
 by its owner.
 
+**CA-6 → SURFACE-SPEC (frozen) §§4, 5, 6, 9 (amendment v9).** The
+hearthd↔custosd fan-out adds to the frozen surface set: the §4
+endpoints `GET /v1/custos/cards` and
+`POST /v1/custos/cards/{id}/resolve` (status-code contract
+200/400/404/409/423), the §5 **global** (not turn-scoped) stream
+`GET /v1/custos/cards/events` with event names `custos_card` /
+`custos_gone`, the §6 custody-card render rule (main chat page,
+distinct style, Allow once / Always / Deny per CUSTOS-SPEC §6.5, no
+optimistic resolution), and the disconnect-auto-denial **exemption**
+for custody cards (S6/S9/V6b do not apply: closing a tab never
+settles a vault card). Full contract in CUSTOS-SPEC §6.4b and
+§10's V28; V16 covers the surface side. Precedent: CA-5 amended the
+`source` enum for `ctl`; this completes the fan-out the v8 door left
+owner-terminal-only.
+
 ## 0. The problem
 
 Today a provider key reaches the model loop as a resolved string and
@@ -210,8 +234,9 @@ credential kinds `api_key` and `oauth2` (fields named, §4.5);
 v1 built-in: Gmail — the primary lane for everything sensitive) and
 **bearer lane** (surrogate header swap at the custody egress proxy for
 plaintext-HTTP BYO endpoints); policy auto/ask/deny per credential
-action and per egress destination, enforced through the existing
-ApprovalHub so cards appear on web + Telegram like tool approvals;
+action and per egress destination, enforced through the custody card
+hub in custosd (§6.4/§6.4b) so cards appear on web + Telegram like
+tool approvals;
 hash-chained append-only audit with WAL, prune anchors, and a verify
 command; KEYS-SPEC takeover per CA-1 (same CLI, same endpoints, one new
 status string).
@@ -282,6 +307,7 @@ tradeoff, §1).
 `vault.age.mac`, `vault.key`, `surrogates.age` (encrypted, §4.3),
 `fingerprints.json`, `policy.json`, `audit/custos-YYYYMMDD.jsonl`,
 `audit/anchors.json`, `snapshots/`, `ctl.sock`, `ctl.token`,
+`doors.sock`, `door.token` (amendment v9, §6.4b),
 `custos.lock` (flock file serializing daemon and file-direct CLI,
 mirroring KEYS-SPEC `keys.lock`). Per-instance anchoring exactly like
 K1; no env-var global home.
@@ -299,7 +325,8 @@ keyfile mode refuses (`keyfile mode: always unlocked — remove config to
 change`). **What locked mode may hold** (the complete list of custody
 and key material; nothing *else secret-bearing* touches process
 memory — plaintext daemon scaffolding it must hold to serve unlock,
-status, and credential-less egress — `ctl.token`, `policy.json`,
+status, and credential-less egress — `ctl.token`, `door.token`
+(amendment v9, §6.4b), `policy.json`,
 fingerprints.json contents — is configuration, not custody, and is
 listed in §2's file inventory as unencrypted): `fingerprints.json`, `vault.key`, and HKDF
 outputs derived from `vault.key` (envelope + anchor keys — restore needs
@@ -727,9 +754,7 @@ ties impossible because canonical forms are distinct strings; among
 non-overlapping canonical strings the ordering is total. The
 match runs **forward-time** (§7).
 
-**6.4 — Ask = the hub, not a fork.** `ask` routes through the same
-ApprovalHub the tool approvals and Telegram cards use (`surface` +
-`nuntius` fan-out). Card content (frozen field set): credential or
+**6.4 — Ask = the hub, not a fork.** Custody cards are hosted by the dedicated hub in custosd (§6.4b); surface doors connect via doors.sock and settle through custosd's hub. No surface registration API exists for custody cards. Card content (frozen field set): credential or
 connector name, tool (worker lane), destination host[:port] + path
 prefix (bearer/egress), argument digest `sha256:<64 hex>` — plus any
 review fields the connector declares on its tool schema (gmail/send
@@ -798,11 +823,14 @@ Door semantics inherit the hub entirely: both-doors, `stale_verdict`
 on a late Allow after hold expiry, `CancelByCredential` while parked,
 the frozen deny strings per §5.1a/§6.4. The door adds no new verdict
 states and no new wire outcomes — it only lets a human reach states
-the machine already has. **Attribution:** a web or Telegram verdict is
-carried by surface's audit; standalone has no surface, so a ctl-door
+the machine already has. **Attribution:** every settled custody-card
 verdict appends a custos chain line `approval_answered` (amendment v8;
-§8.1 kind list) — `{kind, cred, actor: "cli", reason: "ok"|"denied"}` —
-making the human decision durable in the only chain that exists there.
+§8.1 kind list) — ctl-door: `{kind, cred, actor: "cli",
+reason: "ok"|"denied"}`; fan-out doors (amendment v9, §6.4b):
+`actor: "surface"` plus `via: web|telegram`. The human decision is
+durable in custosd's chain regardless of which door carried it —
+standalone has no surface audit at all, and with the fan-out the hub
+is the settlement point, so it writes the line.
 One line per settled verdict; `already answered` races append nothing.
 The CLI surface (§11) gains
 `custos approvals [watch]` over these verbs: one line per card,
@@ -816,6 +844,48 @@ specified: it means *no door exists*, never "standalone" — standalone
 has one. Its emit-site stays as shipped: a nil hub cannot register a
 card, so the call denies with `worker_call_denied(no_approval_door)`
 like every other denial path.
+
+**6.4b — The fan-out door channel (amendment v9).** `doors.sock` binds in the same home dir as `ctl.sock`, 0600, same dir law. It binds continuously, locked or unlocked, exactly like ctl.sock (V27 parity): while locked, HELLO succeeds with an empty pending set and APPROVE/DENY answer the frozen locked refusal — no ENOENT spin for door clients, no reconnect dance across lock cycles. **Lock flush:** `custos lock` pushes `GONE {reason: custos_locked}` for every pending card BEFORE the vault drops its state; the frozen `credential custody locked` reporting contract (CA-3) holds and a door never renders a lock as a transport failure.
+
+**Framing.** Newline-delimited TEXT verbs, JSON only inside payload fields — same grammar family as §6.4a (one frame per line, field values never contain raw newlines):
+
+    C→S  HELLO <door.token> <name>
+         -> OK <json array: current pending cards, §6.4a wire shape>
+         -> ERR bad_token            (connection closes after this line)
+    C→S  APPROVE <id> once|always via web|telegram
+    C→S  DENY <id> via web|telegram
+         -> OK | ERR already_answered | ERR no_such_card
+            | ERR locked | ERR bad_source | ERR stale_verdict
+            | ERR ip_ask_only          (synchronous, §6.4a parity)
+    S→C  CARD <json>                 (after HELLO; §6.4a wire shape)
+    S→C  GONE <json>                 {id, state, reason}
+
+- `name` grammar: `[a-z0-9_-]{1,32}`; duplicate names attach freely (doors are dumb mirrors; first-settle-wins arbitrates).
+- Commands sent before HELLO: `ERR bad_token`, close.
+- **Atomic replay (CA-2(iv) precedent):** HELLO's snapshot and live subscription activate under one hub-registry lock — no lost or double-delivered card in the attach window.
+- **GONE fires on EVERY terminal transition**, settle AND cancel: states `approved, denied, timed_out, cancelled`; reason = settling door's `via` source (`web|telegram`), `cli`, `timer`, or cancel token (`flow_gone`, `credential_revoked`, `custos_locked`). `state: "cancelled"` for all cancel GONE frames; `reason` carries the specific cancel token. Cancel ≠ settle stays frozen (CA-3); doors just learn about both.
+- **Slow doors cannot wedge the daemon:** per-connection outbound queue bounded at 64 frames; overflow drops the connection (client reconnects into the HELLO replay).
+
+**Token.** `door.token`: 32 random bytes, 0600, in the custos home dir. **Stored and transmitted as 64 lowercase hex characters** (`0-9a-f`) — generated by custosd on startup (and in `custos init`) if absent, never waits for first unlock, so `doors.sock` is fully functional in passphrase mode from boot (plaintext scaffolding, §C3). Hex encoding guarantees no space, newline, or NUL in the wire verb `HELLO <door.token> <name>`. `door.token` and `doors.sock` join the §C2 state-root inventory; `door.token` joins §C3's closed list of plaintext scaffolding readable while locked, same posture as `ctl.token`. Isolation is SCOPE, not filesystem: a door token gets card traffic + verdicts, never POLICY-ADD; anyone who can read either token already owns the box (ctl.sock trust model, §3).
+
+**Verdict grammar.** Doors submit `once` or `always`; on `always`, custosd derives the canonical exact-match rule from its OWN parked request memory (§6.5 stays alive: every capable door renders the frozen Allow once / Always / Deny set). `via` MUST be from the closed enum {web, telegram}; missing or unknown with a verdict → `ERR bad_source` — never silently defaults to `ctl` (that default was a spoof path for owner CLI attribution). IP-literal targets: if the card's `dest` is an IP literal, `APPROVE ... always` is rejected with `ERR ip_ask_only` (no auto rule written); `once` is allowed per §6.5's ask-only posture.
+
+**The door client (hearthd side).** Config: `custos.doors_sock` +
+`custos.door_token` (paths). Unset = zero behavior change from
+v0.5.0. A door-client goroutine maintains the **custos card
+registry** (hearthd-internal; explicitly NOT the ApprovalHub — the
+tool-approval state machine and `/approvals/` routes are untouched).
+Nuntius gains a sibling feed for custody cards (Telegram:
+cred/dest/tool/review text + Allow once / Always / Deny buttons →
+same resolve path, `via telegram`). Reconnect uses capped exponential
+backoff (1 s → 30 s) for custosd restarts; on drop, rendered cards
+go dead (`card_dead` precedent, SURFACE-SPEC §5/A1) and the registry
+refreshes via the HELLO snapshot replay after re-attach (NOT via a
+GET verb, which does not exist on doors.sock). A custosd restart
+drops parked flows anyway (§3's restart posture), so no orphan
+state. The web surface contract for this registry lives in
+SURFACE-SPEC v5.2 (CA-6: the two `/v1/custos/cards` routes and the
+global card stream).
 
 **6.5 — Always rules.** Frozen button set: **Allow once / Always /
 Deny**. Always writes the canonical exact-match form of *this request*
@@ -909,7 +979,7 @@ and crash-tail rule, separate file family. Kinds (frozen):
 `credential_removed`, `surrogate_created`, `surrogate_revoked`,
 `surrogate_rejected`, `registry_reconciled`, `vault_mutation_intent`,
 `vault_mutation`, `vault_mutation_recovered`,
-`approval_answered` (amendment v8: a ctl-door verdict settled, §6.4a),
+`approval_answered` (amendment v8: a ctl-door verdict settled, §6.4a; amendment v9: door verdicts carry `via: web|telegram` — closed enum, actor stays `surface`),
 `vault_mutation_aborted` (emitted when a §4.2 mutation is refused
 after its intent line — `reason: lock_timeout` or a failed
 encrypt/write — **or by first-unlock recovery for an intent that
@@ -933,9 +1003,7 @@ error enum, §5.1a: an undeclared value is a defect at review, not a
 passthrough). `credential_added` is
 emitted by `custos login` success and by `hearthd keys set` under
 custody (the custody-routed write audits it with `actor` surface/cli).
-Fields: `t`, `kind`,
-`cred` (name), `sur` (8-hex prefix), `actor` (cell id | `cli` |
-`surface`), `host`, `tool`, `verdict`, `reason`, `gen`, `prev_hash`.
+Fields: `t`, `kind`, `cred` (name), `sur` (8-hex prefix), `actor` (cell id | `cli` | `surface`), `host`, `tool`, `verdict`, `reason`, `via` (`web|telegram` — door verdicts only; omitted for `cli` verdicts), `gen`, `prev_hash`.
 **Chain-writer serialization (frozen):** the audit append is taken
 under `custos.lock` (already held by every §4.2 mutation and by
 restore), and each appender re-reads the current tail line under the
@@ -1240,6 +1308,24 @@ late `APPROVE` after hold expiry audits `stale_verdict` with the dial
 counter at zero; `custos approvals watch` reprints an added card within
 its poll interval and exits on `q`. Locked vault: `CARDS`/`APPROVE`/
 `DENY` answer the frozen locked refusal, no state change.
+V28. Fan-out door (§6.4b, amendment v9): attach/replay atomicity — no
+missed or double-delivered card across the HELLO attach window; `CARD`
+pushed on every register while attached; `GONE` on all terminal states
+incl. the three cancels (`flow_gone`, `credential_revoked`,
+`custos_locked`) with `state: "cancelled"`; cross-door
+first-settle-wins + `stale_verdict` + `already_answered` +
+`ip_ask_only` synchronous acks; `always` derives the canonical
+exact-match rule from parked request memory; `bad_token` close (incl.
+commands sent pre-HELLO); `bad_source` rejection of missing/unknown
+`via`; locked HELLO returns an empty snapshot + locked refuses on
+verdicts (V27 parity); `custos lock` flushes `GONE(custos_locked)`
+for every pending card before the vault drops state; slow-door
+eviction at the 64-frame queue bound (connection dropped, HELLO
+replay recovers); `door.token` auto-generated on startup when absent
+(upgrade path), 64 lowercase hex, present in the §C2/§C3 inventory;
+audit `via`-field honesty (`actor` stays frozen `surface`/`cli`,
+`via` only on door-settled lines); `ip_ask_only` enforced on
+IP-literal targets (`once` still allowed).
 
 ## 11. CLI surface (frozen shapes)
 
@@ -1295,6 +1381,27 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
 
 ## Changelog
 
+- v9 (amendment, PO sign-off, 2026-10-08): the fan-out — external
+  doors for vault cards. v8's door proved the integration shape;
+  hearthd becomes a door client on `doors.sock` (`door.token`,
+  auto-generated on startup, 64 lowercase hex) with the web and
+  Telegram surfaces rendering custody cards. Custody cards stay in
+  custosd's hub (v8's door IS the integration — doors are transport,
+  every frozen hub rule stays). Adds §6.4b (HELLO/APPROVE/DENY/CARD/
+  GONE wire grammar, atomic replay, GONE on every terminal transition
+  incl. cancels with `state: "cancelled"`, lock flush, 64-frame
+  slow-door bound, closed `via` enum, `ip_ask_only`, door-client
+  contract (hearthd config keys, card registry, Nuntius sibling feed,
+  reconnect backoff)), the §6.4
+  hub-hosting sentence (no surface registration API for custody
+  cards) plus §1 and §6.4a amendments to match (frozen text said
+  ApprovalHub / surface-only audit), `via` on `approval_answered`
+  (§8.1, actor stays frozen), §C2/§C3 inventory
+  entries, CA-6 (SURFACE-SPEC v5.2: endpoints, global stream, render
+  rule, V16), and V28. Four hostile-review rounds: rev 2 folded 27
+  deduped findings, rev 3 eleven, rev 4 two; round 4 CONVERGED
+  (0 findings). Additive — zero behavior change with no door
+  attached.
 - v8 (amendment, PO sign-off + shipped, 2026-10-07): standalone
   approval door. Motivation from the first live dogfooding cycle:
   with the hearthd integration unbuilt, `ask` in standalone custosd
