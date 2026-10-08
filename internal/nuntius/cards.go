@@ -117,6 +117,10 @@ func outcomeText(reason, source string) string {
 // the callback_data, resolve through the hub (first tap wins, N5),
 // and ALWAYS toast so no client spinner hangs (N10).
 func (b *Bridge) handleCallback(ctx context.Context, u Update, rec Record) {
+	if strings.HasPrefix(rec.Payload, "cu:") {
+		b.handleCustodyCallback(ctx, u, rec)
+		return
+	}
 	id, verdict, ok := parseApprovalData(rec.Payload)
 	if !ok {
 		b.toast(ctx, callbackIDOf(u), ToastNotPending)

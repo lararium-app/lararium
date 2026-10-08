@@ -28,6 +28,8 @@ type Config struct {
 	Serve     surface.ServeConfig `yaml:"serve"`
 	// Nuntius is the Telegram bridge configuration (NUNTIUS-SPEC §4).
 	Nuntius nuntius.Config `yaml:"nuntius"`
+	// Custos configures the custody door client (CUSTOS-SPEC §6.4b).
+	Custos CustosConfig `yaml:"custos"`
 }
 
 type HearthConfig struct {
@@ -323,13 +325,24 @@ func serve(cfgPath string) {
 		os.Exit(1)
 	}
 
-	_, stopBridge, err := startNuntius(context.Background(), cfg, home, hub, sessions, ap)
+	bridge, stopNuntius, err := startNuntius(context.Background(), cfg, home, hub, sessions, ap)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		sock.Close()
 		os.Exit(1)
 	}
-	if stopBridge != nil {
+	// Custody door client: nil stop (and nothing started) unless both
+	// custos.doors_sock and custos.door_token are set.
+	stopDoor := startCustosDoor(context.Background(), cfg.Custos, bridge)
+	stopBridge := func() {
+		if stopDoor != nil {
+			stopDoor()
+		}
+		if stopNuntius != nil {
+			stopNuntius()
+		}
+	}
+	if stopDoor != nil || stopNuntius != nil {
 		srv.OnShutdown = stopBridge
 	}
 
@@ -339,13 +352,9 @@ func serve(cfgPath string) {
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		sock.Close()
-		if stopBridge != nil {
-			stopBridge()
-		}
+		stopBridge()
 		os.Exit(1)
 	}
 	sock.Close()
-	if stopBridge != nil {
-		stopBridge()
-	}
+	stopBridge()
 }
