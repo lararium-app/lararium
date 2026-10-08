@@ -23,7 +23,9 @@ ApprovalHub), `door.token` 64-char hex encoding, `via` field on
 `approval_answered` (closed enum `web|telegram`), V28 (doors.sock
 contract). Additive to v7/v8 — no behavior change when no door attaches.
 Spec transcription PO-reviewed 2026-10-08 (two fidelity rounds; second
-CONVERGED); implementation of V28 begins on merge.
+CONVERGED); implementation of V28 begins on merge. §6.4b error set
+ratified post-implementation (PO, 2026-10-08): HELLO with a valid token
+but invalid `name` answers `ERR bad_name` + close (V28 subtest C).
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -852,6 +854,7 @@ like every other denial path.
     C→S  HELLO <door.token> <name>
          -> OK <json array: current pending cards, §6.4a wire shape>
          -> ERR bad_token            (connection closes after this line)
+         -> ERR bad_name             (connection closes after this line)
     C→S  APPROVE <id> once|always via web|telegram
     C→S  DENY <id> via web|telegram
          -> OK | ERR already_answered | ERR no_such_card
@@ -862,6 +865,7 @@ like every other denial path.
 
 - `name` grammar: `[a-z0-9_-]{1,32}`; duplicate names attach freely (doors are dumb mirrors; first-settle-wins arbitrates).
 - Commands sent before HELLO: `ERR bad_token`, close.
+- Valid token, invalid name: `ERR bad_name`, close — kept distinct from `bad_token` so a door can tell a name-grammar fault from a credential fault (V28 subtest C anchors this).
 - **Atomic replay (CA-2(iv) precedent):** HELLO's snapshot and live subscription activate under one hub-registry lock — no lost or double-delivered card in the attach window.
 - **GONE fires on EVERY terminal transition**, settle AND cancel: states `approved, denied, timed_out, cancelled`; reason = settling door's `via` source (`web|telegram`), `cli`, `timer`, or cancel token (`flow_gone`, `credential_revoked`, `custos_locked`). `state: "cancelled"` for all cancel GONE frames; `reason` carries the specific cancel token. Cancel ≠ settle stays frozen (CA-3); doors just learn about both.
 - **Slow doors cannot wedge the daemon:** per-connection outbound queue bounded at 64 frames; overflow drops the connection (client reconnects into the HELLO replay).
