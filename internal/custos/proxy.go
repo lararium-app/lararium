@@ -1867,4 +1867,3 @@ func reasonFromSurrogateErr(err error) string {
 		return "invalid_host"
 	}
 }
-
