@@ -19,6 +19,14 @@ func (ws *WorkerServer) ConnDeadlineForTest() time.Duration {
 	return ws.connDeadline()
 }
 
+// LockProxyParkManagerForTest simulates the park-path invariant: it holds
+// the proxy park-manager lock (as registerParkFlow does while registering
+// a card) and returns the release function.
+func LockProxyParkManagerForTest(p *Proxy) func() {
+	p.parkMgr.mu.Lock()
+	return func() { p.parkMgr.mu.Unlock() }
+}
+
 // SetExecTimeoutForTest overrides the worker execution budget in tests.
 func (ws *WorkerServer) SetExecTimeoutForTest(d time.Duration) {
 	ws.cfg.WorkerExecTimeout = d
