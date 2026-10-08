@@ -894,7 +894,7 @@ func TestV28_FanOutDoor(t *testing.T) {
 		defer slowDoor.Close()
 
 		// Push > 64 events without reading (slow door stops reading)
-		for i := 0; i < 70; i++ {
+		for range 70 {
 			hub.RegisterCustos("cell-1", "spam", "dest", "sum", 10*time.Second, nil)
 		}
 
@@ -903,7 +903,7 @@ func TestV28_FanOutDoor(t *testing.T) {
 
 		// Assert connection was dropped by server
 		var closedErr error
-		for j := 0; j < 100; j++ {
+		for range 100 {
 			_, err = slowDoor.NextFrame(200 * time.Millisecond)
 			if err != nil {
 				closedErr = err

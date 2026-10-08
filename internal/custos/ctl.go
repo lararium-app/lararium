@@ -828,9 +828,6 @@ func CardSnapshot(hub *surface.ApprovalHub, workers *WorkerServer, proxy *Proxy)
 	return cards
 }
 
-// cardSnapshot is an uncapitalized alias matching the brief description.
-var cardSnapshot = CardSnapshot
-
 func (s *CtlServer) handleCards(conn net.Conn) {
 	cards := CardSnapshot(s.hubInstance(), s.workersInstance(), s.proxyInstance())
 	b, err := json.Marshal(cards) //nolint:gosec // ApprovalCardWire.Cred carries provider/credential name, never secret value

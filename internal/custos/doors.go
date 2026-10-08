@@ -1,6 +1,6 @@
-// Package custos implements the credential custody vault core per CUSTOS-SPEC.
-// This file implements the fan-out door channel (doors.sock) per CUSTOS-SPEC §6.4b (amendment v9).
 package custos
+
+// This file implements the fan-out door channel (doors.sock) per CUSTOS-SPEC §6.4b (amendment v9).
 
 import (
 	"bufio"
@@ -21,8 +21,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lararium-app/lararium/internal/surface"
 	"golang.org/x/sys/unix"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 var nameRegex = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
@@ -88,9 +89,8 @@ func ReadDoorToken(stateDir string) (string, error) {
 }
 
 func isHex(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+	for i := range len(s) {
+		if !strings.ContainsRune("0123456789abcdef", rune(s[i])) {
 			return false
 		}
 	}
@@ -135,18 +135,17 @@ type doorEvent struct {
 }
 
 type doorClient struct {
-	server         *DoorServer
-	conn           net.Conn
-	name           string
-	outbound       chan string // capacity 64
-	writeMu        sync.Mutex
-	closeOnce      sync.Once
-	closed         atomic.Bool
-	snapshotIDs    map[string]bool
-	bufferMu       sync.Mutex
-	buffered       []doorEvent
-	ready          bool
-	unacknowledged atomic.Int64
+	server      *DoorServer
+	conn        net.Conn
+	name        string
+	outbound    chan string // capacity 64
+	writeMu     sync.Mutex
+	closeOnce   sync.Once
+	closed      atomic.Bool
+	snapshotIDs map[string]bool
+	bufferMu    sync.Mutex
+	buffered    []doorEvent
+	ready       bool
 }
 
 func newDoorClient(server *DoorServer, conn net.Conn, name string) *doorClient {
@@ -247,6 +246,7 @@ func (c *doorClient) drainBuffer() {
 	}
 }
 
+// Close shuts the client connection once and deregisters it from the server.
 func (c *doorClient) Close() {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
@@ -321,16 +321,20 @@ type chainedFanout struct {
 	second surface.ApprovalFanout
 }
 
+// ApprovalPending forwards a pending notification to both fans.
 func (c *chainedFanout) ApprovalPending(id, sessionID, name, argsSummary string) {
 	c.first.ApprovalPending(id, sessionID, name, argsSummary)
 	c.second.ApprovalPending(id, sessionID, name, argsSummary)
 }
 
+// ApprovalTerminal forwards a terminal notification to both fans.
 func (c *chainedFanout) ApprovalTerminal(id, sessionID, state, reason, source string) {
 	c.first.ApprovalTerminal(id, sessionID, state, reason, source)
 	c.second.ApprovalTerminal(id, sessionID, state, reason, source)
 }
 
+// ApprovalTerminalVia forwards a via-attributed terminal notification to both
+// fans, falling back to ApprovalTerminal for fans without via support.
 func (c *chainedFanout) ApprovalTerminalVia(id, sessionID, state, reason, source, via string) {
 	if fv, ok := c.first.(surface.ApprovalTerminalVia); ok {
 		fv.ApprovalTerminalVia(id, sessionID, state, reason, source, via)
@@ -366,7 +370,7 @@ func StartDoorServer(stateDir string, hub *surface.ApprovalHub, opts ...DoorServ
 		return nil, fmt.Errorf("state dir is not a directory: %s", stateDir)
 	}
 	if sys, ok := fi.Sys().(*syscall.Stat_t); ok {
-		if sys.Uid != uint32(os.Geteuid()) {
+		if sys.Uid != uint32(os.Geteuid()) { //nolint:gosec // G115: euid is non-negative by construction
 			return nil, fmt.Errorf("state dir owned by foreign uid %d", sys.Uid)
 		}
 	}
@@ -498,15 +502,16 @@ func (s *DoorServer) handleConn(conn net.Conn) {
 	// Atomic replay: attach subscription and take snapshot
 	var snapshotWires []ApprovalCardWire
 	v := s.vaultInstance()
-	if v != nil && !v.IsUnlocked() {
+	switch {
+	case v != nil && !v.IsUnlocked():
 		s.addClient(client)
 		snapshotWires = []ApprovalCardWire{}
-	} else if s.hub != nil {
+	case s.hub != nil:
 		_ = s.hub.PendingSnapshot(func() {
 			s.addClient(client)
 		})
 		snapshotWires = CardSnapshot(s.hub, s.workersInstance(), s.proxyInstance())
-	} else {
+	default:
 		s.addClient(client)
 		snapshotWires = []ApprovalCardWire{}
 	}
@@ -516,7 +521,7 @@ func (s *DoorServer) handleConn(conn net.Conn) {
 		client.snapshotIDs[card.ID] = true
 	}
 
-	b, err := json.Marshal(snapshotWires)
+	b, err := json.Marshal(snapshotWires) //nolint:gosec // ApprovalCardWire.Cred carries provider/credential name, never secret value
 	if err != nil {
 		return
 	}
@@ -603,7 +608,7 @@ func (s *DoorServer) handleApprove(client *doorClient, cardID string, always boo
 	switch status {
 	case 200:
 		if always {
-			s.storeAlwaysRule(cardID, cred, "surface")
+			s.storeAlwaysRule(cardID, "surface")
 		}
 		if v != nil && v.Audit() != nil {
 			_ = v.Audit().AppendApprovalAnsweredVia(cred, "ok", "surface", via)
@@ -772,7 +777,7 @@ func isIPString(raw string) bool {
 	return net.ParseIP(raw) != nil
 }
 
-func (s *DoorServer) storeAlwaysRule(cardID, cred, actor string) {
+func (s *DoorServer) storeAlwaysRule(cardID, actor string) {
 	v := s.vaultInstance()
 	if v == nil || v.Policy() == nil {
 		return
@@ -901,7 +906,7 @@ func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) Appr
 // ApprovalPending is called on hub pending transition outside the hub mutex.
 func (s *DoorServer) ApprovalPending(id, sessionID, name, argsSummary string) {
 	wire := s.buildCardWire(id, sessionID, name, argsSummary)
-	b, err := json.Marshal(wire)
+	b, err := json.Marshal(wire) //nolint:gosec // ApprovalCardWire.Cred carries provider/credential name, never secret value
 	if err != nil {
 		return
 	}
@@ -952,6 +957,19 @@ func (s *DoorServer) ApprovalTerminalVia(id, sessionID, state, reason, source, v
 	}
 }
 
+// doorActorLabel resolves the actor label for a GONE frame reason: explicit
+// via wins, ctl/cli collapse to "cli", otherwise the raw source is used.
+func doorActorLabel(via, source string) string {
+	switch {
+	case via != "":
+		return via
+	case source == "ctl" || source == "cli":
+		return "cli"
+	default:
+		return source
+	}
+}
+
 func mapTerminalToGone(id, state, reason, source, via string) GoneWire {
 	goneState := state
 	goneReason := reason
@@ -967,13 +985,7 @@ func mapTerminalToGone(id, state, reason, source, via string) GoneWire {
 
 	case state == "approved":
 		goneState = "approved"
-		if via != "" {
-			goneReason = via
-		} else if source == "ctl" || source == "cli" {
-			goneReason = "cli"
-		} else {
-			goneReason = source
-		}
+		goneReason = doorActorLabel(via, source)
 
 	case state == "denied":
 		if reason == "cancelled" {
@@ -981,13 +993,7 @@ func mapTerminalToGone(id, state, reason, source, via string) GoneWire {
 			goneReason = reason
 		} else {
 			goneState = "denied"
-			if via != "" {
-				goneReason = via
-			} else if source == "ctl" || source == "cli" {
-				goneReason = "cli"
-			} else {
-				goneReason = source
-			}
+			goneReason = doorActorLabel(via, source)
 		}
 
 	case state == "cancelled":
