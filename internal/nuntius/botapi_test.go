@@ -12,7 +12,25 @@ import (
 	"time"
 )
 
-// --- Bucket / FloodControl (N9) ---
+// The wiring constructs the transport with a nil FloodControl (polling
+// rides its own bucket); the send path must still be gated, not panic
+// (dogfood 2026-10-08: first /pair reply nil-deref'd chatBucketFor).
+func TestBotAPINilFloodControlDefaults(t *testing.T) {
+	b := NewBotAPI("tok", nil)
+	if b.fc == nil {
+		t.Fatal("nil FloodControl must default to spec rates, not stay nil")
+	}
+	if err := b.fc.Send(context.Background(), "777"); err != nil {
+		t.Fatalf("first send admitted: %v", err)
+	}
+	// Second send inside the same second must block on the per-chat
+	// 1/s bucket — proves it is a real gate, not a no-op.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := b.fc.Send(ctx, "777"); err == nil {
+		t.Fatal("per-chat bucket did not gate the second send")
+	}
+}
 
 func TestBucketBurstThenRefill(t *testing.T) {
 	clk := &fakeClock{t: time.Unix(0, 0)}

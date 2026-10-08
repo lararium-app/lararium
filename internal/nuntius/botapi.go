@@ -43,6 +43,13 @@ var ErrNotFound = errors.New("nuntius: bot api 404 (invalid token?)")
 // environment (Config.Token, spec §4) and is never stored in any file
 // this package writes.
 func NewBotAPI(token string, fc *FloodControl) *BotAPI {
+	// A nil FloodControl used to panic the bridge on its very first
+	// reply (dogfood 2026-10-08): wiring passed nil because polling
+	// rides its own bucket. Default to the spec rates instead — send
+	// gating is never optional.
+	if fc == nil {
+		fc = NewFloodControl(nil, nil)
+	}
 	return &BotAPI{
 		base:  "https://api.telegram.org",
 		token: token,

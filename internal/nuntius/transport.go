@@ -2,14 +2,42 @@ package nuntius
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
 )
 
-// Telegram-shaped wire types (the fields this bridge consumes; §2,
-// §7.2). Field names mirror the Bot API JSON so the real transport in
-// T11b is a thin HTTP layer over these.
+// FlexID is a Telegram numeric id carried as a decimal string. The Bot
+// API sends user.id and chat.id as JSON numbers, but this bridge keys
+// pairing and replies on the string form (ids exceed int32; parsing as
+// JSON numbers would risk float mangling). UnmarshalJSON accepts both
+// spellings: a JSON number is rendered decimal, never via float64.
+type FlexID string
 
-// User is a Telegram user (id as decimal string — Telegram ids exceed
-// int32 and JSON numbers would risk float mangling).
+// UnmarshalJSON accepts a quoted string or a JSON integer id, keeping
+// integers as exact decimal text (never via float64).
+func (f *FlexID) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*f = FlexID(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return fmt.Errorf("nuntius: id is neither string nor number: %s", b)
+	}
+	if _, err := strconv.ParseInt(n.String(), 10, 64); err != nil {
+		return fmt.Errorf("nuntius: id not a valid int64: %s", n.String())
+	}
+	*f = FlexID(n.String())
+	return nil
+}
+
+// User is a Telegram user (id decimal string on both wire spellings —
+// Telegram sends integers and we key everything as strings).
 type User struct {
 	ID       string `json:"id"`
 	Username string `json:"username,omitempty"`
@@ -18,10 +46,43 @@ type User struct {
 	FirstName string `json:"first_name,omitempty"`
 }
 
+// UnmarshalJSON accepts the Bot API's numeric ids (live) as well as the
+// decimal-string spelling used in fixtures.
+func (u *User) UnmarshalJSON(b []byte) error {
+	type alias User
+	var a struct {
+		alias
+
+		ID FlexID `json:"id"`
+	}
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*u = User(a.alias)
+	u.ID = string(a.ID)
+	return nil
+}
+
 // Chat is the conversation an update arrived in.
 type Chat struct {
 	ID   string `json:"id"`
 	Type string `json:"type"` // "private" | "group" | "supergroup" | "channel"
+}
+
+// UnmarshalJSON accepts numeric chat ids (live Bot API) and strings.
+func (c *Chat) UnmarshalJSON(b []byte) error {
+	type alias Chat
+	var a struct {
+		alias
+
+		ID FlexID `json:"id"`
+	}
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*c = Chat(a.alias)
+	c.ID = string(a.ID)
+	return nil
 }
 
 // Message is an inbound (or sent) message.
