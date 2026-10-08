@@ -337,9 +337,11 @@ func (b *Bridge) handleCustodyCallback(ctx context.Context, u Update, rec Record
 		}
 	case CustodyAlreadyAnswered:
 		b.toast(ctx, cbID, ToastAlready)
+		//nolint:contextcheck // card edits detach on purpose: the callback ctx ends before the edit settles; edit() carries its own 15 s ctx
 		f.stripButtons(id, "Already answered")
 	case CustodyStale:
 		b.toast(ctx, cbID, ToastCustodyExpired)
+		//nolint:contextcheck // card edits detach on purpose: the callback ctx ends before the edit settles; edit() carries its own 15 s ctx
 		f.stripButtons(id, "Expired")
 	case CustodyLocked:
 		b.toast(ctx, cbID, ToastCustodyLocked)
@@ -347,6 +349,7 @@ func (b *Bridge) handleCustodyCallback(ctx context.Context, u Update, rec Record
 		b.toast(ctx, cbID, ToastCustodyIPAskOnly)
 	case CustodyNoSuchCard:
 		b.toast(ctx, cbID, ToastNotPending)
+		//nolint:contextcheck // card edits detach on purpose: the callback ctx ends before the edit settles; edit() carries its own 15 s ctx
 		f.drop(id, "No longer pending")
 	default:
 		b.toast(ctx, cbID, ToastCustodyUnavailable)

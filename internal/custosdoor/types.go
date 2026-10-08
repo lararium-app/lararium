@@ -48,18 +48,18 @@ const (
 const defaultDoorName = "hearthd"
 
 // Registry mirrors the contract slice 3 exports as
-// surface.CustosRegistry (field-for-field identical).
-// TODO(s3): replace with surface.CustosRegistry once merged; Card/Gone
-// and the sentinel errors below then become thin adapters over the
-// surface types.
+// surface.CustosRegistry (field-for-field identical). Once slice 3
+// merges, replace this with surface.CustosRegistry; Card/Gone and the
+// sentinel errors below then become thin adapters over the surface
+// types.
 type Registry interface {
 	Snapshot() []Card
 	Subscribe(f func(card *Card, gone *Gone)) (cancel func())
 	Resolve(id, verdict string) (state string, err error)
 }
 
-// Sentinels mapped from the door's synchronous acks.
-// TODO(s3): alias to the surface sentinels once merged.
+// Sentinels mapped from the door's synchronous acks. Alias to the
+// surface sentinels once slice 3 merges.
 var (
 	ErrCardAnswered = errors.New("custos card already answered")
 	ErrStaleVerdict = errors.New("custos card verdict stale")

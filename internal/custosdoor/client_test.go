@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -95,7 +94,7 @@ func (s *fakeServer) hello(t *testing.T, snap string) *fakeConn {
 
 func shortDir(t *testing.T) string {
 	t.Helper()
-	d, err := os.MkdirTemp("/tmp", "cd")
+	d, err := os.MkdirTemp("/tmp", "cd") //nolint:usetesting // UDS path cap: t.TempDir() under deep TMPDIR exceeds 104 bytes
 	if err != nil {
 		d = t.TempDir()
 	}
@@ -131,7 +130,6 @@ func tokenFile(t *testing.T, dir, content string) string {
 }
 
 type rec struct {
-	mu    sync.Mutex
 	cards chan Card
 	gones chan Gone
 }
@@ -460,9 +458,9 @@ func TestBackoffWhileServerDownThenAttach(t *testing.T) {
 			t.Fatal("no retry observed")
 		}
 	}
-	want := []time.Duration{5, 10, 20, 20}
+	want := []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond, 20 * time.Millisecond}
 	for i, d := range delays {
-		if d != want[i]*time.Millisecond {
+		if d != want[i] {
 			t.Fatalf("delays = %v, want 5,10,20,20ms (doubling, capped)", delays)
 		}
 	}

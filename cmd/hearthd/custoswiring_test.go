@@ -9,7 +9,7 @@ import (
 
 func shortTmp(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "cd")
+	dir, err := os.MkdirTemp("/tmp", "cd") //nolint:usetesting // UDS path cap: t.TempDir() under deep TMPDIR exceeds 104 bytes
 	if err != nil {
 		t.Fatal(err)
 	}

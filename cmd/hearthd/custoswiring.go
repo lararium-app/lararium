@@ -28,8 +28,8 @@ type CustosConfig struct {
 // unless both paths are set. The returned stop closes the door
 // connection and waits for the goroutine; it is idempotent.
 //
-// TODO(s3): once internal/surface exports CustosRegistry and
-// Server.SetCustosRegistry, register the client here
+// Follow-up queued for the slice-3 merge: once internal/surface exports
+// CustosRegistry and Server.SetCustosRegistry, register the client here
 // (srv.SetCustosRegistry(client) via a thin Card/Gone/sentinel adapter);
 // until then the web surface does not see custody cards.
 func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge) (stop func()) {
@@ -48,6 +48,7 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 		return nil
 	}
 	if bridge != nil {
+		//nolint:contextcheck // custodyFeed edits run on the feed goroutine with their own detached 15 s ctx (same posture as nuntius background card edits)
 		bridge.WireCustody(custodyWire(client))
 	}
 

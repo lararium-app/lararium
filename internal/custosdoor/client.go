@@ -94,7 +94,7 @@ var _ Registry = (*Client)(nil)
 // log line). Exactly one path set is a configuration error.
 func New(o Options) (*Client, error) {
 	if o.SockPath == "" && o.TokenPath == "" {
-		return nil, nil
+		return nil, nil //nolint:nilnil // feature-off contract: no paths = disabled, documented in Options
 	}
 	if o.SockPath == "" || o.TokenPath == "" {
 		return nil, errors.New("custos: doors_sock and door_token must both be set")
@@ -480,7 +480,7 @@ func (c *Client) ResolveVia(id, verdict, via string) (string, error) {
 	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	if _, err := s.conn.Write([]byte(verb)); err != nil {
 		s.conn.Close()
-		return "", fmt.Errorf("%w: %v", ErrDoorDown, err)
+		return "", fmt.Errorf("%w: %w", ErrDoorDown, err)
 	}
 	t := time.NewTimer(c.opts.AckTimeout)
 	defer t.Stop()
