@@ -14,11 +14,11 @@ import (
 func TestWireIDsNumericAndString(t *testing.T) {
 	numeric := `{"update_id":104017699,
 	  "message":{"message_id":42,
-	    "from":{"id":8910825919,"first_name":"Brandon"},
-	    "chat":{"id":8910825919,"type":"private"},
+	    "from":{"id":8910000001,"first_name":"Test User"},
+	    "chat":{"id":8910000001,"type":"private"},
 	    "text":"/start"}}`
 	callback := `{"update_id":104017700,
-	  "callback_query":{"id":"cb1","from":{"id":8910825919},
+	  "callback_query":{"id":"cb1","from":{"id":8910000001},
 	    "message":{"message_id":43,"chat":{"id":-1001234567890,"type":"supergroup"}},
 	    "data":"approve:abc"}}`
 	stringIDs := `{"update_id":2,"message":{"message_id":1,
@@ -32,8 +32,8 @@ func TestWireIDsNumericAndString(t *testing.T) {
 		chat  string
 		updID int64
 	}{
-		{"numeric message", numeric, "8910825919", "8910825919", 104017699},
-		{"numeric callback", callback, "8910825919", "-1001234567890", 104017700},
+		{"numeric message", numeric, "8910000001", "8910000001", 104017699},
+		{"numeric callback", callback, "8910000001", "-1001234567890", 104017700},
 		{"string ids", stringIDs, "12345678901234567890", "777", 2},
 	} {
 		var u Update
