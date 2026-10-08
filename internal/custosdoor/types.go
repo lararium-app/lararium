@@ -47,15 +47,19 @@ const (
 
 const defaultDoorName = "hearthd"
 
-// Registry mirrors the contract slice 3 exports as
-// surface.CustosRegistry (field-for-field identical). Once slice 3
-// merges, replace this with surface.CustosRegistry; Card/Gone and the
-// sentinel errors below then become thin adapters over the surface
-// types.
+// Event is a custody card event holding either a Card or Gone transition.
+// Exactly one of Card or Gone is non-nil.
+type Event struct {
+	Card *Card
+	Gone *Gone
+}
+
+// Registry mirrors the contract surface.CustosRegistry exports.
 type Registry interface {
 	Snapshot() []Card
 	Subscribe(f func(card *Card, gone *Gone)) (cancel func())
 	Resolve(id, verdict string) (state string, err error)
+	Attach() (cards []Card, cancel func(), events <-chan Event)
 }
 
 // Sentinels mapped from the door's synchronous acks. Alias to the

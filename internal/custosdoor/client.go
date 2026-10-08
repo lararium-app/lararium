@@ -377,6 +377,10 @@ func (c *Client) sorted() []*pendingCard {
 func (c *Client) Snapshot() []Card {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.snapshotLocked()
+}
+
+func (c *Client) snapshotLocked() []Card {
 	now := time.Now()
 	out := make([]Card, 0, len(c.pending))
 	for _, p := range c.sorted() {
@@ -387,6 +391,84 @@ func (c *Client) Snapshot() []Card {
 		out = append(out, card)
 	}
 	return out
+}
+
+// Attach returns a snapshot of currently pending cards and opens a live event stream.
+// Snapshot and subscriber registration are atomic under the Client mutex.
+// The returned events channel is buffered (cap 64). On overflow, the subscriber is
+// dropped-to-dead (unregistered, channel closed). The cancel function is idempotent.
+func (c *Client) Attach() ([]Card, func(), <-chan Event) {
+	ch := make(chan Event, 64)
+	var (
+		subMu  sync.Mutex
+		closed bool
+	)
+
+	c.mu.Lock()
+	cards := c.snapshotLocked()
+	snapIDs := make(map[string]struct{}, len(cards))
+	for _, card := range cards {
+		snapIDs[card.ID] = struct{}{}
+	}
+
+	id := c.nextSub
+	c.nextSub++
+
+	dropToDead := func() {
+		c.mu.Lock()
+		delete(c.subs, id)
+		c.mu.Unlock()
+
+		subMu.Lock()
+		if !closed {
+			closed = true
+			close(ch)
+		}
+		subMu.Unlock()
+	}
+
+	c.subs[id] = func(card *Card, gone *Gone) {
+		subMu.Lock()
+		if closed {
+			subMu.Unlock()
+			return
+		}
+		if card == nil && gone == nil {
+			subMu.Unlock()
+			return
+		}
+		if card != nil {
+			if _, ok := snapIDs[card.ID]; ok {
+				subMu.Unlock()
+				return
+			}
+		}
+		if gone != nil {
+			delete(snapIDs, gone.ID)
+		}
+
+		ev := Event{Card: card, Gone: gone}
+		select {
+		case ch <- ev:
+			subMu.Unlock()
+		default:
+			closed = true
+			close(ch)
+			subMu.Unlock()
+
+			c.mu.Lock()
+			delete(c.subs, id)
+			c.mu.Unlock()
+		}
+	}
+	c.mu.Unlock()
+
+	var cancelOnce sync.Once
+	cancel := func() {
+		cancelOnce.Do(dropToDead)
+	}
+
+	return cards, cancel, ch
 }
 
 // Subscribe registers f for card/gone events, delivered in order from

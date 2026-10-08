@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -538,5 +539,186 @@ func TestCustomNameInHello(t *testing.T) {
 	fc := srv.accept(t)
 	if got := fc.recv(t); got != "HELLO "+testToken+" web-2" {
 		t.Fatalf("HELLO = %q", got)
+	}
+}
+
+func TestAttachAtomicity(t *testing.T) {
+	h := start(t, testToken)
+	h.run(t)
+	fc := h.srv.hello(t, "["+card1+"]")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(h.c.Snapshot()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("snapshot not populated")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cards, cancel, events := h.c.Attach()
+	defer cancel()
+
+	if len(cards) != 1 || cards[0].ID != "c1" {
+		t.Fatalf("snapshot cards = %+v, want 1 card with c1", cards)
+	}
+
+	card2 := strings.Replace(card1, `"c1"`, `"c2"`, 1)
+	card3 := strings.Replace(card1, `"c1"`, `"c3"`, 1)
+
+	fc.send("CARD " + card2)
+	fc.send(`GONE {"id":"c1","state":"approved","reason":"web"}`)
+	fc.send("CARD " + card3)
+
+	var gotEvents []Event
+	for len(gotEvents) < 3 {
+		select {
+		case ev := <-events:
+			gotEvents = append(gotEvents, ev)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for events, got %d", len(gotEvents))
+		}
+	}
+
+	if gotEvents[0].Card == nil || gotEvents[0].Card.ID != "c2" {
+		t.Fatalf("event 0 want card c2, got %+v", gotEvents[0])
+	}
+	if gotEvents[1].Gone == nil || gotEvents[1].Gone.ID != "c1" || gotEvents[1].Gone.State != "approved" {
+		t.Fatalf("event 1 want gone c1 approved, got %+v", gotEvents[1])
+	}
+	if gotEvents[2].Card == nil || gotEvents[2].Card.ID != "c3" {
+		t.Fatalf("event 2 want card c3, got %+v", gotEvents[2])
+	}
+
+	snap := h.c.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("snapshot len = %d, want 2 (c2 and c3)", len(snap))
+	}
+}
+
+func TestAttachOverflowDropToDead(t *testing.T) {
+	h := start(t, testToken)
+	h.run(t)
+	fc := h.up(t, "[]")
+
+	_, fastCancel, fastEvents := h.c.Attach()
+	defer fastCancel()
+
+	_, slowCancel, slowEvents := h.c.Attach()
+	defer slowCancel()
+
+	fastReceived := make(chan Event, 100)
+	fastDone := make(chan struct{})
+	go func() {
+		defer close(fastDone)
+		for ev := range fastEvents {
+			fastReceived <- ev
+			if len(fastReceived) == 70 {
+				return
+			}
+		}
+	}()
+
+	for i := range 70 {
+		cid := fmt.Sprintf("ov_%d", i)
+		fc.send(fmt.Sprintf(`CARD {"id":%q,"cell":"main","cred":"gmail","dest":"x","tool":"","review":"r","age_s":0,"expires_in_s":60}`, cid))
+	}
+
+	select {
+	case <-fastDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("fast consumer timed out, got %d/70 events", len(fastReceived))
+	}
+
+	for i := range 64 {
+		select {
+		case ev, ok := <-slowEvents:
+			if !ok {
+				t.Fatalf("slowEvents closed prematurely at index %d", i)
+			}
+			if ev.Card == nil {
+				t.Fatalf("expected card event at %d", i)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("slow consumer failed reading buffered event %d", i)
+		}
+	}
+
+	select {
+	case ev, ok := <-slowEvents:
+		if ok {
+			t.Fatalf("slowEvents still open after 64 events: got %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slowEvents not closed after overflow")
+	}
+
+	fc.send(`CARD {"id":"post_overflow","cell":"main","cred":"gmail","dest":"x","tool":"","review":"r","age_s":0,"expires_in_s":60}`)
+	select {
+	case ev := <-fastEvents:
+		if ev.Card == nil || ev.Card.ID != "post_overflow" {
+			t.Fatalf("fast consumer got %+v, want post_overflow", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fast consumer did not receive post-overflow card")
+	}
+}
+
+func TestAttachIdempotentCancel(t *testing.T) {
+	h := start(t, testToken)
+	h.run(t)
+	fc := h.up(t, "[]")
+
+	_, cancel, events := h.c.Attach()
+
+	h.c.mu.Lock()
+	subCount := len(h.c.subs)
+	h.c.mu.Unlock()
+	if subCount == 0 {
+		t.Fatal("subscriber not registered")
+	}
+
+	cancel()
+
+	select {
+	case _, ok := <-events:
+		if ok {
+			t.Fatal("events channel not closed on cancel")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for events channel close")
+	}
+
+	h.c.mu.Lock()
+	afterCount := len(h.c.subs)
+	h.c.mu.Unlock()
+	if afterCount != 0 {
+		t.Fatalf("subscribers remaining = %d, want 0", afterCount)
+	}
+
+	cancel()
+	cancel()
+
+	fc.c.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := h.c.Resolve("c1", "once"); errors.Is(err, ErrDoorDown) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("client did not notice door drop")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	_, cancel2, events2 := h.c.Attach()
+	cancel2()
+	cancel2()
+	select {
+	case _, ok := <-events2:
+		if ok {
+			t.Fatal("events2 not closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("events2 not closed on cancel after door drop")
 	}
 }
