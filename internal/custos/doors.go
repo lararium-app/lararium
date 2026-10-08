@@ -827,6 +827,15 @@ func (s *DoorServer) storeAlwaysRule(cardID, actor string) {
 	}
 }
 
+// buildCardWire renders the §6.4b CARD frame for a hub pending fan-out.
+// CRITICAL LOCKING RULE: ApprovalPending fires synchronously from
+// RegisterCustos, which every custody park path invokes while holding
+// parkMgr.mu (the register-inside-the-lock invariant that keeps a global
+// shed from orphaning a card). Go mutexes are not reentrant, so the
+// flow-enrichment lookups below MUST use TryLock: contended means the
+// card id was just minted on this very goroutine and is by ordering not
+// yet in any park map — the argsSummary fallback IS the correct wire.
+// Blocking here once deadlocked the whole park manager (dogfood 2026-10-08).
 func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) ApprovalCardWire {
 	wire := ApprovalCardWire{
 		ID:     id,
@@ -838,8 +847,7 @@ func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) Appr
 	}
 
 	workers := s.workersInstance()
-	if workers != nil && workers.parkMgr != nil {
-		workers.parkMgr.mu.Lock()
+	if workers != nil && workers.parkMgr != nil && workers.parkMgr.mu.TryLock() {
 		for _, cellParks := range workers.parkMgr.byCell {
 			if flow, ok := cellParks[id]; ok {
 				wire.Tool = flow.path
@@ -867,8 +875,7 @@ func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) Appr
 	}
 
 	proxy := s.proxyInstance()
-	if proxy != nil && proxy.parkMgr != nil {
-		proxy.parkMgr.mu.Lock()
+	if proxy != nil && proxy.parkMgr != nil && proxy.parkMgr.mu.TryLock() {
 		for _, cellParks := range proxy.parkMgr.byCell {
 			if flow, ok := cellParks[id]; ok {
 				if flow.cred != "" {
