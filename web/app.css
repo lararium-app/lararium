@@ -436,3 +436,134 @@ main {
 #keys-status.err {
   color: #e06c75;
 }
+
+/* --- Custody cards (CA-6, CUSTOS-SPEC §6.4b) --- */
+
+#custos-cards {
+  max-width: var(--transcript-max);
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+#custos-cards:empty {
+  display: none;
+}
+
+.custos-card {
+  background: #1c1b18;
+  border: 1px solid #d19a66;
+  border-left: 4px solid #e5c07b;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.custos-card.custos-card-error-state {
+  border-color: #e06c75;
+  border-left-color: #e06c75;
+}
+
+.custos-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #2e2a24;
+}
+
+.custos-card-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #e5c07b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.custos-card-meta {
+  font-size: 12px;
+  color: #abb2bf;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.custos-card-body {
+  margin-bottom: 0.75rem;
+  font-size: 13px;
+}
+
+.custos-card-dest,
+.custos-card-tool {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #61afef;
+  margin-bottom: 0.25rem;
+}
+
+.custos-card-review {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #e6e8ee;
+  background: #151412;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  margin-top: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.custos-card-error {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #2c1517;
+  border: 1px solid #e06c75;
+  border-radius: 6px;
+  color: #e06c75;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.custos-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.custos-btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.custos-btn-once {
+  background: #e5c07b;
+  color: #1c1b18;
+}
+
+.custos-btn-always {
+  background: #98c379;
+  color: #1c1b18;
+}
+
+.custos-btn-deny {
+  background: #3a3f4a;
+  color: #e6e8ee;
+}
+
+.custos-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.custos-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+

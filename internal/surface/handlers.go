@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // SessionInfo is the wire shape of one session in GET /v1/sessions
@@ -50,6 +51,9 @@ type Server struct {
 	OnShutdown func()
 	// keys is nil until AttachKeys; routes answer 404 without it.
 	keys *KeysDeps
+
+	custosMu  sync.RWMutex
+	custosReg CustosRegistry
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
