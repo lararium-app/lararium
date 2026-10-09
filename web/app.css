@@ -24,7 +24,8 @@ html, body {
 
 body {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  overflow: hidden;
 }
 
 #rail {
@@ -87,6 +88,7 @@ main {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  height: 100vh;
   padding: 1.5rem;
 }
 
@@ -97,6 +99,7 @@ main {
   margin: 0 auto;
   width: 100%;
   padding-bottom: 1rem;
+  min-height: 0;
 }
 
 .event {
@@ -228,6 +231,27 @@ main {
   gap: 0.5rem;
   padding-top: 1rem;
   border-top: 1px solid #2a2e36;
+  align-items: center;
+}
+
+#stop-btn {
+  padding: 0.5rem 1rem;
+  background: #e06c75;
+  border: none;
+  border-radius: 8px;
+  color: #e6e8ee;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#stop-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+#stop-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 #input {
@@ -295,6 +319,7 @@ main {
     border-bottom: 1px solid #2a2e36;
     min-height: auto;
     max-height: 40vh;
+    overflow: hidden;
   }
 
   #sessions {
@@ -302,6 +327,7 @@ main {
   }
 
   main {
+    height: 60vh;
     padding: 1rem;
   }
 
