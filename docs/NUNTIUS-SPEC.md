@@ -151,7 +151,11 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
   signal handler, no cached allowlist.
 - Mint: `hearthd pair create` prints `pair1_<20 base62>` once and appends
   a code with `expires = created + pair_code_ttl` (default 15 min; §4).
-  No listing of live codes.
+  No listing of live codes. CLI `pair status` reports owners and
+  pending-code expiry only — the store holds hashes, so no code
+  material is listable by construction. `pair create` refuses to mint
+  while paired: §3 makes every code unreachable after pairing, so
+  minting one could only mislead.
   `hearthd pair revoke --all` clears pending codes;
   `hearthd pair unpair <user_id>` removes an owner.
 - Redeem: the bot's first-ever state is **unpaired**. While unpaired, the
