@@ -40,7 +40,7 @@ the screens you already carry.
   threat model assumes prompt injection *succeeds*; the cage makes
   misbehavior physically expensive below the model.
 
-## Status: public preview (v0.7.2-alpha)
+## Status: public preview (v0.7.3-alpha)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
