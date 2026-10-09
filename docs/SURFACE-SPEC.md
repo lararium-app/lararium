@@ -10,7 +10,10 @@ KEYS-SPEC G1 pass — see changelog; CA-5 (the `ctl` audit source,
 CUSTOS-SPEC amendment v8) applied 2026-10-07 — see changelog v5.1;
 CA-6 (custody-card fan-out: two /v1/custos/cards routes, the global
 custos card stream, the render rule, V16; CUSTOS-SPEC amendment v9)
-applied 2026-10-08 — see changelog v5.2.
+applied 2026-10-08 — see changelog v5.2; S10 (amendment A4 §S10.1, PO
+sign-off 2026-10-09) adds §3A — whole-hearth backup/restore CLI shapes,
+the control-socket `backup` verb, and the explicit no-REST-verb stance —
+see changelog v5.3.
 Companion specs: PENATUS-SPEC (the file layer — this API never contradicts
 it), ARCHITECTURE §2.7 (surfaces), CELL-SPEC (execution stays sandboxed).
 
@@ -93,6 +96,37 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
   gone when the tab closes, so a reload (F5, mobile tab reclaim) keeps
   working and catch-up via §5 stays true. Persistent storage
   (`localStorage`) and cookies remain banned outright.
+
+## 3A. Whole-hearth backup & restore CLI (amendment S10.1, 2026-10-09)
+
+Format, consistency, restore, and swap law live in PENATUS-SPEC §4.5;
+this section freezes only the surface shapes. Command set (frozen):
+
+```
+hearthd backup create [--out <path>] [--no-config]
+hearthd backup list <file>
+hearthd backup verify <file>
+hearthd backup extract-config <file> <path>
+hearthd restore <file> --to <dir>             # fresh root; <dir> must not exist
+hearthd restore <file> --replace <dir> --yes [--no-safety]
+```
+
+Stdout data / stderr errors / exit codes per frozen conventions (§0 area
+rules). `list` emits `#columns: path size sha256 mode` then one row per
+manifest entry (dirs: size/sha256 = `-`). `verify` output schema per
+PENATUS §4.5.2 (`#columns: class path detail`, findings on stdout only).
+`extract-config` writes the bundled yaml **mode 0600**, refuses an
+existing `<path>`, and errors clearly on `--no-config` bundles.
+
+**Control-socket verb.** With the daemon running, `backup create`
+resolves `--out` to an absolute path and invokes the control-socket verb
+`backup <out_abs> [--no-config]` — single request line, ack, progress
+lines, done/error — per PENATUS §4.5.3.1. With the daemon stopped the
+CLI walks the tree itself under the §4.5.3.3 flocks; a
+present-but-dead `hearthd.sock` refuses with the operator step.
+
+**No REST endpoint, no web verb, ever in v1** — stated so future PRs
+must amend, not creep.
 
 ## 4. Endpoints (v1 — frozen set)
 
@@ -390,6 +424,13 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5.3 (amendment S10.1 / A4, 2026-10-09).** PO sign-off on amendment
+A4/V10/S10 (whole-hearth backup & restore; four hostile review rounds,
+converged 0 blockers): new §3A freezes the `hearthd backup …` /
+`hearthd restore …` CLI shapes, the control-socket `backup` verb, and
+the explicit no-REST-verb stance for v1. No frozen HTTP/SSE behavior
+changed.
 
 **v5.2 (amendment CA-6, 2026-10-08).** CUSTOS-SPEC amendment v9's
 fan-out applied per its PO sign-off: §4 route table gains
