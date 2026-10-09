@@ -284,6 +284,8 @@ async function sendMessage(text) {
   isStreaming = true;
   setComposerDisabled(true);
   clearStatus();
+  const stopBtn = document.getElementById("stop-btn");
+  if (stopBtn) stopBtn.disabled = false;
   try {
     const resp = await fetch("/v1/sessions/" + currentSessionId + "/messages", {
       method: "POST",
@@ -338,11 +340,29 @@ async function sendMessage(text) {
         currentAssistantText = "";
         loadTranscript();
       }
+      const stopBtn = document.getElementById("stop-btn");
+      if (stopBtn) stopBtn.disabled = true;
     }
   } catch (e) {
     if (e.message !== "unauthorized") showStatus("stream error: " + e.message);
     isStreaming = false;
     setComposerDisabled(false);
+    const stopBtn = document.getElementById("stop-btn");
+    if (stopBtn) stopBtn.disabled = true;
+  }
+}
+
+async function handleStop() {
+  if (!currentSessionId || !isStreaming) return;
+  try {
+    await fetch("/v1/sessions/" + currentSessionId + "/cancel", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token
+      }
+    });
+  } catch (e) {
+    // Ignore errors; the finally block in sendMessage will unfreeze the UI
   }
 }
 
@@ -676,6 +696,13 @@ function init() {
     inputEl.value = "";
     sendMessage(text);
   });
+  document.addEventListener("keydown", (e) => {
+    if (e.target !== inputEl) return;
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      composerEl.requestSubmit();
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopCatchUpPoll();
@@ -687,6 +714,10 @@ function init() {
   loadSessions();
   loadCustosCards();
   startCustosEventStream();
+  const stopBtn = document.getElementById("stop-btn");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", handleStop);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);
