@@ -57,7 +57,7 @@ type Server struct {
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"0.7.1"}`)
+	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"0.7.2"}`)
 }
 
 func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {
