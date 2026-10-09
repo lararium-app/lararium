@@ -40,7 +40,7 @@ the screens you already carry.
   threat model assumes prompt injection *succeeds*; the cage makes
   misbehavior physically expensive below the model.
 
-## Status: public preview (v0.5.0-alpha)
+## Status: public preview (v0.7.1-alpha)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
@@ -63,15 +63,16 @@ audit chain — verified live end-to-end (consent → sealed refresh token
 → policy-checked send → audit line) · **the standalone approval door**:
 `custos approvals` lists pending cards and answers them Allow-once or
 Deny from the owner's terminal, so `ask` verdicts are decidable with no
-`hearthd` running. See [CUSTOS-SPEC.md](docs/CUSTOS-SPEC.md).
+`hearthd` running · **card fan-out**: `hearthd` connects to `custosd`
+as a door client, so one custody approval card renders live on the web
+surface and on Telegram at once — answering it from either surface
+settles the parked request and every sibling render, all of it recorded
+in the same audit chain (`via` names the answering surface). Verified
+live end-to-end on real Telegram. See
+[CUSTOS-SPEC.md](docs/CUSTOS-SPEC.md).
 
-**Not built yet:** other messaging channels (Signal, …); the
-`hearthd`↔`custosd` integration that fans vault approval cards to
-web/Telegram (standalone `custosd` answers them on the control socket
-via `custos approvals`, per CUSTOS-SPEC §6.4a; an unanswered `ask`
-still holds its timeout window and denies with a clean, audited
-`denied: approval`); the Docker quick start does not
-include `custosd` yet.
+**Not built yet:** other messaging channels (Signal, …); voice I/O;
+the Docker quick start does not include `custosd` yet.
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the whole shape.
 
 ## Platforms
