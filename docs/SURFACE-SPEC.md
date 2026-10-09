@@ -114,20 +114,19 @@ hearthd restore <file> --replace <dir> --yes [--no-safety]
 Stdout data / stderr errors / exit codes per frozen conventions (§0 area
 rules). `list` emits `#columns: path size sha256 mode` then one row per
 manifest entry (dirs: size/sha256 = `-`). `verify` output schema per
-PENATUS §4.5 (`#columns: class path detail`, findings on stdout only).
+PENATUS §4.5.2 (`#columns: class path detail`, findings on stdout only).
 `extract-config` writes the bundled yaml **mode 0600**, refuses an
 existing `<path>`, and errors clearly on `--no-config` bundles.
 
 **Control-socket verb.** With the daemon running, `backup create`
 resolves `--out` to an absolute path and invokes the control-socket verb
 `backup <out_abs> [--no-config]` — single request line, ack, progress
-lines, done/error — per PENATUS §4.5 §3.1. With the daemon stopped the
-CLI walks the tree itself under the §4.5 §3.3 flocks; a
+lines, done/error — per PENATUS §4.5.3.1. With the daemon stopped the
+CLI walks the tree itself under the §4.5.3.3 flocks; a
 present-but-dead `hearthd.sock` refuses with the operator step.
 
-**No REST endpoint, no web verb, ever in v1** — restore replaces the
-whole state root, so it cannot be safely driven from the very surface it
-replaces. Stated here so future PRs must amend this spec, not creep.
+**No REST endpoint, no web verb, ever in v1** — stated so future PRs
+must amend, not creep.
 
 ## 4. Endpoints (v1 — frozen set)
 

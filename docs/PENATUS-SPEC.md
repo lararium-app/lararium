@@ -269,8 +269,11 @@ no sync-protocol change is made or implied by it. *(amendment A4 scope note, 202
 
 Transcribed verbatim from ratified draft rev 4 (four hostile review
 rounds, converged 0 blockers). Draft-internal § refs renumbered to this
-section (§2→§4.5.2, §3.x→§4.5.3.x); cross-spec refs qualified by spec
-name; fold-maps and the scope table stay with the draft archive. The
+section (§2→§4.5.2, §3.x→§4.5.3.x); in D1, `§0/§2` cites the ratified
+draft's own scope table and format section (the scope table stays with
+the draft archive — the reference is kept verbatim per transcription
+law); cross-spec refs qualified by spec name. Fold-maps stay with the
+draft archive. The
 V10.1 scoping sentence lives in CUSTOS-SPEC §4.2; the CLI shapes live in
 SURFACE-SPEC §3A; the import-precedence sentence sits above in §4.
 
@@ -516,7 +519,7 @@ Restore law:
 
 ### 4.5.5 PO decisions
 
-- **D1 — CLI home. DECIDED (rev-4 F7 status aligned with the amendment’s §0/§2 law):**
+- **D1 — CLI home. DECIDED (rev-4 F7 status aligned with §0/§2 law):**
   new `SURFACE-SPEC §3A`; the `--help` registry line lands with
   implementation.
 - **D2 — extension. DECIDED:** `.lararium-backup` + content type
