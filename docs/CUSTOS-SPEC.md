@@ -26,6 +26,16 @@ Spec transcription PO-reviewed 2026-10-08 (two fidelity rounds; second
 CONVERGED); implementation of V28 begins on merge. §6.4b error set
 ratified post-implementation (PO, 2026-10-08): HELLO with a valid token
 but invalid `name` answers `ERR bad_name` + close (V28 subtest C).
+**Amendment v10 (amendment A4 §V10.1, PO sign-off 2026-10-09): the
+installation-event scoping sentence.** Appends one clarifying statement
+to §4.2 (WAL supersession enumeration): "move the vault backward" and
+"closed in exactly two ways" scope to a **live state root**; whole-hearth
+restore (PENATUS-SPEC §4.5) replaces vault, MAC, key, surrogates,
+registry, audit chain, anchors, snapshots, and WAL together as one
+verified coherent generation set — an installation event, not a
+supersession. Append-only: nothing deleted, nothing reworded, the two
+enumerated ways stand untouched. Custos daemon: zero code (docs edit
+only).
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -455,6 +465,18 @@ post-restore boot can ever apply the superseded mutation, and the
 restore audit line is the proof).
 Recovery's own vault rewrite runs its *own* intent/commit pair marked
 `recovery`, so a crash during recovery survives a further boot.
+
+Both statements — "the only way to move the vault backward" and "an
+intent is closed `vault_mutation_superseded` in exactly two ways" —
+scope to a **live state root**. Whole-hearth restore (PENATUS-SPEC
+§4.5) is an installation event: it replaces the entire state root —
+vault, MAC, key, surrogates, registry, audit chain, anchors, snapshots,
+and WAL together, verified as one coherent generation set — so neither
+clause applies to it. There is no surviving prior on-disk state to roll
+back *from* or supersede *against*; the bundle's own audit chain is the
+continuity, and the restored WAL, matching the restored vault by
+construction, is resolved by ordinary first-unlock recovery (§8.1a),
+whose rules are unchanged.
 
 **4.3 — Surrogate registry.** `surrogates.age` (same age identity,
 separate envelope so rotation doesn't rewrite bindings) maps
@@ -1384,6 +1406,16 @@ authenticated-TTY CLI issuance skips the card (you are at the
 keyboard). No TTY-only fallback needed unless dogfood says otherwise.
 
 ## Changelog
+
+- v10 (amendment A4 §V10.1, PO sign-off, 2026-10-09): whole-hearth
+  backup & restore (PENATUS-SPEC amendment v10 §4.5; SURFACE-SPEC v5.3
+  §3A) required one clarification here, zero code. Appends the
+  installation-event scoping sentence to §4.2: the "only way to move the
+  vault backward" clause and the two-way supersession enumeration scope
+  to a live state root — restore replaces the whole root (vault, MAC,
+  key, surrogates, registry, audit chain, anchors, snapshots, WAL) as
+  one verified coherent generation set, resolved by ordinary first-unlock
+  recovery (§8.1a). Append-only; no v7/v8/v9 behavior changes.
 
 - v9 (amendment, PO sign-off, 2026-10-08): the fan-out — external
   doors for vault cards. v8's door proved the integration shape;
