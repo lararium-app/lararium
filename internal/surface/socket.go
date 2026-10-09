@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -50,7 +51,7 @@ func (s *Server) ServeSocket(path string, reload func() error) (io.Closer, error
 		return nil, fmt.Errorf("control socket mode: %w", err)
 	}
 
-	sc := &socketCloser{ln: ln, path: path, done: make(chan struct{})}
+	sc := &socketCloser{ln: ln, path: path, done: make(chan struct{}), s: s}
 	go sc.acceptLoop(reload)
 	return sc, nil
 }
@@ -59,6 +60,7 @@ type socketCloser struct {
 	ln   net.Listener
 	path string
 	done chan struct{}
+	s    *Server
 }
 
 func (c *socketCloser) acceptLoop(reload func() error) {
@@ -68,19 +70,21 @@ func (c *socketCloser) acceptLoop(reload func() error) {
 		if err != nil {
 			return // listener closed
 		}
-		go handleSocketConn(conn, reload)
+		go c.s.handleSocketConn(conn, reload)
 	}
 }
 
-func handleSocketConn(conn net.Conn, reload func() error) {
+func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
-	line, err := bufio.NewReader(conn).ReadString('\n')
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
 		return
 	}
-	switch trimCR(line) {
-	case socketReloadCmd:
+	cmd := trimCR(line)
+	switch {
+	case cmd == socketReloadCmd:
 		if err := reload(); err != nil {
 			// reload errors are ours; they never carry key material.
 			log.Printf("hearthd socket: reload failed: %v", err)
@@ -88,9 +92,51 @@ func handleSocketConn(conn net.Conn, reload func() error) {
 			return
 		}
 		fmt.Fprint(conn, socketAck)
+	case cmd == "PING":
+		fmt.Fprint(conn, "OK\n")
+	case strings.HasPrefix(cmd, "backup ") || cmd == "backup":
+		s.handleBackupSocket(conn, reader, cmd)
 	default:
 		fmt.Fprint(conn, "ERR unknown command\n")
 	}
+}
+
+func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line string) {
+	if s.Backup == nil {
+		fmt.Fprint(conn, "ERR backup not supported\n")
+		return
+	}
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		fmt.Fprint(conn, "ERR usage: backup <out_abs> [--no-config]\n")
+		return
+	}
+	outAbs := parts[1]
+	noConfig := false
+	for _, p := range parts[2:] {
+		if p == "--no-config" {
+			noConfig = true
+		}
+	}
+
+	// 1. Ack request line immediately (§4.5.3.1)
+	if _, err := fmt.Fprint(conn, "OK\n"); err != nil {
+		return
+	}
+
+	// Extend deadline for backup operations
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Minute))
+
+	progress := func(msg string) {
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Minute))
+		_, _ = fmt.Fprintf(conn, "PROGRESS %s\n", msg)
+	}
+
+	if err := s.Backup(outAbs, noConfig, progress); err != nil {
+		_, _ = fmt.Fprintf(conn, "ERR %s\n", err.Error())
+		return
+	}
+	_, _ = fmt.Fprint(conn, "DONE\n")
 }
 
 func trimCR(s string) string {
@@ -139,3 +185,82 @@ func ReloadViaSocket(path string, timeout time.Duration) error {
 	}
 	return nil
 }
+
+// PingViaSocket sends PING to a running daemon and waits for OK/PONG.
+func PingViaSocket(path string, timeout time.Duration) error {
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.DialContext(context.Background(), "unix", path)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrNotListening, err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := fmt.Fprint(conn, "PING\n"); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("ping read: %w", err)
+	}
+	line = trimCR(line)
+	if line != "OK" && line != "PONG" {
+		return fmt.Errorf("ping unexpected response: %s", line)
+	}
+	return nil
+}
+
+// BackupViaSocket invokes the control socket verb backup <out_abs> [--no-config] per §4.5.3.1.
+// Single request line, ack, progress lines, done/error.
+func BackupViaSocket(path string, outAbs string, noConfig bool, progress func(string)) error {
+	d := net.Dialer{Timeout: socketTimeout}
+	conn, err := d.DialContext(context.Background(), "unix", path)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrNotListening, err)
+	}
+	defer conn.Close()
+
+	cmd := "backup " + outAbs
+	if noConfig {
+		cmd += " --no-config"
+	}
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+	if _, err := fmt.Fprintf(conn, "%s\n", cmd); err != nil {
+		return err
+	}
+
+	r := bufio.NewReader(conn)
+	ack, err := r.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("backup ack: %w", err)
+	}
+	ack = trimCR(ack)
+	if strings.HasPrefix(ack, "ERR ") {
+		return errors.New(strings.TrimPrefix(ack, "ERR "))
+	}
+	if ack != "OK" {
+		return fmt.Errorf("unexpected backup ack: %s", ack)
+	}
+
+	for {
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Minute))
+		line, err := r.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return errors.New("connection closed before backup finished")
+			}
+			return fmt.Errorf("read backup line: %w", err)
+		}
+		line = trimCR(line)
+		switch {
+		case strings.HasPrefix(line, "PROGRESS "):
+			if progress != nil {
+				progress(strings.TrimPrefix(line, "PROGRESS "))
+			}
+		case line == "DONE":
+			return nil
+		case strings.HasPrefix(line, "ERR "):
+			return errors.New(strings.TrimPrefix(line, "ERR "))
+		}
+	}
+}
+
