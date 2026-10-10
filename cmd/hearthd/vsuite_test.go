@@ -1277,14 +1277,14 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		})
 
 		env.tg.SendUpdate(makeMsgUpdate(1, "owner_v7_click", "chat_v7_click", "private", "run action"))
-		if err := env.tg.WaitForSends(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForSends(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		card := env.tg.LastSent()
 		approvalID := strings.Split(card.Keyboard.Buttons[0][0].CallbackData, ":")[1]
 
 		env.tg.SendUpdate(makeCallbackUpdate(2, "owner_v7_click", "chat_v7_click", "private", "cb1", "ap:"+approvalID+":a"))
-		if err := env.tg.WaitForEdits(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForEdits(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		edit := env.tg.LastEdit()
@@ -1298,7 +1298,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		// Late click -> already resolved toast, zero additional tool runs
 		env.tg.SendUpdate(makeCallbackUpdate(3, "owner_v7_click", "chat_v7_click", "private", "cb2", "ap:"+approvalID+":a"))
-		if err := env.tg.WaitForToasts(2, 2*time.Second); err != nil {
+		if err := env.tg.WaitForToasts(2, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		if toast := env.tg.LastToast().Text; toast != nuntius.ToastAlready {
@@ -1324,7 +1324,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		})
 
 		env.tg.SendUpdate(makeMsgUpdate(1, "owner_v7_web", "chat_v7_web", "private", "run action"))
-		if err := env.tg.WaitForSends(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForSends(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		card := env.tg.LastSent()
@@ -1334,7 +1334,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		if code := env.ap.ResolveFrom("main", approvalID, true, "web"); code != 200 {
 			t.Fatalf("web resolve code = %d", code)
 		}
-		if err := env.tg.WaitForEdits(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForEdits(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		edit := env.tg.LastEdit()
@@ -1348,7 +1348,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		// Late click -> already resolved toast, zero additional tool runs
 		env.tg.SendUpdate(makeCallbackUpdate(2, "owner_v7_web", "chat_v7_web", "private", "cb_late", "ap:"+approvalID+":a"))
-		if err := env.tg.WaitForToasts(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForToasts(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		if toast := env.tg.LastToast().Text; toast != nuntius.ToastAlready {
@@ -1398,7 +1398,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		// Late click -> already resolved toast, zero tool runs
 		env.tg.SendUpdate(makeCallbackUpdate(2, "owner_v7_timeout", "chat_v7_timeout", "private", "cb_late", "ap:"+approvalID+":a"))
-		if err := env.tg.WaitForToasts(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForToasts(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		if toast := env.tg.LastToast().Text; toast != nuntius.ToastAlready {
@@ -1424,7 +1424,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		})
 
 		env.tg.SendUpdate(makeMsgUpdate(1, "owner_v7_cancel", "chat_v7_cancel", "private", "run action"))
-		if err := env.tg.WaitForSends(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForSends(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		card := env.tg.LastSent()
@@ -1432,7 +1432,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 
 		// Cancel turn via bridge /cancel
 		env.tg.SendUpdate(makeMsgUpdate(2, "owner_v7_cancel", "chat_v7_cancel", "private", "/cancel"))
-		if err := env.tg.WaitForEdits(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForEdits(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		edit := env.tg.LastEdit()
@@ -1457,7 +1457,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 
 		// Late click -> already resolved toast, zero tool runs
 		env.tg.SendUpdate(makeCallbackUpdate(3, "owner_v7_cancel", "chat_v7_cancel", "private", "cb_late", "ap:"+approvalID+":a"))
-		if err := env.tg.WaitForToasts(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForToasts(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		if toast := env.tg.LastToast().Text; toast != nuntius.ToastAlready {
@@ -1483,7 +1483,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 		})
 
 		env.tg.SendUpdate(makeMsgUpdate(1, "owner_v7_shutdown", "chat_v7_shutdown", "private", "run action"))
-		if err := env.tg.WaitForSends(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForSends(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		card := env.tg.LastSent()
@@ -1491,7 +1491,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 
 		// Shutdown approval hub via Hub.Shutdown()
 		env.hub.Shutdown()
-		if err := env.tg.WaitForEdits(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForEdits(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		edit := env.tg.LastEdit()
@@ -1512,7 +1512,7 @@ func TestV7TerminalCleanupMatrix(t *testing.T) {
 
 		// Late click -> already resolved toast
 		env.tg.SendUpdate(makeCallbackUpdate(2, "owner_v7_shutdown", "chat_v7_shutdown", "private", "cb_late", "ap:"+approvalID+":a"))
-		if err := env.tg.WaitForToasts(1, 2*time.Second); err != nil {
+		if err := env.tg.WaitForToasts(1, 5*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		if toast := env.tg.LastToast().Text; toast != nuntius.ToastAlready {

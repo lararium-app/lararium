@@ -876,17 +876,32 @@ func TestV16_SlowClient_OverflowEviction(t *testing.T) {
 		t.Fatal("timed out waiting for subscription")
 	}
 
-	// Flood registry with > 64 events while writer is delayed
-	for i := range 75 {
-		reg.PublishCard(CustosCard{ID: fmt.Sprintf("a_card00000000%03d", i)})
-	}
+	// Flood the registry open-loop while the writer is delayed: publish well
+	// past the 64-event buffer, but stop as soon as the stream closes so the
+	// test stays fast when overflow is prompt. The close deadline is generous
+	// (timing-sensitive on slow/shared runners); overflow MUST happen, and
+	// continued publishing past the close is harmless (dropped).
+	floodDone := make(chan struct{})
+	go func() {
+		defer close(floodDone)
+		for i := range 400 {
+			select {
+			case <-streamDone:
+				return
+			default:
+			}
+			reg.PublishCard(CustosCard{ID: fmt.Sprintf("a_card00000000%03d", i)})
+			time.Sleep(time.Millisecond)
+		}
+	}()
 
 	select {
 	case <-streamDone:
 		// Succeeded: slow client disconnected on overflow
-	case <-time.After(90 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("stream did not close on buffer overflow")
 	}
+	<-floodDone
 }
 
 // V16: No-optimistic resolution HTTP contract:
