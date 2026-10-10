@@ -20,17 +20,17 @@ import (
 // StatMode formats the file or dir mode into a 4-digit octal string per §4.5.2.
 func StatMode(info os.FileInfo) string {
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return fmt.Sprintf("%04o", stat.Mode&07777)
+		return fmt.Sprintf("%04o", stat.Mode&0o7777)
 	}
 	perm := uint32(info.Mode().Perm())
 	if info.Mode()&os.ModeSetuid != 0 {
-		perm |= 04000
+		perm |= 0o4000
 	}
 	if info.Mode()&os.ModeSetgid != 0 {
-		perm |= 02000
+		perm |= 0o2000
 	}
 	if info.Mode()&os.ModeSticky != 0 {
-		perm |= 01000
+		perm |= 0o1000
 	}
 	return fmt.Sprintf("%04o", perm)
 }
@@ -41,14 +41,14 @@ func ParseOctalMode(modeStr string) (os.FileMode, error) {
 	if err != nil {
 		return 0, err
 	}
-	perm := os.FileMode(v & 0777)
-	if v&04000 != 0 {
+	perm := os.FileMode(v & 0o777)
+	if v&0o4000 != 0 {
 		perm |= os.ModeSetuid
 	}
-	if v&02000 != 0 {
+	if v&0o2000 != 0 {
 		perm |= os.ModeSetgid
 	}
-	if v&01000 != 0 {
+	if v&0o1000 != 0 {
 		perm |= os.ModeSticky
 	}
 	return perm, nil
@@ -196,7 +196,7 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 		fh.SetMode(mode)
 		if rawMode, err := strconv.ParseUint(entry.Mode, 8, 32); err == nil {
 			typeBits := fh.ExternalAttrs >> 16 & 0xF000
-			fh.ExternalAttrs = (uint32(typeBits|uint32(rawMode&07777)) << 16) | (fh.ExternalAttrs & 0xFFFF)
+			fh.ExternalAttrs = (uint32(typeBits|uint32(rawMode&0o7777)) << 16) | (fh.ExternalAttrs & 0xFFFF)
 		}
 
 		if entry.Dir {

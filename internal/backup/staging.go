@@ -49,14 +49,15 @@ func defaultStatfs(path string) (FSInfo, error) {
 // - memory/index.db (rule 5)
 // - *.sock, *.lock
 // - atomic-rename temporary files according to the precise writer law (F1):
-//   1. base has suffix ".tmp":
-//      Covers root TokenStore (tokens-*.tmp), Keystore (keys-*.tmp),
-//      and Custos (*-mut-*.tmp, *-init-*.tmp, etc.), where all os.CreateTemp
-//      patterns end with ".tmp".
-//   2. rel starts with "nuntius/" AND base matches "<anything>.tmp<any digits>":
-//      Covers nuntius state.go (internal/nuntius/state.go:76) which uses
-//      os.CreateTemp(dir, name+".tmp*") where random digits replace the star,
-//      producing e.g. "state.tmp4182" (".tmp" followed by ONLY digits at end).
+//  1. base has suffix ".tmp":
+//     Covers root TokenStore (tokens-*.tmp), Keystore (keys-*.tmp),
+//     and Custos (*-mut-*.tmp, *-init-*.tmp, etc.), where all os.CreateTemp
+//     patterns end with ".tmp".
+//  2. rel starts with "nuntius/" AND base matches "<anything>.tmp<any digits>":
+//     Covers nuntius state.go (internal/nuntius/state.go:76) which uses
+//     os.CreateTemp(dir, name+".tmp*") where random digits replace the star,
+//     producing e.g. "state.tmp4182" (".tmp" followed by ONLY digits at end).
+//
 // - temporary staging directories (.backup-staging-*) per B4
 func IsExcluded(rel string, info os.FileInfo) bool {
 	cleanRel := filepath.ToSlash(filepath.Clean(rel))
@@ -352,7 +353,7 @@ func StageTree(root, stagingDir string) error {
 
 		rawMode := uint32(mode.Perm())
 		if stat, ok := lfi.Sys().(*syscall.Stat_t); ok {
-			rawMode = uint32(stat.Mode & 07777)
+			rawMode = uint32(stat.Mode & 0o7777)
 		}
 
 		dstPath := filepath.Join(stagingDir, norm.NFC.String(rel))
@@ -420,7 +421,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	rawMode := uint32(mode.Perm())
 	if fi, err := os.Lstat(src); err == nil {
 		if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
-			rawMode = uint32(stat.Mode & 07777)
+			rawMode = uint32(stat.Mode & 0o7777)
 		}
 	}
 	return syscall.Chmod(dst, rawMode)

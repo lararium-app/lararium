@@ -215,8 +215,8 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 			})
 			tamperedPaths[entry.Path] = true
 		} else {
-			zipPerm := zf.Mode() & 07777
-			expectedPerm := expectedMode & 07777
+			zipPerm := zf.Mode() & 0o7777
+			expectedPerm := expectedMode & 0o7777
 			if zipPerm != expectedPerm {
 				findings = append(findings, Finding{
 					Class:  "tamper",

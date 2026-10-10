@@ -613,8 +613,8 @@ func TestBK12_FreeSpacePreflight(t *testing.T) {
 	parentDir := filepath.Dir(root)
 	fsMap = make(map[string]FSInfo)
 	fsMap[parentDir] = FSInfo{AvailableBytes: 1000000000, Fsid: 200} // parent has DIFFERENT fsid
-	fsMap[root] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}       // root has fsid 100
-	fsMap[outDir] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}     // outDir shares fsid 100 with root
+	fsMap[root] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}      // root has fsid 100
+	fsMap[outDir] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}    // outDir shares fsid 100 with root
 
 	stagingDirInside, err := CreateStagingDir(root)
 	if err != nil {

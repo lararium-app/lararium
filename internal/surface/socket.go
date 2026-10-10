@@ -342,4 +342,3 @@ func BackupViaSocket(path string, outAbs string, noConfig bool, progress func(st
 		}
 	}
 }
-
