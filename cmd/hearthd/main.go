@@ -127,7 +127,7 @@ func main() {
 	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml")
 	modelFlag := flag.String("model", "", "override: model ref for this run")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  token create|revoke <label>\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
+		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  token create|revoke <label>\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -149,6 +149,9 @@ func main() {
 			return
 		case "backup":
 			backupCmd(*cfgPath, args[1:])
+			return
+		case "restore":
+			restoreCmd(args[1:])
 			return
 		}
 	}
@@ -245,6 +248,11 @@ func serve(cfgPath string) {
 	}
 
 	home := cfg.Hearth.Home
+	if err := backup.RecoverSwap(home); err != nil {
+		fmt.Fprintf(os.Stderr, "swap recovery failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	tokensPath := filepath.Join(home, "tokens.json")
 	store, err := surface.OpenTokenStore(tokensPath)
 	if err != nil {
