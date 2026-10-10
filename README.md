@@ -127,7 +127,7 @@ docker compose exec hearthd hearthd token create me
 
 The command prints a ready URL to open in a browser (shown once).
 
-Build from source with Go 1.25+ (`go build ./cmd/hearthd && go test
+Build from source with Go 1.26+ (`go build ./cmd/hearthd && go test
 ./...`); run `./hearthd` for the REPL or `./hearthd serve` for the web
 door. Native Linux/WSL2 installs additionally get the `cell` sandbox —
 see [CELL-SPEC.md](docs/CELL-SPEC.md) for the host requirements and
