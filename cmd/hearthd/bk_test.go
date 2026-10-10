@@ -22,6 +22,8 @@ import (
 
 // BK17: Offline stopped-daemon: persona files, memory/, archive/, nuntius/ byte-identical after round-trip.
 func TestBK17_OfflineByteIdentity(t *testing.T) {
+	// Short temp path keeps hearthd.sock under the 108-byte sun_path limit.
+	//nolint:usetesting // t.TempDir() embeds the long test name
 	tmpDir, err := os.MkdirTemp("", "b4-bk17-")
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +42,7 @@ func TestBK17_OfflineByteIdentity(t *testing.T) {
 	}{
 		"SOUL.md":      {content: []byte("# Soul\nCore soul personality.\n"), mode: 0o644},
 		"IDENTITY.md":  {content: []byte("# Identity\nAssistant identity details.\n"), mode: 0o644},
-		"USER.md":      {content: []byte("# User\nUser preferences and profile.\n"), mode: 0o644},
+		"USER.md":      {content: []byte("# User\nOwner preferences and profile.\n"), mode: 0o644},
 		"MEMORY.md":    {content: []byte("# Memory\nDurable memory store.\n"), mode: 0o600},
 		"HEARTBEAT.md": {content: []byte("# Heartbeat\nPeriodic maintenance orders.\n"), mode: 0o644},
 		"keys.json":    {content: []byte(`{"anthropic":"sk-ant-bk17-key"}`), mode: 0o600},
@@ -313,6 +315,8 @@ func (p *bk4GatedProvider) StreamComplete(ctx context.Context, msgs []router.Mes
 
 // BK4: Mid-turn: long turn + socket backup → restored root: every events.jsonl seq-contiguous; in-flight turn whole-or-absent; all pre-backup turns present.
 func TestBK4_MidTurnBackupCoherence(t *testing.T) {
+	// Short temp path keeps hearthd.sock under the 108-byte sun_path limit.
+	//nolint:usetesting // t.TempDir() embeds the long test name
 	tmpDir, err := os.MkdirTemp("", "b4-bk4-")
 	if err != nil {
 		t.Fatal(err)
@@ -493,10 +497,7 @@ func TestBK4_MidTurnBackupCoherence(t *testing.T) {
 		}
 
 		// (c) In-flight turn whole-or-absent (no half-written turn)
-		var turn2Events []penatus.Event
-		for _, ev := range events[2:] {
-			turn2Events = append(turn2Events, ev)
-		}
+		turn2Events := events[2:]
 
 		if expectTurn2 {
 			// Whole: user msg (seq 3), tool_call (seq 4), tool_result (seq 5), assistant msg (seq 6)
@@ -512,11 +513,9 @@ func TestBK4_MidTurnBackupCoherence(t *testing.T) {
 			if terminal.Role != "assistant" || terminal.Text != "turn 2 final reply" {
 				t.Fatalf("terminal assistant event missing or corrupted: %+v", terminal)
 			}
-		} else {
+		} else if len(turn2Events) != 0 {
 			// Absent: zero events of turn 2
-			if len(turn2Events) != 0 {
-				t.Fatalf("expected absent in-flight turn (0 events), got %d events", len(turn2Events))
-			}
+			t.Fatalf("expected absent in-flight turn (0 events), got %d events", len(turn2Events))
 		}
 	}
 
@@ -531,6 +530,8 @@ func TestBK4_MidTurnBackupCoherence(t *testing.T) {
 
 // BK11: Post-restore first boot: index rebuilt; CUSTOS-SPEC §8.1a clean; audit verify green; snapshots listable.
 func TestBK11_PostRestoreFirstBoot(t *testing.T) {
+	// Short temp path keeps hearthd.sock under the 108-byte sun_path limit.
+	//nolint:usetesting // t.TempDir() embeds the long test name
 	tmpDir, err := os.MkdirTemp("", "b4-bk11-")
 	if err != nil {
 		t.Fatal(err)
@@ -602,7 +603,7 @@ func TestBK11_PostRestoreFirstBoot(t *testing.T) {
 	}
 	// Mutate creates gen 2 and snapshots gen 1
 	err = v.Mutate(passphrase, func(doc *custos.VaultDoc) ([]string, error) {
-		doc.Credentials["openai"] = custos.Credential{Kind: "api_key", Secret: "sk-openai-bk11"}
+		doc.Credentials["openai"] = custos.Credential{Kind: "api_key", Secret: "x-bk11-fixture"} //nolint:gosec // G101: fixture value, not a credential
 		return []string{"openai"}, nil
 	}, false)
 	if err != nil {
