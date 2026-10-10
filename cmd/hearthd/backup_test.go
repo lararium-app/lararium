@@ -364,6 +364,15 @@ func TestBK3_SocketInputLaw(t *testing.T) {
 		t.Fatal("file was created inside root despite self-inclusion refusal")
 	}
 
+	// 2b. Out path equal to hearth root itself → refusal, both socket and CLI helper (F2)
+	err = surface.BackupViaSocket(sockPath, home, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "inside hearth root") {
+		t.Fatalf("expected ERR on --out == root over socket, got: %v", err)
+	}
+	if err := backup.CheckSelfInclusion(home, home); err == nil || !strings.Contains(err.Error(), "inside hearth root") {
+		t.Fatalf("expected CheckSelfInclusion(home, home) refusal, got: %v", err)
+	}
+
 	// 3. Out path containing whitespace → ERR usage (M14)
 	err = surface.BackupViaSocket(sockPath, "/tmp/evil path/backup.lararium-backup", false, nil)
 	if err == nil || !strings.Contains(err.Error(), "usage") {

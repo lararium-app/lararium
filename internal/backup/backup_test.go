@@ -363,6 +363,10 @@ func TestBK6_CreateRefusals(t *testing.T) {
 	if err := CreateOffline(root, cfg, outInRoot, false, nil); err == nil {
 		t.Fatal("expected refusal for --out inside root")
 	}
+	// Refusal 1b: --out equal to root itself (F2)
+	if err := CreateOffline(root, cfg, root, false, nil); err == nil {
+		t.Fatal("expected refusal for --out == root itself")
+	}
 
 	// Refusal 2: symlink in tree
 	symlinkPath := filepath.Join(root, "bad-link")
@@ -533,18 +537,37 @@ func TestBK12_FreeSpacePreflight(t *testing.T) {
 	root := setupTestRoot(t)
 	cfg := setupTestConfig(t)
 	out := filepath.Join(t.TempDir(), "test.lararium-backup")
+	outDir := filepath.Dir(out)
 
 	origStatfs := StatfsFunc
 	defer func() { StatfsFunc = origStatfs }()
 
-	// Case 1: Out fs artificially full
+	// Filesystem-id-aware statfs mock (map path -> FSInfo, resolving via longest matching prefix)
+	fsMap := make(map[string]FSInfo)
 	StatfsFunc = func(path string) (FSInfo, error) {
-		if strings.Contains(path, "hearth") {
-			return FSInfo{AvailableBytes: 1000000000, Fsid: 1}, nil
+		clean := filepath.Clean(path)
+		var bestPrefix string
+		var bestInfo FSInfo
+		var found bool
+		for prefix, info := range fsMap {
+			cPrefix := filepath.Clean(prefix)
+			if clean == cPrefix || strings.HasPrefix(clean, cPrefix+string(filepath.Separator)) {
+				if len(cPrefix) >= len(bestPrefix) {
+					bestPrefix = cPrefix
+					bestInfo = info
+					found = true
+				}
+			}
 		}
-		// out fs has only 10 bytes free
-		return FSInfo{AvailableBytes: 10, Fsid: 2}, nil
+		if found {
+			return bestInfo, nil
+		}
+		return FSInfo{AvailableBytes: 1000000000, Fsid: 1}, nil
 	}
+
+	// Case 1: Out fs artificially full (different fsid, space < Σ)
+	fsMap[root] = FSInfo{AvailableBytes: 1000000000, Fsid: 1}
+	fsMap[outDir] = FSInfo{AvailableBytes: 10, Fsid: 2}
 
 	err := CreateOffline(root, cfg, out, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "insufficient free space") {
@@ -557,10 +580,9 @@ func TestBK12_FreeSpacePreflight(t *testing.T) {
 
 	// Case 2: Same filesystem, space < 2Σ
 	treeSz, _ := ComputeTreeSize(root, cfg, true)
-	StatfsFunc = func(path string) (FSInfo, error) {
-		// Available is 1.5 * treeSz (< 2Σ)
-		return FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}, nil
-	}
+	fsMap[root] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}
+	fsMap[outDir] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}
+
 	err = CreateOffline(root, cfg, out, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "2Σ") {
 		t.Fatalf("expected 2Σ refusal on shared fs, got %v", err)
@@ -582,6 +604,98 @@ func TestBK12_FreeSpacePreflight(t *testing.T) {
 	}
 	if stFS.Fsid != rFS.Fsid {
 		t.Fatalf("staging fsid %d != root fsid %d (B4)", stFS.Fsid, rFS.Fsid)
+	}
+	os.RemoveAll(stagingDir)
+
+	// Case 3 (F3): filepath.Dir(root) reports a DIFFERENT fsid than root
+	// Assert staging dir created INSIDE root, excluded from walk (existing .backup-staging- clause),
+	// and same-fsid out still demands 2Σ.
+	parentDir := filepath.Dir(root)
+	fsMap = make(map[string]FSInfo)
+	fsMap[parentDir] = FSInfo{AvailableBytes: 1000000000, Fsid: 200} // parent has DIFFERENT fsid
+	fsMap[root] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}       // root has fsid 100
+	fsMap[outDir] = FSInfo{AvailableBytes: treeSz + 1, Fsid: 100}     // outDir shares fsid 100 with root
+
+	stagingDirInside, err := CreateStagingDir(root)
+	if err != nil {
+		t.Fatalf("CreateStagingDir with different parent fsid: %v", err)
+	}
+	defer os.RemoveAll(stagingDirInside)
+
+	// Assert staging dir created INSIDE root
+	if filepath.Dir(stagingDirInside) != root {
+		t.Fatalf("expected staging dir created inside root %s, got %s", root, stagingDirInside)
+	}
+
+	// Assert staging dir is excluded from walk (existing .backup-staging- clause)
+	dummyFile := filepath.Join(stagingDirInside, "staging-dummy.txt")
+	if err := os.WriteFile(dummyFile, []byte("staged content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	relStaging, err := filepath.Rel(root, stagingDirInside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingFi, err := os.Stat(stagingDirInside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsExcluded(relStaging, stagingFi) {
+		t.Fatalf("expected staging dir %s to be excluded by IsExcluded", relStaging)
+	}
+
+	foundStagingInWalk := false
+	err = filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == root {
+			return nil
+		}
+		r, _ := filepath.Rel(root, p)
+		if IsExcluded(r, fi) {
+			if fi.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.Contains(r, ".backup-staging-") {
+			foundStagingInWalk = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+	if foundStagingInWalk {
+		t.Fatal("staging dir created inside root was not excluded from walk")
+	}
+
+	// ComputeTreeSize must not include files inside staging dir
+	treeSzWithStaging, err := ComputeTreeSize(root, cfg, true)
+	if err != nil {
+		t.Fatalf("ComputeTreeSize: %v", err)
+	}
+	if treeSzWithStaging != treeSz {
+		t.Fatalf("tree size changed when staging dir inside root: got %d, want %d", treeSzWithStaging, treeSz)
+	}
+
+	// Same-fsid out still demands 2Σ (available treeSz + 1 < 2Σ)
+	err = PreflightFreeSpace(root, out, treeSz)
+	if err == nil || !strings.Contains(err.Error(), "2Σ") {
+		t.Fatalf("expected 2Σ refusal on shared fsid, got %v", err)
+	}
+	err = CreateOffline(root, cfg, out, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "2Σ") {
+		t.Fatalf("expected CreateOffline 2Σ refusal on shared fsid, got %v", err)
+	}
+
+	// When space is >= 2Σ, same-fsid preflight succeeds
+	fsMap[root] = FSInfo{AvailableBytes: 2 * treeSz, Fsid: 100}
+	fsMap[outDir] = FSInfo{AvailableBytes: 2 * treeSz, Fsid: 100}
+	if err := PreflightFreeSpace(root, out, treeSz); err != nil {
+		t.Fatalf("expected PreflightFreeSpace to succeed with 2Σ: %v", err)
 	}
 }
 
@@ -1031,5 +1145,205 @@ func removeZipEntry(t *testing.T, src, dst string, nameToRemove string) {
 		fh.SetMode(f.Mode())
 		w, _ := zw.CreateHeader(fh)
 		_, _ = w.Write(content)
+	}
+}
+
+// TestBK_F1_PreciseExclusionLaw tests that:
+// (a) bundle includes prompt.tmpl, notes.tmp.md, config.tmp.json
+// (b) bundle excludes tokens-abc.tmp at root and nuntius/state.tmp4182 (fixture)
+func TestBK_F1_PreciseExclusionLaw(t *testing.T) {
+	root := setupTestRoot(t)
+	cfg := setupTestConfig(t)
+	out := filepath.Join(t.TempDir(), "test-f1.lararium-backup")
+
+	// (a) files that MUST be included: prompt.tmpl, notes.tmp.md, config.tmp.json
+	if err := os.WriteFile(filepath.Join(root, "prompt.tmpl"), []byte("prompt template"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.tmp.md"), []byte("notes temp md"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config.tmp.json"), []byte("config temp json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// (b) files that MUST be excluded: tokens-abc.tmp at root and nuntius/state.tmp4182
+	if err := os.WriteFile(filepath.Join(root, "tokens-abc.tmp"), []byte("secret token tmp"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nuntiusDir := filepath.Join(root, "nuntius")
+	if err := os.MkdirAll(nuntiusDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nuntiusDir, "state.tmp4182"), []byte("nuntius state tmp"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CreateOffline(root, cfg, out, false, nil); err != nil {
+		t.Fatalf("CreateOffline failed: %v", err)
+	}
+
+	zr, err := zip.OpenReader(out)
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	defer zr.Close()
+
+	names := make(map[string]bool)
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+
+	// (a) bundle includes prompt.tmpl, notes.tmp.md, config.tmp.json
+	for _, included := range []string{"tree/prompt.tmpl", "tree/notes.tmp.md", "tree/config.tmp.json"} {
+		if !names[included] {
+			t.Errorf("expected bundle to include %s, but it was missing", included)
+		}
+	}
+
+	// (b) bundle excludes tokens-abc.tmp at root and nuntius/state.tmp4182
+	for _, excluded := range []string{"tree/tokens-abc.tmp", "tree/nuntius/state.tmp4182"} {
+		if names[excluded] {
+			t.Errorf("expected bundle to exclude %s, but it was present", excluded)
+		}
+	}
+
+	// Also verify manifest.json entries
+	manifestFile, err := zr.Open("manifest.json")
+	if err != nil {
+		t.Fatalf("open manifest.json: %v", err)
+	}
+	defer manifestFile.Close()
+	var m Manifest
+	if err := json.NewDecoder(manifestFile).Decode(&m); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+
+	manifestPaths := make(map[string]bool)
+	for _, entry := range m.Entries {
+		manifestPaths[entry.Path] = true
+	}
+
+	for _, included := range []string{"tree/prompt.tmpl", "tree/notes.tmp.md", "tree/config.tmp.json"} {
+		if !manifestPaths[included] {
+			t.Errorf("expected manifest to include %s, but it was missing", included)
+		}
+	}
+	for _, excluded := range []string{"tree/tokens-abc.tmp", "tree/nuntius/state.tmp4182"} {
+		if manifestPaths[excluded] {
+			t.Errorf("expected manifest to exclude %s, but it was present", excluded)
+		}
+	}
+}
+
+// TestBK_F1_ENOENTBenignSkip tests that:
+// (c) ENOENT benign-skip: call the staging copy on a dir where a file vanishes
+// (using injected hook) and assert no error and exclusion from manifest.
+func TestBK_F1_ENOENTBenignSkip(t *testing.T) {
+	root := setupTestRoot(t)
+	cfg := setupTestConfig(t)
+	out := filepath.Join(t.TempDir(), "test-vanish.lararium-backup")
+
+	vanishPath := filepath.Join(root, "vanish.txt")
+	if err := os.WriteFile(vanishPath, []byte("I will disappear"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keptPath := filepath.Join(root, "kept.txt")
+	if err := os.WriteFile(keptPath, []byte("I will stay"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origHook := StagePreCopyHook
+	defer func() { StagePreCopyHook = origHook }()
+
+	vanished := false
+	StagePreCopyHook = func(srcPath string) error {
+		if filepath.Base(srcPath) == "vanish.txt" {
+			// Delete the listed file between walk-visit and copy
+			if err := os.Remove(srcPath); err != nil {
+				return err
+			}
+			vanished = true
+		}
+		return nil
+	}
+
+	// Call the staging copy directly
+	stagingDir, err := CreateStagingDir(root)
+	if err != nil {
+		t.Fatalf("CreateStagingDir: %v", err)
+	}
+	defer os.RemoveAll(stagingDir)
+
+	err = StageTree(root, stagingDir)
+	if err != nil {
+		t.Fatalf("StageTree returned error on vanishing file: %v", err)
+	}
+	if !vanished {
+		t.Fatal("vanish.txt was not encountered/deleted by hook")
+	}
+
+	// Verify vanished file is not in staging dir, and kept file is
+	if _, err := os.Stat(filepath.Join(stagingDir, "vanish.txt")); err == nil {
+		t.Fatal("vanish.txt unexpectedly exists in staging directory")
+	}
+	if _, err := os.Stat(filepath.Join(stagingDir, "kept.txt")); err != nil {
+		t.Fatalf("kept.txt missing from staging directory: %v", err)
+	}
+
+	// Compress staging into bundle and assert exclusion from manifest
+	if err := WriteBundle(stagingDir, cfg, false, root, out); err != nil {
+		t.Fatalf("WriteBundle failed: %v", err)
+	}
+
+	zr, err := zip.OpenReader(out)
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	defer zr.Close()
+
+	manifestFile, err := zr.Open("manifest.json")
+	if err != nil {
+		t.Fatalf("open manifest.json: %v", err)
+	}
+	defer manifestFile.Close()
+
+	var m Manifest
+	if err := json.NewDecoder(manifestFile).Decode(&m); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+
+	for _, entry := range m.Entries {
+		if entry.Path == "tree/vanish.txt" {
+			t.Fatal("vanished file found in manifest entries")
+		}
+	}
+
+	foundKept := false
+	for _, entry := range m.Entries {
+		if entry.Path == "tree/kept.txt" {
+			foundKept = true
+			break
+		}
+	}
+	if !foundKept {
+		t.Fatal("kept.txt missing from manifest entries")
+	}
+}
+
+// TestBK_F2_SelfInclusionRoot tests that --out equal to the root itself must refuse (F2).
+func TestBK_F2_SelfInclusionRoot(t *testing.T) {
+	root := setupTestRoot(t)
+
+	// CLI helper CheckSelfInclusion: --out == root itself must refuse
+	err := CheckSelfInclusion(root, root)
+	if err == nil || !strings.Contains(err.Error(), "inside hearth root") {
+		t.Fatalf("expected CheckSelfInclusion(root, root) refusal, got: %v", err)
+	}
+
+	// CheckSelfInclusion with trailing slash
+	err = CheckSelfInclusion(root, root+string(filepath.Separator))
+	if err == nil || !strings.Contains(err.Error(), "inside hearth root") {
+		t.Fatalf("expected CheckSelfInclusion with trailing slash refusal, got: %v", err)
 	}
 }

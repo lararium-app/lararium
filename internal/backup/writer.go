@@ -304,7 +304,7 @@ func CheckSelfInclusion(root, outAbs string) error {
 	if err != nil {
 		return fmt.Errorf("check self-inclusion: %w", err)
 	}
-	if !strings.HasPrefix(rel, "..") && rel != "." {
+	if !strings.HasPrefix(rel, "..") {
 		return fmt.Errorf("--out inside hearth root (self-inclusion refused): %s is inside %s", outAbs, absRoot)
 	}
 	return nil

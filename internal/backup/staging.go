@@ -44,12 +44,19 @@ func defaultStatfs(path string) (FSInfo, error) {
 	return FSInfo{AvailableBytes: avail, Fsid: fsid}, nil
 }
 
-// IsExcluded reports whether a relative path in the hearth root is excluded per §4.5.2, B4, and M8.
+// IsExcluded reports whether a relative path in the hearth root is excluded per §4.5.2, B4, M8, and F1.
 // Excluded:
 // - memory/index.db (rule 5)
 // - *.sock, *.lock
-// - atomic-rename temporary files (*.tmp* everywhere per M8: covers TokenStore tokens-*.tmp at root,
-//   and nuntius <name>.tmp* in nuntius/)
+// - atomic-rename temporary files according to the precise writer law (F1):
+//   1. base has suffix ".tmp":
+//      Covers root TokenStore (tokens-*.tmp), Keystore (keys-*.tmp),
+//      and Custos (*-mut-*.tmp, *-init-*.tmp, etc.), where all os.CreateTemp
+//      patterns end with ".tmp".
+//   2. rel starts with "nuntius/" AND base matches "<anything>.tmp<any digits>":
+//      Covers nuntius state.go (internal/nuntius/state.go:76) which uses
+//      os.CreateTemp(dir, name+".tmp*") where random digits replace the star,
+//      producing e.g. "state.tmp4182" (".tmp" followed by ONLY digits at end).
 // - temporary staging directories (.backup-staging-*) per B4
 func IsExcluded(rel string, info os.FileInfo) bool {
 	cleanRel := filepath.ToSlash(filepath.Clean(rel))
@@ -60,13 +67,45 @@ func IsExcluded(rel string, info os.FileInfo) bool {
 	if strings.HasSuffix(base, ".sock") || strings.HasSuffix(base, ".lock") {
 		return true
 	}
-	if strings.Contains(base, ".tmp") {
-		return true
-	}
 	if strings.HasPrefix(base, ".backup-staging-") {
 		return true
 	}
+
+	// Clause 1: base has suffix ".tmp"
+	// Writers covered:
+	// - surface TokenStore: tokens-*.tmp at root
+	// - keystore: keys-*.tmp
+	// - custos: vault-mut-*.tmp, vaultmac-mut-*.tmp, surrogates-mut-*.tmp,
+	//   vault-init-*.tmp, vaultmac-init-*.tmp, etc.
+	// All these writers use os.CreateTemp patterns ending in ".tmp".
+	if strings.HasSuffix(base, ".tmp") {
+		return true
+	}
+
+	// Clause 2: rel starts with "nuntius/" AND base matches "<anything>.tmp<any digits>"
+	// Writers covered:
+	// - nuntius state.go (internal/nuntius/state.go:76): uses CreateTemp(dir, name+".tmp*")
+	//   where random digits replace the star, producing e.g. "state.tmp4182".
+	//   Matches ".tmp" followed by ONLY digits at end.
+	if strings.HasPrefix(cleanRel, "nuntius/") {
+		if idx := strings.LastIndex(base, ".tmp"); idx != -1 {
+			digits := base[idx+len(".tmp"):]
+			if len(digits) > 0 && isAllDigits(digits) {
+				return true
+			}
+		}
+	}
+
 	return false
+}
+
+func isAllDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckTreeShape enforces the tree-shape law (§4.5.2):
@@ -82,6 +121,9 @@ func CheckTreeShape(root string) ([]string, error) {
 
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if path == root {
@@ -134,6 +176,9 @@ func ComputeTreeSize(root string, configPath string, includeConfig bool) (uint64
 	var total uint64
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if path == root {
@@ -249,6 +294,13 @@ type dirTarget struct {
 	mode uint32
 }
 
+// StagePreCopyHook is an optional hook invoked before inspecting and copying each path during StageTree.
+// Tests can use this seam to simulate a file vanishing (ENOENT) between walk-visit and copy.
+var StagePreCopyHook func(srcPath string) error
+
+// StageCopyFileFunc allows overriding file copying during staging (test seam).
+var StageCopyFileFunc = copyFile
+
 // StageTree copies the included hearth root tree into stagingDir, preserving file and dir modes (M10).
 // While holding flocks, lstat each entry during StageTree; symlink/device/FIFO encountered → abort (M12).
 // Never follow; open with O_NOFOLLOW (M12).
@@ -277,6 +329,12 @@ func StageTree(root, stagingDir string) error {
 				return filepath.SkipDir
 			}
 			return nil
+		}
+
+		if StagePreCopyHook != nil {
+			if err := StagePreCopyHook(srcPath); err != nil {
+				return err
+			}
 		}
 
 		// M12: staging-time shape re-check while holding flocks via lstat
@@ -312,7 +370,7 @@ func StageTree(root, stagingDir string) error {
 			return fmt.Errorf("mkdir parent %s: %w", rel, err)
 		}
 
-		if err := copyFile(srcPath, dstPath, lfi.Mode()); err != nil {
+		if err := StageCopyFileFunc(srcPath, dstPath, lfi.Mode()); err != nil {
 			if os.IsNotExist(err) {
 				return nil // M8: benign skip
 			}
