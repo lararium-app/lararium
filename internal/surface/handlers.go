@@ -54,7 +54,12 @@ type Server struct {
 
 	custosMu  sync.RWMutex
 	custosReg CustosRegistry
+
+	Backup BackupFunc
 }
+
+// BackupFunc handles control-socket backup verbs (PENATUS §4.5.3.1).
+type BackupFunc func(outAbs string, noConfig bool, progress func(string)) error
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"0.7.3"}`)
