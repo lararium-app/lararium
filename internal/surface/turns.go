@@ -44,9 +44,33 @@ type Hub struct {
 	router               *router.Router
 	ap                   *ApprovalHub
 	// keys is the live key registry handed to every Session (nil-safe).
-	keys    *keystore.Registry
-	mu      sync.Mutex
-	running map[string]*turn
+	keys           *keystore.Registry
+	mu             sync.Mutex
+	running        map[string]*turn
+	singleWriterMu sync.RWMutex
+}
+
+// TrySingleWriterLock attempts to acquire the hub's single-writer serialization point non-blockingly (PENATUS §4.5.3.3).
+func (h *Hub) TrySingleWriterLock() (func(), bool) {
+	if !h.singleWriterMu.TryLock() {
+		return nil, false
+	}
+	return func() {
+		h.singleWriterMu.Unlock()
+	}, true
+}
+
+// SingleWriterLock acquires the hub's single-writer serialization point non-blockingly (PENATUS §4.5.3.1, §4.5.3.3).
+func (h *Hub) SingleWriterLock() (func(), bool) {
+	return h.TrySingleWriterLock()
+}
+
+// RLock acquires the hub's writer RLock (PENATUS §4.5.3.1, M9).
+func (h *Hub) RLock() func() {
+	h.singleWriterMu.RLock()
+	return func() {
+		h.singleWriterMu.RUnlock()
+	}
 }
 
 // AttachKeys gives the hub the live key registry (KEYS-SPEC K6).
@@ -466,6 +490,9 @@ func (h *Hub) executeTurn(
 			}))
 		}
 	}
+
+	h.singleWriterMu.RLock()
+	defer h.singleWriterMu.RUnlock()
 
 	sessDir := h.SessionDir(sessionID)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {

@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/lararium-app/lararium/internal/backup"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/router"
@@ -125,6 +126,10 @@ func main() {
 	}
 	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml")
 	modelFlag := flag.String("model", "", "override: model ref for this run")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  token create|revoke <label>\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	args := flag.Args()
@@ -141,6 +146,9 @@ func main() {
 			return
 		case "pair":
 			pairCmd(*cfgPath, args[1:])
+			return
+		case "backup":
+			backupCmd(*cfgPath, args[1:])
 			return
 		}
 	}
@@ -317,6 +325,10 @@ func serve(cfgPath string) {
 		Providers: kp.ProviderInfos,
 		Reload:    reloadKeys,
 	})
+
+	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
+		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.SingleWriterLock, progress)
+	}
 
 	// Control socket (KEYS-SPEC K6): CLI writes, then pings here.
 	sock, err := srv.ServeSocket(filepath.Join(home, "hearthd.sock"), reloadKeys)
