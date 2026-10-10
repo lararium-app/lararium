@@ -5,11 +5,25 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
 	"golang.org/x/text/unicode/norm"
 )
+
+// Writer inventory (PENATUS §4.5.3.1, M9):
+// Every hearth-root writer and its serialization protocol:
+// 1. tokens.json: uses flock on the tokens file itself (TokenStore.lockTokenFile) — NOT keys.lock.
+// 2. session create PenatusSource.Create: creates session dir and renames session.json outside
+//    single-writer (documented honest gap: transient session file, atomic rename, no torn reads).
+// 3. nuntius inbox/state/owners.jsonl: tmp+rename under its own mutexes, NOT fs locks
+//    (transient file sets vary, atomicity per file, no torn reads).
+// 4. events.jsonl: appended under Hub singleWriterMu (SingleWriterLock/TrySingleWriterLock).
+// 5. memory/: atomic tmp+rename under Hub single-writer lock.
+// 6. custody state root (vault.*, surrogates.age, fingerprints.json, snapshots/):
+//    serialized under custos.lock flock protocol (CUSTOS-SPEC §4.2, AcquireLocks).
+// 7. keys.json: serialized under keys.lock flock protocol.
 
 // FSInfo holds filesystem availability information.
 type FSInfo struct {
@@ -30,8 +44,13 @@ func defaultStatfs(path string) (FSInfo, error) {
 	return FSInfo{AvailableBytes: avail, Fsid: fsid}, nil
 }
 
-// IsExcluded reports whether a relative path in the hearth root is excluded per §4.5.2.
-// Always excluded: memory/index.db (rule 5), *.sock, *.lock.
+// IsExcluded reports whether a relative path in the hearth root is excluded per §4.5.2, B4, and M8.
+// Excluded:
+// - memory/index.db (rule 5)
+// - *.sock, *.lock
+// - atomic-rename temporary files (*.tmp* everywhere per M8: covers TokenStore tokens-*.tmp at root,
+//   and nuntius <name>.tmp* in nuntius/)
+// - temporary staging directories (.backup-staging-*) per B4
 func IsExcluded(rel string, info os.FileInfo) bool {
 	cleanRel := filepath.ToSlash(filepath.Clean(rel))
 	if cleanRel == "memory/index.db" {
@@ -39,6 +58,12 @@ func IsExcluded(rel string, info os.FileInfo) bool {
 	}
 	base := filepath.Base(cleanRel)
 	if strings.HasSuffix(base, ".sock") || strings.HasSuffix(base, ".lock") {
+		return true
+	}
+	if strings.Contains(base, ".tmp") {
+		return true
+	}
+	if strings.HasPrefix(base, ".backup-staging-") {
 		return true
 	}
 	return false
@@ -133,10 +158,18 @@ func ComputeTreeSize(root string, configPath string, includeConfig bool) (uint64
 	if err != nil {
 		return 0, err
 	}
-	if includeConfig && configPath != "" {
-		if fi, err := os.Stat(configPath); err == nil && !fi.IsDir() {
-			total += uint64(fi.Size())
+	if includeConfig {
+		if configPath == "" {
+			return 0, fmt.Errorf("config in force must be in bundle: no config path provided (M13)")
 		}
+		fi, err := os.Stat(configPath)
+		if err != nil {
+			return 0, fmt.Errorf("stat config file %s: %w (config in force must be in bundle; silent omission is illegal per M13)", configPath, err)
+		}
+		if fi.IsDir() {
+			return 0, fmt.Errorf("config path %s is a directory", configPath)
+		}
+		total += uint64(fi.Size())
 	}
 	return total, nil
 }
@@ -185,10 +218,22 @@ func PreflightFreeSpace(root string, outPath string, treeSize uint64) error {
 	return nil
 }
 
-// CreateStagingDir creates a 0700 temporary directory on the hearth root's own filesystem.
+// CreateStagingDir creates a 0700 temporary directory on the hearth root's own filesystem (B4).
+// If parent filesystem differs from root's fs, falls back to creating inside root.
 func CreateStagingDir(root string) (string, error) {
+	rootFS, err := StatfsFunc(root)
+	if err != nil {
+		return "", fmt.Errorf("statfs root %s: %w", root, err)
+	}
+
 	parent := filepath.Dir(root)
-	staging, err := os.MkdirTemp(parent, ".backup-staging-")
+	targetDir := parent
+	parentFS, err := StatfsFunc(parent)
+	if err != nil || parentFS.Fsid != rootFS.Fsid {
+		targetDir = root
+	}
+
+	staging, err := os.MkdirTemp(targetDir, ".backup-staging-")
 	if err != nil {
 		return "", fmt.Errorf("create staging directory: %w", err)
 	}
@@ -199,10 +244,24 @@ func CreateStagingDir(root string) (string, error) {
 	return staging, nil
 }
 
-// StageTree copies the included hearth root tree into stagingDir, preserving file and dir modes.
+type dirTarget struct {
+	path string
+	mode uint32
+}
+
+// StageTree copies the included hearth root tree into stagingDir, preserving file and dir modes (M10).
+// While holding flocks, lstat each entry during StageTree; symlink/device/FIFO encountered → abort (M12).
+// Never follow; open with O_NOFOLLOW (M12).
+// Do not pre-order chmod dirs; copy children first, then chmod dirs last in post-order (M11).
+// If a file vanishes mid-copy (ENOENT) → benign skip, not failure (M8).
 func StageTree(root, stagingDir string) error {
-	return filepath.Walk(root, func(srcPath string, info os.FileInfo, err error) error {
+	var dirTargets []dirTarget
+
+	err := filepath.Walk(root, func(srcPath string, info os.FileInfo, err error) error {
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // M8: benign skip if file vanishes mid-walk
+			}
 			return err
 		}
 		if srcPath == root {
@@ -220,14 +279,31 @@ func StageTree(root, stagingDir string) error {
 			return nil
 		}
 
+		// M12: staging-time shape re-check while holding flocks via lstat
+		lfi, err := os.Lstat(srcPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // M8 benign skip
+			}
+			return err
+		}
+		mode := lfi.Mode()
+		if mode&os.ModeSymlink != 0 || mode&os.ModeNamedPipe != 0 || mode&os.ModeDevice != 0 || mode&os.ModeCharDevice != 0 || mode&os.ModeSocket != 0 {
+			return fmt.Errorf("tree-shape law violation during staging: encountered illegal entry %s (%v)", rel, mode)
+		}
+
+		rawMode := uint32(mode.Perm())
+		if stat, ok := lfi.Sys().(*syscall.Stat_t); ok {
+			rawMode = uint32(stat.Mode & 07777)
+		}
+
 		dstPath := filepath.Join(stagingDir, norm.NFC.String(rel))
 		if info.IsDir() {
-			if err := os.MkdirAll(dstPath, info.Mode().Perm()); err != nil {
+			// M11: do not pre-order chmod dirs; create 0700 for children, chmod post-order
+			if err := os.MkdirAll(dstPath, 0o700); err != nil {
 				return fmt.Errorf("create staging dir %s: %w", rel, err)
 			}
-			if err := os.Chmod(dstPath, info.Mode().Perm()); err != nil {
-				return fmt.Errorf("chmod staging dir %s: %w", rel, err)
-			}
+			dirTargets = append(dirTargets, dirTarget{path: dstPath, mode: rawMode})
 			return nil
 		}
 
@@ -236,21 +312,43 @@ func StageTree(root, stagingDir string) error {
 			return fmt.Errorf("mkdir parent %s: %w", rel, err)
 		}
 
-		if err := copyFile(srcPath, dstPath, info.Mode()); err != nil {
+		if err := copyFile(srcPath, dstPath, lfi.Mode()); err != nil {
+			if os.IsNotExist(err) {
+				return nil // M8: benign skip
+			}
 			return fmt.Errorf("copy staging file %s: %w", rel, err)
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// M11: apply dir modes in post-order (deepest directories first)
+	sort.Slice(dirTargets, func(i, j int) bool {
+		return len(dirTargets[i].path) > len(dirTargets[j].path)
+	})
+	for _, dt := range dirTargets {
+		if err := syscall.Chmod(dt.path, dt.mode); err != nil {
+			return fmt.Errorf("post-order chmod dir %s: %w", dt.path, err)
+		}
+	}
+
+	return nil
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
+	// M12: Never follow; open with O_NOFOLLOW
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return os.ErrNotExist // M8 benign skip
+		}
 		return err
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -259,5 +357,13 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if _, err := io.Copy(out, in); err != nil {
 		return err
 	}
-	return os.Chmod(dst, mode.Perm())
+
+	// M10: preserve source stat mode (incl. setuid/setgid/sticky bits) into staging
+	rawMode := uint32(mode.Perm())
+	if fi, err := os.Lstat(src); err == nil {
+		if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
+			rawMode = uint32(stat.Mode & 07777)
+		}
+	}
+	return syscall.Chmod(dst, rawMode)
 }

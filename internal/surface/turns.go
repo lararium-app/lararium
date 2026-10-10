@@ -50,11 +50,26 @@ type Hub struct {
 	singleWriterMu sync.RWMutex
 }
 
-// SingleWriterLock acquires the hub's single-writer serialization point (PENATUS §4.5.3.1).
-func (h *Hub) SingleWriterLock() func() {
-	h.singleWriterMu.Lock()
+// TrySingleWriterLock attempts to acquire the hub's single-writer serialization point non-blockingly (PENATUS §4.5.3.3).
+func (h *Hub) TrySingleWriterLock() (func(), bool) {
+	if !h.singleWriterMu.TryLock() {
+		return nil, false
+	}
 	return func() {
 		h.singleWriterMu.Unlock()
+	}, true
+}
+
+// SingleWriterLock acquires the hub's single-writer serialization point non-blockingly (PENATUS §4.5.3.1, §4.5.3.3).
+func (h *Hub) SingleWriterLock() (func(), bool) {
+	return h.TrySingleWriterLock()
+}
+
+// RLock acquires the hub's writer RLock (PENATUS §4.5.3.1, M9).
+func (h *Hub) RLock() func() {
+	h.singleWriterMu.RLock()
+	return func() {
+		h.singleWriterMu.RUnlock()
 	}
 }
 

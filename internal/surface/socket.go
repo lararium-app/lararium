@@ -9,7 +9,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,10 +19,32 @@ import (
 // the hearth dir. The CLI writes keys.json itself, then asks a running
 // daemon to re-read it. One command: RELOAD-KEYS.
 const (
-	socketReloadCmd = "RELOAD-KEYS"
-	socketAck       = "OK\n"
-	socketTimeout   = 5 * time.Second
+	socketReloadCmd  = "RELOAD-KEYS"
+	socketAck        = "OK\n"
+	socketTimeout    = 5 * time.Second
+	backupAckTimeout = 30 * time.Second
 )
+
+var (
+	serverRootsMu sync.RWMutex
+	serverRoots   = make(map[*Server]string)
+	serverHooksMu sync.RWMutex
+	serverHooks   = make(map[*Server]func(string))
+)
+
+// SetServerHearthHome associates a hearth root directory with a Server instance.
+func SetServerHearthHome(s *Server, root string) {
+	serverRootsMu.Lock()
+	serverRoots[s] = root
+	serverRootsMu.Unlock()
+}
+
+// SetServerBackupHook registers a hook called during backup progress phases (for concurrency testing).
+func SetServerBackupHook(s *Server, hook func(string)) {
+	serverHooksMu.Lock()
+	serverHooks[s] = hook
+	serverHooksMu.Unlock()
+}
 
 // ServeSocket starts the control socket at path and returns a Closer
 // that stops accepting and removes the socket file. Stale-file rule
@@ -28,6 +52,7 @@ const (
 // there but dead, unlink and bind. reload runs on each RELOAD-KEYS
 // line; its error text must never contain key material.
 func (s *Server) ServeSocket(path string, reload func() error) (io.Closer, error) {
+	SetServerHearthHome(s, filepath.Dir(path))
 	if _, err := os.Stat(path); err == nil {
 		d := net.Dialer{Timeout: socketTimeout}
 		conn, dialErr := d.DialContext(context.Background(), "unix", path)
@@ -76,7 +101,7 @@ func (c *socketCloser) acceptLoop(reload func() error) {
 
 func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+	_ = conn.SetDeadline(time.Now().Add(backupAckTimeout))
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
@@ -106,16 +131,45 @@ func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line st
 		fmt.Fprint(conn, "ERR backup not supported\n")
 		return
 	}
-	parts := strings.Fields(line)
-	if len(parts) < 2 {
+
+	// Protocol law (§4.5.3.1, M14): request line splits on space into max 3 fields;
+	// out path must not contain whitespace; CLI quotes nothing. If remainder starts with "--" treat as flag else ERR usage.
+	parts := strings.Split(line, " ")
+	if len(parts) < 2 || parts[0] != "backup" || parts[1] == "" {
 		fmt.Fprint(conn, "ERR usage: backup <out_abs> [--no-config]\n")
 		return
 	}
 	outAbs := parts[1]
 	noConfig := false
-	for _, p := range parts[2:] {
-		if p == "--no-config" {
+	if len(parts) == 3 {
+		if parts[2] == "--no-config" {
 			noConfig = true
+		} else if strings.HasPrefix(parts[2], "--") {
+			fmt.Fprintf(conn, "ERR unknown flag %s\n", parts[2])
+			return
+		} else {
+			fmt.Fprint(conn, "ERR usage: backup <out_abs> [--no-config]\n")
+			return
+		}
+	} else if len(parts) > 3 {
+		fmt.Fprint(conn, "ERR usage: out path must not contain whitespace; backup <out_abs> [--no-config]\n")
+		return
+	}
+
+	// B3: socket input law — reject non-absolute and out_abs inside hearth root BEFORE ack
+	if !filepath.IsAbs(outAbs) {
+		fmt.Fprint(conn, "ERR out path must be absolute\n")
+		return
+	}
+
+	serverRootsMu.RLock()
+	root := serverRoots[s]
+	serverRootsMu.RUnlock()
+
+	if root != "" {
+		if err := checkSelfInclusionSocket(root, outAbs); err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return
 		}
 	}
 
@@ -129,6 +183,12 @@ func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line st
 
 	progress := func(msg string) {
 		_ = conn.SetDeadline(time.Now().Add(10 * time.Minute))
+		serverHooksMu.RLock()
+		hook := serverHooks[s]
+		serverHooksMu.RUnlock()
+		if hook != nil {
+			hook(msg)
+		}
 		_, _ = fmt.Fprintf(conn, "PROGRESS %s\n", msg)
 	}
 
@@ -137,6 +197,25 @@ func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line st
 		return
 	}
 	_, _ = fmt.Fprint(conn, "DONE\n")
+}
+
+func checkSelfInclusionSocket(root, outAbs string) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve root: %w", err)
+	}
+	absOut, err := filepath.Abs(outAbs)
+	if err != nil {
+		return fmt.Errorf("resolve out: %w", err)
+	}
+	rel, err := filepath.Rel(absRoot, absOut)
+	if err != nil {
+		return fmt.Errorf("check self-inclusion: %w", err)
+	}
+	if !strings.HasPrefix(rel, "..") && rel != "." {
+		return fmt.Errorf("--out inside hearth root (self-inclusion refused): %s is inside %s", outAbs, absRoot)
+	}
+	return nil
 }
 
 func trimCR(s string) string {
@@ -212,7 +291,7 @@ func PingViaSocket(path string, timeout time.Duration) error {
 // BackupViaSocket invokes the control socket verb backup <out_abs> [--no-config] per §4.5.3.1.
 // Single request line, ack, progress lines, done/error.
 func BackupViaSocket(path string, outAbs string, noConfig bool, progress func(string)) error {
-	d := net.Dialer{Timeout: socketTimeout}
+	d := net.Dialer{Timeout: backupAckTimeout}
 	conn, err := d.DialContext(context.Background(), "unix", path)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrNotListening, err)
@@ -223,7 +302,7 @@ func BackupViaSocket(path string, outAbs string, noConfig bool, progress func(st
 	if noConfig {
 		cmd += " --no-config"
 	}
-	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+	_ = conn.SetDeadline(time.Now().Add(backupAckTimeout))
 	if _, err := fmt.Fprintf(conn, "%s\n", cmd); err != nil {
 		return err
 	}

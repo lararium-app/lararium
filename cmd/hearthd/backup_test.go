@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -62,15 +63,11 @@ func TestCLI_SocketBackupHappyPath(t *testing.T) {
 	cfgPath := createTestConfig(t, home)
 	sockPath := filepath.Join(home, "hearthd.sock")
 
-	srv := &surface.Server{}
-	var singleWriterMu sync.RWMutex
-	singleWriterLock := func() func() {
-		singleWriterMu.Lock()
-		return func() { singleWriterMu.Unlock() }
-	}
+	hub := surface.NewHub(surface.ServeConfig{}, home, 1000, 80, nil, nil, nil)
+	srv := &surface.Server{Hub: hub}
 
 	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
-		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, singleWriterLock, progress)
+		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.TrySingleWriterLock, progress)
 	}
 
 	closer, err := srv.ServeSocket(sockPath, func() error { return nil })
@@ -132,19 +129,23 @@ func TestCLI_StaleSocketRefusal(t *testing.T) {
 	}
 }
 
-// TestBK5_CustodyCoherenceAndHeldLockRefusal tests that held custos.lock
-// causes immediate busy refusal with no leftovers (§4.5.3.3, BK5).
+// TestBK5_CustodyCoherenceAndHeldLockRefusal tests that held custos.lock at <root>/custos/custos.lock
+// causes immediate busy refusal with no leftovers (§4.5.3.3, B2), and concurrent custos mutation hammer
+// yields either a coherent bundle generation or busy refusal (B2, M7).
 func TestBK5_CustodyCoherenceAndHeldLockRefusal(t *testing.T) {
 	home := createTestHearthRoot(t)
 	cfgPath := createTestConfig(t, home)
 
-	// Hold custos.lock
-	custosLockPath := filepath.Join(home, "custos.lock")
+	// 1. Hold custos.lock at <root>/custos/custos.lock (B2)
+	custosDir := filepath.Join(home, "custos")
+	if err := os.MkdirAll(custosDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	custosLockPath := filepath.Join(custosDir, "custos.lock")
 	f, err := os.OpenFile(custosLockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatalf("flock custos.lock: %v", err)
 	}
@@ -159,7 +160,6 @@ func TestBK5_CustodyCoherenceAndHeldLockRefusal(t *testing.T) {
 	if _, err := os.Stat(outAbs); err == nil {
 		t.Fatal("partial output file was left behind")
 	}
-	// Verify no staging dir was left in parent
 	parent := filepath.Dir(home)
 	entries, _ := os.ReadDir(parent)
 	for _, e := range entries {
@@ -167,30 +167,179 @@ func TestBK5_CustodyCoherenceAndHeldLockRefusal(t *testing.T) {
 			t.Fatalf("leftover staging directory found: %s", e.Name())
 		}
 	}
+
+	// Release held lock
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	f.Close()
+
+	// 2. Hammer test (B2, M7): goroutine hammering custos mutation lock + concurrent create
+	// → each produced bundle parses to one coherent generation OR create refuses busy.
+	vaultPath := filepath.Join(custosDir, "vault.data")
+	surrPath := filepath.Join(custosDir, "surrogates.data")
+	_ = os.WriteFile(vaultPath, []byte("gen0"), 0o600)
+	_ = os.WriteFile(surrPath, []byte("gen0"), 0o600)
+
+	stopHammer := make(chan struct{})
+	hammerDone := make(chan struct{})
+	go func() {
+		defer close(hammerDone)
+		gen := 1
+		for {
+			select {
+			case <-stopHammer:
+				return
+			default:
+				hf, err := os.OpenFile(custosLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+				if err == nil {
+					if err := syscall.Flock(int(hf.Fd()), syscall.LOCK_EX); err == nil {
+						genStr := fmt.Sprintf("gen%d", gen)
+						_ = os.WriteFile(vaultPath, []byte(genStr), 0o600)
+						_ = os.WriteFile(surrPath, []byte(genStr), 0o600)
+						gen++
+						_ = syscall.Flock(int(hf.Fd()), syscall.LOCK_UN)
+					}
+					hf.Close()
+				}
+				time.Sleep(500 * time.Microsecond)
+			}
+		}
+	}()
+
+	for attempt := 0; attempt < 5; attempt++ {
+		outHammer := filepath.Join(t.TempDir(), fmt.Sprintf("hammer-%d.lararium-backup", attempt))
+		err := backup.CreateOffline(home, cfgPath, outHammer, false, nil)
+		if err != nil {
+			if !strings.Contains(err.Error(), "busy") {
+				t.Fatalf("expected busy refusal during hammer, got: %v", err)
+			}
+			continue
+		}
+
+		// Produced bundle must parse to one coherent generation
+		zr, err := zip.OpenReader(outHammer)
+		if err != nil {
+			t.Fatalf("open hammer bundle: %v", err)
+		}
+		var vaultVal, surrVal string
+		for _, zf := range zr.File {
+			if zf.Name == "tree/custos/vault.data" {
+				rc, _ := zf.Open()
+				data, _ := io.ReadAll(rc)
+				rc.Close()
+				vaultVal = string(data)
+			}
+			if zf.Name == "tree/custos/surrogates.data" {
+				rc, _ := zf.Open()
+				data, _ := io.ReadAll(rc)
+				rc.Close()
+				surrVal = string(data)
+			}
+		}
+		zr.Close()
+
+		if vaultVal != surrVal {
+			t.Fatalf("torn read in bundle: vault=%q, surrogates=%q", vaultVal, surrVal)
+		}
+	}
+	close(stopHammer)
+	<-hammerDone
 }
 
 // TestBK9_SocketConcurrency tests that a second backup request over socket
-// during an active backup refuses immediately (LOCK_NB) (§4.5.3.3, BK9).
+// during an active backup refuses immediately (LOCK_NB) (§4.5.3.3, BK9, B1).
+// Must go through the REAL srv.Backup (no stub) and assert the second request
+// gets busy refusal fast (<2s), while an in-flight turn blocks the first with busy too.
 func TestBK9_SocketConcurrency(t *testing.T) {
 	home := createTestHearthRoot(t)
 	cfgPath := createTestConfig(t, home)
-	_ = cfgPath
 	sockPath := filepath.Join(home, "hearthd.sock")
 
-	srv := &surface.Server{}
+	hub := surface.NewHub(surface.ServeConfig{}, home, 1000, 80, nil, nil, nil)
+	srv := &surface.Server{Hub: hub}
+
+	// Real srv.Backup (no stub, B1)
+	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
+		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.TrySingleWriterLock, progress)
+	}
+
 	started := make(chan struct{})
 	unblock := make(chan struct{})
-
-	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
-		// Acquire backup.lock explicitly
-		locks, err := backup.AcquireLocks(home)
-		if err != nil {
-			return err
+	surface.SetServerBackupHook(srv, func(phase string) {
+		if phase == "staging tree" {
+			select {
+			case <-started:
+			default:
+				close(started)
+				<-unblock
+			}
 		}
-		defer locks.Release()
-		close(started)
-		<-unblock
-		return nil
+	})
+
+	closer, err := srv.ServeSocket(sockPath, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+
+	// 1. In-flight turn blocks the first request with busy too (§4.5.3.3, B1)
+	turnUnlock := hub.RLock()
+	outTurn := filepath.Join(t.TempDir(), "turn-blocked.lararium-backup")
+	errTurn := surface.BackupViaSocket(sockPath, outTurn, false, nil)
+	if errTurn == nil || !strings.Contains(errTurn.Error(), "busy") {
+		t.Fatalf("expected busy refusal while in-flight turn holds single-writer lock, got: %v", errTurn)
+	}
+	turnUnlock() // release turn
+
+	// 2. Launch first real backup in background
+	var wg sync.WaitGroup
+	wg.Add(1)
+	out1 := filepath.Join(t.TempDir(), "out1.lararium-backup")
+	var err1 error
+	go func() {
+		defer wg.Done()
+		err1 = surface.BackupViaSocket(sockPath, out1, false, nil)
+	}()
+
+	<-started
+
+	// 3. Second request over socket while first holds locks must refuse immediately with busy (<2s)
+	out2 := filepath.Join(t.TempDir(), "out2.lararium-backup")
+	t0 := time.Now()
+	err2 := surface.BackupViaSocket(sockPath, out2, false, nil)
+	dur := time.Since(t0)
+	if dur >= 2*time.Second {
+		t.Fatalf("second backup request took too long (%v), must refuse fast (<2s)", dur)
+	}
+	if err2 == nil || !strings.Contains(err2.Error(), "busy") {
+		t.Fatalf("second socket backup must refuse immediately with busy, got: %v", err2)
+	}
+
+	// Unblock first backup and verify it completes cleanly
+	close(unblock)
+	wg.Wait()
+	if err1 != nil {
+		t.Fatalf("first backup failed: %v", err1)
+	}
+
+	// Verify first backup is valid
+	var stdout, stderr bytes.Buffer
+	findings, err := backup.Verify(out1, &stdout, &stderr)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("first bundle verify failed: err=%v, findings=%+v", err, findings)
+	}
+}
+
+// TestBK3_SocketInputLaw tests that handleBackupSocket rejects
+// relative out paths and paths inside hearth root BEFORE ack (B3, M14).
+func TestBK3_SocketInputLaw(t *testing.T) {
+	home := createTestHearthRoot(t)
+	cfgPath := createTestConfig(t, home)
+	sockPath := filepath.Join(home, "hearthd.sock")
+
+	hub := surface.NewHub(surface.ServeConfig{}, home, 1000, 80, nil, nil, nil)
+	srv := &surface.Server{Hub: hub}
+	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
+		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.TrySingleWriterLock, progress)
 	}
 
 	closer, err := srv.ServeSocket(sockPath, func() error { return nil })
@@ -199,25 +348,27 @@ func TestBK9_SocketConcurrency(t *testing.T) {
 	}
 	defer closer.Close()
 
-	// Launch first backup
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = surface.BackupViaSocket(sockPath, filepath.Join(t.TempDir(), "out1.lararium-backup"), false, nil)
-	}()
-
-	<-started
-
-	// Second backup over socket while first holds locks must refuse immediately
-	out2 := filepath.Join(t.TempDir(), "out2.lararium-backup")
-	err2 := surface.BackupViaSocket(sockPath, out2, false, nil)
-	if err2 == nil || !strings.Contains(err2.Error(), "busy") {
-		t.Fatalf("second socket backup must refuse with busy, got: %v", err2)
+	// 1. Relative path over socket → ERR, nothing written (B3)
+	err = surface.BackupViaSocket(sockPath, "relative/path.lararium-backup", false, nil)
+	if err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected ERR on relative path, got: %v", err)
 	}
 
-	close(unblock)
-	wg.Wait()
+	// 2. Out path inside hearth root → ERR, nothing written (B3)
+	insidePath := filepath.Join(home, "inside.lararium-backup")
+	err = surface.BackupViaSocket(sockPath, insidePath, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "inside hearth root") {
+		t.Fatalf("expected ERR on self-inclusion inside root, got: %v", err)
+	}
+	if _, err := os.Stat(insidePath); err == nil {
+		t.Fatal("file was created inside root despite self-inclusion refusal")
+	}
+
+	// 3. Out path containing whitespace → ERR usage (M14)
+	err = surface.BackupViaSocket(sockPath, "/tmp/evil path/backup.lararium-backup", false, nil)
+	if err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("expected ERR usage on path with whitespace, got: %v", err)
+	}
 }
 
 // TestBK15_OfflineAndDaemonCountsAgree tests that offline and daemon paths

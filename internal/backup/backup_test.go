@@ -327,6 +327,31 @@ func TestBK3_TamperVsQuarantine(t *testing.T) {
 			t.Fatalf("expected quarantine finding for seq duplicate, got %+v", findings)
 		}
 	}
+
+	// Case 7: Unparseable mode string in manifest entry -> tamper (B6)
+	{
+		corruptPath := filepath.Join(t.TempDir(), "invalid-mode.lararium-backup")
+		copyAndMutateZip(t, out, corruptPath, func(name string, data []byte) []byte {
+			if name == "manifest.json" {
+				data = bytes.Replace(data, []byte(`"mode": "0600"`), []byte(`"mode": "invalid"`), 1)
+				if !bytes.Contains(data, []byte(`"mode": "invalid"`)) {
+					data = bytes.Replace(data, []byte(`"mode": "0644"`), []byte(`"mode": "invalid"`), 1)
+				}
+			}
+			return data
+		})
+		var stdout, stderr bytes.Buffer
+		findings, _ := Verify(corruptPath, &stdout, &stderr)
+		found := false
+		for _, f := range findings {
+			if f.Class == "tamper" && strings.Contains(f.Detail, "unparseable mode") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected tamper finding for unparseable mode string, got %+v", findings)
+		}
+	}
 }
 
 func TestBK6_CreateRefusals(t *testing.T) {
@@ -540,16 +565,40 @@ func TestBK12_FreeSpacePreflight(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "2Σ") {
 		t.Fatalf("expected 2Σ refusal on shared fs, got %v", err)
 	}
+
+	// B4: assert staging fs == root fs (compare StatfsFunc results)
+	stagingDir, err := CreateStagingDir(root)
+	if err != nil {
+		t.Fatalf("CreateStagingDir: %v", err)
+	}
+	defer os.RemoveAll(stagingDir)
+	stFS, err := StatfsFunc(stagingDir)
+	if err != nil {
+		t.Fatalf("StatfsFunc(stagingDir): %v", err)
+	}
+	rFS, err := StatfsFunc(root)
+	if err != nil {
+		t.Fatalf("StatfsFunc(root): %v", err)
+	}
+	if stFS.Fsid != rFS.Fsid {
+		t.Fatalf("staging fsid %d != root fsid %d (B4)", stFS.Fsid, rFS.Fsid)
+	}
 }
 
 func TestBK13_ModesAndEmptyDirs(t *testing.T) {
 	root := setupTestRoot(t)
 	cfg := setupTestConfig(t)
 
-	// Create source 04755 file
+	// Create source 04755 file (B5)
 	suidFile := filepath.Join(root, "suid-tool")
 	_ = os.WriteFile(suidFile, []byte("echo hi\n"), 0o755)
 	_ = syscall.Chmod(suidFile, 0o4755)
+
+	// Create empty dir in source root (B5)
+	emptyDir := filepath.Join(root, "empty-dir")
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	out := filepath.Join(t.TempDir(), "modes.lararium-backup")
 	if err := CreateOffline(root, cfg, out, false, nil); err != nil {
@@ -562,6 +611,77 @@ func TestBK13_ModesAndEmptyDirs(t *testing.T) {
 	}
 	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("bundle mode = %o, want 0600", fi.Mode().Perm())
+	}
+
+	// B5 pin: assert manifest entries
+	zr, err := zip.OpenReader(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+
+	if len(zr.File) == 0 || zr.File[0].Name != "manifest.json" {
+		t.Fatal("manifest.json must be strictly first zip entry")
+	}
+	mf, err := zr.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mfData, err := io.ReadAll(mf)
+	mf.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, _, err := ParseManifest(mfData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foundSuid := false
+	foundEmptyDirManifest := false
+	for _, entry := range manifest.Entries {
+		if entry.Path == "tree/suid-tool" {
+			foundSuid = true
+			if entry.Mode != "4755" && entry.Mode != "04755" {
+				t.Fatalf("suid source recorded mode = %q, want 4755 or 04755", entry.Mode)
+			}
+			parsedMode, err := ParseOctalMode(entry.Mode)
+			if err != nil {
+				t.Fatalf("parse suid mode: %v", err)
+			}
+			extMode := ExtractionMode(parsedMode)
+			if extMode != 0o755 {
+				t.Fatalf("extraction mode = %04o, want 0755", extMode)
+			}
+		}
+		if entry.Path == "tree/empty-dir/" {
+			foundEmptyDirManifest = true
+			if !entry.Dir {
+				t.Fatalf("empty dir entry must have dir: true")
+			}
+			if entry.SHA256 != "" || entry.Size != nil {
+				t.Fatalf("empty dir entry must carry no sha256 or size, got sha=%q size=%v", entry.SHA256, entry.Size)
+			}
+		}
+	}
+	if !foundSuid {
+		t.Fatal("tree/suid-tool not found in manifest")
+	}
+	if !foundEmptyDirManifest {
+		t.Fatal("tree/empty-dir/ not found in manifest")
+	}
+
+	foundEmptyDirZip := false
+	for _, zf := range zr.File {
+		if zf.Name == "tree/empty-dir/" {
+			foundEmptyDirZip = true
+			if !zf.FileInfo().IsDir() {
+				t.Fatal("empty dir zip entry must be a directory")
+			}
+		}
+	}
+	if !foundEmptyDirZip {
+		t.Fatal("tree/empty-dir/ not found in zip archive")
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -682,6 +802,126 @@ func TestBK18_ZipSlip(t *testing.T) {
 		if !found {
 			t.Fatalf("expected tamper finding for %q, got %+v", slip, findings)
 		}
+	}
+}
+
+// TestBK_M11_ReadOnlyDirs tests that read-only directories (e.g. 0555) do not fail staging (M11).
+func TestBK_M11_ReadOnlyDirs(t *testing.T) {
+	root := setupTestRoot(t)
+	cfg := setupTestConfig(t)
+
+	roDir := filepath.Join(root, "readonly-dir")
+	if err := os.MkdirAll(roDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	childFile := filepath.Join(roDir, "child.txt")
+	if err := os.WriteFile(childFile, []byte("child"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Make dir read-only
+	if err := syscall.Chmod(roDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Chmod(roDir, 0o755) // cleanup permission
+
+	out := filepath.Join(t.TempDir(), "ro-dirs.lararium-backup")
+	if err := CreateOffline(root, cfg, out, false, nil); err != nil {
+		t.Fatalf("CreateOffline failed on read-only dir: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	findings, err := Verify(out, &stdout, &stderr)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("verify failed on read-only dir bundle: err=%v, findings=%+v", err, findings)
+	}
+}
+
+// TestBK_M12_StagingTreeSymlinkAborts tests that encountering a symlink during StageTree aborts (M12).
+func TestBK_M12_StagingTreeSymlinkAborts(t *testing.T) {
+	root := setupTestRoot(t)
+	stagingDir := filepath.Join(t.TempDir(), "staging")
+	_ = os.MkdirAll(stagingDir, 0o700)
+
+	symlinkPath := filepath.Join(root, "mid-copy-link")
+	_ = os.Symlink(filepath.Join(root, "SOUL.md"), symlinkPath)
+	defer os.Remove(symlinkPath)
+
+	err := StageTree(root, stagingDir)
+	if err == nil || !strings.Contains(err.Error(), "tree-shape law violation") {
+		t.Fatalf("expected tree-shape law violation during StageTree, got: %v", err)
+	}
+}
+
+// TestBK_M13_ConfigReadErrors tests that missing or unreadable config when !noConfig refuses clearly (M13).
+func TestBK_M13_ConfigReadErrors(t *testing.T) {
+	root := setupTestRoot(t)
+	missingCfg := filepath.Join(t.TempDir(), "nonexistent.yaml")
+	out := filepath.Join(t.TempDir(), "test.lararium-backup")
+
+	err := CreateOffline(root, missingCfg, out, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "config in force must be in bundle") {
+		t.Fatalf("expected clear refusal for missing config file, got: %v", err)
+	}
+}
+
+// TestBK_M15_MalformedMemberPath_EvilTxt tests that bundle schema at verify rejects root-level evil.txt (M15).
+func TestBK_M15_MalformedMemberPath_EvilTxt(t *testing.T) {
+	root := setupTestRoot(t)
+	cfg := setupTestConfig(t)
+	outValid := filepath.Join(t.TempDir(), "valid.lararium-backup")
+	if err := CreateOffline(root, cfg, outValid, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	evilPath := filepath.Join(t.TempDir(), "evil.lararium-backup")
+	// Add evil.txt at root of zip AND in manifest.json
+	copyAndMutateZip(t, outValid, evilPath, func(name string, data []byte) []byte {
+		if name == "manifest.json" {
+			var m Manifest
+			_ = json.Unmarshal(data, &m)
+			sz := int64(4)
+			m.Entries = append(m.Entries, ManifestEntry{
+				Path:   "evil.txt",
+				Mode:   "0644",
+				Size:   &sz,
+				SHA256: "abcd",
+			})
+			mutated, _ := json.MarshalIndent(m, "", "  ")
+			return mutated
+		}
+		return data
+	})
+	// Also add evil.txt file to zip
+	evilZipWithMember := filepath.Join(t.TempDir(), "evil-zip.lararium-backup")
+	addZipEntry(t, evilPath, evilZipWithMember, "evil.txt", []byte("evil"))
+
+	var stdout, stderr bytes.Buffer
+	findings, _ := Verify(evilZipWithMember, &stdout, &stderr)
+	found := false
+	for _, f := range findings {
+		if f.Class == "tamper" && (f.Path == "evil.txt" || strings.Contains(f.Detail, "malformed")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected tamper finding for root-level evil.txt (M15), got: %+v", findings)
+	}
+}
+
+// TestBK_m17_IsSecretPathSnapshots tests that snapshots/** matches children only, not the directory itself (m17).
+func TestBK_m17_IsSecretPathSnapshots(t *testing.T) {
+	if IsSecretPath("tree/custos/snapshots/") {
+		t.Fatal("tree/custos/snapshots/ directory entry itself must NOT be a secret (m17)")
+	}
+	if !IsSecretPath("tree/custos/snapshots/snap-1/manifest.json") {
+		t.Fatal("child of tree/custos/snapshots/ MUST be a secret (m17)")
+	}
+}
+
+// TestBK_m18_IsProductNewerUnparseable tests that isProductNewer returns false with no warning on parse failure (m18).
+func TestBK_m18_IsProductNewerUnparseable(t *testing.T) {
+	if isProductNewer("hearthd/not-a-version", Product) {
+		t.Fatal("expected false for unparseable product version (m18)")
 	}
 }
 

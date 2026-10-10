@@ -53,10 +53,17 @@ func IsSecretPath(p string) bool {
 			return true
 		}
 	}
-	if strings.HasPrefix(p, "tree/custos/snapshots/") {
+	// m17: snapshots/** matches children only, not the directory entry itself.
+	if strings.HasPrefix(p, "tree/custos/snapshots/") && p != "tree/custos/snapshots/" {
 		return true
 	}
 	return false
+}
+
+// ExtractionMode maps recorded source mode to extraction mode per §4.5.2 (B5, BK13):
+// recorded modes are masked & 0777 after stripping setuid/setgid/sticky bits.
+func ExtractionMode(mode os.FileMode) os.FileMode {
+	return mode & 0o777
 }
 
 // List implements `hearthd backup list <file>`: TSV `#columns: path size sha256 mode` (dirs: size/sha256 = "-").

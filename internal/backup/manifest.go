@@ -10,10 +10,13 @@ import (
 	"time"
 )
 
-const (
-	FormatVersion = "backup/1.0"
-	Product       = "hearthd/0.7.3"
-)
+const FormatVersion = "backup/1.0"
+
+// Version is the daemon version (can be set via ldflags), matching daemon /health (m16).
+var Version = "0.7.3"
+
+// Product is hearthd/<version> per §4.5.2 (m16).
+var Product = "hearthd/" + Version
 
 // Manifest is the manifest.json model per PENATUS-SPEC §4.5.2.
 type Manifest struct {
@@ -192,14 +195,15 @@ func isProductNewer(bundleProd, binaryProd string) bool {
 	for i := 0; i < len(bParts) && i < len(cParts); i++ {
 		bNum, bErr := strconv.Atoi(bParts[i])
 		cNum, cErr := strconv.Atoi(cParts[i])
-		if bErr == nil && cErr == nil {
-			if bNum > cNum {
-				return true
-			}
-			if bNum < cNum {
-				return false
-			}
+		if bErr != nil || cErr != nil {
+			return false // m18: on parse failure, NO warning (skip comparison)
+		}
+		if bNum > cNum {
+			return true
+		}
+		if bNum < cNum {
+			return false
 		}
 	}
-	return bp > cp
+	return false
 }

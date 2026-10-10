@@ -140,6 +140,17 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 			continue
 		}
 
+		// Bundle schema at verify (M15): every member path must start with "tree/" or be "config/lararium.yaml"
+		if zf.Name != "config/lararium.yaml" && !strings.HasPrefix(zf.Name, "tree/") {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   zf.Name,
+				Detail: "malformed bundle member path: must start with tree/ or be config/lararium.yaml or manifest.json",
+			})
+			tamperedPaths[zf.Name] = true
+			continue
+		}
+
 		// Zip-slip law (§4.5.2, BK18): reject .., absolute, drive-shaped
 		if IsZipSlip(zf.Name) {
 			findings = append(findings, Finding{
@@ -173,6 +184,16 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 
 	// Check Manifest -> Zip (hash, size, mode, missing from zip)
 	for _, entry := range manifest.Entries {
+		// Bundle schema check on manifest entries (M15)
+		if entry.Path != "config/lararium.yaml" && !strings.HasPrefix(entry.Path, "tree/") {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: "malformed manifest member path: must start with tree/ or be config/lararium.yaml",
+			})
+			tamperedPaths[entry.Path] = true
+		}
+
 		zf, exists := zipByName[entry.Path]
 		if !exists {
 			findings = append(findings, Finding{
@@ -184,9 +205,16 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 			continue
 		}
 
-		// Check mode
+		// Check mode (B6: unparseable mode string in a manifest entry → tamper finding)
 		expectedMode, err := ParseOctalMode(entry.Mode)
-		if err == nil {
+		if err != nil {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: fmt.Sprintf("unparseable mode string %q: %v", entry.Mode, err),
+			})
+			tamperedPaths[entry.Path] = true
+		} else {
 			zipPerm := zf.Mode() & 07777
 			expectedPerm := expectedMode & 07777
 			if zipPerm != expectedPerm {

@@ -35,13 +35,23 @@ func StatMode(info os.FileInfo) string {
 	return fmt.Sprintf("%04o", perm)
 }
 
-// ParseOctalMode parses an octal mode string like "0755" into os.FileMode.
+// ParseOctalMode parses an octal mode string like "0755" or "4755" into os.FileMode.
 func ParseOctalMode(modeStr string) (os.FileMode, error) {
 	v, err := strconv.ParseUint(modeStr, 8, 32)
 	if err != nil {
 		return 0, err
 	}
-	return os.FileMode(v), nil
+	perm := os.FileMode(v & 0777)
+	if v&04000 != 0 {
+		perm |= os.ModeSetuid
+	}
+	if v&02000 != 0 {
+		perm |= os.ModeSetgid
+	}
+	if v&01000 != 0 {
+		perm |= os.ModeSticky
+	}
+	return perm, nil
 }
 
 // WriteBundle takes the staged tree (and optional config) and compresses it into outAbs.
@@ -95,22 +105,26 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 		return fmt.Errorf("walk staging: %w", err)
 	}
 
-	// 2. Add config if requested and exists
+	// 2. Add config if requested (M13: !noConfig && read error → refuse with clear error)
 	var configBytes []byte
-	if !noConfig && configPath != "" {
-		raw, err := os.ReadFile(configPath)
-		if err == nil {
-			configBytes = raw
-			sz := int64(len(raw))
-			h := sha256.Sum256(raw)
-			hashStr := hex.EncodeToString(h[:])
-			entries = append(entries, ManifestEntry{
-				Path:   "config/lararium.yaml",
-				Mode:   "0600",
-				Size:   &sz,
-				SHA256: hashStr,
-			})
+	if !noConfig {
+		if configPath == "" {
+			return fmt.Errorf("config in force must be in bundle: no config path provided (M13)")
 		}
+		raw, err := os.ReadFile(configPath)
+		if err != nil {
+			return fmt.Errorf("read config file %s: %w (config in force must be in bundle; silent omission is illegal per M13)", configPath, err)
+		}
+		configBytes = raw
+		sz := int64(len(raw))
+		h := sha256.Sum256(raw)
+		hashStr := hex.EncodeToString(h[:])
+		entries = append(entries, ManifestEntry{
+			Path:   "config/lararium.yaml",
+			Mode:   "0600",
+			Size:   &sz,
+			SHA256: hashStr,
+		})
 	}
 
 	// Sort entries deterministically by path
@@ -180,6 +194,10 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 			Method: zip.Deflate,
 		}
 		fh.SetMode(mode)
+		if rawMode, err := strconv.ParseUint(entry.Mode, 8, 32); err == nil {
+			typeBits := fh.ExternalAttrs >> 16 & 0xF000
+			fh.ExternalAttrs = (uint32(typeBits|uint32(rawMode&07777)) << 16) | (fh.ExternalAttrs & 0xFFFF)
+		}
 
 		if entry.Dir {
 			if _, err := zw.CreateHeader(fh); err != nil {
@@ -278,9 +296,13 @@ func CheckSelfInclusion(root, outAbs string) error {
 	if err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(absRoot, outAbs)
+	absOut, err := filepath.Abs(outAbs)
 	if err != nil {
-		return nil
+		return err
+	}
+	rel, err := filepath.Rel(absRoot, absOut)
+	if err != nil {
+		return fmt.Errorf("check self-inclusion: %w", err)
 	}
 	if !strings.HasPrefix(rel, "..") && rel != "." {
 		return fmt.Errorf("--out inside hearth root (self-inclusion refused): %s is inside %s", outAbs, absRoot)
@@ -324,7 +346,7 @@ func CreateOffline(root string, cfgPath string, outAbs string, noConfig bool, pr
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(stagingDir)
+	defer cleanStaging(stagingDir)
 
 	if err := StageTree(root, stagingDir); err != nil {
 		return fmt.Errorf("stage tree: %w", err)
@@ -338,8 +360,8 @@ func CreateOffline(root string, cfgPath string, outAbs string, noConfig bool, pr
 	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs)
 }
 
-// CreateFromDaemon performs a full backup from a running daemon (§4.5.3.1).
-func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool, singleWriterLock func() func(), progress func(string)) error {
+// CreateFromDaemon performs a full backup from a running daemon (§4.5.3.1, B1).
+func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool, singleWriterLock func() (func(), bool), progress func(string)) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -361,10 +383,14 @@ func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool,
 		return err
 	}
 
-	// 3. Single-writer lock and flocks
+	// 3. Single-writer lock and flocks (B1: non-blocking, refuses with ErrBusy if held)
 	var releaseSingleWriter func()
 	if singleWriterLock != nil {
-		releaseSingleWriter = singleWriterLock()
+		rel, ok := singleWriterLock()
+		if !ok {
+			return fmt.Errorf("%w: single-writer lock held", ErrBusy)
+		}
+		releaseSingleWriter = rel
 		defer func() {
 			if releaseSingleWriter != nil {
 				releaseSingleWriter()
@@ -385,7 +411,7 @@ func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool,
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(stagingDir)
+	defer cleanStaging(stagingDir)
 
 	if err := StageTree(root, stagingDir); err != nil {
 		return fmt.Errorf("stage tree: %w", err)
@@ -401,4 +427,15 @@ func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool,
 	// 6. Compress staging → temp next to outAbs → rename
 	progress("compressing archive")
 	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs)
+}
+
+func cleanStaging(dir string) {
+	// Restore write permissions on all dirs before deletion so os.RemoveAll succeeds on read-only dirs (M11)
+	_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && fi.IsDir() {
+			_ = syscall.Chmod(p, 0o700)
+		}
+		return nil
+	})
+	_ = os.RemoveAll(dir)
 }

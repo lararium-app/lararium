@@ -20,9 +20,10 @@ type Locks struct {
 }
 
 // AcquireLocks acquires backup.lock, custos.lock, and keys.lock in strict order with LOCK_NB.
+// Custos lock path is <root>/custos/custos.lock per B2 (CUSTOS-SPEC §4.2, internal/custos/flock.go).
 func AcquireLocks(root string) (*Locks, error) {
 	backupPath := filepath.Join(root, "backup.lock")
-	custosPath := filepath.Join(root, "custos.lock")
+	custosPath := filepath.Join(root, "custos", "custos.lock")
 	keysPath := filepath.Join(root, "keys.lock")
 
 	bFile, err := openAndFlock(backupPath)
@@ -51,6 +52,9 @@ func AcquireLocks(root string) (*Locks, error) {
 }
 
 func openAndFlock(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir lock dir %s: %w", filepath.Dir(path), err)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock %s: %w", filepath.Base(path), err)
