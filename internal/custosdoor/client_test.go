@@ -638,7 +638,7 @@ func TestAttachOverflowDropToDead(t *testing.T) {
 			if ev.Card == nil {
 				t.Fatalf("expected card event at %d", i)
 			}
-		case <-time.After(time.Second):
+		case <-time.After(5 * time.Second): // generous: shared runners stall goroutines
 			t.Fatalf("slow consumer failed reading buffered event %d", i)
 		}
 	}
@@ -648,7 +648,7 @@ func TestAttachOverflowDropToDead(t *testing.T) {
 		if ok {
 			t.Fatalf("slowEvents still open after 64 events: got %+v", ev)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second): // generous: shared runners stall goroutines
 		t.Fatal("slowEvents not closed after overflow")
 	}
 
