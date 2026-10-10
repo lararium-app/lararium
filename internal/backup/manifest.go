@@ -14,7 +14,7 @@ import (
 const FormatVersion = "backup/1.0"
 
 // Version is the daemon version (can be set via ldflags), matching daemon /health (m16).
-var Version = "0.7.3"
+var Version = "0.8.0"
 
 // Product is hearthd/<version> per §4.5.2 (m16).
 var Product = "hearthd/" + Version
