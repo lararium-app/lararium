@@ -13,6 +13,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// SecretsHonestyLine is the fixed honesty banner printed by verify per §4.5.4.
 const SecretsHonestyLine = "a bundle is your disk — store it where your disk would be unsafe."
 
 // Finding represents one verification row: tamper or quarantine.
@@ -55,10 +56,11 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 	}
 
 	if manifestFileIndex != 0 {
-		detail := "manifest.json must be strictly the first zip entry"
-		if manifestFileIndex == -1 {
+		var detail string
+		switch manifestFileIndex {
+		case -1:
 			detail = "manifest.json missing from zip archive"
-		} else {
+		default:
 			detail = fmt.Sprintf("manifest.json at index %d, must be strictly index 0", manifestFileIndex)
 		}
 		findings = append(findings, Finding{
@@ -97,10 +99,9 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 
 	manifest, droppedFields, warnings, err := ParseManifest(manifestBytes)
 	if err != nil {
-		// Version law: major != 1 refuse with pointer, or unparseable json
-		// If unparseable json or major != 1:
+		// Version law: a wrong major version or unsupported format is a
+		// fatal refusal (caller exits non-zero), not a finding row.
 		if strings.Contains(err.Error(), "major version must be 1") || strings.Contains(err.Error(), "unsupported backup format") {
-			// Fatal format refusal
 			return nil, err
 		}
 		findings = append(findings, Finding{
@@ -120,183 +121,19 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 		fmt.Fprintf(stderr, "warning: %s\n", warn)
 	}
 
-	// 3. Map zip files and manifest entries
+	// 3. Cross-check zip <-> manifest, then hash/size/mode per entry.
 	zipByName := make(map[string]*zip.File)
 	for _, f := range zr.File {
 		zipByName[f.Name] = f
 	}
-
 	manifestByName := make(map[string]ManifestEntry)
 	for _, e := range manifest.Entries {
 		manifestByName[e.Path] = e
 	}
-
 	// Track entries with tamper findings so they are never classified quarantine
-	tamperedPaths := make(map[string]bool)
-
-	// Check Zip -> Manifest (zip-slip & extra zip entries)
-	for _, zf := range zr.File {
-		if zf.Name == "manifest.json" {
-			continue
-		}
-
-		// Bundle schema at verify (M15): every member path must start with "tree/" or be "config/lararium.yaml"
-		if zf.Name != "config/lararium.yaml" && !strings.HasPrefix(zf.Name, "tree/") {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   zf.Name,
-				Detail: "malformed bundle member path: must start with tree/ or be config/lararium.yaml or manifest.json",
-			})
-			tamperedPaths[zf.Name] = true
-			continue
-		}
-
-		// Zip-slip law (§4.5.2, BK18): reject .., absolute, drive-shaped
-		if IsZipSlip(zf.Name) {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   zf.Name,
-				Detail: "illegal path: escapes target root (zip-slip law violation)",
-			})
-			tamperedPaths[zf.Name] = true
-			continue
-		}
-
-		// NFC normalization law (§4.5.2, BK14)
-		if norm.NFC.String(zf.Name) != zf.Name {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   zf.Name,
-				Detail: "path is not NFC normalized",
-			})
-			tamperedPaths[zf.Name] = true
-		}
-
-		if _, ok := manifestByName[zf.Name]; !ok {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   zf.Name,
-				Detail: "entry in zip archive but missing from manifest",
-			})
-			tamperedPaths[zf.Name] = true
-		}
-	}
-
-	// Check Manifest -> Zip (hash, size, mode, missing from zip)
-	for _, entry := range manifest.Entries {
-		// Bundle schema check on manifest entries (M15)
-		if entry.Path != "config/lararium.yaml" && !strings.HasPrefix(entry.Path, "tree/") {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   entry.Path,
-				Detail: "malformed manifest member path: must start with tree/ or be config/lararium.yaml",
-			})
-			tamperedPaths[entry.Path] = true
-		}
-
-		zf, exists := zipByName[entry.Path]
-		if !exists {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   entry.Path,
-				Detail: "entry in manifest but missing from zip archive",
-			})
-			tamperedPaths[entry.Path] = true
-			continue
-		}
-
-		// Check mode (B6: unparseable mode string in a manifest entry → tamper finding)
-		expectedMode, err := ParseOctalMode(entry.Mode)
-		if err != nil {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   entry.Path,
-				Detail: fmt.Sprintf("unparseable mode string %q: %v", entry.Mode, err),
-			})
-			tamperedPaths[entry.Path] = true
-		} else {
-			zipPerm := zf.Mode() & 0o7777
-			expectedPerm := expectedMode & 0o7777
-			if zipPerm != expectedPerm {
-				findings = append(findings, Finding{
-					Class:  "tamper",
-					Path:   entry.Path,
-					Detail: fmt.Sprintf("mode mismatch: manifest %s, zip %04o", entry.Mode, zipPerm),
-				})
-				tamperedPaths[entry.Path] = true
-			}
-		}
-
-		if entry.Dir {
-			// Directory entry: must end in '/' and have no hash/size
-			if !strings.HasSuffix(entry.Path, "/") || !zf.FileInfo().IsDir() {
-				findings = append(findings, Finding{
-					Class:  "tamper",
-					Path:   entry.Path,
-					Detail: "directory entry shape mismatch",
-				})
-				tamperedPaths[entry.Path] = true
-			}
-			if entry.SHA256 != "" || entry.Size != nil {
-				findings = append(findings, Finding{
-					Class:  "tamper",
-					Path:   entry.Path,
-					Detail: "directory entry must carry no sha256 or size",
-				})
-				tamperedPaths[entry.Path] = true
-			}
-			continue
-		}
-
-		// Regular file: verify hash and size
-		rc, err := zf.Open()
-		if err != nil {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   entry.Path,
-				Detail: fmt.Sprintf("open zip member: %v", err),
-			})
-			tamperedPaths[entry.Path] = true
-			continue
-		}
-
-		hasher := sha256.New()
-		sz, copyErr := io.Copy(hasher, rc)
-		rc.Close()
-		if copyErr != nil {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   entry.Path,
-				Detail: fmt.Sprintf("read zip member content: %v", copyErr),
-			})
-			tamperedPaths[entry.Path] = true
-			continue
-		}
-
-		if entry.Size == nil || sz != *entry.Size {
-			actualSize := sz
-			expSize := int64(-1)
-			if entry.Size != nil {
-				expSize = *entry.Size
-			}
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   entry.Path,
-				Detail: fmt.Sprintf("size mismatch: manifest %d, zip %d", expSize, actualSize),
-			})
-			tamperedPaths[entry.Path] = true
-		}
-
-		actualHash := hex.EncodeToString(hasher.Sum(nil))
-		if actualHash != entry.SHA256 {
-			findings = append(findings, Finding{
-				Class:  "tamper",
-				Path:   entry.Path,
-				Detail: fmt.Sprintf("hash mismatch: manifest %s, zip %s", entry.SHA256, actualHash),
-			})
-			tamperedPaths[entry.Path] = true
-		}
-	}
+	zipFindings, tamperedPaths := checkZipAgainstManifest(zr.File, manifestByName)
+	findings = append(findings, zipFindings...)
+	findings = append(findings, checkManifestAgainstZip(manifest.Entries, zipByName, tamperedPaths)...)
 
 	// 4. Quarantine checks on session transcripts (§4.5.2, BK3):
 	// Parse every tree/sessions/*/events.jsonl.
@@ -381,6 +218,179 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
 
 	printVerifyOutput(findings, stdout, stderr, matchedSecrets)
 	return findings, nil
+}
+
+// checkZipAgainstManifest verifies every zip member (schema, zip-slip, NFC,
+// presence in manifest) per §4.5.2. Returns its tamper findings and the set
+// of paths found tampered, which quarantine checks must never re-classify.
+func checkZipAgainstManifest(files []*zip.File, manifestByName map[string]ManifestEntry) ([]Finding, map[string]bool) {
+	var findings []Finding
+	tamperedPaths := make(map[string]bool)
+	for _, zf := range files {
+		if zf.Name == "manifest.json" {
+			continue
+		}
+		// Bundle schema at verify (M15): every member path must start with "tree/" or be "config/lararium.yaml".
+		if zf.Name != "config/lararium.yaml" && !strings.HasPrefix(zf.Name, "tree/") {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   zf.Name,
+				Detail: "malformed bundle member path: must start with tree/ or be config/lararium.yaml or manifest.json",
+			})
+			tamperedPaths[zf.Name] = true
+			continue
+		}
+		// Zip-slip law (§4.5.2, BK18): reject .., absolute, drive-shaped.
+		if IsZipSlip(zf.Name) {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   zf.Name,
+				Detail: "illegal path: escapes target root (zip-slip law violation)",
+			})
+			tamperedPaths[zf.Name] = true
+			continue
+		}
+		// NFC normalization law (§4.5.2, BK14).
+		if norm.NFC.String(zf.Name) != zf.Name {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   zf.Name,
+				Detail: "path is not NFC normalized",
+			})
+			tamperedPaths[zf.Name] = true
+		}
+		if _, ok := manifestByName[zf.Name]; !ok {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   zf.Name,
+				Detail: "entry in zip archive but missing from manifest",
+			})
+			tamperedPaths[zf.Name] = true
+		}
+	}
+	return findings, tamperedPaths
+}
+
+// checkManifestAgainstZip verifies every manifest entry exists in the zip
+// with matching schema, mode, dir shape, size, and hash per §4.5.2.
+// tamperedPaths is updated in place with any additional tampered entries.
+func checkManifestAgainstZip(entries []ManifestEntry, zipByName map[string]*zip.File, tamperedPaths map[string]bool) []Finding {
+	var findings []Finding
+	for _, entry := range entries {
+		// Bundle schema check on manifest entries (M15).
+		if entry.Path != "config/lararium.yaml" && !strings.HasPrefix(entry.Path, "tree/") {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: "malformed manifest member path: must start with tree/ or be config/lararium.yaml",
+			})
+			tamperedPaths[entry.Path] = true
+		}
+		zf, exists := zipByName[entry.Path]
+		if !exists {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: "entry in manifest but missing from zip archive",
+			})
+			tamperedPaths[entry.Path] = true
+			continue
+		}
+		// B6: unparseable mode string in a manifest entry → tamper finding.
+		expectedMode, err := ParseOctalMode(entry.Mode)
+		if err != nil {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: fmt.Sprintf("unparseable mode string %q: %v", entry.Mode, err),
+			})
+			tamperedPaths[entry.Path] = true
+		} else {
+			zipPerm := zf.Mode() & 0o7777
+			expectedPerm := expectedMode & 0o7777
+			if zipPerm != expectedPerm {
+				findings = append(findings, Finding{
+					Class:  "tamper",
+					Path:   entry.Path,
+					Detail: fmt.Sprintf("mode mismatch: manifest %s, zip %04o", entry.Mode, zipPerm),
+				})
+				tamperedPaths[entry.Path] = true
+			}
+		}
+		if entry.Dir {
+			// Directory entry: must end in '/' and carry no hash/size.
+			if !strings.HasSuffix(entry.Path, "/") || !zf.FileInfo().IsDir() {
+				findings = append(findings, Finding{
+					Class:  "tamper",
+					Path:   entry.Path,
+					Detail: "directory entry shape mismatch",
+				})
+				tamperedPaths[entry.Path] = true
+			}
+			if entry.SHA256 != "" || entry.Size != nil {
+				findings = append(findings, Finding{
+					Class:  "tamper",
+					Path:   entry.Path,
+					Detail: "directory entry must carry no sha256 or size",
+				})
+				tamperedPaths[entry.Path] = true
+			}
+			continue
+		}
+		// Regular file: verify hash and size.
+		rc, err := zf.Open()
+		if err != nil {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: fmt.Sprintf("open zip member: %v", err),
+			})
+			tamperedPaths[entry.Path] = true
+			continue
+		}
+		hasher := sha256.New()
+		// G110: cap decompression per member; expected+1 suffices to prove
+		// any size mismatch, and the hard cap bounds bombs with inflated
+		// declared sizes (sz < expected trips the mismatch check below).
+		const maxHashBytes int64 = 1 << 30
+		limit := maxHashBytes
+		if entry.Size != nil && *entry.Size >= 0 && *entry.Size < maxHashBytes-1 {
+			limit = *entry.Size + 1
+		}
+		sz, copyErr := io.Copy(hasher, io.LimitReader(rc, limit))
+		rc.Close()
+		if copyErr != nil {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: fmt.Sprintf("read zip member content: %v", copyErr),
+			})
+			tamperedPaths[entry.Path] = true
+			continue
+		}
+		if entry.Size == nil || sz != *entry.Size {
+			expSize := int64(-1)
+			if entry.Size != nil {
+				expSize = *entry.Size
+			}
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: fmt.Sprintf("size mismatch: manifest %d, zip %d", expSize, sz),
+			})
+			tamperedPaths[entry.Path] = true
+		}
+		actualHash := hex.EncodeToString(hasher.Sum(nil))
+		if actualHash != entry.SHA256 {
+			findings = append(findings, Finding{
+				Class:  "tamper",
+				Path:   entry.Path,
+				Detail: fmt.Sprintf("hash mismatch: manifest %s, zip %s", entry.SHA256, actualHash),
+			})
+			tamperedPaths[entry.Path] = true
+		}
+	}
+	return findings
 }
 
 func isEventsJSONL(p string) bool {

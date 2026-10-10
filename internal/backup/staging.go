@@ -39,8 +39,8 @@ func defaultStatfs(path string) (FSInfo, error) {
 	if err := syscall.Statfs(path, &stat); err != nil {
 		return FSInfo{}, err
 	}
-	fsid := uint64(stat.Fsid.X__val[0])<<32 | uint64(uint32(stat.Fsid.X__val[1]))
-	avail := stat.Bavail * uint64(stat.Bsize)
+	fsid := uint64(stat.Fsid.X__val[0])<<32 | uint64(uint32(stat.Fsid.X__val[1])) //nolint:gosec // G115: statfs fields are non-negative ids on Linux
+	avail := stat.Bavail * uint64(stat.Bsize)                                     //nolint:gosec // G115: statfs fields are non-negative sizes on Linux
 	return FSInfo{AvailableBytes: avail, Fsid: fsid}, nil
 }
 
@@ -58,7 +58,7 @@ func defaultStatfs(path string) (FSInfo, error) {
 //     os.CreateTemp(dir, name+".tmp*") where random digits replace the star,
 //     producing e.g. "state.tmp4182" (".tmp" followed by ONLY digits at end).
 //
-// - temporary staging directories (.backup-staging-*) per B4
+// - temporary staging directories (.backup-staging-*) per B4.
 func IsExcluded(rel string, info os.FileInfo) bool {
 	cleanRel := filepath.ToSlash(filepath.Clean(rel))
 	if cleanRel == "memory/index.db" {
@@ -101,8 +101,8 @@ func IsExcluded(rel string, info os.FileInfo) bool {
 }
 
 func isAllDigits(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
+	for _, c := range []byte(s) {
+		if c < '0' || c > '9' {
 			return false
 		}
 	}
@@ -151,7 +151,7 @@ func CheckTreeShape(root string) ([]string, error) {
 
 		if !info.IsDir() {
 			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-				key := devIno{dev: uint64(stat.Dev), ino: uint64(stat.Ino)}
+				key := devIno{dev: stat.Dev, ino: stat.Ino}
 				if stat.Nlink > 1 {
 					offenders = append(offenders, rel)
 				} else if _, seen := seenInos[key]; seen {
@@ -197,7 +197,7 @@ func ComputeTreeSize(root string, configPath string, includeConfig bool) (uint64
 			return nil
 		}
 		if !info.IsDir() {
-			total += uint64(info.Size())
+			total += uint64(info.Size()) //nolint:gosec // G115: file sizes are non-negative
 		}
 		return nil
 	})
@@ -215,7 +215,7 @@ func ComputeTreeSize(root string, configPath string, includeConfig bool) (uint64
 		if fi.IsDir() {
 			return 0, fmt.Errorf("config path %s is a directory", configPath)
 		}
-		total += uint64(fi.Size())
+		total += uint64(fi.Size()) //nolint:gosec // G115: file sizes are non-negative
 	}
 	return total, nil
 }
@@ -353,7 +353,7 @@ func StageTree(root, stagingDir string) error {
 
 		rawMode := uint32(mode.Perm())
 		if stat, ok := lfi.Sys().(*syscall.Stat_t); ok {
-			rawMode = uint32(stat.Mode & 0o7777)
+			rawMode = stat.Mode & 0o7777 // ModeT is uint32 already (unconvert)
 		}
 
 		dstPath := filepath.Join(stagingDir, norm.NFC.String(rel))
@@ -421,7 +421,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	rawMode := uint32(mode.Perm())
 	if fi, err := os.Lstat(src); err == nil {
 		if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
-			rawMode = uint32(stat.Mode & 0o7777)
+			rawMode = stat.Mode & 0o7777 // ModeT is uint32 already (unconvert)
 		}
 	}
 	return syscall.Chmod(dst, rawMode)

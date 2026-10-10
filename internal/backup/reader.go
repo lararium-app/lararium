@@ -149,7 +149,9 @@ func ExtractConfig(bundlePath string, destPath string) error {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, rc); err != nil {
+	// G110: a bundle config member is a small yaml; cap extraction so a
+	// decompression bomb cannot write more than 8 MiB.
+	if _, err := io.Copy(out, io.LimitReader(rc, 8<<20)); err != nil {
 		os.Remove(destPath)
 		return fmt.Errorf("write config file: %w", err)
 	}

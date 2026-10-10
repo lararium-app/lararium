@@ -215,9 +215,7 @@ func TestBK3_TamperVsQuarantine(t *testing.T) {
 		corruptPath := filepath.Join(t.TempDir(), "corrupt-manifest.lararium-backup")
 		copyAndMutateZip(t, out, corruptPath, func(name string, data []byte) []byte {
 			if name == "manifest.json" {
-				// Corrupt hash of SOUL.md
-				data = bytes.Replace(data, []byte("tree/SOUL.md"), []byte("tree/SOUL.md"), 1)
-				// Corrupt first hash character
+				// Corrupt first hash character of SOUL.md's entry.
 				data = bytes.Replace(data, []byte(`"sha256": "`), []byte(`"sha256": "0000000000`), 1)
 			}
 			return data
@@ -477,8 +475,6 @@ func TestBK9_Concurrency(t *testing.T) {
 	}
 
 	// Second create must refuse IMMEDIATELY (LOCK_NB)
-	start := testing.Benchmark(func(b *testing.B) {})
-	_ = start
 	err2 := CreateOffline(root, cfg, out, false, nil)
 	if err2 == nil || !errors.Is(err2, ErrBusy) {
 		t.Fatalf("second create must refuse immediately with ErrBusy, got: %v", err2)
@@ -1039,7 +1035,7 @@ func TestBK_m18_IsProductNewerUnparseable(t *testing.T) {
 	}
 }
 
-// Helpers for corrupting zip bundles
+// Helpers for corrupting zip bundles.
 func copyAndMutateZip(t *testing.T, src, dst string, mutate func(name string, data []byte) []byte) {
 	t.Helper()
 	zr, err := zip.OpenReader(src)
@@ -1149,8 +1145,8 @@ func removeZipEntry(t *testing.T, src, dst string, nameToRemove string) {
 }
 
 // TestBK_F1_PreciseExclusionLaw tests that:
-// (a) bundle includes prompt.tmpl, notes.tmp.md, config.tmp.json
-// (b) bundle excludes tokens-abc.tmp at root and nuntius/state.tmp4182 (fixture)
+// (a) bundle includes prompt.tmpl, notes.tmp.md, config.tmp.json;
+// (b) bundle excludes tokens-abc.tmp at root and nuntius/state.tmp4182 (fixture).
 func TestBK_F1_PreciseExclusionLaw(t *testing.T) {
 	root := setupTestRoot(t)
 	cfg := setupTestConfig(t)

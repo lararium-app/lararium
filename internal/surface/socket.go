@@ -120,13 +120,13 @@ func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
 	case cmd == "PING":
 		fmt.Fprint(conn, "OK\n")
 	case strings.HasPrefix(cmd, "backup ") || cmd == "backup":
-		s.handleBackupSocket(conn, reader, cmd)
+		s.handleBackupSocket(conn, cmd)
 	default:
 		fmt.Fprint(conn, "ERR unknown command\n")
 	}
 }
 
-func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line string) {
+func (s *Server) handleBackupSocket(conn net.Conn, line string) {
 	if s.Backup == nil {
 		fmt.Fprint(conn, "ERR backup not supported\n")
 		return
@@ -141,17 +141,18 @@ func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line st
 	}
 	outAbs := parts[1]
 	noConfig := false
-	if len(parts) == 3 {
-		if parts[2] == "--no-config" {
-			noConfig = true
-		} else if strings.HasPrefix(parts[2], "--") {
-			fmt.Fprintf(conn, "ERR unknown flag %s\n", parts[2])
-			return
-		} else {
-			fmt.Fprint(conn, "ERR usage: backup <out_abs> [--no-config]\n")
-			return
-		}
-	} else if len(parts) > 3 {
+	switch {
+	case len(parts) == 2:
+		// no flags
+	case len(parts) == 3 && parts[2] == "--no-config":
+		noConfig = true
+	case len(parts) == 3 && strings.HasPrefix(parts[2], "--"):
+		fmt.Fprintf(conn, "ERR unknown flag %s\n", parts[2])
+		return
+	case len(parts) == 3:
+		fmt.Fprint(conn, "ERR usage: backup <out_abs> [--no-config]\n")
+		return
+	default:
 		fmt.Fprint(conn, "ERR usage: out path must not contain whitespace; backup <out_abs> [--no-config]\n")
 		return
 	}

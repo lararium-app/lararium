@@ -205,7 +205,7 @@ func TestBK5_CustodyCoherenceAndHeldLockRefusal(t *testing.T) {
 		}
 	}()
 
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := range 5 {
 		outHammer := filepath.Join(t.TempDir(), fmt.Sprintf("hammer-%d.lararium-backup", attempt))
 		err := backup.CreateOffline(home, cfgPath, outHammer, false, nil)
 		if err != nil {

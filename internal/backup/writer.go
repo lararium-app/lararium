@@ -186,59 +186,12 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 		return fmt.Errorf("write manifest zip entry: %w", err)
 	}
 
-	// Stream all entries
-	for _, entry := range entries {
-		mode, _ := ParseOctalMode(entry.Mode)
-		fh := &zip.FileHeader{
-			Name:   entry.Path,
-			Method: zip.Deflate,
-		}
-		fh.SetMode(mode)
-		if rawMode, err := strconv.ParseUint(entry.Mode, 8, 32); err == nil {
-			typeBits := fh.ExternalAttrs >> 16 & 0xF000
-			fh.ExternalAttrs = (uint32(typeBits|uint32(rawMode&0o7777)) << 16) | (fh.ExternalAttrs & 0xFFFF)
-		}
-
-		if entry.Dir {
-			if _, err := zw.CreateHeader(fh); err != nil {
-				zw.Close()
-				tmpFile.Close()
-				return fmt.Errorf("create dir zip entry %s: %w", entry.Path, err)
-			}
-			continue
-		}
-
-		w, err := zw.CreateHeader(fh)
-		if err != nil {
-			zw.Close()
-			tmpFile.Close()
-			return fmt.Errorf("create file zip entry %s: %w", entry.Path, err)
-		}
-
-		if entry.Path == "config/lararium.yaml" {
-			if _, err := w.Write(configBytes); err != nil {
-				zw.Close()
-				tmpFile.Close()
-				return fmt.Errorf("write config zip entry: %w", err)
-			}
-			continue
-		}
-
-		relPath := strings.TrimPrefix(entry.Path, "tree/")
-		srcFile := filepath.Join(stagingDir, filepath.FromSlash(relPath))
-		f, err := os.Open(srcFile)
-		if err != nil {
-			zw.Close()
-			tmpFile.Close()
-			return fmt.Errorf("open staged file %s: %w", srcFile, err)
-		}
-		_, copyErr := io.Copy(w, f)
-		f.Close()
-		if copyErr != nil {
-			zw.Close()
-			tmpFile.Close()
-			return fmt.Errorf("copy staged file %s to zip: %w", srcFile, copyErr)
-		}
+	// Stream all entries (funlen: helper writes every member; zw/tmpFile
+	// are closed by the caller on any error path below).
+	if err := writeZipEntries(zw, entries, stagingDir, configBytes); err != nil {
+		zw.Close()
+		tmpFile.Close()
+		return err
 	}
 
 	if err := zw.Close(); err != nil {
@@ -265,6 +218,56 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 	}
 	fsyncDir(outDir)
 
+	return nil
+}
+
+// writeZipEntries streams every manifest member (dirs, config bytes, staged
+// files) into the zip writer, preserving raw modes in ExternalAttrs.
+func writeZipEntries(zw *zip.Writer, entries []ManifestEntry, stagingDir string, configBytes []byte) error {
+	for _, entry := range entries {
+		mode, _ := ParseOctalMode(entry.Mode)
+		fh := &zip.FileHeader{
+			Name:   entry.Path,
+			Method: zip.Deflate,
+		}
+		fh.SetMode(mode)
+		if rawMode, err := strconv.ParseUint(entry.Mode, 8, 32); err == nil {
+			// rawMode is masked to the 12-bit mode field before widening.
+			typeBits := fh.ExternalAttrs >> 16 & 0xF000
+			fh.ExternalAttrs = ((typeBits | uint32(rawMode&0o7777)) << 16) | (fh.ExternalAttrs & 0xFFFF)
+		}
+
+		if entry.Dir {
+			if _, err := zw.CreateHeader(fh); err != nil {
+				return fmt.Errorf("create dir zip entry %s: %w", entry.Path, err)
+			}
+			continue
+		}
+
+		w, err := zw.CreateHeader(fh)
+		if err != nil {
+			return fmt.Errorf("create file zip entry %s: %w", entry.Path, err)
+		}
+
+		if entry.Path == "config/lararium.yaml" {
+			if _, err := w.Write(configBytes); err != nil {
+				return fmt.Errorf("write config zip entry: %w", err)
+			}
+			continue
+		}
+
+		relPath := strings.TrimPrefix(entry.Path, "tree/")
+		srcFile := filepath.Join(stagingDir, filepath.FromSlash(relPath))
+		f, err := os.Open(srcFile)
+		if err != nil {
+			return fmt.Errorf("open staged file %s: %w", srcFile, err)
+		}
+		_, copyErr := io.Copy(w, f)
+		f.Close()
+		if copyErr != nil {
+			return fmt.Errorf("copy staged file %s to zip: %w", srcFile, copyErr)
+		}
+	}
 	return nil
 }
 

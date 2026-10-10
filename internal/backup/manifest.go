@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// FormatVersion is the bundle format identifier per PENATUS-SPEC §4.5.2.
 const FormatVersion = "backup/1.0"
 
 // Version is the daemon version (can be set via ldflags), matching daemon /health (m16).
@@ -28,11 +29,13 @@ type Manifest struct {
 	Counts  CountsInfo      `json:"counts"`
 }
 
+// SourceInfo records the origin of a bundle per §4.5.2.
 type SourceInfo struct {
 	AbsPath  string `json:"abs_path"`
 	Hostname string `json:"hostname"`
 }
 
+// ManifestEntry describes one bundle member per §4.5.2.
 type ManifestEntry struct {
 	Path   string `json:"path"`
 	Dir    bool   `json:"dir,omitempty"`
@@ -41,6 +44,7 @@ type ManifestEntry struct {
 	SHA256 string `json:"sha256,omitempty"`
 }
 
+// CountsInfo carries manifest summary counts per §4.5.2.
 type CountsInfo struct {
 	Sessions    int `json:"sessions"`
 	MemoryFiles int `json:"memory_files"`
@@ -64,10 +68,11 @@ func ComputeCounts(root string) (CountsInfo, error) {
 	memDir := filepath.Join(root, "memory")
 	if _, err := os.Stat(memDir); err == nil {
 		_ = filepath.Walk(memDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return nil
+			if err != nil || info.IsDir() {
+				// Best-effort count: unreadable subtrees simply contribute zero.
+				return nil //nolint:nilerr // walk errors are swallowed by design
 			}
-			if !info.IsDir() && strings.HasSuffix(info.Name(), ".md") {
+			if strings.HasSuffix(info.Name(), ".md") {
 				counts.MemoryFiles++
 			}
 			return nil
