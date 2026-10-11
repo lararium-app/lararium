@@ -25,7 +25,14 @@
   --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --accent-h: 25;
-}
+
+  --ember-deep: #b9542a;
+  --ember-grad: #d4703a;
+  --ember-a15: var(--ember-a15);
+  --ember-a28: var(--ember-a28);
+  --ember-a35: var(--ember-a35);
+  --ember-a40: var(--ember-a40);
+  --ember-a50: var(--ember-a50);}
 
 html[data-theme="warm"] {
   --bg: #111418;
@@ -42,7 +49,14 @@ html[data-theme="warm"] {
   --ember-glow: rgba(232, 131, 74, 0.16);
   --radius: 14px;
   --font-brand: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
-}
+
+  --ember-deep: #b9542a;
+  --ember-grad: #d4703a;
+  --ember-a15: var(--ember-a15);
+  --ember-a28: var(--ember-a28);
+  --ember-a35: var(--ember-a35);
+  --ember-a40: var(--ember-a40);
+  --ember-a50: var(--ember-a50);}
 
 html[data-theme="neutral"] {
   --bg: #141414;
@@ -59,7 +73,14 @@ html[data-theme="neutral"] {
   --ember-glow: rgba(122, 162, 214, 0.18);
   --radius: 8px;
   --font-brand: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
+
+  --ember-deep: #4c74a8;
+  --ember-grad: #5d86bd;
+  --ember-a15: rgba(122, 162, 214, 0.15);
+  --ember-a28: rgba(122, 162, 214, 0.28);
+  --ember-a35: rgba(122, 162, 214, 0.35);
+  --ember-a40: rgba(122, 162, 214, 0.4);
+  --ember-a50: rgba(122, 162, 214, 0.5);}
 
 html[data-theme="custom"],
 html[data-theme="custom"][data-base="dark"] {
@@ -77,7 +98,14 @@ html[data-theme="custom"][data-base="dark"] {
   --ember-glow: hsla(var(--accent-h), 70%, 55%, 0.18);
   --radius: 12px;
   --font-brand: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
-}
+
+  --ember-deep: hsl(var(--accent-h), 68%, 38%);
+  --ember-grad: hsl(var(--accent-h), 65%, 45%);
+  --ember-a15: hsla(var(--accent-h), 70%, 55%, 0.15);
+  --ember-a28: hsla(var(--accent-h), 70%, 55%, 0.28);
+  --ember-a35: hsla(var(--accent-h), 70%, 55%, 0.35);
+  --ember-a40: hsla(var(--accent-h), 70%, 55%, 0.4);
+  --ember-a50: hsla(var(--accent-h), 70%, 55%, 0.5);}
 
 html[data-theme="custom"][data-base="light"] {
   --bg: #f5f4f0;
@@ -94,7 +122,14 @@ html[data-theme="custom"][data-base="light"] {
   --ember-glow: hsla(var(--accent-h), 70%, 45%, 0.16);
   --radius: 12px;
   --font-brand: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
+
+  --ember-deep: hsl(var(--accent-h), 68%, 38%);
+  --ember-grad: hsl(var(--accent-h), 65%, 45%);
+  --ember-a15: hsla(var(--accent-h), 70%, 45%, 0.15);
+  --ember-a28: hsla(var(--accent-h), 70%, 45%, 0.28);
+  --ember-a35: hsla(var(--accent-h), 70%, 45%, 0.35);
+  --ember-a40: hsla(var(--accent-h), 70%, 45%, 0.4);
+  --ember-a50: hsla(var(--accent-h), 70%, 45%, 0.5);}
 
 html, body {
   height: 100%;
@@ -141,7 +176,7 @@ body {
   width: 34px;
   height: 34px;
   border-radius: 10px;
-  background: radial-gradient(circle at 50% 30%, var(--ember2), #b9542a 70%);
+  background: radial-gradient(circle at 50% 30%, var(--ember2), var(--ember-deep) 70%);
   display: grid;
   place-items: center;
   font-size: 17px;
@@ -276,7 +311,7 @@ body {
   margin-left: 6px;
   font: 600 10px var(--font-body);
   color: var(--ember2);
-  border: 1px solid rgba(232, 131, 74, 0.35);
+  border: 1px solid var(--ember-a35);
   border-radius: 20px;
   padding: 0 6px;
   vertical-align: 1px;
@@ -556,7 +591,7 @@ main {
   width: 56px;
   height: 56px;
   border-radius: 16px;
-  background: radial-gradient(circle at 50% 30%, var(--ember2), #b9542a 70%);
+  background: radial-gradient(circle at 50% 30%, var(--ember2), var(--ember-deep) 70%);
   display: grid;
   place-items: center;
   font-size: 28px;
@@ -710,7 +745,7 @@ main {
 .custos-btn {
   font: 500 11.5px var(--font-body);
   color: var(--ember2);
-  border: 1px solid rgba(232, 131, 74, 0.4);
+  border: 1px solid var(--ember-a40);
   background: none;
   border-radius: 7px;
   padding: 5px 11px;
@@ -719,7 +754,7 @@ main {
 }
 
 .custos-btn-once {
-  background: rgba(232, 131, 74, 0.15);
+  background: var(--ember-a15);
   color: var(--ember2);
 }
 
@@ -766,7 +801,7 @@ main {
 }
 
 .avatar.ember {
-  background: radial-gradient(circle at 50% 30%, var(--ember2), #b9542a 70%);
+  background: radial-gradient(circle at 50% 30%, var(--ember2), var(--ember-deep) 70%);
   box-shadow: 0 0 14px var(--ember-glow);
 }
 
@@ -863,7 +898,7 @@ main {
 
 .msg.user .bubble {
   background: var(--ember-glow);
-  border: 1px solid rgba(232, 131, 74, 0.28);
+  border: 1px solid var(--ember-a28);
   padding: 9px 14px;
   border-radius: 14px 14px 4px 14px;
   max-width: 85%;
@@ -1036,7 +1071,7 @@ main {
 }
 
 .approval-buttons .allow {
-  background: linear-gradient(180deg, var(--ember2), #d4703a);
+  background: linear-gradient(180deg, var(--ember2), var(--ember-grad));
   color: #191210;
 }
 
@@ -1094,7 +1129,7 @@ main {
 }
 
 .composer:focus-within {
-  border-color: rgba(232, 131, 74, 0.5);
+  border-color: var(--ember-a50);
   box-shadow: 0 0 0 3px var(--ember-glow), 0 8px 30px rgba(0, 0, 0, 0.35);
 }
 
@@ -1151,7 +1186,7 @@ main {
 
 .sendbtn {
   border: 0;
-  background: linear-gradient(180deg, var(--ember2), #d4703a);
+  background: linear-gradient(180deg, var(--ember2), var(--ember-grad));
   color: #191210;
   font: 600 13px var(--font-body);
   border-radius: 10px;
@@ -1325,7 +1360,7 @@ main {
 }
 
 #keys-form button[type="submit"] {
-  background: linear-gradient(180deg, var(--ember2), #d4703a);
+  background: linear-gradient(180deg, var(--ember2), var(--ember-grad));
   color: #191210;
   border: 0;
   border-radius: 8px;
