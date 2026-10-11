@@ -127,7 +127,7 @@ func main() {
 	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml")
 	modelFlag := flag.String("model", "", "override: model ref for this run")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  token create|revoke <label>\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
+		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  setup\n  token create|revoke <label>\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -137,6 +137,9 @@ func main() {
 		switch args[0] {
 		case "serve":
 			serve(*cfgPath)
+			return
+		case "setup":
+			setupCmd(*cfgPath, args[1:])
 			return
 		case "token":
 			tokenCmd(*cfgPath, args[1:])
