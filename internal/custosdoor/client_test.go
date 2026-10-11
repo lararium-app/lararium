@@ -606,27 +606,26 @@ func TestAttachOverflowDropToDead(t *testing.T) {
 	_, slowCancel, slowEvents := h.c.Attach()
 	defer slowCancel()
 
-	fastReceived := make(chan Event, 100)
-	fastDone := make(chan struct{})
-	go func() {
-		defer close(fastDone)
-		for ev := range fastEvents {
-			fastReceived <- ev
-			if len(fastReceived) == 70 {
-				return
-			}
-		}
-	}()
-
+	// Send one card at a time and wait for the fast consumer to receive it
+	// before sending the next. The previous burst-plus-background-consumer
+	// shape assumed the consumer goroutine keeps up with 70 back-to-back
+	// dispatches; on loaded shared runners (effectively GOMAXPROCS=1) the
+	// dispatcher outran it, fast's buffer filled, and the client correctly
+	// drop-to-deaded the FAST subscriber — the test then read the closed
+	// channel and misreported a zero Event as a wrong card. Pacing on
+	// receipt keeps fast's buffer near-empty under any scheduler while
+	// slow never reads, so overflow deterministically hits slow.
 	for i := range 70 {
 		cid := fmt.Sprintf("ov_%d", i)
 		fc.send(fmt.Sprintf(`CARD {"id":%q,"cell":"main","cred":"gmail","dest":"x","tool":"","review":"r","age_s":0,"expires_in_s":60}`, cid))
-	}
-
-	select {
-	case <-fastDone:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("fast consumer timed out, got %d/70 events", len(fastReceived))
+		select {
+		case ev := <-fastEvents:
+			if ev.Card == nil || ev.Card.ID != cid {
+				t.Fatalf("fast consumer got %+v, want card %s", ev, cid)
+			}
+		case <-time.After(5 * time.Second): // generous: shared runners stall goroutines
+			t.Fatalf("fast consumer did not receive %s within 5s", cid)
+		}
 	}
 
 	for i := range 64 {
