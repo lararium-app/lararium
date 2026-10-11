@@ -8,25 +8,120 @@ const transcriptEl = document.getElementById("transcript");
 const custosCardsEl = document.getElementById("custos-cards");
 const composerEl = document.getElementById("composer");
 const inputEl = document.getElementById("input");
+const topbarTitleEl = document.getElementById("topbar-title");
+const topbarModelEl = document.getElementById("topbar-model");
+const topbarModelNameEl = document.getElementById("topbar-model-name");
+const topbarTransportEl = document.getElementById("topbar-transport");
+const sessionSearchEl = document.getElementById("session-search");
+const navToggleBtn = document.getElementById("nav-toggle");
+const railBackdropEl = document.getElementById("rail-backdrop");
+const themeBtnEl = document.getElementById("theme-btn");
+const themePopoverEl = document.getElementById("theme-popover");
+const accentHueEl = document.getElementById("accent-hue");
+const hueValEl = document.getElementById("hue-val");
+const shareBtnEl = document.getElementById("share-btn");
 
 let token = null;
 let currentSessionId = null;
+let currentSessionModel = null;
 let catchUpTimer = null;
 let isStreaming = false;
 let currentAssistantBubble = null;
 let currentAssistantText = "";
+let loadedSessions = [];
+let loadedEvents = [];
+let lastUserMessageText = "";
+
+// --- Theme System ---
+
+function initTheme() {
+  const savedTheme = sessionStorage.getItem("lararium.theme") || "warm";
+  const hue = sessionStorage.getItem("lararium.accent-hue") || "25";
+  const base = sessionStorage.getItem("lararium.base") || "dark";
+
+  document.documentElement.dataset.theme = savedTheme;
+  document.documentElement.style.setProperty("--accent-h", hue);
+  document.documentElement.dataset.base = base;
+
+  if (accentHueEl) accentHueEl.value = hue;
+  if (hueValEl) hueValEl.textContent = hue;
+  updateThemeUI();
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  sessionStorage.setItem("lararium.theme", theme);
+  if (theme === "custom") {
+    const hue = sessionStorage.getItem("lararium.accent-hue") || "25";
+    document.documentElement.style.setProperty("--accent-h", hue);
+    const base = sessionStorage.getItem("lararium.base") || "dark";
+    document.documentElement.dataset.base = base;
+  }
+  updateThemeUI();
+}
+
+function setBase(base) {
+  document.documentElement.dataset.base = base;
+  sessionStorage.setItem("lararium.base", base);
+  updateThemeUI();
+}
+
+function updateThemeUI() {
+  const curTheme = document.documentElement.dataset.theme || "warm";
+  const curBase = document.documentElement.dataset.base || "dark";
+
+  if (themePopoverEl) {
+    for (const btn of themePopoverEl.querySelectorAll(".theme-opt")) {
+      btn.classList.toggle("active", btn.dataset.themeVal === curTheme);
+    }
+    const customControls = document.getElementById("custom-theme-controls");
+    if (customControls) {
+      customControls.hidden = curTheme !== "custom";
+    }
+    for (const btn of themePopoverEl.querySelectorAll(".base-btn")) {
+      btn.classList.toggle("active", btn.dataset.baseVal === curBase);
+    }
+  }
+}
+
+function toggleThemePopover() {
+  if (!themePopoverEl) return;
+  themePopoverEl.hidden = !themePopoverEl.hidden;
+  if (!themePopoverEl.hidden) {
+    updateThemeUI();
+  }
+}
+
+function closeThemePopover() {
+  if (themePopoverEl) themePopoverEl.hidden = true;
+}
+
+// --- Helpers ---
 
 function showStatus(msg) {
-  statusEl.textContent = msg;
+  if (statusEl) statusEl.textContent = msg;
+  const dot = document.getElementById("status-dot");
+  if (dot) {
+    if (msg.includes("error") || msg.includes("failed") || msg.includes("unauthorized")) {
+      dot.className = "dot err";
+    } else {
+      dot.className = "dot warn";
+    }
+  }
 }
 
 function clearStatus() {
-  statusEl.textContent = "";
+  if (statusEl) statusEl.textContent = "hearth online";
+  const dot = document.getElementById("status-dot");
+  if (dot) dot.className = "dot";
 }
 
 function setComposerDisabled(disabled) {
   inputEl.disabled = disabled;
-  composerEl.querySelector("button").disabled = disabled;
+  const sendBtn = composerEl.querySelector('button[type="submit"]');
+  if (sendBtn) sendBtn.disabled = disabled;
+  const stopBtn = document.getElementById("stop-btn");
+  if (stopBtn) stopBtn.disabled = !disabled;
 }
 
 function createElement(tag, className, textContent) {
@@ -36,24 +131,390 @@ function createElement(tag, className, textContent) {
   return el;
 }
 
-function renderSessionList(sessions) {
-  sessionsEl.textContent = "";
-  for (const s of sessions) {
-    const li = createElement("li");
-    const label = createElement("span");
-    label.textContent = s.title || s.id;
-    if (s.kind === "side") {
-      const marker = createElement("span", "kind-marker");
-      marker.textContent = " ⟳";
-      label.appendChild(marker);
+function formatTime(val) {
+  try {
+    const d = val ? new Date(val) : new Date();
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     }
-    li.appendChild(label);
-    li.dataset.id = s.id;
-    if (s.id === currentSessionId) li.classList.add("active");
-    li.addEventListener("click", () => selectSession(s.id));
-    sessionsEl.appendChild(li);
+  } catch (_) {}
+  return "";
+}
+
+function autoGrowTextarea() {
+  inputEl.style.setProperty("height", "auto");
+  const nextHeight = Math.min(inputEl.scrollHeight, 200);
+  inputEl.style.setProperty("height", nextHeight + "px");
+}
+
+function toggleRail() {
+  document.body.classList.toggle("rail-open");
+}
+
+function closeRail() {
+  document.body.classList.remove("rail-open");
+}
+
+// --- Hand-rolled XSS-safe Markdown Renderer ---
+
+function parseMarkdownBlocks(text) {
+  const lines = text.split(/\r?\n/);
+  const blocks = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block (```lang)
+    const fenceMatch = line.match(/^```(\w*)/);
+    if (fenceMatch) {
+      const lang = fenceMatch[1] || "";
+      i++;
+      const codeLines = [];
+      let closed = false;
+      while (i < lines.length) {
+        if (/^```\s*$/.test(lines[i])) {
+          closed = true;
+          i++;
+          break;
+        }
+        codeLines.push(lines[i]);
+        i++;
+      }
+      blocks.push({
+        type: "code",
+        lang: lang,
+        content: codeLines.join("\n"),
+        closed: closed
+      });
+      continue;
+    }
+
+    // Heading (#, ##, ###)
+    const headingMatch = line.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length,
+        text: headingMatch[2]
+      });
+      i++;
+      continue;
+    }
+
+    // Horizontal rule (---, ***, ___)
+    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
+      blocks.push({ type: "hr" });
+      i++;
+      continue;
+    }
+
+    // Unordered list (- item, * item)
+    if (/^[-*]\s+(.*)$/.test(line)) {
+      const items = [];
+      while (i < lines.length) {
+        const itemMatch = lines[i].match(/^[-*]\s+(.*)$/);
+        if (itemMatch) {
+          items.push(itemMatch[1]);
+          i++;
+        } else if (lines[i].trim() === "") {
+          break;
+        } else {
+          if (items.length > 0 && !/^(\d+\.|#{1,3}|```|[-*]\s+)/.test(lines[i])) {
+            items[items.length - 1] += " " + lines[i].trim();
+            i++;
+          } else {
+            break;
+          }
+        }
+      }
+      blocks.push({ type: "ul", items });
+      continue;
+    }
+
+    // Ordered list (1. item)
+    if (/^\d+\.\s+(.*)$/.test(line)) {
+      const items = [];
+      while (i < lines.length) {
+        const itemMatch = lines[i].match(/^\d+\.\s+(.*)$/);
+        if (itemMatch) {
+          items.push(itemMatch[1]);
+          i++;
+        } else if (lines[i].trim() === "") {
+          break;
+        } else {
+          if (items.length > 0 && !/^(\d+\.|#{1,3}|```|[-*]\s+)/.test(lines[i])) {
+            items[items.length - 1] += " " + lines[i].trim();
+            i++;
+          } else {
+            break;
+          }
+        }
+      }
+      blocks.push({ type: "ol", items });
+      continue;
+    }
+
+    // Blank lines
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    // Paragraph
+    const paraLines = [];
+    while (i < lines.length) {
+      const cur = lines[i];
+      if (cur.trim() === "") break;
+      if (/^```/.test(cur)) break;
+      if (/^(#{1,3})\s+/.test(cur)) break;
+      if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(cur)) break;
+      if (/^[-*]\s+/.test(cur)) break;
+      if (/^\d+\.\s+/.test(cur)) break;
+      paraLines.push(cur);
+      i++;
+    }
+    if (paraLines.length > 0) {
+      blocks.push({ type: "p", lines: paraLines });
+    }
+  }
+
+  return blocks;
+}
+
+function renderInline(text, parentEl) {
+  function parseLinkAt(str, start) {
+    const prefixMatch = str.slice(start).match(/^\[([^\]]+)\]\(/);
+    if (!prefixMatch) return null;
+    let depth = 1;
+    let i = start + prefixMatch[0].length;
+    while (i < str.length && depth > 0) {
+      if (str[i] === '(') depth++;
+      else if (str[i] === ')') depth--;
+      i++;
+    }
+    if (depth === 0) {
+      const url = str.slice(start + prefixMatch[0].length, i - 1);
+      return {
+        linkText: prefixMatch[1],
+        url: url.trim(),
+        totalLen: i - start
+      };
+    }
+    return null;
+  }
+
+  let pos = 0;
+  while (pos < text.length) {
+    // Inline code `...`
+    if (text[pos] === '`') {
+      const endTick = text.indexOf('`', pos + 1);
+      if (endTick !== -1) {
+        const codeText = text.slice(pos + 1, endTick);
+        const codeEl = createElement("code", "inline", codeText);
+        parentEl.appendChild(codeEl);
+        pos = endTick + 1;
+        continue;
+      }
+    }
+
+    // Bold **...**
+    if (text.startsWith('**', pos)) {
+      const endBold = text.indexOf('**', pos + 2);
+      if (endBold !== -1) {
+        const boldText = text.slice(pos + 2, endBold);
+        const bEl = createElement("b");
+        renderInline(boldText, bEl);
+        parentEl.appendChild(bEl);
+        pos = endBold + 2;
+        continue;
+      }
+    }
+
+    // Italic *...*
+    if (text[pos] === '*' && text[pos + 1] !== '*' && text[pos + 1] !== ' ') {
+      const endItalic = text.indexOf('*', pos + 1);
+      if (endItalic !== -1 && endItalic > pos + 1) {
+        const italicText = text.slice(pos + 1, endItalic);
+        const iEl = createElement("i");
+        renderInline(italicText, iEl);
+        parentEl.appendChild(iEl);
+        pos = endItalic + 1;
+        continue;
+      }
+    }
+
+    // Link [text](url)
+    if (text[pos] === '[') {
+      const linkInfo = parseLinkAt(text, pos);
+      if (linkInfo) {
+        const isSafe = /^https?:\/\//i.test(linkInfo.url) || /^mailto:/i.test(linkInfo.url);
+        if (isSafe) {
+          const a = createElement("a");
+          a.href = linkInfo.url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          a.textContent = linkInfo.linkText;
+          parentEl.appendChild(a);
+        } else {
+          // Drop unsafe url protocol (e.g. javascript:)
+          parentEl.appendChild(document.createTextNode(linkInfo.linkText));
+        }
+        pos += linkInfo.totalLen;
+        continue;
+      }
+    }
+
+    // Plain text accumulation
+    let nextSpecial = pos + 1;
+    while (nextSpecial < text.length) {
+      const ch = text[nextSpecial];
+      if (ch === '`' || ch === '*' || ch === '[') break;
+      nextSpecial++;
+    }
+    const plainChunk = text.slice(pos, nextSpecial);
+    parentEl.appendChild(document.createTextNode(plainChunk));
+    pos = nextSpecial;
   }
 }
+
+function renderMarkdown(text, containerEl) {
+  containerEl.replaceChildren();
+  const blocks = parseMarkdownBlocks(text);
+
+  for (const block of blocks) {
+    if (block.type === "code") {
+      const blockEl = createElement("div", "codeblock");
+      const headEl = createElement("div", "head");
+      const langLabel = createElement("span", "lang", block.lang || "code");
+      headEl.appendChild(langLabel);
+
+      const copyBtn = createElement("button", "copy", "Copy");
+      copyBtn.type = "button";
+      copyBtn.title = "Copy code";
+      copyBtn.addEventListener("click", () => {
+        navigator.clipboard.writeText(block.content).then(() => {
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+        }).catch(() => {});
+      });
+      headEl.appendChild(copyBtn);
+      blockEl.appendChild(headEl);
+
+      const preEl = createElement("pre");
+      const codeEl = createElement("code", "", block.content);
+      preEl.appendChild(codeEl);
+      blockEl.appendChild(preEl);
+      containerEl.appendChild(blockEl);
+    } else if (block.type === "heading") {
+      const tag = block.level === 1 ? "h3" : (block.level === 2 ? "h4" : "h5");
+      const hEl = createElement(tag, tag);
+      renderInline(block.text, hEl);
+      containerEl.appendChild(hEl);
+    } else if (block.type === "hr") {
+      containerEl.appendChild(createElement("hr"));
+    } else if (block.type === "ul") {
+      const ulEl = createElement("ul", "bullets");
+      for (const itemText of block.items) {
+        const liEl = createElement("li");
+        renderInline(itemText, liEl);
+        ulEl.appendChild(liEl);
+      }
+      containerEl.appendChild(ulEl);
+    } else if (block.type === "ol") {
+      const olEl = createElement("ol", "ordered-list");
+      for (const itemText of block.items) {
+        const liEl = createElement("li");
+        renderInline(itemText, liEl);
+        olEl.appendChild(liEl);
+      }
+      containerEl.appendChild(olEl);
+    } else if (block.type === "p") {
+      const pEl = createElement("p");
+      for (let li = 0; li < block.lines.length; li++) {
+        renderInline(block.lines[li], pEl);
+        if (li < block.lines.length - 1) {
+          pEl.appendChild(createElement("br"));
+        }
+      }
+      containerEl.appendChild(pEl);
+    }
+  }
+}
+
+// --- Session List & Grouping ---
+
+function getSessionGroup(createdStr) {
+  if (!createdStr) return "Older";
+  const date = new Date(createdStr);
+  if (isNaN(date.getTime())) return "Older";
+  const now = new Date();
+
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterdayStart = todayStart - 86400000;
+  const prev7Start = todayStart - 7 * 86400000;
+
+  const t = date.getTime();
+  if (t >= todayStart) return "Today";
+  if (t >= yesterdayStart) return "Yesterday";
+  if (t >= prev7Start) return "Previous 7 days";
+  return "Older";
+}
+
+function renderSessionList(sessions) {
+  sessionsEl.replaceChildren();
+  const query = sessionSearchEl ? sessionSearchEl.value.trim().toLowerCase() : "";
+  const filtered = query ? sessions.filter(s => (s.title || s.id).toLowerCase().includes(query)) : sessions;
+
+  const groups = { "Today": [], "Yesterday": [], "Previous 7 days": [], "Older": [] };
+  let hasTimestamps = false;
+
+  for (const s of filtered) {
+    if (s.created) hasTimestamps = true;
+    const grp = getSessionGroup(s.created);
+    groups[grp].push(s);
+  }
+
+  const groupKeys = ["Today", "Yesterday", "Previous 7 days", "Older"];
+
+  for (const gKey of groupKeys) {
+    const list = groups[gKey];
+    if (list.length === 0) continue;
+
+    if (hasTimestamps) {
+      const groupHeader = createElement("div", "group", gKey);
+      sessionsEl.appendChild(groupHeader);
+    }
+
+    for (const s of list) {
+      const li = createElement("li", "sess");
+      li.dataset.id = s.id;
+      if (s.id === currentSessionId) li.classList.add("active");
+
+      const titleSpan = createElement("span", "t");
+      titleSpan.textContent = s.title || s.id;
+      if (s.kind === "side" || s.parent) {
+        const marker = createElement("span", "badge kind-marker", "branched");
+        titleSpan.appendChild(marker);
+      }
+      li.appendChild(titleSpan);
+
+      const previewText = s.preview || s.last_message;
+      if (previewText) {
+        const pSpan = createElement("span", "p", previewText);
+        li.appendChild(pSpan);
+      }
+
+      li.addEventListener("click", () => {
+        selectSession(s.id);
+        if (window.innerWidth <= 720) closeRail();
+      });
+      sessionsEl.appendChild(li);
+    }
+  }
+}
+
+// --- API Calls ---
 
 async function fetchJson(method, path, body) {
   const headers = {
@@ -76,45 +537,177 @@ async function fetchJson(method, path, body) {
 }
 
 async function loadSessions() {
-  const data = await fetchJson("GET", "/v1/sessions");
-  renderSessionList(data);
-  if (data.length === 0 && !currentSessionId) {
-    // First run: open the door and start typing — no dead composer.
-    await createSession();
-    return;
-  }
-  if (data.length > 0 && !currentSessionId) {
-    selectSession(data[0].id);
+  try {
+    const data = await fetchJson("GET", "/v1/sessions");
+    loadedSessions = data;
+    renderSessionList(data);
+    if (data.length === 0 && !currentSessionId) {
+      await createSession();
+      return;
+    }
+    if (data.length > 0 && !currentSessionId) {
+      selectSession(data[0].id);
+    }
+  } catch (e) {
+    if (e.message !== "unauthorized") showStatus("failed to load sessions: " + e.message);
   }
 }
 
 async function createSession() {
-  const data = await fetchJson("POST", "/v1/sessions", {});
-  await loadSessions();
-  selectSession(data.id);
+  try {
+    const data = await fetchJson("POST", "/v1/sessions", {});
+    await loadSessions();
+    selectSession(data.id);
+  } catch (e) {
+    if (e.message !== "unauthorized") showStatus("failed to create session: " + e.message);
+  }
 }
 
 function selectSession(id) {
   currentSessionId = id;
+  const sessObj = loadedSessions.find(s => s.id === id);
+  if (sessObj) {
+    currentSessionModel = sessObj.model_pin || null;
+    if (topbarTitleEl) topbarTitleEl.textContent = sessObj.title || sessObj.id;
+    if (topbarModelEl) {
+      if (currentSessionModel) {
+        topbarModelEl.hidden = false;
+        if (topbarModelNameEl) topbarModelNameEl.textContent = currentSessionModel;
+      } else {
+        topbarModelEl.hidden = true;
+      }
+    }
+  } else {
+    currentSessionModel = null;
+    if (topbarTitleEl) topbarTitleEl.textContent = id;
+    if (topbarModelEl) topbarModelEl.hidden = true;
+  }
+
   for (const li of sessionsEl.children) {
-    li.classList.toggle("active", li.dataset.id === id);
+    if (li.dataset.id) {
+      li.classList.toggle("active", li.dataset.id === id);
+    }
   }
   loadTranscript();
 }
 
+// --- Empty State ---
+
+function renderEmptyState() {
+  transcriptEl.replaceChildren();
+  const emptyStateEl = createElement("div", "empty-state");
+  emptyStateEl.id = "empty-state";
+
+  const flameEl = createElement("div", "flame-large", "🔥");
+  emptyStateEl.appendChild(flameEl);
+
+  const titleEl = createElement("h2", "", "Your hearth is warm.");
+  emptyStateEl.appendChild(titleEl);
+
+  const pEl = createElement("p", "", "Choose a suggestion or ask anything to begin.");
+  emptyStateEl.appendChild(pEl);
+
+  const gridEl = createElement("div", "suggestion-grid");
+  const suggestions = [
+    "Summarize today's notifications",
+    "What did the door sensors see?",
+    "Draft a weekly digest",
+    "What are my provider keys doing?"
+  ];
+
+  for (const sug of suggestions) {
+    const chipBtn = createElement("button", "suggestion-chip", sug);
+    chipBtn.type = "button";
+    chipBtn.addEventListener("click", () => {
+      inputEl.value = sug;
+      inputEl.focus();
+      autoGrowTextarea();
+    });
+    gridEl.appendChild(chipBtn);
+  }
+
+  emptyStateEl.appendChild(gridEl);
+  transcriptEl.appendChild(emptyStateEl);
+}
+
+function removeEmptyState() {
+  const existing = document.getElementById("empty-state");
+  if (existing) existing.remove();
+}
+
+// --- Transcript Rendering ---
+
 function renderEvent(ev) {
-  // Penatus event schema (PENATUS-SPEC §2, frozen): every event has `t`
-  // (type) and `seq`; msg events carry `role`; tool_result carries
-  // `result_digest`. Unknown `t` values render as nothing (forward-compat).
+  removeEmptyState();
   const wrapper = createElement("div", "event");
+
   if (ev.t === "msg" && ev.role === "user") {
-    const bubble = createElement("div", "bubble user");
-    bubble.textContent = ev.text;
-    wrapper.appendChild(bubble);
+    lastUserMessageText = ev.text;
+    wrapper.classList.add("msg", "user");
+    const mcol = createElement("div", "mcol");
+    const bubble = createElement("div", "bubble", ev.text);
+    mcol.appendChild(bubble);
+    wrapper.appendChild(mcol);
+    const avatar = createElement("div", "avatar you", "YOU");
+    wrapper.appendChild(avatar);
   } else if (ev.t === "msg" && ev.role === "assistant") {
-    const bubble = createElement("div", "bubble assistant");
-    bubble.textContent = ev.text;
-    wrapper.appendChild(bubble);
+    wrapper.classList.add("msg", "assistant");
+    const avatar = createElement("div", "avatar ember", "🔥");
+    wrapper.appendChild(avatar);
+
+    const mcol = createElement("div", "mcol");
+    const meta = createElement("div", "meta");
+    const author = createElement("b", "", "Hearth");
+    meta.appendChild(author);
+
+    const timeStr = formatTime(ev.created || ev.time);
+    if (timeStr) {
+      meta.appendChild(document.createTextNode(" " + timeStr));
+    }
+    if (currentSessionModel) {
+      meta.appendChild(document.createTextNode(" · " + currentSessionModel));
+    }
+    mcol.appendChild(meta);
+
+    const bubble = createElement("div", "bubble");
+    renderMarkdown(ev.text, bubble);
+    mcol.appendChild(bubble);
+
+    const actions = createElement("div", "msg-actions");
+    const copyBtn = createElement("button", "", "⧉ Copy");
+    copyBtn.type = "button";
+    copyBtn.title = "Copy message";
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(ev.text).then(() => {
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => { copyBtn.textContent = "⧉ Copy"; }, 1500);
+      }).catch(() => {});
+    });
+    actions.appendChild(copyBtn);
+
+    const retryBtn = createElement("button", "", "↻ Retry");
+    retryBtn.type = "button";
+    retryBtn.title = "Retry prompt";
+    retryBtn.addEventListener("click", () => {
+      // Find previous user prompt
+      const idx = loadedEvents.indexOf(ev);
+      let promptToResend = lastUserMessageText;
+      if (idx > 0) {
+        for (let j = idx - 1; j >= 0; j--) {
+          if (loadedEvents[j].t === "msg" && loadedEvents[j].role === "user") {
+            promptToResend = loadedEvents[j].text;
+            break;
+          }
+        }
+      }
+      if (promptToResend) {
+        sendMessage(promptToResend);
+      }
+    });
+    actions.appendChild(retryBtn);
+
+    mcol.appendChild(actions);
+    wrapper.appendChild(mcol);
   } else if (ev.t === "tool_call") {
     const details = createElement("details", "tool-call");
     const summary = createElement("summary");
@@ -132,7 +725,8 @@ function renderEvent(ev) {
       const outcome = createElement("div", ev.ok ? "tool-outcome" : "tool-outcome err");
       outcome.textContent = "→ " + (ev.ok ? "ok" : "error") + ": " + (ev.result_digest || "");
       existing.appendChild(outcome);
-      existing.closest("details").open = true;
+      const parentDetails = existing.closest("details");
+      if (parentDetails) parentDetails.open = true;
     }
   } else if (ev.t === "compact") {
     const sep = createElement("hr", "compact-sep");
@@ -142,16 +736,22 @@ function renderEvent(ev) {
     note.textContent = "branched from " + (ev.from_session || "?");
     wrapper.appendChild(note);
   }
+
   transcriptEl.appendChild(wrapper);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
 async function loadTranscript() {
-  transcriptEl.textContent = "";
+  transcriptEl.replaceChildren();
   try {
     const data = await fetchJson("GET", "/v1/sessions/" + currentSessionId + "/events?after_seq=0");
-    for (const ev of data.events) {
-      renderEvent(ev);
+    loadedEvents = data.events || [];
+    if (loadedEvents.length === 0) {
+      renderEmptyState();
+    } else {
+      for (const ev of loadedEvents) {
+        renderEvent(ev);
+      }
     }
     if (data.in_flight) {
       startCatchUpPoll();
@@ -170,9 +770,14 @@ function startCatchUpPoll() {
     if (document.hidden) return;
     try {
       const data = await fetchJson("GET", "/v1/sessions/" + currentSessionId + "/events?after_seq=0");
-      transcriptEl.textContent = "";
-      for (const ev of data.events) {
-        renderEvent(ev);
+      loadedEvents = data.events || [];
+      transcriptEl.replaceChildren();
+      if (loadedEvents.length === 0) {
+        renderEmptyState();
+      } else {
+        for (const ev of loadedEvents) {
+          renderEvent(ev);
+        }
       }
       if (!data.in_flight) {
         stopCatchUpPoll();
@@ -194,17 +799,34 @@ function stopCatchUpPoll() {
 
 function handleSSEEvent(eventType, data) {
   if (eventType === "delta") {
+    removeEmptyState();
     if (!currentAssistantBubble) {
-      currentAssistantBubble = createElement("div", "bubble assistant");
-      const wrapper = createElement("div", "event");
-      wrapper.appendChild(currentAssistantBubble);
+      const wrapper = createElement("div", "event msg assistant");
+      const avatar = createElement("div", "avatar ember", "🔥");
+      wrapper.appendChild(avatar);
+
+      const mcol = createElement("div", "mcol");
+      const meta = createElement("div", "meta");
+      const author = createElement("b", "", "Hearth");
+      meta.appendChild(author);
+      meta.appendChild(document.createTextNode(" " + formatTime(new Date())));
+      if (currentSessionModel) {
+        meta.appendChild(document.createTextNode(" · " + currentSessionModel));
+      }
+      mcol.appendChild(meta);
+
+      currentAssistantBubble = createElement("div", "bubble");
+      mcol.appendChild(currentAssistantBubble);
+
+      wrapper.appendChild(mcol);
       transcriptEl.appendChild(wrapper);
       currentAssistantText = "";
     }
     currentAssistantText += data.text;
-    currentAssistantBubble.textContent = currentAssistantText;
+    renderMarkdown(currentAssistantText, currentAssistantBubble);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   } else if (eventType === "tool_start") {
+    removeEmptyState();
     const details = createElement("details", "tool-call");
     const summary = createElement("summary");
     summary.textContent = "⚙ " + data.name + " (running)";
@@ -225,8 +847,12 @@ function handleSSEEvent(eventType, data) {
       const outcome = createElement("div", data.ok ? "tool-outcome" : "tool-outcome err");
       outcome.textContent = "→ " + (data.ok ? "ok" : "error") + (data.approval ? " (approval: " + data.approval + ")" : "");
       content.appendChild(outcome);
-      content.closest("details").querySelector("summary").textContent = "⚙ " + content.closest("details").querySelector("summary").textContent.replace("(running)", "(done)");
-      content.closest("details").open = true;
+      const parentDetails = content.closest("details");
+      if (parentDetails) {
+        const summary = parentDetails.querySelector("summary");
+        if (summary) summary.textContent = summary.textContent.replace("(running)", "(done)");
+        parentDetails.open = true;
+      }
     }
   } else if (eventType === "turn_done") {
     isStreaming = false;
@@ -244,16 +870,18 @@ function handleSSEEvent(eventType, data) {
 }
 
 function renderApprovalCard(data) {
+  removeEmptyState();
   const wrapper = createElement("div", "event approval-card");
   const msg = createElement("div", "approval-message");
   msg.textContent = "Tool " + data.name + " requests approval:\n" + data.args_summary;
   wrapper.appendChild(msg);
   const btnRow = createElement("div", "approval-buttons");
-  const allowBtn = createElement("button", "allow");
-  allowBtn.textContent = "Allow";
-  const denyBtn = createElement("button", "deny");
-  denyBtn.textContent = "Deny";
+  const allowBtn = createElement("button", "allow", "Allow");
+  allowBtn.type = "button";
+  const denyBtn = createElement("button", "deny", "Deny");
+  denyBtn.type = "button";
   let resolved = false;
+
   async function decide(decision) {
     if (resolved) return;
     resolved = true;
@@ -266,6 +894,7 @@ function renderApprovalCard(data) {
     }
     btnRow.remove();
   }
+
   allowBtn.addEventListener("click", () => decide("allow"));
   denyBtn.addEventListener("click", () => decide("deny"));
   btnRow.appendChild(allowBtn);
@@ -278,14 +907,21 @@ function renderApprovalCard(data) {
 async function sendMessage(text) {
   if (isStreaming) return;
   if (!currentSessionId) {
-    // Race or failed load: make sure there is a session before posting.
-    try { await createSession(); } catch { showStatus("could not open a session"); setComposerDisabled(false); return; }
+    try {
+      await createSession();
+    } catch {
+      showStatus("could not open a session");
+      setComposerDisabled(false);
+      return;
+    }
   }
+  lastUserMessageText = text;
   isStreaming = true;
   setComposerDisabled(true);
   clearStatus();
   const stopBtn = document.getElementById("stop-btn");
   if (stopBtn) stopBtn.disabled = false;
+
   try {
     const resp = await fetch("/v1/sessions/" + currentSessionId + "/messages", {
       method: "POST",
@@ -331,8 +967,6 @@ async function sendMessage(text) {
         }
       }
     } finally {
-      // stream closed for any reason (cancel, disconnect, lost terminal
-      // event): never leave the composer frozen.
       if (isStreaming) {
         isStreaming = false;
         setComposerDisabled(false);
@@ -340,14 +974,12 @@ async function sendMessage(text) {
         currentAssistantText = "";
         loadTranscript();
       }
-      const stopBtn = document.getElementById("stop-btn");
       if (stopBtn) stopBtn.disabled = true;
     }
   } catch (e) {
     if (e.message !== "unauthorized") showStatus("stream error: " + e.message);
     isStreaming = false;
     setComposerDisabled(false);
-    const stopBtn = document.getElementById("stop-btn");
     if (stopBtn) stopBtn.disabled = true;
   }
 }
@@ -361,9 +993,7 @@ async function handleStop() {
         "Authorization": "Bearer " + token
       }
     });
-  } catch (e) {
-    // Ignore errors; the finally block in sendMessage will unfreeze the UI
-  }
+  } catch (_) {}
 }
 
 function initToken() {
@@ -381,7 +1011,7 @@ function initToken() {
   return true;
 }
 
-// --- Provider keys drawer (KEYS-SPEC K4 web door) ---------------------
+// --- Provider Keys Drawer ---
 
 const keysButtonEl = document.getElementById("keys-button");
 const keysDrawerEl = document.getElementById("keys-drawer");
@@ -395,27 +1025,29 @@ const keysStatusEl = document.getElementById("keys-status");
 const keysTransportWarnEl = document.getElementById("keys-transport-warn");
 
 function keysStatus(msg, isError) {
+  if (!keysStatusEl) return;
   keysStatusEl.textContent = msg || "";
   keysStatusEl.classList.toggle("err", !!isError);
 }
 
 function openKeysDrawer() {
+  if (!keysDrawerEl || !keysBackdropEl) return;
   keysDrawerEl.hidden = false;
   keysBackdropEl.hidden = false;
-  // Transport honesty (spec K4): warn only on plain HTTP from a
-  // non-loopback host. HTTPS pages never nag; loopback is the local
-  // machine by definition.
+
   const host = location.hostname;
   const loopback = host === "localhost" || host === "127.0.0.1" ||
     host === "[::1]" || host === "::1" || host === "";
-  keysTransportWarnEl.hidden = location.protocol === "https:" || loopback;
+  if (keysTransportWarnEl) {
+    keysTransportWarnEl.hidden = location.protocol === "https:" || loopback;
+  }
   loadKeys();
 }
 
 function closeKeysDrawer() {
-  keysDrawerEl.hidden = true;
-  keysBackdropEl.hidden = true;
-  keysValueEl.value = ""; // never linger in the DOM
+  if (keysDrawerEl) keysDrawerEl.hidden = true;
+  if (keysBackdropEl) keysBackdropEl.hidden = true;
+  if (keysValueEl) keysValueEl.value = "";
   keysStatus("");
 }
 
@@ -429,7 +1061,8 @@ async function loadKeys() {
 }
 
 function renderKeys(rows) {
-  keysListEl.textContent = "";
+  if (!keysListEl) return;
+  keysListEl.replaceChildren();
   for (const row of rows) {
     const li = createElement("li");
     const name = createElement("span", "key-name", row.name);
@@ -439,6 +1072,7 @@ function renderKeys(rows) {
     li.appendChild(status);
     if (row.status === "set (keys.json)") {
       const del = createElement("button", "key-remove", "remove");
+      del.type = "button";
       del.title = "Remove this key from the daemon";
       del.addEventListener("click", () => removeKey(row.name));
       li.appendChild(del);
@@ -450,17 +1084,15 @@ function renderKeys(rows) {
 async function saveKey(name, value) {
   try {
     await fetchJson("PUT", "/v1/keys/" + encodeURIComponent(name), { key: value });
-    keysValueEl.value = "";
+    if (keysValueEl) keysValueEl.value = "";
     keysStatus("saved " + name);
     await loadKeys();
   } catch (e) {
     if (e.message === "unknown provider") {
-      // First key for a provider the daemon's config never mentioned:
-      // an explicit user choice, not an error state.
       if (window.confirm('"' + name + '" is not a configured provider. Save it anyway?')) {
         try {
           await fetchJson("PUT", "/v1/keys/" + encodeURIComponent(name) + "?force=true", { key: value });
-          keysValueEl.value = "";
+          if (keysValueEl) keysValueEl.value = "";
           keysStatus("saved " + name);
           await loadKeys();
         } catch (e2) {
@@ -485,41 +1117,45 @@ async function removeKey(name) {
 }
 
 function initKeysDrawer() {
-  keysButtonEl.addEventListener("click", openKeysDrawer);
-  keysCloseEl.addEventListener("click", closeKeysDrawer);
-  keysBackdropEl.addEventListener("click", closeKeysDrawer);
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !keysDrawerEl.hidden) closeKeysDrawer();
-  });
-  keysFormEl.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const name = keysNameEl.value.trim();
-    const value = keysValueEl.value;
-    if (!name || !value) return;
-    saveKey(name, value);
-  });
+  if (keysButtonEl) keysButtonEl.addEventListener("click", openKeysDrawer);
+  if (keysCloseEl) keysCloseEl.addEventListener("click", closeKeysDrawer);
+  if (keysBackdropEl) keysBackdropEl.addEventListener("click", closeKeysDrawer);
+
+  if (keysFormEl) {
+    keysFormEl.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const name = keysNameEl ? keysNameEl.value.trim() : "";
+      const value = keysValueEl ? keysValueEl.value : "";
+      if (!name || !value) return;
+      saveKey(name, value);
+    });
+  }
 }
 
-// --- Custody cards (CA-6, CUSTOS-SPEC §6.4b) ---------------------------
+// --- Custody Request Cards ---
 
 function renderCustosCard(card) {
   if (!custosCardsEl) return;
   if (custosCardsEl.querySelector('[data-card-id="' + card.id + '"]')) return;
 
-  const cardEl = createElement("div", "custos-card");
+  const cardEl = createElement("div", "custos-card custo");
   cardEl.dataset.cardId = card.id;
 
-  const header = createElement("div", "custos-card-header");
-  const title = createElement("span", "custos-card-title", "Custody Request");
+  const ic = createElement("div", "ic", "🛡");
+  cardEl.appendChild(ic);
+
+  const body = createElement("div", "body");
+  const title = createElement("div", "custos-card-title");
+  title.textContent = "Custody Request";
   const metaParts = [];
   if (card.cell) metaParts.push(card.cell);
   if (card.cred) metaParts.push(card.cred);
-  const meta = createElement("span", "custos-card-meta", metaParts.join(" · "));
-  header.appendChild(title);
-  header.appendChild(meta);
-  cardEl.appendChild(header);
+  if (metaParts.length > 0) {
+    const metaSpan = createElement("span", "custos-card-meta custo-meta", " — " + metaParts.join(" · "));
+    title.appendChild(metaSpan);
+  }
+  body.appendChild(title);
 
-  const body = createElement("div", "custos-card-body");
   if (card.dest) {
     const destEl = createElement("div", "custos-card-dest", "dest: " + card.dest);
     body.appendChild(destEl);
@@ -539,9 +1175,12 @@ function renderCustosCard(card) {
   cardEl.appendChild(errorEl);
 
   const actions = createElement("div", "custos-card-actions");
-  const onceBtn = createElement("button", "custos-btn custos-btn-once", "Allow once");
-  const alwaysBtn = createElement("button", "custos-btn custos-btn-always", "Always");
-  const denyBtn = createElement("button", "custos-btn custos-btn-deny", "Deny");
+  const onceBtn = createElement("button", "custobtn custos-btn-once", "Allow once");
+  onceBtn.type = "button";
+  const alwaysBtn = createElement("button", "custobtn custos-btn-always", "Always");
+  alwaysBtn.type = "button";
+  const denyBtn = createElement("button", "custobtn custos-btn-deny", "Deny");
+  denyBtn.type = "button";
 
   let inFlight = false;
   async function resolveCard(verdict) {
@@ -564,12 +1203,10 @@ function renderCustosCard(card) {
       });
 
       if (resp.status === 200) {
-        // Resolved: remove only on 200 ack per no-optimistic rule
         cardEl.remove();
         return;
       }
 
-      // Non-200 (409, 423, 400, etc.): keep card, show frozen error state inline
       let errText = resp.statusText;
       try {
         const errJson = await resp.json();
@@ -685,24 +1322,113 @@ async function startCustosEventStream() {
   }
 }
 
+// --- Initialization ---
+
 function init() {
-  if (!initToken()) return;
+  initTheme();
+
+  const host = location.hostname;
+  const loopback = host === "localhost" || host === "127.0.0.1" ||
+    host === "[::1]" || host === "::1" || host === "";
+  if (topbarTransportEl) {
+    if (loopback) {
+      topbarTransportEl.textContent = "🔒 loopback";
+    } else if (location.protocol === "https:") {
+      topbarTransportEl.textContent = "🔒 https";
+    } else {
+      topbarTransportEl.textContent = "⚠️ unencrypted";
+    }
+  }
+
   initKeysDrawer();
-  newSessionBtn.addEventListener("click", createSession);
-  composerEl.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const text = inputEl.value.trim();
-    if (!text) return;
-    inputEl.value = "";
-    sendMessage(text);
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.target !== inputEl) return;
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+
+  if (newSessionBtn) newSessionBtn.addEventListener("click", createSession);
+
+  if (composerEl) {
+    composerEl.addEventListener("submit", (e) => {
       e.preventDefault();
-      composerEl.requestSubmit();
+      const text = inputEl.value.trim();
+      if (!text) return;
+      inputEl.value = "";
+      inputEl.style.removeProperty("height");
+      sendMessage(text);
+    });
+  }
+
+  if (inputEl) {
+    inputEl.addEventListener("input", autoGrowTextarea);
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.target === inputEl) {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        composerEl.requestSubmit();
+      }
+    } else if (e.key === "Escape") {
+      if (keysDrawerEl && !keysDrawerEl.hidden) {
+        closeKeysDrawer();
+      } else if (document.body.classList.contains("rail-open")) {
+        closeRail();
+      } else if (themePopoverEl && !themePopoverEl.hidden) {
+        closeThemePopover();
+      }
     }
   });
+
+  if (sessionSearchEl) {
+    sessionSearchEl.addEventListener("input", () => {
+      renderSessionList(loadedSessions);
+    });
+  }
+
+  if (navToggleBtn) navToggleBtn.addEventListener("click", toggleRail);
+  if (railBackdropEl) railBackdropEl.addEventListener("click", closeRail);
+
+  if (themeBtnEl) themeBtnEl.addEventListener("click", toggleThemePopover);
+
+  if (themePopoverEl) {
+    for (const btn of themePopoverEl.querySelectorAll(".theme-opt")) {
+      btn.addEventListener("click", () => setTheme(btn.dataset.themeVal));
+    }
+    for (const btn of themePopoverEl.querySelectorAll(".base-btn")) {
+      btn.addEventListener("click", () => setBase(btn.dataset.baseVal));
+    }
+    if (accentHueEl) {
+      accentHueEl.addEventListener("input", (e) => {
+        const val = e.target.value;
+        document.documentElement.style.setProperty("--accent-h", val);
+        sessionStorage.setItem("lararium.accent-hue", val);
+        if (hueValEl) hueValEl.textContent = val;
+      });
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    if (themePopoverEl && !themePopoverEl.hidden) {
+      if (!themePopoverEl.contains(e.target) && e.target !== themeBtnEl && !themeBtnEl.contains(e.target)) {
+        closeThemePopover();
+      }
+    }
+  });
+
+  if (shareBtnEl) {
+    shareBtnEl.addEventListener("click", () => {
+      if (navigator.share) {
+        navigator.share({ title: document.title, url: window.location.href }).catch(() => {});
+      } else {
+        navigator.clipboard.writeText(window.location.href).then(() => {
+          const orig = shareBtnEl.textContent;
+          shareBtnEl.textContent = "Copied link";
+          setTimeout(() => { shareBtnEl.textContent = orig; }, 1500);
+        }).catch(() => {});
+      }
+    });
+  }
+
+  const stopBtn = document.getElementById("stop-btn");
+  if (stopBtn) stopBtn.addEventListener("click", handleStop);
+
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopCatchUpPoll();
@@ -711,13 +1437,15 @@ function init() {
       loadCustosCards();
     }
   });
+
+  if (!initToken()) {
+    renderEmptyState();
+    return;
+  }
+
   loadSessions();
   loadCustosCards();
   startCustosEventStream();
-  const stopBtn = document.getElementById("stop-btn");
-  if (stopBtn) {
-    stopBtn.addEventListener("click", handleStop);
-  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

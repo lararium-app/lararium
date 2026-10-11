@@ -1,48 +1,105 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="warm">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lararium</title>
 <link rel="stylesheet" href="/app.css">
+<!-- Theme is applied by app.js before first contentful paint; the
+     data-theme attribute above is the flash-free default (warm). An
+     inline bootstrap script is NOT possible: CSP default-src 'self'
+     blocks inline execution, so a non-default theme may paint warm for
+     one frame. -->
 <script src="/app.js" defer></script>
 </head>
 <body>
-<aside id="rail">
-<ul id="sessions"></ul>
-<button id="new-session">+ session</button>
-<button id="keys-button">keys</button>
+<div id="rail-backdrop"></div>
+<aside id="rail" class="rail">
+  <div class="hearth">
+    <div class="brand">
+      <div class="flame">🔥</div>
+      <div><h1>Lararium</h1><small>house hearth · v0.8</small></div>
+    </div>
+    <button id="new-session" class="newbtn" type="button"><b>+</b> New session</button>
+  </div>
+  <div class="search"><input id="session-search" placeholder="Search sessions…"></div>
+  <ul id="sessions" class="sessions"></ul>
+  <div class="railfoot">
+    <span class="status-pill"><span id="status-dot" class="dot"></span><span id="status">hearth online</span></span>
+    <span class="railfoot-actions">
+      <button id="keys-button" class="iconbtn" type="button" title="Keys" aria-label="Keys">🗝</button>
+      <button id="theme-btn" class="iconbtn" type="button" title="Theme" aria-label="Theme">🎨</button>
+    </span>
+    <div id="theme-popover" class="theme-popover" hidden>
+      <div class="theme-popover-title">Theme</div>
+      <div class="theme-options">
+        <button type="button" class="theme-opt" data-theme-val="warm">Warm</button>
+        <button type="button" class="theme-opt" data-theme-val="neutral">Neutral</button>
+        <button type="button" class="theme-opt" data-theme-val="custom">Custom…</button>
+      </div>
+      <div id="custom-theme-controls" class="custom-controls" hidden>
+        <label for="accent-hue" class="slider-label"><span>Accent hue:</span><span><span id="hue-val">25</span>°</span></label>
+        <input type="range" id="accent-hue" min="0" max="360" value="25">
+        <div class="base-toggle-row">
+          <span>Base</span>
+          <div class="base-toggle-btns">
+            <button type="button" class="base-btn" data-base-val="dark">Dark</button>
+            <button type="button" class="base-btn" data-base-val="light">Light</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </aside>
 <main>
-<div id="transcript"></div>
-<div id="custos-cards"></div>
-<form id="composer">
-<textarea id="input" required></textarea>
-<button type="submit">send</button>
-<button id="stop-btn" type="button" disabled>stop</button>
-</form>
-<div id="status"></div>
+  <div class="topbar">
+    <button id="nav-toggle" class="nav-toggle iconbtn" type="button" title="Menu" aria-label="Toggle menu">☰</button>
+    <span id="topbar-title" class="title">Lararium</span>
+    <span id="topbar-model" class="chip" hidden><span id="topbar-model-name"></span> <span class="caret">▾</span></span>
+    <span id="topbar-transport" class="chip">🔒 loopback</span>
+    <span class="spacer"></span>
+    <button id="share-btn" class="sharebtn" type="button">⌥ Share</button>
+  </div>
+  <div class="stream">
+    <div id="custos-cards"></div>
+    <div id="transcript" class="chat"></div>
+  </div>
+  <div class="composerwrap">
+    <form id="composer" class="composer">
+      <textarea id="input" placeholder="Ask your hearth anything…" required></textarea>
+      <div class="crow">
+        <button type="button" class="chip attach" disabled title="coming soon">＋</button>
+        <button type="button" class="chip" disabled title="coming soon">🎤 Voice</button>
+        <span class="spacer"></span>
+        <div class="send">
+          <button id="stop-btn" type="button" class="stopbtn" disabled>◼ Stop</button>
+          <button type="submit" class="sendbtn">Send ↵</button>
+        </div>
+      </div>
+    </form>
+    <div class="disclaimer">Hearth can make mistakes — verify before you act.</div>
+  </div>
 </main>
 <div id="keys-backdrop" hidden></div>
 <aside id="keys-drawer" hidden aria-label="Provider keys">
-<div class="drawer-head">
-<h2>Provider keys</h2>
-<button id="keys-close" title="Close">✕</button>
-</div>
-<div id="keys-transport-warn" hidden>
-This page is served over plain HTTP from a non-local address: keys typed
-here cross the network unencrypted. Use <code>hearthd keys set</code> on
-the daemon host, or connect over HTTPS or loopback, instead.
-</div>
-<p class="drawer-hint">Keys are stored on the daemon host (mode 0600) and
-never sent back to this page. Values show as a display fingerprint only.</p>
-<ul id="keys-list"></ul>
-<form id="keys-form">
-<input id="keys-name" placeholder="provider (e.g. openai)" autocomplete="off" spellcheck="false">
-<input id="keys-value" type="password" placeholder="api key" autocomplete="new-password">
-<button type="submit">save</button>
-</form>
-<div id="keys-status"></div>
+  <div class="drawer-head">
+    <h2>Provider keys</h2>
+    <button id="keys-close" type="button" title="Close">✕</button>
+  </div>
+  <div id="keys-transport-warn" hidden>
+    This page is served over plain HTTP from a non-local address: keys typed
+    here cross the network unencrypted. Use <code>hearthd keys set</code> on
+    the daemon host, or connect over HTTPS or loopback, instead.
+  </div>
+  <p class="drawer-hint">Keys are stored on the daemon host (mode 0600) and
+  never sent back to this page. Values show as a display fingerprint only.</p>
+  <ul id="keys-list"></ul>
+  <form id="keys-form">
+    <input id="keys-name" placeholder="provider (e.g. openai)" autocomplete="off" spellcheck="false">
+    <input id="keys-value" type="password" placeholder="api key" autocomplete="new-password">
+    <button type="submit">save</button>
+  </form>
+  <div id="keys-status"></div>
 </aside>
 </body>
 </html>
