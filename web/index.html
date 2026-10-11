@@ -4,16 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lararium</title>
-<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/app.css">
-<script>
-const t = localStorage.getItem("lararium.theme") || "warm";
-document.documentElement.dataset.theme = t;
-const h = localStorage.getItem("lararium.accent-hue");
-if (h) document.documentElement.style.setProperty("--accent-h", h);
-const b = localStorage.getItem("lararium.base");
-if (b) document.documentElement.dataset.base = b;
-</script>
+<!-- Theme is applied by app.js before first contentful paint; the
+     data-theme attribute above is the flash-free default (warm). An
+     inline bootstrap script is NOT possible: CSP default-src 'self'
+     blocks inline execution, so a non-default theme may paint warm for
+     one frame. -->
 <script src="/app.js" defer></script>
 </head>
 <body>
