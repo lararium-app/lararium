@@ -1,13 +1,12 @@
 # hearthd in Docker — see docker/config/lararium.yaml (config) and
 # docker/hearth/ (persona home: SOUL.md, IDENTITY.md, USER.md, MEMORY.md,
-# sessions/). API keys come from the host environment only; nothing secret
+# sessions/). API keys come from the host environment or keys.json; nothing secret
 # is baked into the image.
 #
 #   # talk to a model server on your own machine (llama.cpp et al):
 #   docker compose up --build
-#   # ...or any hosted endpoint: uncomment one provider in
-#   # docker/config/lararium.yaml and pass its key through:
-#   OPENAI_API_KEY=*** docker compose up --build
+#   # ...or one-time interactive setup for hosted keys (OpenRouter, Nova, Custom):
+#   docker compose exec -it hearthd hearthd setup
 #
 # Starts the web chat + API on http://127.0.0.1:7717; open a door with:
 #   docker compose exec hearthd hearthd token create me
@@ -17,9 +16,12 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    # The container serves the web chat + API. For the REPL in your
-    # terminal:  docker compose exec -it hearthd hearthd
-    command: ["serve"]
+    # The container runs first-time setup, then serves the web chat + API.
+    # For interactive setup:  docker compose exec -it hearthd hearthd setup
+    # For the REPL:           docker compose exec -it hearthd hearthd
+    entrypoint: ["sh", "-c"]
+    command:
+      - "if [ ! -f /etc/lararium/.setup-done ] && [ -t 0 ]; then hearthd setup || true; touch /etc/lararium/.setup-done; fi; exec hearthd serve"
     stdin_open: true # REPL via `exec -it` needs a terminal
     tty: true
     # Web chat + API (`hearthd serve`). Published on the host's loopback
@@ -34,13 +36,15 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NOVITA_API_KEY: ${NOVITA_API_KEY:-}
       LARARIUM_CONFIG: /etc/lararium/lararium.yaml
+      LARARIUM_DOCKER: "1"
     # Lets the container reach a model server on the host
     # (http://host.docker.internal:PORT); harmless where it is built in.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./config:/etc/lararium:ro
+      - ./config:/etc/lararium
       # Bind (not named volume): persona files are required at startup and
       # an empty volume would shadow them; the bind keeps them editable and
       # persistent (sessions/ JSONL lands here too).
