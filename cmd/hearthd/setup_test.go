@@ -339,7 +339,7 @@ func TestCustomProviderValidationRejects(t *testing.T) {
 	}
 }
 
-// 5. CANONICAL LIST test: menu rendering asserts exact rows/order
+// 5. CANONICAL LIST test: menu rendering asserts exact rows/order.
 func TestCanonicalList(t *testing.T) {
 	items := CanonicalMenuItems()
 	if len(items) != 37 {

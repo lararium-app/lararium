@@ -38,8 +38,11 @@ const (
 	KindAzureFoundry
 	KindCustom
 	KindKeepCurrent
-	KindDiscovered = KindLocal
 )
+
+// KindDiscovered is an alias for KindLocal: a picked local server and a
+// manually scanned one write the same "local" provider.
+const KindDiscovered = KindLocal
 
 // MenuItem represents a single numbered choice in the setup wizard menu.
 type MenuItem struct {
@@ -47,7 +50,7 @@ type MenuItem struct {
 	Title         string
 	Name          string
 	BaseURL       string
-	APIKeyEnv     string
+	KeyEnv        string
 	AllowEmptyKey bool
 }
 
@@ -63,223 +66,223 @@ var canonicalMenuItems = []MenuItem{
 		Title: "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Fireworks AI (OpenAI-compatible direct model API)",
-		Name:      "fireworks",
-		BaseURL:   "https://api.fireworks.ai/inference/v1",
-		APIKeyEnv: "FIREWORKS_API_KEY",
+		Kind:    KindActive,
+		Title:   "Fireworks AI (OpenAI-compatible direct model API)",
+		Name:    "fireworks",
+		BaseURL: "https://api.fireworks.ai/inference/v1",
+		KeyEnv:  "FIREWORKS_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "OpenRouter (Pay-per-use API aggregator)",
-		Name:      "openrouter",
-		BaseURL:   "https://openrouter.ai/api/v1",
-		APIKeyEnv: "OPENROUTER_API_KEY",
+		Kind:    KindActive,
+		Title:   "OpenRouter (Pay-per-use API aggregator)",
+		Name:    "openrouter",
+		BaseURL: "https://openrouter.ai/api/v1",
+		KeyEnv:  "OPENROUTER_API_KEY",
 	},
 	{
 		Kind:  KindPlaceholder,
 		Title: "Mixture of Agents (named presets; aggregator acts after reference models)",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)",
-		Name:      "novita",
-		BaseURL:   "https://api.novita.ai/openai/v1",
-		APIKeyEnv: "NOVITA_API_KEY",
+		Kind:    KindActive,
+		Title:   "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)",
+		Name:    "novita",
+		BaseURL: "https://api.novita.ai/openai/v1",
+		KeyEnv:  "NOVITA_API_KEY",
 	},
 	{
 		Kind:          KindActive,
 		Title:         "LM Studio (Local desktop app with built-in model server)",
 		Name:          "lmstudio",
 		BaseURL:       "http://127.0.0.1:1234/v1",
-		APIKeyEnv:     "LMSTUDIO_API_KEY",
+		KeyEnv:        "LMSTUDIO_API_KEY",
 		AllowEmptyKey: true,
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Anthropic (Claude models via API key)",
-		Name:      "anthropic",
-		BaseURL:   "https://api.anthropic.com/v1",
-		APIKeyEnv: "ANTHROPIC_API_KEY",
+		Kind:    KindActive,
+		Title:   "Anthropic (Claude models via API key)",
+		Name:    "anthropic",
+		BaseURL: "https://api.anthropic.com/v1",
+		KeyEnv:  "ANTHROPIC_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "OpenAI (direct OpenAI API)",
-		Name:      "openai",
-		BaseURL:   "https://api.openai.com/v1",
-		APIKeyEnv: "OPENAI_API_KEY",
+		Kind:    KindActive,
+		Title:   "OpenAI (direct OpenAI API)",
+		Name:    "openai",
+		BaseURL: "https://api.openai.com/v1",
+		KeyEnv:  "OPENAI_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Qwen (Qwen Cloud / DashScope API key)",
-		Name:      "qwen",
-		BaseURL:   "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		APIKeyEnv: "DASHSCOPE_API_KEY",
+		Kind:    KindActive,
+		Title:   "Qwen (Qwen Cloud / DashScope API key)",
+		Name:    "qwen",
+		BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		KeyEnv:  "DASHSCOPE_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "xAI Grok (direct API)",
-		Name:      "xai",
-		BaseURL:   "https://api.x.ai/v1",
-		APIKeyEnv: "XAI_API_KEY",
+		Kind:    KindActive,
+		Title:   "xAI Grok (direct API)",
+		Name:    "xai",
+		BaseURL: "https://api.x.ai/v1",
+		KeyEnv:  "XAI_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)",
-		Name:      "mimo",
-		BaseURL:   "https://api.xiaomimimo.com/v1",
-		APIKeyEnv: "MIMO_API_KEY",
+		Kind:    KindActive,
+		Title:   "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)",
+		Name:    "mimo",
+		BaseURL: "https://api.xiaomimimo.com/v1",
+		KeyEnv:  "MIMO_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Tencent Hunyuan (TokenHub)",
-		Name:      "tencent_tokenhub",
-		BaseURL:   "https://tokenhub.tencentmaas.com/v1",
-		APIKeyEnv: "TENCENT_TOKENHUB_API_KEY",
+		Kind:    KindActive,
+		Title:   "Tencent Hunyuan (TokenHub)",
+		Name:    "tencent_tokenhub",
+		BaseURL: "https://tokenhub.tencentmaas.com/v1",
+		KeyEnv:  "TENCENT_TOKENHUB_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)",
-		Name:      "nvidia",
-		BaseURL:   "https://integrate.api.nvidia.com/v1",
-		APIKeyEnv: "NVIDIA_API_KEY",
+		Kind:    KindActive,
+		Title:   "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)",
+		Name:    "nvidia",
+		BaseURL: "https://integrate.api.nvidia.com/v1",
+		KeyEnv:  "NVIDIA_API_KEY",
 	},
 	{
 		Kind:  KindPlaceholder,
 		Title: "GitHub Copilot",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Hugging Face Inference Providers",
-		Name:      "huggingface",
-		BaseURL:   "https://router.huggingface.co/v1",
-		APIKeyEnv: "HF_TOKEN",
+		Kind:    KindActive,
+		Title:   "Hugging Face Inference Providers",
+		Name:    "huggingface",
+		BaseURL: "https://router.huggingface.co/v1",
+		KeyEnv:  "HF_TOKEN",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Google AI Studio (Gemini API)",
-		Name:      "gemini",
-		BaseURL:   "https://generativelanguage.googleapis.com/v1beta/openai",
-		APIKeyEnv: "GEMINI_API_KEY",
+		Kind:    KindActive,
+		Title:   "Google AI Studio (Gemini API)",
+		Name:    "gemini",
+		BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+		KeyEnv:  "GEMINI_API_KEY",
 	},
 	{
 		Kind:  KindPlaceholder,
 		Title: "Google Vertex AI (Gemini via GCP; OAuth2/ADC)",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "DeepSeek (V3, R1, coder, direct API)",
-		Name:      "deepseek",
-		BaseURL:   "https://api.deepseek.com/v1",
-		APIKeyEnv: "DEEPSEEK_API_KEY",
+		Kind:    KindActive,
+		Title:   "DeepSeek (V3, R1, coder, direct API)",
+		Name:    "deepseek",
+		BaseURL: "https://api.deepseek.com/v1",
+		KeyEnv:  "DEEPSEEK_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Z.AI / GLM (Zhipu direct API)",
-		Name:      "zai",
-		BaseURL:   "https://api.z.ai/api/paas/v4",
-		APIKeyEnv: "ZAI_API_KEY",
+		Kind:    KindActive,
+		Title:   "Z.AI / GLM (Zhipu direct API)",
+		Name:    "zai",
+		BaseURL: "https://api.z.ai/api/paas/v4",
+		KeyEnv:  "ZAI_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Kimi / Moonshot (Moonshot global endpoint)",
-		Name:      "moonshot",
-		BaseURL:   "https://api.moonshot.ai/v1",
-		APIKeyEnv: "MOONSHOT_API_KEY",
+		Kind:    KindActive,
+		Title:   "Kimi / Moonshot (Moonshot global endpoint)",
+		Name:    "moonshot",
+		BaseURL: "https://api.moonshot.ai/v1",
+		KeyEnv:  "MOONSHOT_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "StepFun Step Plan (Agent / coding models via Step Plan API)",
-		Name:      "stepfun",
-		BaseURL:   "https://api.stepfun.com/v1",
-		APIKeyEnv: "STEPFUN_API_KEY",
+		Kind:    KindActive,
+		Title:   "StepFun Step Plan (Agent / coding models via Step Plan API)",
+		Name:    "stepfun",
+		BaseURL: "https://api.stepfun.com/v1",
+		KeyEnv:  "STEPFUN_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "MiniMax (Global endpoint)",
-		Name:      "minimax",
-		BaseURL:   "https://api.minimax.io/v1",
-		APIKeyEnv: "MINIMAX_API_KEY",
+		Kind:    KindActive,
+		Title:   "MiniMax (Global endpoint)",
+		Name:    "minimax",
+		BaseURL: "https://api.minimax.io/v1",
+		KeyEnv:  "MINIMAX_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Ollama Cloud (Cloud-hosted open models, ollama.com)",
-		Name:      "ollama",
-		BaseURL:   "https://ollama.com/v1",
-		APIKeyEnv: "OLLAMA_API_KEY",
+		Kind:    KindActive,
+		Title:   "Ollama Cloud (Cloud-hosted open models, ollama.com)",
+		Name:    "ollama",
+		BaseURL: "https://ollama.com/v1",
+		KeyEnv:  "OLLAMA_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Arcee AI (Trinity models, direct API)",
-		Name:      "arcee",
-		BaseURL:   "https://api.arcee.ai/api/v1",
-		APIKeyEnv: "ARCEE_API_KEY",
+		Kind:    KindActive,
+		Title:   "Arcee AI (Trinity models, direct API)",
+		Name:    "arcee",
+		BaseURL: "https://api.arcee.ai/api/v1",
+		KeyEnv:  "ARCEE_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "GMI Cloud (Multi-model direct API)",
-		Name:      "gmi",
-		BaseURL:   "https://api.gmi-serving.com/v1",
-		APIKeyEnv: "GMI_API_KEY",
+		Kind:    KindActive,
+		Title:   "GMI Cloud (Multi-model direct API)",
+		Name:    "gmi",
+		BaseURL: "https://api.gmi-serving.com/v1",
+		KeyEnv:  "GMI_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Kilo Code (Kilo Gateway API)",
-		Name:      "kilo",
-		BaseURL:   "https://api.kilo.ai/api/gateway",
-		APIKeyEnv: "KILO_API_KEY",
+		Kind:    KindActive,
+		Title:   "Kilo Code (Kilo Gateway API)",
+		Name:    "kilo",
+		BaseURL: "https://api.kilo.ai/api/gateway",
+		KeyEnv:  "KILO_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "OpenCode Zen (pay-as-you-go)",
-		Name:      "opencode",
-		BaseURL:   "https://opencode.ai/zen/v1",
-		APIKeyEnv: "OPENCODE_API_KEY",
+		Kind:    KindActive,
+		Title:   "OpenCode Zen (pay-as-you-go)",
+		Name:    "opencode",
+		BaseURL: "https://opencode.ai/zen/v1",
+		KeyEnv:  "OPENCODE_API_KEY",
 	},
 	{
 		Kind:  KindPlaceholder,
 		Title: "AWS Bedrock (IAM/CLI auth)",
 	},
 	{
-		Kind:      KindAzureFoundry,
-		Title:     "Azure Foundry (OpenAI-style endpoint, your Azure AI deployment)",
-		Name:      "azure_foundry",
-		APIKeyEnv: "AZURE_FOUNDRY_API_KEY",
+		Kind:   KindAzureFoundry,
+		Title:  "Azure Foundry (OpenAI-style endpoint, your Azure AI deployment)",
+		Name:   "azure_foundry",
+		KeyEnv: "AZURE_FOUNDRY_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Vercel AI Gateway (Multi-model aggregator)",
-		Name:      "vercel_ai_gateway",
-		BaseURL:   "https://ai-gateway.vercel.sh/v1",
-		APIKeyEnv: "VERCEL_AI_GATEWAY_API_KEY",
+		Kind:    KindActive,
+		Title:   "Vercel AI Gateway (Multi-model aggregator)",
+		Name:    "vercel_ai_gateway",
+		BaseURL: "https://ai-gateway.vercel.sh/v1",
+		KeyEnv:  "VERCEL_AI_GATEWAY_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Actual Computer (hosted inference via api.actual.inc)",
-		Name:      "actual",
-		BaseURL:   "https://api.actual.inc/v1",
-		APIKeyEnv: "ACTUAL_API_KEY",
+		Kind:    KindActive,
+		Title:   "Actual Computer (hosted inference via api.actual.inc)",
+		Name:    "actual",
+		BaseURL: "https://api.actual.inc/v1",
+		KeyEnv:  "ACTUAL_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "DeepInfra (100+ open models, pay-per-use)",
-		Name:      "deepinfra",
-		BaseURL:   "https://api.deepinfra.com/v1/openai",
-		APIKeyEnv: "DEEPINFRA_API_KEY",
+		Kind:    KindActive,
+		Title:   "DeepInfra (100+ open models, pay-per-use)",
+		Name:    "deepinfra",
+		BaseURL: "https://api.deepinfra.com/v1/openai",
+		KeyEnv:  "DEEPINFRA_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Upstage (Solar API)",
-		Name:      "upstage",
-		BaseURL:   "https://api.upstage.ai/v1/solar",
-		APIKeyEnv: "UPSTAGE_API_KEY",
+		Kind:    KindActive,
+		Title:   "Upstage (Solar API)",
+		Name:    "upstage",
+		BaseURL: "https://api.upstage.ai/v1/solar",
+		KeyEnv:  "UPSTAGE_API_KEY",
 	},
 	{
-		Kind:      KindActive,
-		Title:     "Nebius Token Factory (OpenAI-compatible inference)",
-		Name:      "nebius",
-		BaseURL:   "https://api.tokenfactory.nebius.com/v1",
-		APIKeyEnv: "NEBIUS_API_KEY",
+		Kind:    KindActive,
+		Title:   "Nebius Token Factory (OpenAI-compatible inference)",
+		Name:    "nebius",
+		BaseURL: "https://api.tokenfactory.nebius.com/v1",
+		KeyEnv:  "NEBIUS_API_KEY",
 	},
 	{
 		Kind:  KindCustom,
@@ -292,7 +295,9 @@ var canonicalMenuItems = []MenuItem{
 }
 
 // CanonicalMenuItems builds the single source of truth provider list for setup.
-func CanonicalMenuItems(discovered ...[]DiscoveredServer) []MenuItem {
+// Discovery is NOT performed here (PO directive): the menu is static; the
+// local-server scan runs only when the user picks the Local models row.
+func CanonicalMenuItems() []MenuItem {
 	items := make([]MenuItem, len(canonicalMenuItems))
 	copy(items, canonicalMenuItems)
 	return items
@@ -635,8 +640,8 @@ func printNonTTYState(out io.Writer, cfgPath string, cfg *Config) {
 	fmt.Fprintln(out, "To run the interactive setup wizard, run hearthd in a terminal with a TTY: hearthd setup")
 }
 
-func selectMenuProvider(out io.Writer, readLine func(string) (string, error), discovered ...[]DiscoveredServer) (MenuItem, bool, error) {
-	menuItems := CanonicalMenuItems(discovered...)
+func selectMenuProvider(out io.Writer, readLine func(string) (string, error)) (MenuItem, bool, error) {
+	menuItems := CanonicalMenuItems()
 	for {
 		fmt.Fprintln(out, "\nSelect a provider:")
 		RenderMenu(out, menuItems)
@@ -686,7 +691,7 @@ func resolveProviderDetails(item MenuItem, readLine func(string) (string, error)
 				baseURL = o
 			}
 		}
-		return item.Name, baseURL, item.APIKeyEnv, false, nil
+		return item.Name, baseURL, item.KeyEnv, false, nil
 	case KindAzureFoundry:
 		baseURL = item.BaseURL
 		if overrides != nil {
@@ -709,7 +714,7 @@ func resolveProviderDetails(item MenuItem, readLine func(string) (string, error)
 				break
 			}
 		}
-		return item.Name, baseURL, item.APIKeyEnv, false, nil
+		return item.Name, baseURL, item.KeyEnv, false, nil
 	case KindCustom:
 		for {
 			n, rErr := readLine("Provider name: ")
