@@ -35,9 +35,9 @@ let lastUserMessageText = "";
 // --- Theme System ---
 
 function initTheme() {
-  const savedTheme = localStorage.getItem("lararium.theme") || "warm";
-  const hue = localStorage.getItem("lararium.accent-hue") || "25";
-  const base = localStorage.getItem("lararium.base") || "dark";
+  const savedTheme = sessionStorage.getItem("lararium.theme") || "warm";
+  const hue = sessionStorage.getItem("lararium.accent-hue") || "25";
+  const base = sessionStorage.getItem("lararium.base") || "dark";
 
   document.documentElement.dataset.theme = savedTheme;
   document.documentElement.style.setProperty("--accent-h", hue);
@@ -50,11 +50,11 @@ function initTheme() {
 
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem("lararium.theme", theme);
+  sessionStorage.setItem("lararium.theme", theme);
   if (theme === "custom") {
-    const hue = localStorage.getItem("lararium.accent-hue") || "25";
+    const hue = sessionStorage.getItem("lararium.accent-hue") || "25";
     document.documentElement.style.setProperty("--accent-h", hue);
-    const base = localStorage.getItem("lararium.base") || "dark";
+    const base = sessionStorage.getItem("lararium.base") || "dark";
     document.documentElement.dataset.base = base;
   }
   updateThemeUI();
@@ -62,7 +62,7 @@ function setTheme(theme) {
 
 function setBase(base) {
   document.documentElement.dataset.base = base;
-  localStorage.setItem("lararium.base", base);
+  sessionStorage.setItem("lararium.base", base);
   updateThemeUI();
 }
 
@@ -1398,7 +1398,7 @@ function init() {
       accentHueEl.addEventListener("input", (e) => {
         const val = e.target.value;
         document.documentElement.style.setProperty("--accent-h", val);
-        localStorage.setItem("lararium.accent-hue", val);
+        sessionStorage.setItem("lararium.accent-hue", val);
         if (hueValEl) hueValEl.textContent = val;
       });
     }
