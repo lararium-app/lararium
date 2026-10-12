@@ -13,7 +13,9 @@ custos card stream, the render rule, V16; CUSTOS-SPEC amendment v9)
 applied 2026-10-08 — see changelog v5.2; S10 (amendment A4 §S10.1, PO
 sign-off 2026-10-09) adds §3A — whole-hearth backup/restore CLI shapes,
 the control-socket `backup` verb, and the explicit no-REST-verb stance —
-see changelog v5.3.
+see changelog v5.3; CA-7 (policy rules on the surface: three
+/v1/policy/rules routes, V17; CUSTOS-SPEC amendment v11) applied
+2026-10-12 — see changelog v5.4.
 Companion specs: PENATUS-SPEC (the file layer — this API never contradicts
 it), ARCHITECTURE §2.7 (surfaces), CELL-SPEC (execution stays sandboxed).
 
@@ -144,6 +146,9 @@ must amend, not creep.
 | DELETE | /v1/keys/{name} | 204 — removes the keys.json entry only; idempotent (K-A1, KEYS-SPEC K4) |
 | GET  | /v1/custos/cards | `{"cards":[…]}` — hearthd's door-registry pending set, CUSTOS-SPEC §6.4a wire shape; catch-up after refresh/new tab (CA-6, CUSTOS-SPEC §6.4b) |
 | POST | /v1/custos/cards/{id}/resolve | `{"verdict":"once"|"always"|"deny"}` → 200 `{"state":"approved"|"denied"}`; 404 no_such_card; 409 already_answered\|stale_verdict; 423 locked; 400 ip_ask_only. id gate: `^a_[0-9A-Za-z]{10,32}$` (same as S4). hearthd forwards the verb to doors.sock with `via web` and relays the synchronous ack — door `OK` maps to 200 `{"state":"approved"}` for `once`/`always` and `{"state":"denied"}` for `deny`; every `ERR` maps to its frozen status, 1:1 (CA-6) |
+| GET  | /v1/policy/rules | `{"egress_strict":bool,"rules":[{"lane","pattern","verdict","always","source"}]}` — `PolicyEngine.ListRules()` verbatim, same sort (lane asc, pattern asc); `rules` is `[]` never null; 423 locked; 503 policy_corrupt (CA-7, CUSTOS-SPEC §6.6) |
+| PUT  | /v1/policy/rules | `{"lane":"credential"|"egress","pattern":"…","verdict":"auto"|"ask"|"deny"}` → 200 `{"ok":true,"notes":[…]}` (domination notes; `[]` when none). Mirrors ctl `POLICY-ADD`: `lane=="egress"` → AddEgressRule, else AddCredentialRule; `always` never page-settable (always-rules are card-minted, §6.5); engine validation errors → 400; 503 policy_corrupt. Audit actor `web` (CA-7) |
+| DELETE | /v1/policy/rules/{pattern} | `{pattern}` URL-path-encoded, printable ASCII `^[\x21-\x7e]{1,256}$` after decoding (fails gate → 404, S4-style); optional `?lane=credential|egress` (absent = dual-lane lookup); → 200 `{"ok":true,"removed":true|false}`; 503 policy_corrupt. Mirrors ctl `POLICY-RM`. Audit actor `web` (CA-7) |
 | GET  | / | embedded page HTML — static, unauthenticated (it contains no secret; every API call it makes needs the token) |
 | GET  | /app.js, /app.css | embedded page assets — static, unauthenticated, immutable (same rule: no secret in them) |
 
@@ -412,6 +417,20 @@ V16. Custos cards (CA-6, CUSTOS-SPEC §6.4b): `GET /v1/custos/cards` →
     pending → the card stays pending in the hub (no `denied:disconnected`
     anywhere), and `GET /v1/custos/cards` after reconnect still lists it.
     (§4/§5/§6)
+V17. Policy rules (CA-7): with an unlocked vault —
+    `GET /v1/policy/rules` → 200, `rules:[]` on a fresh engine (never
+    null), `egress_strict:false`; `PUT` `{lane:"credential",
+    pattern:"demo/echo",verdict:"ask"}` → 200 with `notes`; the row then
+    appears in `GET` with `source:"web"`, `always:false`; duplicate `PUT`
+    with a dominating pattern returns its notes (domination path,
+    engine-owned); `PUT` invalid verdict → 400; `PUT` empty pattern →
+    400; `PUT` `{lane:"egress",pattern:"*.proxy.test",verdict:"auto"}` →
+    200, row lane `egress`; `DELETE /v1/policy/rules/<urlencoded>` →
+    `{"removed":true}`, then `removed:false` on second delete; `DELETE`
+    with a control-char or over-length pattern → 404; locked vault (all
+    three verbs) → 423; corrupt posture fixture → 503 on all three; no
+    bearer → 401. Audit tail shows `actor:"web"` on both writes.
+    (§4/§9, CUSTOS §6.5/§6.6/§11)
 
 ## 10. PO decisions (settled 2026-10-02)
 
@@ -424,6 +443,15 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5.4 (amendment CA-7, 2026-10-12).** PO sign-off on CA-7 (policy rules
+on the surface): §4 route table gains `GET /v1/policy/rules`,
+`PUT /v1/policy/rules`, `DELETE /v1/policy/rules/{pattern}` —
+read/write of the frozen `PolicyEngine` rule set over the bearer gate,
+ctl-verb parity (`POLICY-ADD`/`POLICY-RM`), audit actor `web`, no new
+engine semantics, no doors.sock or ctl protocol changes. §9 gains V17.
+CUSTOS-SPEC amendment v11 records the `web` audit actor.
+No frozen turn-stream behavior changed.
 
 **v5.3 (amendment S10.1 / A4, 2026-10-09).** PO sign-off on amendment
 A4/V10/S10 (whole-hearth backup & restore; four hostile review rounds,

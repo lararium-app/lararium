@@ -36,6 +36,15 @@ verified coherent generation set — an installation event, not a
 supersession. Append-only: nothing deleted, nothing reworded, the two
 enumerated ways stand untouched. Custos daemon: zero code (docs edit
 only).
+**Amendment v11 (CA-7, PO sign-off 2026-10-12): the `web` audit actor.**
+Records `web` as a fourth actor label (cell id | `cli` | `surface` |
+`web`) for policy writes arriving on the SURFACE-SPEC §4
+`/v1/policy/rules` routes (CA-7). These are engine verbs run with the
+bearer-holder's authority and no custody-card step — semantically a door,
+carried as a distinct actor so the audit tail distinguishes page
+mutations from ctl and approval-card writes. Audit kind, chain rules,
+and every v7–v10 behavior: unchanged. Zero daemon code (docs edit only;
+the surface-side code lands under SURFACE-SPEC v5.4).
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -1029,7 +1038,7 @@ error enum, §5.1a: an undeclared value is a defect at review, not a
 passthrough). `credential_added` is
 emitted by `custos login` success and by `hearthd keys set` under
 custody (the custody-routed write audits it with `actor` surface/cli).
-Fields: `t`, `kind`, `cred` (name), `sur` (8-hex prefix), `actor` (cell id | `cli` | `surface`), `host`, `tool`, `verdict`, `reason`, `via` (`web|telegram` — door verdicts only; omitted for `cli` verdicts), `gen`, `prev_hash`.
+Fields: `t`, `kind`, `cred` (name), `sur` (8-hex prefix), `actor` (cell id | `cli` | `surface` | `web` — `web` added by amendment v11 for the CA-7 surface policy routes, SURFACE-SPEC §4), `host`, `tool`, `verdict`, `reason`, `via` (`web|telegram` — door verdicts only; omitted for `cli` verdicts), `gen`, `prev_hash`.
 **Chain-writer serialization (frozen):** the audit append is taken
 under `custos.lock` (already held by every §4.2 mutation and by
 restore), and each appender re-reads the current tail line under the
@@ -1406,6 +1415,10 @@ authenticated-TTY CLI issuance skips the card (you are at the
 keyboard). No TTY-only fallback needed unless dogfood says otherwise.
 
 ## Changelog
+
+- v11 (amendment CA-7, PO sign-off, 2026-10-12): the `web` audit actor
+  for `/v1/policy/rules` writes (SURFACE-SPEC v5.4). Records `web` in
+  the §8 actor enumeration; append-only, zero daemon code.
 
 - v10 (amendment A4 §V10.1, PO sign-off, 2026-10-09): whole-hearth
   backup & restore (PENATUS-SPEC amendment v10 §4.5; SURFACE-SPEC v5.3
