@@ -105,6 +105,8 @@ cd lararium/docker
 docker compose up --build
 ```
 
+Prefer the wizard on a fresh volume? Run `docker compose exec -it hearthd hearthd setup` before the first start (detached `up -d` never blocks on it).
+
 The reference config points at a model server on **your** machine
 (`http://host.docker.internal:8080/v1`) — serve any model there with
 llama.cpp (or point the reference config at yourself) and it just works,

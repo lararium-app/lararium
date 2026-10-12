@@ -16,14 +16,14 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    # The container runs first-time setup, then serves the web chat + API.
-    # For interactive setup:  docker compose exec -it hearthd hearthd setup
-    # For the REPL:           docker compose exec -it hearthd hearthd
+    # Serves the web chat + API; setup is explicit so detached starts
+    # never block on a menu:
+    #   interactive setup:  docker compose exec -it hearthd hearthd setup
+    #   REPL:               docker compose exec -it hearthd hearthd
     entrypoint: ["sh", "-c"]
     command:
       - "if [ ! -f /etc/lararium/.setup-done ] && [ -t 0 ]; then hearthd setup || true; touch /etc/lararium/.setup-done; fi; exec hearthd serve"
-    stdin_open: true # REPL via `exec -it` needs a terminal
-    tty: true
+    stdin_open: true # REPL via `exec -it` needs a terminal; detached starts (up -d) deliberately skip interactive setup and get defaults; docker compose exec -it hearthd hearthd setup remains the documented route
     # Web chat + API (`hearthd serve`). Published on the host's loopback
     # only — reach it from the machine running Docker, or put your own
     # TLS proxy in front and add its hostname to serve.allowed_hosts.

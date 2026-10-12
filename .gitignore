@@ -3,7 +3,8 @@ node_modules/
 /package-lock.json
 !web/package.json
 !web/package-lock.json
-web/dist/
+web/dist/*
+!web/dist/index.html
 shot*.js
 shot-*.png
 # Secrets & tokens never enter git

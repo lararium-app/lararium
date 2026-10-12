@@ -1,9 +1,17 @@
 # hearthd — Lararium hearth daemon
+FROM node:22 AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
 FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=web /web/dist ./web/dist
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/hearthd ./cmd/hearthd
 
 # debian-slim (not distroless): the compose entrypoint shim runs `sh -c` for
