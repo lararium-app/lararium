@@ -1,11 +1,26 @@
-// Package web holds the embedded single-page chat UI (spec §7: exactly
-// index.html, app.js, app.css — vanilla, no build step, no CDN).
+// Package web holds the embedded single-page chat UI built by Vite
+// (React 18 + TypeScript) and served by the surface at / and under
+// /assets/*.
 package web
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
-// FS is the embedded page bundle served by the surface at /, /app.js,
-// and /app.css.
+// distFS embeds the production Vite build in dist/.
 //
-//go:embed index.html app.js app.css
-var FS embed.FS
+//go:embed dist
+var distFS embed.FS
+
+// FS is the embedded page bundle subtree served by the surface at /
+// and under /assets/*.
+var FS fs.FS
+
+func init() {
+	sub, err := fs.Sub(distFS, "dist")
+	if err != nil {
+		panic(err)
+	}
+	FS = sub
+}

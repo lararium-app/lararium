@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #111418;
+  --bg2: #161a20;
+  --panel: #1a1f26;
+  --panel2: #20262f;
+  --line: #2a323d;
+  --line2: #38424f;
+  --ink: #e8e4dc;
+  --ink2: #a8a99f;
+  --ink3: #767b84;
+  --ember: #e8834a;
+  --ember2: #f2a15f;
+  --ember-glow: rgba(232, 131, 74, 0.16);
+  --ok: #7fb37a;
+  --warn: #d9a441;
+  --err: #e06c75;
+  --radius: 14px;
+  --font-brand: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --accent-h: 25;
+}
+
+html[data-theme="warm"] {
+  --bg: #111418;
+  --bg2: #161a20;
+  --panel: #1a1f26;
+  --panel2: #20262f;
+  --line: #2a323d;
+  --line2: #38424f;
+  --ink: #e8e4dc;
+  --ink2: #a8a99f;
+  --ink3: #767b84;
+  --ember: #e8834a;
+  --ember2: #f2a15f;
+  --ember-glow: rgba(232, 131, 74, 0.16);
+  --radius: 14px;
+  --font-brand: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+}
+
+html[data-theme="neutral"] {
+  --bg: #141414;
+  --bg2: #1a1a1a;
+  --panel: #212121;
+  --panel2: #2a2a2a;
+  --line: #333333;
+  --line2: #424242;
+  --ink: #e8e8e8;
+  --ink2: #b0b0b0;
+  --ink3: #757575;
+  --ember: #7aa2d6;
+  --ember2: #92b6e4;
+  --ember-glow: rgba(122, 162, 214, 0.18);
+  --radius: 8px;
+  --font-brand: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+html[data-theme="custom"],
+html[data-theme="custom"][data-base="dark"] {
+  --bg: #111418;
+  --bg2: #161a20;
+  --panel: #1a1f26;
+  --panel2: #20262f;
+  --line: #2a323d;
+  --line2: #38424f;
+  --ink: #e8e4dc;
+  --ink2: #a8a99f;
+  --ink3: #767b84;
+  --ember: hsl(var(--accent-h), 70%, 55%);
+  --ember2: hsl(var(--accent-h), 75%, 65%);
+  --ember-glow: hsla(var(--accent-h), 70%, 55%, 0.18);
+  --radius: 12px;
+  --font-brand: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+}
+
+html[data-theme="custom"][data-base="light"] {
+  --bg: #f5f4f0;
+  --bg2: #ebe9e3;
+  --panel: #ffffff;
+  --panel2: #f0eee8;
+  --line: #dcd9d0;
+  --line2: #ccc8be;
+  --ink: #1f2328;
+  --ink2: #57606a;
+  --ink3: #8c959f;
+  --ember: hsl(var(--accent-h), 70%, 45%);
+  --ember2: hsl(var(--accent-h), 75%, 55%);
+  --ember-glow: hsla(var(--accent-h), 70%, 45%, 0.16);
+  --radius: 12px;
+  --font-brand: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+}
+
+::selection {
+  background: var(--ember);
+  color: #111316;
+}
