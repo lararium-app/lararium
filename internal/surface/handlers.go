@@ -55,6 +55,9 @@ type Server struct {
 	custosMu  sync.RWMutex
 	custosReg CustosRegistry
 
+	policyMu  sync.RWMutex
+	policySrc PolicySource
+
 	Backup BackupFunc
 }
 
