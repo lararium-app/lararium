@@ -65,6 +65,11 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.URL.Path == "/v1/policy/rules" || strings.HasPrefix(r.URL.Path, "/v1/policy/rules/") {
+		if s.dispatchPolicy(w, r) {
+			return
+		}
+	}
 	if r.URL.Path == "/v1/sessions" {
 		switch r.Method {
 		case http.MethodGet:

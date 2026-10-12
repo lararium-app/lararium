@@ -302,6 +302,16 @@ PYEOF
     return 0
 }
 
+# ---- V17: policy rules (CA-7) -------------------------------------------------------
+
+v17() {
+    bash "$ROOT_DIR/tests/surface/v17_policy.sh" > "$WORK/v17.log" 2>&1 || {
+        cat "$WORK/v17.log"
+        return 1
+    }
+    return 0
+}
+
 # ---- run ------------------------------------------------------------------------------
 
 echo "=== running V-suite ==="
@@ -315,6 +325,7 @@ check V7   "1.1 MiB body -> 413"                    v7
 check V11  "page source greps"                      v11
 check V13  "Host gate config matrix"                v13
 check V15c "events clamp + 400s"                    v15c
+check V17  "policy rules (CA-7)"                    v17
 
 echo "=== summary ==="
 echo "PASS: $PASS  FAIL: $FAIL"

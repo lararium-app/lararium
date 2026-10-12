@@ -21,6 +21,8 @@ type CustosConfig struct {
 	// DoorName is a NON-FROZEN extension: the HELLO door name
 	// ([a-z0-9_-]{1,32}); empty = "hearthd".
 	DoorName string `yaml:"door_name"`
+	// UnlockKeyfile is the optional path to an unlock keyfile per CUSTOS-SPEC §4.1, §C3, §12 Q1.
+	UnlockKeyfile string `yaml:"unlock_keyfile"`
 }
 
 // startCustosDoor starts the door client as a supervised goroutine and
