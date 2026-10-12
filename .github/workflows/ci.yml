@@ -25,6 +25,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI (embed.go requires web/dist to exist)
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Build
         run: go build ./...
 

@@ -131,7 +131,13 @@ v3() {
     fresh "127.0.0.1:17720" "[]"
     start || return 1
     local h
-    for path in / /app.js /app.css; do
+    local paths=(/ /app.js /app.css)
+    if [[ -d "$ROOT_DIR/web/dist/assets" ]]; then
+        while IFS= read -r f; do
+            [[ -n "$f" ]] && paths+=("/assets/$f")
+        done < <(ls -1 "$ROOT_DIR/web/dist/assets")
+    fi
+    for path in "${paths[@]}"; do
         h=$(curl -s -D - -o /dev/null "http://$LISTEN$path")
         echo "$h" | tr -d '\r' | grep -qi "^content-security-policy: default-src 'self'; style-src 'self'; frame-ancestors 'none'$" || return 1
         echo "$h" | tr -d '\r' | grep -qi "^x-content-type-options: nosniff$" || return 1
@@ -223,18 +229,24 @@ v7() {
 
 v11() {
     local w="$ROOT_DIR/web"
-    grep -qE 'https?://' "$w/index.html" "$w/app.js" "$w/app.css" && return 1
+    local src_files=("$w/index.html")
+    if [[ -d "$w/src" ]]; then
+        while IFS= read -r f; do
+            src_files+=("$f")
+        done < <(find "$w/src" -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.css" \))
+    fi
+    grep -qE 'https?://' "${src_files[@]}" && return 1
     # protocol-relative URLs only ever appear as string literals; comments
     # legitimately contain //, so anchor to a quote or backtick
-    grep -qE '["'"'"'`]//' "$w/app.js" && return 1
+    grep -qE '["'"'"'`]//' "${src_files[@]}" && return 1
     # fetch() with a literal argument must use a relative literal;
     # variable args are checked at their call sites (all relative)
-    grep -E "fetch\\(['\"\`]" "$w/app.js" | grep -vqE "fetch\\(['\"\`]/" && return 1
-    grep -q "localStorage" "$w/app.js" && return 1
-    grep -qE '\.innerHTML[[:space:]]*=' "$w/app.js" && return 1
-    grep -qE 'console\.[a-z]+\([^)]*token' "$w/app.js" && return 1
-    grep -q "replaceState" "$w/app.js" || return 1
-    grep -q "sessionStorage" "$w/app.js" || return 1
+    grep -E "fetch\\(['\"\`]" "${src_files[@]}" | grep -vqE "fetch\\(['\"\`]/" && return 1
+    grep -q "localStorage" "${src_files[@]}" && return 1
+    grep -qE '\.innerHTML[[:space:]]*=' "${src_files[@]}" && return 1
+    grep -qE 'console\.[a-z]+\([^)]*token' "${src_files[@]}" && return 1
+    grep -q "replaceState" "${src_files[@]}" || return 1
+    grep -q "sessionStorage" "${src_files[@]}" || return 1
     return 0
 }
 
