@@ -141,6 +141,51 @@ func (o *openAI) Capabilities(ctx context.Context) (Caps, error) {
 	return ProbeOpenAI(ctx, o.baseURL, key, o.defaultModel)
 }
 
+// Models returns the list of model IDs from the provider's /models endpoint.
+func (o *openAI) Models(ctx context.Context) ([]string, error) {
+	key, err := o.resolveKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return fetchModels(ctx, o.baseURL, key)
+}
+
+// fetchModels issues GET baseURL/models (with optional Bearer key) to discover model IDs.
+func fetchModels(ctx context.Context, baseURL, key string) ([]string, error) {
+	u := strings.TrimRight(baseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d from /models", resp.StatusCode)
+	}
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	var models []string
+	for _, d := range body.Data {
+		id := strings.TrimSpace(d.ID)
+		if id != "" {
+			models = append(models, id)
+		}
+	}
+	return models, nil
+}
+
 // schemaOrNull returns raw JSON for a tool schema, defaulting to an empty object.
 func schemaOrNull(s string) json.RawMessage {
 	if strings.TrimSpace(s) == "" {

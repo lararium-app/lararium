@@ -1,0 +1,1 @@
+Transcribes the PO-approved rev-4 text (2026-10-09) into PENATUS-SPEC §1/§4/new §4.5, CUSTOS-SPEC §4.2 (v10, append-only), SURFACE-SPEC §3A (v5.3). Fidelity-verified against the ratified draft modulo documented section renumbering. Docs only — implementation slices follow on merge per freeze doctrine.

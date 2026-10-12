@@ -1,0 +1,80 @@
+And now we wait for the tests to finish.
+FINDING 1 [severity: BLOCKER] [section: §4.5.3.3]
+Problem: `hub.SingleWriterLock` in `turns.go` invokes blocking `singleWriterMu.Lock()` rather than a non-blocking try-lock, and `CreateFromDaemon` in `writer.go` acquires this mutex before attempting to take `backup.lock`. A second concurrent socket backup or in-flight turn blocks indefinitely on the mutex instead of failing immediately with `busy: lock held by another process` (`LOCK_NB`), and `TestBK9_SocketConcurrency` masks this by replacing `srv.Backup` to bypass `CreateFromDaemon` and `singleWriterLock` entirely.
+Why it matters: Violates the strict §4.5.3.3 lock law requiring all lock acquisitions to be non-blocking with immediate refusal, and relies on a test that fails to pin the daemon concurrency contract.
+
+FINDING 2 [severity: BLOCKER] [section: §4.5.3.3]
+Problem: `AcquireLocks` in `lock.go` takes an on-disk flock on `filepath.Join(root, "custos.lock")`, whereas CUSTOS-SPEC §C2 and the live custos daemon flock `filepath.Join(root, "custos", "custos.lock")`. Because `backup.Create` and live custos mutations flock two entirely different files, backup never synchronizes with custos vault mutations.
+Why it matters: Point-in-time custody coherence across `keys.json`, `vault.key`, `surrogates.age`, and WAL snapshots is broken during concurrent mutations, violating the core §4.5.3.3 guarantee.
+
+FINDING 3 [severity: BLOCKER] [section: §4.5.3.1]
+Problem: `handleBackupSocket` in `socket.go` fails to validate that the requested output path is absolute before dispatching to `s.Backup`, while `CheckSelfInclusion` in `writer.go` discards errors from `filepath.Rel` with `return nil` whenever `outAbs` is relative. A client can supply a relative path such as `backup sessions/corrupt.lararium-backup` over the control socket to write backup temp files directly inside the active hearth root.
+Why it matters: Breaches the absolute-path protocol contract and self-inclusion refusal law of §4.5.3.1 and §4.5.3.4, allowing bundle creation to contaminate or overwrite root state.
+
+FINDING 4 [severity: BLOCKER] [section: §4.5.3.1]
+Problem: `CreateStagingDir` in `staging.go` allocates the temporary staging directory at `filepath.Dir(root)` rather than ensuring it resides on the hearth root filesystem. If `root` is a mount point, staging lands on a parent filesystem whose free space was never checked by `PreflightFreeSpace`, and if the output bundle also targets the parent filesystem, preflight only demands Σ space rather than the required 2Σ coexistence threshold.
+Why it matters: Backups on mounted roots risk unexpected `ENOSPC` disk exhaustion and crash failures during staging copy or compression.
+
+FINDING 5 [severity: BLOCKER] [section: §4.5.6]
+Problem: `TestBK13_ModesAndEmptyDirs` only verifies that the backup archive file has mode 0600 and that `Verify` produces zero findings. It never asserts that `suid-tool` is recorded with mode 0755, never asserts that empty directory entries exist in the manifest or zip, and never asserts that directory entries omit `sha256` and `size`.
+Why it matters: The test fails to pin any of its normative claims for BK13 create-side mode recording and empty directory preservation.
+
+FINDING 6 [severity: BLOCKER] [section: §4.5.2]
+Problem: In `verify.go`, errors returned by `ParseOctalMode(entry.Mode)` when evaluating manifest entries are silently ignored behind `if err == nil`. A manifest entry containing an unparseable or corrupted mode string (such as `"invalid"`) produces no tamper finding and passes verification cleanly.
+Why it matters: Manifest content corruption escapes detection, violating the strict verify law that any manifest discrepancy must yield a `tamper` finding.
+
+FINDING 7 [severity: MAJOR] [section: §4.5.6]
+Problem: Test BK5 mandates testing that a vault-mutation hammer concurrently executing with a backup loop produces bundles that consistently parse together as a single generation, but `backup_test.go` only tests static held-lock refusal.
+Why it matters: Live concurrency and generational coherence between custos mutations and backup staging remain completely unexercised.
+
+FINDING 8 [severity: MAJOR] [section: §4.5.3.1]
+Problem: Transient files matching `tokens-*.tmp` created by `TokenStore.writeEntries` are written directly into the hearth root and match no pattern in `IsExcluded`. A token creation or revocation occurring during staging copy races with `filepath.Walk`, causing staging to fail with `ENOENT` if the tmp file vanishes or packaging transient temp files into the backup archive.
+Why it matters: Concurrent token rotations create a race window that can abort backups or corrupt bundle membership.
+
+FINDING 9 [severity: MAJOR] [section: §4.5.3.1]
+Problem: Multiple runtime writers modify the hearth root outside `singleWriterMu` and flocks—including `TokenStore.writeEntries` (`tokens.json`), `PenatusSource.Create` (`session.json` and `events.jsonl` branching), and the `nuntius` background polling loop (`inbox.jsonl`, `state.json`, and `owners.json`)—yet none are documented in the PR body.
+Why it matters: Breaches the normative §4.5.3.1 writer-inventory duty requiring every hearth-root writer outside existing locks to be audited and documented.
+
+FINDING 10 [severity: MAJOR] [section: §4.5.2]
+Problem: `copyFile` in `staging.go` applies source file modes using `mode.Perm()`, which strips `os.ModeSetuid`, `os.ModeSetgid`, and sticky bits before files land in the staging directory. When `WriteBundle` subsequently reads permissions from staging, source files originally possessing setuid/setgid bits have already lost them rather than retaining recorded source modes in the manifest for extraction-time stripping.
+Why it matters: Breaks the §4.5.2 contract specifying that modes round-trip verbatim into the manifest and that privilege bit masking occurs strictly upon extraction.
+
+FINDING 11 [severity: MAJOR] [section: §4.5.2]
+Problem: `StageTree` in `staging.go` applies directory permissions in pre-order traversal via `os.Chmod(dstPath, info.Mode().Perm())`. If any directory in the hearth root has read-only permissions (such as 0555 or 0500), copying subsequent child entries into that directory fails with permission denied (`EACCES`).
+Why it matters: Backups fail on legitimate directory trees containing read-only subdirectories.
+
+FINDING 12 [severity: MAJOR] [section: §4.5.2]
+Problem: `StageTree` performs no validation against symlinks, devices, or FIFOs during copying, relying solely on the pre-lock `CheckTreeShape` scan. If an offender exists or is introduced prior to staging, `copyFile` follows symlinks via `os.Open` (potentially copying external filesystem data into staging) or hangs indefinitely on FIFOs.
+Why it matters: The tree-shape refusal law of §4.5.2 is bypassed during the staging copy phase.
+
+FINDING 13 [severity: MAJOR] [section: §4.5.2]
+Problem: `WriteBundle` in `writer.go` reads `configPath` under `if err == nil` without checking errors. If the configuration file cannot be read due to file permissions or bad paths, it is silently omitted from the bundle without warning or error when `--no-config` was not specified.
+Why it matters: Violates the fundamental §4.5.1 contract that backups bundle configuration by default unless explicitly opted out with `--no-config`.
+
+FINDING 14 [severity: MAJOR] [section: §4.5.3.1]
+Problem: `handleBackupSocket` in `socket.go` parses the socket command line with `strings.Fields`, splitting arguments on arbitrary whitespace. Providing an output path with spaces causes path truncation and misinterprets trailing path components as command flags.
+Why it matters: Control socket backup invocations fail or misbehave when operating on paths containing spaces.
+
+FINDING 15 [severity: MAJOR] [section: §4.5.2]
+Problem: `Verify` in `verify.go` checks zip entries against manifest entries but does not validate that member paths conform to the top-level bundle schema (`tree/` or `config/`). A crafted bundle containing root-level members (such as `evil.txt`) present in both the manifest and the zip passes verification without generating a tamper finding.
+Why it matters: Permits malformed bundles violating the §4.5.2 bundle structure layout to be classified as valid.
+
+FINDING 16 [severity: MINOR] [section: §4.5.2]
+Problem: `manifest.Product` in `manifest.go` is defined as a fixed string constant `"hearthd/0.7.3"` decoupled from real build metadata or version variables.
+Why it matters: Upgrading the daemon build without manually editing `Product` leaves backup manifests misidentifying the generating binary version.
+
+FINDING 17 [severity: MINOR] [section: §4.5.2]
+Problem: `IsSecretPath` in `reader.go` checks `strings.HasPrefix(p, "tree/custos/snapshots/")`, matching the directory entry `tree/custos/snapshots/` itself.
+Why it matters: The directory itself is displayed in the derived secrets list on stderr rather than only secret-bearing child files.
+
+FINDING 18 [severity: MINOR] [section: §4.5.2]
+Problem: `isProductNewer` in `manifest.go` falls back to ASCII string comparison when semver parsing fails, causing pre-release strings such as `"0.7.3-alpha"` to compare greater than `"0.7.3"`.
+Why it matters: Pre-release binary builds trigger spurious newer-product warnings during verification.
+
+FINDING 19 [severity: MINOR] [section: §4.5.3.1]
+Problem: `handleSocketConn` and `BackupViaSocket` in `socket.go` enforce a rigid 5-second `socketTimeout` on the initial request line and ack exchange.
+Why it matters: A heavily loaded daemon taking slightly longer to accept connections or process initial command lines risks premature client timeout before deadline extension occurs.
+
+CONVERGENCE: 6 blockers, 9 majors, 4 minors; verdict: reject.
+EXIT=0
+EXIT=0

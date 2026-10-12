@@ -59,6 +59,7 @@ type ToolSpec struct {
 type Provider interface {
 	Complete(ctx context.Context, msgs []Message, opts Options) (*Completion, error)
 	Capabilities(ctx context.Context) (Caps, error)
+	Models(ctx context.Context) ([]string, error)
 	Name() string
 }
 

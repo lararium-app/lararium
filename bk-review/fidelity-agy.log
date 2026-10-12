@@ -1,0 +1,19 @@
+FINDING 1 [severity: BLOCKER] [section: PENATUS-SPEC §4.5.5]
+Problem: Decision D1 rewords the ratified draft's text from `(rev-4 F7 status aligned with §0/§2 law):` to `(rev-4 F7 status aligned with the amendment’s §0/§2 law):`, inserting text not present in the ratified draft. Renumbering of section cross-references is permitted only per the documented mapping (`§2→§4.5.2`), and unauthorized rewording of draft sentences is explicitly prohibited.
+Why it matters: Modifying ratified draft sentences during spec transcription breaks strict transcription fidelity and risks drift from Product Owner sign-off.
+
+FINDING 2 [severity: BLOCKER] [section: SURFACE-SPEC §3A]
+Problem: Section 3A introduces cross-references citing `per PENATUS §4.5 §3.1` and `under the §4.5 §3.3 flocks` instead of following the documented section renumbering mapping (`§3.x→§4.5.3.x`). These malformed citations with double section marks point to non-existent section anchors in PENATUS-SPEC, where consistency and lock law are codified under `§4.5.3` and `§4.5.3.3`.
+Why it matters: Readers and implementers navigating from the surface specification cannot follow the broken section links to locate the normative socket verb and flock requirements.
+
+FINDING 3 [severity: BLOCKER] [section: SURFACE-SPEC §3A]
+Problem: Section 3A rewords the ratified draft's frozen no-REST stance from `**No REST endpoint, no web verb, ever in v1** — stated so future PRs must amend, not creep.` by inserting an unratified explanatory clause: `— restore replaces the whole state root, so it cannot be safely driven from the very surface it replaces. Stated here so future PRs must amend this spec, not creep.`. Any sentence in draft §1–§7 that is reworded in the spec is a blocker.
+Why it matters: Introducing unratified prose expansions into frozen spec text contradicts the exact ratified sentence preserved in PENATUS-SPEC §4.5.4 and weakens the strict freeze boundary.
+
+FINDING 4 [severity: MINOR] [section: SURFACE-SPEC §3A]
+Problem: Section 3A references the verify output schema as `per PENATUS §4.5`, which covers the entire whole-hearth backup and restore specification, rather than pointing specifically to `PENATUS §4.5.2` where the output schema and table columns are defined.
+Why it matters: Implementers verifying command line output contracts must scan the entire multi-page §4.5 section rather than directly locating the subsection defining `#columns: class path detail`.
+
+CONVERGENCE: 3 blockers, 0 majors, 1 minor; verdict: reject.
+EXIT=0
+EXIT=0

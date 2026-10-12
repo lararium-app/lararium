@@ -19,6 +19,26 @@ import (
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
+// modelSource implements surface.ModelSource by querying each provider's /models.
+type modelSource struct {
+	byName map[string]router.Provider
+}
+
+func (m modelSource) ListModels() ([]surface.ModelInfo, error) {
+	var out []surface.ModelInfo
+	for name, prov := range m.byName {
+		ctx := context.Background()
+		models, err := prov.Models(ctx)
+		if err != nil {
+			continue
+		}
+		if len(models) > 0 {
+			out = append(out, surface.ModelInfo{Provider: name, Models: models})
+		}
+	}
+	return out, nil
+}
+
 // Config is the whole of lararium.yaml. Unknown keys are an ERROR (fasti
 // lesson: silent config drift is how daemons start doing surprise things).
 type Config struct {
@@ -308,6 +328,7 @@ func serve(cfgPath string) {
 		Store:    store,
 		Sessions: sessions,
 		Hub:      hub,
+		Models:   modelSource{byName: byName},
 	}
 	srv.AttachKeys(&surface.KeysDeps{
 		Store:     kstore,

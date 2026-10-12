@@ -225,9 +225,16 @@ main {
   max-width: var(--transcript-max);
   margin: 1rem auto 0;
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
   padding-top: 1rem;
   border-top: 1px solid #2a2e36;
+}
+
+#composer-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
 }
 
 #input {
@@ -245,13 +252,28 @@ main {
   resize: vertical;
 }
 
-#input:focus {
+#model-select {
+  flex-shrink: 0;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 0.5rem 0.75rem;
+  background: #15181d;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#model-select:focus {
   outline: none;
   border-color: var(--accent);
 }
 
-#input:disabled {
-  opacity: 0.6;
+#model-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 #composer button {
@@ -436,3 +458,33 @@ main {
 #keys-status.err {
   color: #e06c75;
 }
+
+/* Code block syntax highlighting (minimal, no external deps) */
+pre {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: #0d0f13;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+pre code {
+  display: block;
+  padding: 1rem;
+  color: #e6e8ee;
+}
+
+/* Basic token colors */
+.token-comment { color: #6a7a8a; }
+.token-keyword { color: #c792ea; }
+.token-string { color: #c3e88d; }
+.token-number { color: #f78c6c; }
+.token-function { color: #82aaff; }
+.token-class { color: #ffcb6b; }
+.token-operator { color: #89ddff; }
+.token-punctuation { color: #a0a8b8; }

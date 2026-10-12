@@ -1,0 +1,82 @@
+FINDING 1 [severity: BLOCKER] [section: §4.3]
+Problem: The draft mandates that `--replace` stages contents into a temporary directory and renames into place atomically, but POSIX `rename(2)` rejects replacing a non-empty directory with `ENOTEMPTY`. Any multi-step fallback involving unlinking or moving the existing root first creates a crash window where the hearth root is missing.
+Why it matters: The primary restore safety guarantee cannot be implemented as specified on standard POSIX filesystems without risking total data loss during an interrupted restore.
+
+FINDING 2 [severity: BLOCKER] [section: §1]
+Problem: Section 1 defines a backup as restorable on a clean machine to a working daemon with zero manual file surgery, but §2 and §5 (D4) exclude `config/lararium.yaml` by default. A daemon restored on a clean machine without its configuration file cannot boot without manual operator intervention.
+Why it matters: The default backup behavior directly breaks the fundamental one-step restore guarantee defined in §1.
+
+FINDING 3 [severity: BLOCKER] [section: §4.1]
+Problem: Section 4 rule 1 mandates that a bundle newer than the binary (`product` version) must be refused, directly overriding frozen PENATUS-SPEC §4 rule 2 without an explicit amendment. Frozen §4 rule 2 explicitly commands that newer minor versions must be imported while dropping unknown fields.
+Why it matters: The draft silently invalidates the frozen specification's forward-compatibility contract for minor version upgrades.
+
+FINDING 4 [severity: MAJOR] [section: §2]
+Problem: Section 2 introduces a persistent ULID stored at `<hearth>/backup.id`, but PENATUS-SPEC §1 freezes the household tree and permits no unspec'd state files under the hearth root. The draft lists no amendment to PENATUS §1, violating the frozen tree definition and the non-negotiable "no hidden state" rule of PENATUS §4.
+Why it matters: Creating or initializing backups writes unauthorized state files into a frozen directory schema.
+
+FINDING 5 [severity: MAJOR] [section: §2]
+Problem: The bundle layout places `config/lararium.yaml` outside `tree/`, but §4 defines restore solely targeting a hearth directory (`--to <dir>` or `--replace <dir>`). The draft never specifies where `config/lararium.yaml` is unpacked during restoration or how both directories could be updated atomically.
+Why it matters: Implementers cannot determine the target location of the configuration file, risking host configuration overwrites or leaving the daemon unconfigured.
+
+FINDING 6 [severity: MAJOR] [section: §3.1]
+Problem: Section 3.1 states that a backup mid-turn blocks the turn for the walk duration, but §6 BK4 asserts that restoring a mid-turn backup produces a turn count identical to the source. If the turn was in-flight and its completed message uncommitted, its event count cannot match the post-turn source daemon unless the backup waited for completion.
+Why it matters: Either the point-in-time snapshot mechanism or the BK4 test assertion is internally contradictory and will fail during testing.
+
+FINDING 7 [severity: MAJOR] [section: §4.3]
+Problem: Section 4.3 requires `--replace` to take an automatic safety bundle before swapping, but if an operator is restoring specifically to recover from a corrupted hearth root, `backup create` will fail validation and abort the restore. Furthermore, staging a full bundle and safety archive on the same filesystem requires substantial free disk space that may not exist during an emergency.
+Why it matters: Operators will be locked out of restoring valid backups over corrupted or disk-exhausted hearth roots.
+
+FINDING 8 [severity: MAJOR] [section: §3.2]
+Problem: Section 3.2 specifies that the CLI walks the tree directly when the socket is absent without acquiring an on-disk flock or lock file. This permits two concurrent CLI backups or a concurrent restore and backup to execute simultaneously on a stopped daemon, violating the strict "never two backups at once" guarantee of §3.4.
+Why it matters: Uncoordinated concurrent offline operations will result in torn reads, race conditions on `backup.id`, and corrupted archives.
+
+FINDING 9 [severity: MAJOR] [section: §4.4]
+Problem: Section 4 rule 4 claims that restored files retain their recorded permissions (such as 0600 for secrets), but no test in the §6 verification suite checks filesystem modes after restoration. A faulty implementation that extracts files using standard permissive umasks will pass all twelve BK test cases without detection.
+Why it matters: Restored credentials and private keys could be left world-readable on disk without failing verification.
+
+FINDING 10 [severity: MAJOR] [section: §6]
+Problem: Test BK12 asserts that session playback with `--lean` resolves or degrades "per §4 export's existing stance — pin whichever the text says," but frozen PENATUS-SPEC §4 does not define any missing-blob degradation semantics. Because neither the frozen spec nor the draft specifies the degradation behavior, the test is unimplementable and unenforcible.
+Why it matters: The test suite cannot verify `--lean` bundle playback consistency when the expected behavior is undefined across all referenced specifications.
+
+FINDING 11 [severity: MAJOR] [section: §4]
+Problem: Frozen CUSTOS-SPEC §4.2 explicitly restricts intent supersession to "exactly two ways" (higher generation or `custos restore` swap-time closure with audit proof). Whole-hearth restore replaces the entire state root without recording an audit line or running the required closure protocol, silently bypassing §4.2 without amending its closed enumeration.
+Why it matters: Restoring over a root with unresolved WAL intents violates the frozen crash recovery and audit continuity invariants of CUSTOS-SPEC.
+
+FINDING 12 [severity: MAJOR] [section: §2]
+Problem: Frozen CUSTOS-SPEC §8.4 mandates retaining eight snapshot generations (`keep 8`) for in-place rollbacks. Section 2 excludes snapshots by default, and §5 (D5) limits `--with-snapshots` to the single newest generation set, breaking §8.4 rollback capabilities upon restore without proposing an amendment to §8.4.
+Why it matters: A restored daemon loses historical rollback generations required by the frozen custody specification.
+
+FINDING 13 [severity: MAJOR] [section: §4.3]
+Problem: Section 4.3 stages extracted bundle contents into a sibling temporary directory prior to renaming, but specifies no mode or umask for the staging directory itself. If created with a standard 0755 umask, plaintext secrets like `vault.key` and `keys.json` are exposed to other local users during the staging and fsync phases.
+Why it matters: The temporary staging mechanism creates a local secret leakage vulnerability before the directory is swapped into place.
+
+FINDING 14 [severity: MAJOR] [section: §3.3]
+Problem: Section 3.3 acquires `custos.lock` only immediately before walking `custos/`, rather than holding it across the entire snapshot walk. Custos mutations that modify `keys.json` or register surrogates while other directories are being walked can produce a bundle with mismatched credential and vault states.
+Why it matters: Point-in-time consistency across the boundary between custody state and general hearth state is broken.
+
+FINDING 15 [severity: MAJOR] [section: §3.1]
+Problem: Section 3.1 claims backup of an idle daemon returns in "file-walk time," yet requires the daemon to stream the entire compressed ZIP bundle over the control socket while holding its single-writer lock. Writing multi-gigabyte archives to slow external outputs or pipes holds the writer lock indefinitely, stalling all agent turns and heartbeat operations.
+Why it matters: The single-writer lock duration is tied to socket I/O rather than a fast snapshot, degrading daemon availability.
+
+FINDING 16 [severity: MINOR] [section: §6]
+Problem: The BK verification suite lacks any test case verifying backups taken while the daemon is stopped, and never tests the preservation of `nuntius/`, persona files, or `archive/`. Tests BK1 and BK11 focus almost entirely on session transcripts, search indexes, and vault unlocks.
+Why it matters: Regressions in backing up offline daemons or non-session hearth files will go undetected by the test suite.
+
+FINDING 17 [severity: MINOR] [section: §2]
+Problem: Section 2 does not specify whether `manifest.json` must strictly be the first physical ZIP entry, nor does it specify path separator normalization (`/` vs `\`), Unicode normalization forms (NFC vs NFD), or handling of symlinks and empty directories. Independent implementations on different operating systems will produce mutually incompatible archives or fail manifest lookups.
+Why it matters: Cross-platform portability and deterministic archive parsing are compromised by underspecified format standards.
+
+FINDING 18 [severity: MINOR] [section: §4]
+Problem: The command syntax `hearthd backup create [--out <path>]` does not specify a default destination path when `--out` is omitted. If the default output path is within the hearth root, or if an operator targets a path inside the hearth, the archive is not excluded by §2's exclusion law and will attempt to archive itself.
+Why it matters: Backup invocations may fail with recursive growth or corrupt the archive by capturing its own partial output file.
+
+FINDING 19 [severity: MINOR] [section: §2]
+Problem: Section 2 claims `backup verify` checks that each `events.jsonl` parses with contiguous sequence numbers, but BK3 only tests single-byte flipping in the file. A subtle sequence gap or duplicate event in an otherwise well-formed file is never tested against `backup verify`.
+Why it matters: Implementations that only validate JSON parsing rather than strict sequence monotonicity will falsely pass the verification suite.
+
+FINDING 20 [severity: MINOR] [section: §5]
+Problem: Section 0 explicitly designates changes to encryption-at-rest as a non-target, yet §5 D3 outlines an uncosted `--age <recipient>` bundle encryption alternative without defining key distribution or CLI flags. This leaves the security architecture of the backup artifact unsettled between plaintext parity and archive-level envelope encryption.
+Why it matters: Scope creep in the open decisions list distracts from signing off on a concrete security boundary for bundle distribution.
+
+CONVERGENCE: 3 blockers, 12 majors, 5 minors; verdict: reject.
+EXIT=0

@@ -7,6 +7,7 @@ const newSessionBtn = document.getElementById("new-session");
 const transcriptEl = document.getElementById("transcript");
 const composerEl = document.getElementById("composer");
 const inputEl = document.getElementById("input");
+const modelSelectEl = document.getElementById("model-select");
 
 let token = null;
 let currentSessionId = null;
@@ -25,6 +26,7 @@ function clearStatus() {
 
 function setComposerDisabled(disabled) {
   inputEl.disabled = disabled;
+  modelSelectEl.disabled = disabled;
   composerEl.querySelector("button").disabled = disabled;
 }
 
@@ -33,6 +35,49 @@ function createElement(tag, className, textContent) {
   if (className) el.className = className;
   if (textContent !== undefined) el.textContent = textContent;
   return el;
+}
+
+// Simple markdown renderer — supports code blocks, inline code, bold, italic, links.
+function renderMarkdown(text) {
+  if (!text) return "";
+  const escapeHtml = (s) => s
+    .replace(/&/g, "&")
+    .replace(/</g, "<")
+    .replace(/>/g, ">")
+    .replace(/"/g, '"')
+    .replace(/'/g, "&#039;");
+  
+  let html = escapeHtml(text);
+  
+  // Code blocks (```lang\ncode\n```)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const langClass = lang ? ` class="language-${lang}"` : "";
+    // Escape HTML in code content
+    const escapedCode = code
+      .replace(/&/g, "&")
+      .replace(/</g, "<")
+      .replace(/>/g, ">");
+    return `<pre><code${langClass}>${escapedCode}</code></pre>`;
+  });
+  
+  // Inline code (`code`)
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  
+  // Bold (**text** or __text__)
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  
+  // Italic (*text* or _text_)
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/_([^_]+)_/g, "<em>$1</em>");
+  
+  // Links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  
+  // Line breaks
+  html = html.replace(/\n/g, "<br>");
+  
+  return html;
 }
 
 function renderSessionList(sessions) {
@@ -112,7 +157,7 @@ function renderEvent(ev) {
     wrapper.appendChild(bubble);
   } else if (ev.t === "msg" && ev.role === "assistant") {
     const bubble = createElement("div", "bubble assistant");
-    bubble.textContent = ev.text;
+    bubble.innerHTML = renderMarkdown(ev.text);
     wrapper.appendChild(bubble);
   } else if (ev.t === "tool_call") {
     const details = createElement("details", "tool-call");
@@ -201,7 +246,7 @@ function handleSSEEvent(eventType, data) {
       currentAssistantText = "";
     }
     currentAssistantText += data.text;
-    currentAssistantBubble.textContent = currentAssistantText;
+    currentAssistantBubble.innerHTML = renderMarkdown(currentAssistantText);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   } else if (eventType === "tool_start") {
     const details = createElement("details", "tool-call");
@@ -291,7 +336,7 @@ async function sendMessage(text) {
         "Accept": "text/event-stream",
         "Authorization": "Bearer " + token
       },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, model: modelSelectEl.value || undefined })
     });
     if (resp.status === 401) {
       showStatus("unauthorized — token revoked or wrong");
@@ -407,6 +452,30 @@ async function loadKeys() {
   }
 }
 
+async function loadModels() {
+  try {
+    const data = await fetchJson("GET", "/v1/models");
+    modelSelectEl.innerHTML = "";
+    for (const provider of data) {
+      const group = document.createElement("optgroup");
+      group.label = provider.provider;
+      for (const model of provider.models) {
+        const opt = document.createElement("option");
+        opt.value = provider.provider + "/" + model;
+        opt.textContent = model;
+        group.appendChild(opt);
+      }
+      modelSelectEl.appendChild(group);
+    }
+    // Auto-select first model if none selected
+    if (modelSelectEl.options.length > 0 && !modelSelectEl.value) {
+      modelSelectEl.selectedIndex = 0;
+    }
+  } catch (e) {
+    if (e.message !== "unauthorized") console.warn("failed to load models:", e.message);
+  }
+}
+
 function renderKeys(rows) {
   keysListEl.textContent = "";
   for (const row of rows) {
@@ -482,6 +551,7 @@ function initKeysDrawer() {
 function init() {
   if (!initToken()) return;
   initKeysDrawer();
+  loadModels();
   newSessionBtn.addEventListener("click", createSession);
   composerEl.addEventListener("submit", (e) => {
     e.preventDefault();

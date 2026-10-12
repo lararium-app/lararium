@@ -1,0 +1,1332 @@
+diff --git a/cmd/hearthd/backup_test.go b/cmd/hearthd/backup_test.go
+index 64f981c..09f968e 100644
+--- a/cmd/hearthd/backup_test.go
++++ b/cmd/hearthd/backup_test.go
+@@ -3,6 +3,7 @@ package main
+ import (
+ 	"archive/zip"
+ 	"bytes"
++	"fmt"
+ 	"io"
+ 	"net"
+ 	"os"
+@@ -62,15 +63,11 @@ func TestCLI_SocketBackupHappyPath(t *testing.T) {
+ 	cfgPath := createTestConfig(t, home)
+ 	sockPath := filepath.Join(home, "hearthd.sock")
+ 
+-	srv := &surface.Server{}
+-	var singleWriterMu sync.RWMutex
+-	singleWriterLock := func() func() {
+-		singleWriterMu.Lock()
+-		return func() { singleWriterMu.Unlock() }
+-	}
++	hub := surface.NewHub(surface.ServeConfig{}, home, 1000, 80, nil, nil, nil)
++	srv := &surface.Server{Hub: hub}
+ 
+ 	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
+-		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, singleWriterLock, progress)
++		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.TrySingleWriterLock, progress)
+ 	}
+ 
+ 	closer, err := srv.ServeSocket(sockPath, func() error { return nil })
+@@ -132,19 +129,23 @@ func TestCLI_StaleSocketRefusal(t *testing.T) {
+ 	}
+ }
+ 
+-// TestBK5_CustodyCoherenceAndHeldLockRefusal tests that held custos.lock
+-// causes immediate busy refusal with no leftovers (§4.5.3.3, BK5).
++// TestBK5_CustodyCoherenceAndHeldLockRefusal tests that held custos.lock at <root>/custos/custos.lock
++// causes immediate busy refusal with no leftovers (§4.5.3.3, B2), and concurrent custos mutation hammer
++// yields either a coherent bundle generation or busy refusal (B2, M7).
+ func TestBK5_CustodyCoherenceAndHeldLockRefusal(t *testing.T) {
+ 	home := createTestHearthRoot(t)
+ 	cfgPath := createTestConfig(t, home)
+ 
+-	// Hold custos.lock
+-	custosLockPath := filepath.Join(home, "custos.lock")
++	// 1. Hold custos.lock at <root>/custos/custos.lock (B2)
++	custosDir := filepath.Join(home, "custos")
++	if err := os.MkdirAll(custosDir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	custosLockPath := filepath.Join(custosDir, "custos.lock")
+ 	f, err := os.OpenFile(custosLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	defer f.Close()
+ 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+ 		t.Fatalf("flock custos.lock: %v", err)
+ 	}
+@@ -159,7 +160,6 @@ func TestBK5_CustodyCoherenceAndHeldLockRefusal(t *testing.T) {
+ 	if _, err := os.Stat(outAbs); err == nil {
+ 		t.Fatal("partial output file was left behind")
+ 	}
+-	// Verify no staging dir was left in parent
+ 	parent := filepath.Dir(home)
+ 	entries, _ := os.ReadDir(parent)
+ 	for _, e := range entries {
+@@ -167,57 +167,208 @@ func TestBK5_CustodyCoherenceAndHeldLockRefusal(t *testing.T) {
+ 			t.Fatalf("leftover staging directory found: %s", e.Name())
+ 		}
+ 	}
++
++	// Release held lock
++	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
++	f.Close()
++
++	// 2. Hammer test (B2, M7): goroutine hammering custos mutation lock + concurrent create
++	// → each produced bundle parses to one coherent generation OR create refuses busy.
++	vaultPath := filepath.Join(custosDir, "vault.data")
++	surrPath := filepath.Join(custosDir, "surrogates.data")
++	_ = os.WriteFile(vaultPath, []byte("gen0"), 0o600)
++	_ = os.WriteFile(surrPath, []byte("gen0"), 0o600)
++
++	stopHammer := make(chan struct{})
++	hammerDone := make(chan struct{})
++	go func() {
++		defer close(hammerDone)
++		gen := 1
++		for {
++			select {
++			case <-stopHammer:
++				return
++			default:
++				hf, err := os.OpenFile(custosLockPath, os.O_CREATE|os.O_RDWR, 0o600)
++				if err == nil {
++					if err := syscall.Flock(int(hf.Fd()), syscall.LOCK_EX); err == nil {
++						genStr := fmt.Sprintf("gen%d", gen)
++						_ = os.WriteFile(vaultPath, []byte(genStr), 0o600)
++						_ = os.WriteFile(surrPath, []byte(genStr), 0o600)
++						gen++
++						_ = syscall.Flock(int(hf.Fd()), syscall.LOCK_UN)
++					}
++					hf.Close()
++				}
++				time.Sleep(500 * time.Microsecond)
++			}
++		}
++	}()
++
++	for attempt := 0; attempt < 5; attempt++ {
++		outHammer := filepath.Join(t.TempDir(), fmt.Sprintf("hammer-%d.lararium-backup", attempt))
++		err := backup.CreateOffline(home, cfgPath, outHammer, false, nil)
++		if err != nil {
++			if !strings.Contains(err.Error(), "busy") {
++				t.Fatalf("expected busy refusal during hammer, got: %v", err)
++			}
++			continue
++		}
++
++		// Produced bundle must parse to one coherent generation
++		zr, err := zip.OpenReader(outHammer)
++		if err != nil {
++			t.Fatalf("open hammer bundle: %v", err)
++		}
++		var vaultVal, surrVal string
++		for _, zf := range zr.File {
++			if zf.Name == "tree/custos/vault.data" {
++				rc, _ := zf.Open()
++				data, _ := io.ReadAll(rc)
++				rc.Close()
++				vaultVal = string(data)
++			}
++			if zf.Name == "tree/custos/surrogates.data" {
++				rc, _ := zf.Open()
++				data, _ := io.ReadAll(rc)
++				rc.Close()
++				surrVal = string(data)
++			}
++		}
++		zr.Close()
++
++		if vaultVal != surrVal {
++			t.Fatalf("torn read in bundle: vault=%q, surrogates=%q", vaultVal, surrVal)
++		}
++	}
++	close(stopHammer)
++	<-hammerDone
+ }
+ 
+ // TestBK9_SocketConcurrency tests that a second backup request over socket
+-// during an active backup refuses immediately (LOCK_NB) (§4.5.3.3, BK9).
++// during an active backup refuses immediately (LOCK_NB) (§4.5.3.3, BK9, B1).
++// Must go through the REAL srv.Backup (no stub) and assert the second request
++// gets busy refusal fast (<2s), while an in-flight turn blocks the first with busy too.
+ func TestBK9_SocketConcurrency(t *testing.T) {
+ 	home := createTestHearthRoot(t)
+ 	cfgPath := createTestConfig(t, home)
+-	_ = cfgPath
+ 	sockPath := filepath.Join(home, "hearthd.sock")
+ 
+-	srv := &surface.Server{}
+-	started := make(chan struct{})
+-	unblock := make(chan struct{})
++	hub := surface.NewHub(surface.ServeConfig{}, home, 1000, 80, nil, nil, nil)
++	srv := &surface.Server{Hub: hub}
+ 
++	// Real srv.Backup (no stub, B1)
+ 	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
+-		// Acquire backup.lock explicitly
+-		locks, err := backup.AcquireLocks(home)
+-		if err != nil {
+-			return err
+-		}
+-		defer locks.Release()
+-		close(started)
+-		<-unblock
+-		return nil
++		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.TrySingleWriterLock, progress)
+ 	}
+ 
++	started := make(chan struct{})
++	unblock := make(chan struct{})
++	surface.SetServerBackupHook(srv, func(phase string) {
++		if phase == "staging tree" {
++			select {
++			case <-started:
++			default:
++				close(started)
++				<-unblock
++			}
++		}
++	})
++
+ 	closer, err := srv.ServeSocket(sockPath, func() error { return nil })
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	defer closer.Close()
+ 
+-	// Launch first backup
++	// 1. In-flight turn blocks the first request with busy too (§4.5.3.3, B1)
++	turnUnlock := hub.RLock()
++	outTurn := filepath.Join(t.TempDir(), "turn-blocked.lararium-backup")
++	errTurn := surface.BackupViaSocket(sockPath, outTurn, false, nil)
++	if errTurn == nil || !strings.Contains(errTurn.Error(), "busy") {
++		t.Fatalf("expected busy refusal while in-flight turn holds single-writer lock, got: %v", errTurn)
++	}
++	turnUnlock() // release turn
++
++	// 2. Launch first real backup in background
+ 	var wg sync.WaitGroup
+ 	wg.Add(1)
++	out1 := filepath.Join(t.TempDir(), "out1.lararium-backup")
++	var err1 error
+ 	go func() {
+ 		defer wg.Done()
+-		_ = surface.BackupViaSocket(sockPath, filepath.Join(t.TempDir(), "out1.lararium-backup"), false, nil)
++		err1 = surface.BackupViaSocket(sockPath, out1, false, nil)
+ 	}()
+ 
+ 	<-started
+ 
+-	// Second backup over socket while first holds locks must refuse immediately
++	// 3. Second request over socket while first holds locks must refuse immediately with busy (<2s)
+ 	out2 := filepath.Join(t.TempDir(), "out2.lararium-backup")
++	t0 := time.Now()
+ 	err2 := surface.BackupViaSocket(sockPath, out2, false, nil)
++	dur := time.Since(t0)
++	if dur >= 2*time.Second {
++		t.Fatalf("second backup request took too long (%v), must refuse fast (<2s)", dur)
++	}
+ 	if err2 == nil || !strings.Contains(err2.Error(), "busy") {
+-		t.Fatalf("second socket backup must refuse with busy, got: %v", err2)
++		t.Fatalf("second socket backup must refuse immediately with busy, got: %v", err2)
+ 	}
+ 
++	// Unblock first backup and verify it completes cleanly
+ 	close(unblock)
+ 	wg.Wait()
++	if err1 != nil {
++		t.Fatalf("first backup failed: %v", err1)
++	}
++
++	// Verify first backup is valid
++	var stdout, stderr bytes.Buffer
++	findings, err := backup.Verify(out1, &stdout, &stderr)
++	if err != nil || len(findings) != 0 {
++		t.Fatalf("first bundle verify failed: err=%v, findings=%+v", err, findings)
++	}
++}
++
++// TestBK3_SocketInputLaw tests that handleBackupSocket rejects
++// relative out paths and paths inside hearth root BEFORE ack (B3, M14).
++func TestBK3_SocketInputLaw(t *testing.T) {
++	home := createTestHearthRoot(t)
++	cfgPath := createTestConfig(t, home)
++	sockPath := filepath.Join(home, "hearthd.sock")
++
++	hub := surface.NewHub(surface.ServeConfig{}, home, 1000, 80, nil, nil, nil)
++	srv := &surface.Server{Hub: hub}
++	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
++		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.TrySingleWriterLock, progress)
++	}
++
++	closer, err := srv.ServeSocket(sockPath, func() error { return nil })
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer closer.Close()
++
++	// 1. Relative path over socket → ERR, nothing written (B3)
++	err = surface.BackupViaSocket(sockPath, "relative/path.lararium-backup", false, nil)
++	if err == nil || !strings.Contains(err.Error(), "absolute") {
++		t.Fatalf("expected ERR on relative path, got: %v", err)
++	}
++
++	// 2. Out path inside hearth root → ERR, nothing written (B3)
++	insidePath := filepath.Join(home, "inside.lararium-backup")
++	err = surface.BackupViaSocket(sockPath, insidePath, false, nil)
++	if err == nil || !strings.Contains(err.Error(), "inside hearth root") {
++		t.Fatalf("expected ERR on self-inclusion inside root, got: %v", err)
++	}
++	if _, err := os.Stat(insidePath); err == nil {
++		t.Fatal("file was created inside root despite self-inclusion refusal")
++	}
++
++	// 3. Out path containing whitespace → ERR usage (M14)
++	err = surface.BackupViaSocket(sockPath, "/tmp/evil path/backup.lararium-backup", false, nil)
++	if err == nil || !strings.Contains(err.Error(), "usage") {
++		t.Fatalf("expected ERR usage on path with whitespace, got: %v", err)
++	}
+ }
+ 
+ // TestBK15_OfflineAndDaemonCountsAgree tests that offline and daemon paths
+diff --git a/internal/backup/backup_test.go b/internal/backup/backup_test.go
+index 0a35f9f..0050e0d 100644
+--- a/internal/backup/backup_test.go
++++ b/internal/backup/backup_test.go
+@@ -327,6 +327,31 @@ func TestBK3_TamperVsQuarantine(t *testing.T) {
+ 			t.Fatalf("expected quarantine finding for seq duplicate, got %+v", findings)
+ 		}
+ 	}
++
++	// Case 7: Unparseable mode string in manifest entry -> tamper (B6)
++	{
++		corruptPath := filepath.Join(t.TempDir(), "invalid-mode.lararium-backup")
++		copyAndMutateZip(t, out, corruptPath, func(name string, data []byte) []byte {
++			if name == "manifest.json" {
++				data = bytes.Replace(data, []byte(`"mode": "0600"`), []byte(`"mode": "invalid"`), 1)
++				if !bytes.Contains(data, []byte(`"mode": "invalid"`)) {
++					data = bytes.Replace(data, []byte(`"mode": "0644"`), []byte(`"mode": "invalid"`), 1)
++				}
++			}
++			return data
++		})
++		var stdout, stderr bytes.Buffer
++		findings, _ := Verify(corruptPath, &stdout, &stderr)
++		found := false
++		for _, f := range findings {
++			if f.Class == "tamper" && strings.Contains(f.Detail, "unparseable mode") {
++				found = true
++			}
++		}
++		if !found {
++			t.Fatalf("expected tamper finding for unparseable mode string, got %+v", findings)
++		}
++	}
+ }
+ 
+ func TestBK6_CreateRefusals(t *testing.T) {
+@@ -540,17 +565,41 @@ func TestBK12_FreeSpacePreflight(t *testing.T) {
+ 	if err == nil || !strings.Contains(err.Error(), "2Σ") {
+ 		t.Fatalf("expected 2Σ refusal on shared fs, got %v", err)
+ 	}
++
++	// B4: assert staging fs == root fs (compare StatfsFunc results)
++	stagingDir, err := CreateStagingDir(root)
++	if err != nil {
++		t.Fatalf("CreateStagingDir: %v", err)
++	}
++	defer os.RemoveAll(stagingDir)
++	stFS, err := StatfsFunc(stagingDir)
++	if err != nil {
++		t.Fatalf("StatfsFunc(stagingDir): %v", err)
++	}
++	rFS, err := StatfsFunc(root)
++	if err != nil {
++		t.Fatalf("StatfsFunc(root): %v", err)
++	}
++	if stFS.Fsid != rFS.Fsid {
++		t.Fatalf("staging fsid %d != root fsid %d (B4)", stFS.Fsid, rFS.Fsid)
++	}
+ }
+ 
+ func TestBK13_ModesAndEmptyDirs(t *testing.T) {
+ 	root := setupTestRoot(t)
+ 	cfg := setupTestConfig(t)
+ 
+-	// Create source 04755 file
++	// Create source 04755 file (B5)
+ 	suidFile := filepath.Join(root, "suid-tool")
+ 	_ = os.WriteFile(suidFile, []byte("echo hi\n"), 0o755)
+ 	_ = syscall.Chmod(suidFile, 0o4755)
+ 
++	// Create empty dir in source root (B5)
++	emptyDir := filepath.Join(root, "empty-dir")
++	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++
+ 	out := filepath.Join(t.TempDir(), "modes.lararium-backup")
+ 	if err := CreateOffline(root, cfg, out, false, nil); err != nil {
+ 		t.Fatal(err)
+@@ -564,6 +613,77 @@ func TestBK13_ModesAndEmptyDirs(t *testing.T) {
+ 		t.Fatalf("bundle mode = %o, want 0600", fi.Mode().Perm())
+ 	}
+ 
++	// B5 pin: assert manifest entries
++	zr, err := zip.OpenReader(out)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer zr.Close()
++
++	if len(zr.File) == 0 || zr.File[0].Name != "manifest.json" {
++		t.Fatal("manifest.json must be strictly first zip entry")
++	}
++	mf, err := zr.File[0].Open()
++	if err != nil {
++		t.Fatal(err)
++	}
++	mfData, err := io.ReadAll(mf)
++	mf.Close()
++	if err != nil {
++		t.Fatal(err)
++	}
++	manifest, _, _, err := ParseManifest(mfData)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	foundSuid := false
++	foundEmptyDirManifest := false
++	for _, entry := range manifest.Entries {
++		if entry.Path == "tree/suid-tool" {
++			foundSuid = true
++			if entry.Mode != "4755" && entry.Mode != "04755" {
++				t.Fatalf("suid source recorded mode = %q, want 4755 or 04755", entry.Mode)
++			}
++			parsedMode, err := ParseOctalMode(entry.Mode)
++			if err != nil {
++				t.Fatalf("parse suid mode: %v", err)
++			}
++			extMode := ExtractionMode(parsedMode)
++			if extMode != 0o755 {
++				t.Fatalf("extraction mode = %04o, want 0755", extMode)
++			}
++		}
++		if entry.Path == "tree/empty-dir/" {
++			foundEmptyDirManifest = true
++			if !entry.Dir {
++				t.Fatalf("empty dir entry must have dir: true")
++			}
++			if entry.SHA256 != "" || entry.Size != nil {
++				t.Fatalf("empty dir entry must carry no sha256 or size, got sha=%q size=%v", entry.SHA256, entry.Size)
++			}
++		}
++	}
++	if !foundSuid {
++		t.Fatal("tree/suid-tool not found in manifest")
++	}
++	if !foundEmptyDirManifest {
++		t.Fatal("tree/empty-dir/ not found in manifest")
++	}
++
++	foundEmptyDirZip := false
++	for _, zf := range zr.File {
++		if zf.Name == "tree/empty-dir/" {
++			foundEmptyDirZip = true
++			if !zf.FileInfo().IsDir() {
++				t.Fatal("empty dir zip entry must be a directory")
++			}
++		}
++	}
++	if !foundEmptyDirZip {
++		t.Fatal("tree/empty-dir/ not found in zip archive")
++	}
++
+ 	var stdout, stderr bytes.Buffer
+ 	findings, err := Verify(out, &stdout, &stderr)
+ 	if err != nil {
+@@ -685,6 +805,126 @@ func TestBK18_ZipSlip(t *testing.T) {
+ 	}
+ }
+ 
++// TestBK_M11_ReadOnlyDirs tests that read-only directories (e.g. 0555) do not fail staging (M11).
++func TestBK_M11_ReadOnlyDirs(t *testing.T) {
++	root := setupTestRoot(t)
++	cfg := setupTestConfig(t)
++
++	roDir := filepath.Join(root, "readonly-dir")
++	if err := os.MkdirAll(roDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	childFile := filepath.Join(roDir, "child.txt")
++	if err := os.WriteFile(childFile, []byte("child"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	// Make dir read-only
++	if err := syscall.Chmod(roDir, 0o555); err != nil {
++		t.Fatal(err)
++	}
++	defer syscall.Chmod(roDir, 0o755) // cleanup permission
++
++	out := filepath.Join(t.TempDir(), "ro-dirs.lararium-backup")
++	if err := CreateOffline(root, cfg, out, false, nil); err != nil {
++		t.Fatalf("CreateOffline failed on read-only dir: %v", err)
++	}
++
++	var stdout, stderr bytes.Buffer
++	findings, err := Verify(out, &stdout, &stderr)
++	if err != nil || len(findings) != 0 {
++		t.Fatalf("verify failed on read-only dir bundle: err=%v, findings=%+v", err, findings)
++	}
++}
++
++// TestBK_M12_StagingTreeSymlinkAborts tests that encountering a symlink during StageTree aborts (M12).
++func TestBK_M12_StagingTreeSymlinkAborts(t *testing.T) {
++	root := setupTestRoot(t)
++	stagingDir := filepath.Join(t.TempDir(), "staging")
++	_ = os.MkdirAll(stagingDir, 0o700)
++
++	symlinkPath := filepath.Join(root, "mid-copy-link")
++	_ = os.Symlink(filepath.Join(root, "SOUL.md"), symlinkPath)
++	defer os.Remove(symlinkPath)
++
++	err := StageTree(root, stagingDir)
++	if err == nil || !strings.Contains(err.Error(), "tree-shape law violation") {
++		t.Fatalf("expected tree-shape law violation during StageTree, got: %v", err)
++	}
++}
++
++// TestBK_M13_ConfigReadErrors tests that missing or unreadable config when !noConfig refuses clearly (M13).
++func TestBK_M13_ConfigReadErrors(t *testing.T) {
++	root := setupTestRoot(t)
++	missingCfg := filepath.Join(t.TempDir(), "nonexistent.yaml")
++	out := filepath.Join(t.TempDir(), "test.lararium-backup")
++
++	err := CreateOffline(root, missingCfg, out, false, nil)
++	if err == nil || !strings.Contains(err.Error(), "config in force must be in bundle") {
++		t.Fatalf("expected clear refusal for missing config file, got: %v", err)
++	}
++}
++
++// TestBK_M15_MalformedMemberPath_EvilTxt tests that bundle schema at verify rejects root-level evil.txt (M15).
++func TestBK_M15_MalformedMemberPath_EvilTxt(t *testing.T) {
++	root := setupTestRoot(t)
++	cfg := setupTestConfig(t)
++	outValid := filepath.Join(t.TempDir(), "valid.lararium-backup")
++	if err := CreateOffline(root, cfg, outValid, false, nil); err != nil {
++		t.Fatal(err)
++	}
++
++	evilPath := filepath.Join(t.TempDir(), "evil.lararium-backup")
++	// Add evil.txt at root of zip AND in manifest.json
++	copyAndMutateZip(t, outValid, evilPath, func(name string, data []byte) []byte {
++		if name == "manifest.json" {
++			var m Manifest
++			_ = json.Unmarshal(data, &m)
++			sz := int64(4)
++			m.Entries = append(m.Entries, ManifestEntry{
++				Path:   "evil.txt",
++				Mode:   "0644",
++				Size:   &sz,
++				SHA256: "abcd",
++			})
++			mutated, _ := json.MarshalIndent(m, "", "  ")
++			return mutated
++		}
++		return data
++	})
++	// Also add evil.txt file to zip
++	evilZipWithMember := filepath.Join(t.TempDir(), "evil-zip.lararium-backup")
++	addZipEntry(t, evilPath, evilZipWithMember, "evil.txt", []byte("evil"))
++
++	var stdout, stderr bytes.Buffer
++	findings, _ := Verify(evilZipWithMember, &stdout, &stderr)
++	found := false
++	for _, f := range findings {
++		if f.Class == "tamper" && (f.Path == "evil.txt" || strings.Contains(f.Detail, "malformed")) {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatalf("expected tamper finding for root-level evil.txt (M15), got: %+v", findings)
++	}
++}
++
++// TestBK_m17_IsSecretPathSnapshots tests that snapshots/** matches children only, not the directory itself (m17).
++func TestBK_m17_IsSecretPathSnapshots(t *testing.T) {
++	if IsSecretPath("tree/custos/snapshots/") {
++		t.Fatal("tree/custos/snapshots/ directory entry itself must NOT be a secret (m17)")
++	}
++	if !IsSecretPath("tree/custos/snapshots/snap-1/manifest.json") {
++		t.Fatal("child of tree/custos/snapshots/ MUST be a secret (m17)")
++	}
++}
++
++// TestBK_m18_IsProductNewerUnparseable tests that isProductNewer returns false with no warning on parse failure (m18).
++func TestBK_m18_IsProductNewerUnparseable(t *testing.T) {
++	if isProductNewer("hearthd/not-a-version", Product) {
++		t.Fatal("expected false for unparseable product version (m18)")
++	}
++}
++
+ // Helpers for corrupting zip bundles
+ func copyAndMutateZip(t *testing.T, src, dst string, mutate func(name string, data []byte) []byte) {
+ 	t.Helper()
+diff --git a/internal/backup/lock.go b/internal/backup/lock.go
+index 3c3dcf6..5bb24c9 100644
+--- a/internal/backup/lock.go
++++ b/internal/backup/lock.go
+@@ -20,9 +20,10 @@ type Locks struct {
+ }
+ 
+ // AcquireLocks acquires backup.lock, custos.lock, and keys.lock in strict order with LOCK_NB.
++// Custos lock path is <root>/custos/custos.lock per B2 (CUSTOS-SPEC §4.2, internal/custos/flock.go).
+ func AcquireLocks(root string) (*Locks, error) {
+ 	backupPath := filepath.Join(root, "backup.lock")
+-	custosPath := filepath.Join(root, "custos.lock")
++	custosPath := filepath.Join(root, "custos", "custos.lock")
+ 	keysPath := filepath.Join(root, "keys.lock")
+ 
+ 	bFile, err := openAndFlock(backupPath)
+@@ -51,6 +52,9 @@ func AcquireLocks(root string) (*Locks, error) {
+ }
+ 
+ func openAndFlock(path string) (*os.File, error) {
++	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
++		return nil, fmt.Errorf("mkdir lock dir %s: %w", filepath.Dir(path), err)
++	}
+ 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("open lock %s: %w", filepath.Base(path), err)
+diff --git a/internal/backup/manifest.go b/internal/backup/manifest.go
+index 3b579fb..5f63f16 100644
+--- a/internal/backup/manifest.go
++++ b/internal/backup/manifest.go
+@@ -10,10 +10,13 @@ import (
+ 	"time"
+ )
+ 
+-const (
+-	FormatVersion = "backup/1.0"
+-	Product       = "hearthd/0.7.3"
+-)
++const FormatVersion = "backup/1.0"
++
++// Version is the daemon version (can be set via ldflags), matching daemon /health (m16).
++var Version = "0.7.3"
++
++// Product is hearthd/<version> per §4.5.2 (m16).
++var Product = "hearthd/" + Version
+ 
+ // Manifest is the manifest.json model per PENATUS-SPEC §4.5.2.
+ type Manifest struct {
+@@ -192,14 +195,15 @@ func isProductNewer(bundleProd, binaryProd string) bool {
+ 	for i := 0; i < len(bParts) && i < len(cParts); i++ {
+ 		bNum, bErr := strconv.Atoi(bParts[i])
+ 		cNum, cErr := strconv.Atoi(cParts[i])
+-		if bErr == nil && cErr == nil {
+-			if bNum > cNum {
+-				return true
+-			}
+-			if bNum < cNum {
+-				return false
+-			}
++		if bErr != nil || cErr != nil {
++			return false // m18: on parse failure, NO warning (skip comparison)
++		}
++		if bNum > cNum {
++			return true
++		}
++		if bNum < cNum {
++			return false
+ 		}
+ 	}
+-	return bp > cp
++	return false
+ }
+diff --git a/internal/backup/reader.go b/internal/backup/reader.go
+index a05261c..1ccad1b 100644
+--- a/internal/backup/reader.go
++++ b/internal/backup/reader.go
+@@ -53,12 +53,19 @@ func IsSecretPath(p string) bool {
+ 			return true
+ 		}
+ 	}
+-	if strings.HasPrefix(p, "tree/custos/snapshots/") {
++	// m17: snapshots/** matches children only, not the directory entry itself.
++	if strings.HasPrefix(p, "tree/custos/snapshots/") && p != "tree/custos/snapshots/" {
+ 		return true
+ 	}
+ 	return false
+ }
+ 
++// ExtractionMode maps recorded source mode to extraction mode per §4.5.2 (B5, BK13):
++// recorded modes are masked & 0777 after stripping setuid/setgid/sticky bits.
++func ExtractionMode(mode os.FileMode) os.FileMode {
++	return mode & 0o777
++}
++
+ // List implements `hearthd backup list <file>`: TSV `#columns: path size sha256 mode` (dirs: size/sha256 = "-").
+ func List(bundlePath string, w io.Writer) error {
+ 	zr, err := zip.OpenReader(bundlePath)
+diff --git a/internal/backup/staging.go b/internal/backup/staging.go
+index 48946a3..e39d9ca 100644
+--- a/internal/backup/staging.go
++++ b/internal/backup/staging.go
+@@ -5,12 +5,26 @@ import (
+ 	"io"
+ 	"os"
+ 	"path/filepath"
++	"sort"
+ 	"strings"
+ 	"syscall"
+ 
+ 	"golang.org/x/text/unicode/norm"
+ )
+ 
++// Writer inventory (PENATUS §4.5.3.1, M9):
++// Every hearth-root writer and its serialization protocol:
++// 1. tokens.json: uses flock on the tokens file itself (TokenStore.lockTokenFile) — NOT keys.lock.
++// 2. session create PenatusSource.Create: creates session dir and renames session.json outside
++//    single-writer (documented honest gap: transient session file, atomic rename, no torn reads).
++// 3. nuntius inbox/state/owners.jsonl: tmp+rename under its own mutexes, NOT fs locks
++//    (transient file sets vary, atomicity per file, no torn reads).
++// 4. events.jsonl: appended under Hub singleWriterMu (SingleWriterLock/TrySingleWriterLock).
++// 5. memory/: atomic tmp+rename under Hub single-writer lock.
++// 6. custody state root (vault.*, surrogates.age, fingerprints.json, snapshots/):
++//    serialized under custos.lock flock protocol (CUSTOS-SPEC §4.2, AcquireLocks).
++// 7. keys.json: serialized under keys.lock flock protocol.
++
+ // FSInfo holds filesystem availability information.
+ type FSInfo struct {
+ 	AvailableBytes uint64
+@@ -30,8 +44,13 @@ func defaultStatfs(path string) (FSInfo, error) {
+ 	return FSInfo{AvailableBytes: avail, Fsid: fsid}, nil
+ }
+ 
+-// IsExcluded reports whether a relative path in the hearth root is excluded per §4.5.2.
+-// Always excluded: memory/index.db (rule 5), *.sock, *.lock.
++// IsExcluded reports whether a relative path in the hearth root is excluded per §4.5.2, B4, and M8.
++// Excluded:
++// - memory/index.db (rule 5)
++// - *.sock, *.lock
++// - atomic-rename temporary files (*.tmp* everywhere per M8: covers TokenStore tokens-*.tmp at root,
++//   and nuntius <name>.tmp* in nuntius/)
++// - temporary staging directories (.backup-staging-*) per B4
+ func IsExcluded(rel string, info os.FileInfo) bool {
+ 	cleanRel := filepath.ToSlash(filepath.Clean(rel))
+ 	if cleanRel == "memory/index.db" {
+@@ -41,6 +60,12 @@ func IsExcluded(rel string, info os.FileInfo) bool {
+ 	if strings.HasSuffix(base, ".sock") || strings.HasSuffix(base, ".lock") {
+ 		return true
+ 	}
++	if strings.Contains(base, ".tmp") {
++		return true
++	}
++	if strings.HasPrefix(base, ".backup-staging-") {
++		return true
++	}
+ 	return false
+ }
+ 
+@@ -133,10 +158,18 @@ func ComputeTreeSize(root string, configPath string, includeConfig bool) (uint64
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-	if includeConfig && configPath != "" {
+-		if fi, err := os.Stat(configPath); err == nil && !fi.IsDir() {
+-			total += uint64(fi.Size())
++	if includeConfig {
++		if configPath == "" {
++			return 0, fmt.Errorf("config in force must be in bundle: no config path provided (M13)")
+ 		}
++		fi, err := os.Stat(configPath)
++		if err != nil {
++			return 0, fmt.Errorf("stat config file %s: %w (config in force must be in bundle; silent omission is illegal per M13)", configPath, err)
++		}
++		if fi.IsDir() {
++			return 0, fmt.Errorf("config path %s is a directory", configPath)
++		}
++		total += uint64(fi.Size())
+ 	}
+ 	return total, nil
+ }
+@@ -185,10 +218,22 @@ func PreflightFreeSpace(root string, outPath string, treeSize uint64) error {
+ 	return nil
+ }
+ 
+-// CreateStagingDir creates a 0700 temporary directory on the hearth root's own filesystem.
++// CreateStagingDir creates a 0700 temporary directory on the hearth root's own filesystem (B4).
++// If parent filesystem differs from root's fs, falls back to creating inside root.
+ func CreateStagingDir(root string) (string, error) {
++	rootFS, err := StatfsFunc(root)
++	if err != nil {
++		return "", fmt.Errorf("statfs root %s: %w", root, err)
++	}
++
+ 	parent := filepath.Dir(root)
+-	staging, err := os.MkdirTemp(parent, ".backup-staging-")
++	targetDir := parent
++	parentFS, err := StatfsFunc(parent)
++	if err != nil || parentFS.Fsid != rootFS.Fsid {
++		targetDir = root
++	}
++
++	staging, err := os.MkdirTemp(targetDir, ".backup-staging-")
+ 	if err != nil {
+ 		return "", fmt.Errorf("create staging directory: %w", err)
+ 	}
+@@ -199,10 +244,24 @@ func CreateStagingDir(root string) (string, error) {
+ 	return staging, nil
+ }
+ 
+-// StageTree copies the included hearth root tree into stagingDir, preserving file and dir modes.
++type dirTarget struct {
++	path string
++	mode uint32
++}
++
++// StageTree copies the included hearth root tree into stagingDir, preserving file and dir modes (M10).
++// While holding flocks, lstat each entry during StageTree; symlink/device/FIFO encountered → abort (M12).
++// Never follow; open with O_NOFOLLOW (M12).
++// Do not pre-order chmod dirs; copy children first, then chmod dirs last in post-order (M11).
++// If a file vanishes mid-copy (ENOENT) → benign skip, not failure (M8).
+ func StageTree(root, stagingDir string) error {
+-	return filepath.Walk(root, func(srcPath string, info os.FileInfo, err error) error {
++	var dirTargets []dirTarget
++
++	err := filepath.Walk(root, func(srcPath string, info os.FileInfo, err error) error {
+ 		if err != nil {
++			if os.IsNotExist(err) {
++				return nil // M8: benign skip if file vanishes mid-walk
++			}
+ 			return err
+ 		}
+ 		if srcPath == root {
+@@ -220,14 +279,31 @@ func StageTree(root, stagingDir string) error {
+ 			return nil
+ 		}
+ 
++		// M12: staging-time shape re-check while holding flocks via lstat
++		lfi, err := os.Lstat(srcPath)
++		if err != nil {
++			if os.IsNotExist(err) {
++				return nil // M8 benign skip
++			}
++			return err
++		}
++		mode := lfi.Mode()
++		if mode&os.ModeSymlink != 0 || mode&os.ModeNamedPipe != 0 || mode&os.ModeDevice != 0 || mode&os.ModeCharDevice != 0 || mode&os.ModeSocket != 0 {
++			return fmt.Errorf("tree-shape law violation during staging: encountered illegal entry %s (%v)", rel, mode)
++		}
++
++		rawMode := uint32(mode.Perm())
++		if stat, ok := lfi.Sys().(*syscall.Stat_t); ok {
++			rawMode = uint32(stat.Mode & 07777)
++		}
++
+ 		dstPath := filepath.Join(stagingDir, norm.NFC.String(rel))
+ 		if info.IsDir() {
+-			if err := os.MkdirAll(dstPath, info.Mode().Perm()); err != nil {
++			// M11: do not pre-order chmod dirs; create 0700 for children, chmod post-order
++			if err := os.MkdirAll(dstPath, 0o700); err != nil {
+ 				return fmt.Errorf("create staging dir %s: %w", rel, err)
+ 			}
+-			if err := os.Chmod(dstPath, info.Mode().Perm()); err != nil {
+-				return fmt.Errorf("chmod staging dir %s: %w", rel, err)
+-			}
++			dirTargets = append(dirTargets, dirTarget{path: dstPath, mode: rawMode})
+ 			return nil
+ 		}
+ 
+@@ -236,21 +312,43 @@ func StageTree(root, stagingDir string) error {
+ 			return fmt.Errorf("mkdir parent %s: %w", rel, err)
+ 		}
+ 
+-		if err := copyFile(srcPath, dstPath, info.Mode()); err != nil {
++		if err := copyFile(srcPath, dstPath, lfi.Mode()); err != nil {
++			if os.IsNotExist(err) {
++				return nil // M8: benign skip
++			}
+ 			return fmt.Errorf("copy staging file %s: %w", rel, err)
+ 		}
+ 		return nil
+ 	})
++	if err != nil {
++		return err
++	}
++
++	// M11: apply dir modes in post-order (deepest directories first)
++	sort.Slice(dirTargets, func(i, j int) bool {
++		return len(dirTargets[i].path) > len(dirTargets[j].path)
++	})
++	for _, dt := range dirTargets {
++		if err := syscall.Chmod(dt.path, dt.mode); err != nil {
++			return fmt.Errorf("post-order chmod dir %s: %w", dt.path, err)
++		}
++	}
++
++	return nil
+ }
+ 
+ func copyFile(src, dst string, mode os.FileMode) error {
+-	in, err := os.Open(src)
++	// M12: Never follow; open with O_NOFOLLOW
++	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+ 	if err != nil {
++		if os.IsNotExist(err) {
++			return os.ErrNotExist // M8 benign skip
++		}
+ 		return err
+ 	}
+ 	defer in.Close()
+ 
+-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
++	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -259,5 +357,13 @@ func copyFile(src, dst string, mode os.FileMode) error {
+ 	if _, err := io.Copy(out, in); err != nil {
+ 		return err
+ 	}
+-	return os.Chmod(dst, mode.Perm())
++
++	// M10: preserve source stat mode (incl. setuid/setgid/sticky bits) into staging
++	rawMode := uint32(mode.Perm())
++	if fi, err := os.Lstat(src); err == nil {
++		if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
++			rawMode = uint32(stat.Mode & 07777)
++		}
++	}
++	return syscall.Chmod(dst, rawMode)
+ }
+diff --git a/internal/backup/verify.go b/internal/backup/verify.go
+index 17c3fe1..27c0419 100644
+--- a/internal/backup/verify.go
++++ b/internal/backup/verify.go
+@@ -140,6 +140,17 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
+ 			continue
+ 		}
+ 
++		// Bundle schema at verify (M15): every member path must start with "tree/" or be "config/lararium.yaml"
++		if zf.Name != "config/lararium.yaml" && !strings.HasPrefix(zf.Name, "tree/") {
++			findings = append(findings, Finding{
++				Class:  "tamper",
++				Path:   zf.Name,
++				Detail: "malformed bundle member path: must start with tree/ or be config/lararium.yaml or manifest.json",
++			})
++			tamperedPaths[zf.Name] = true
++			continue
++		}
++
+ 		// Zip-slip law (§4.5.2, BK18): reject .., absolute, drive-shaped
+ 		if IsZipSlip(zf.Name) {
+ 			findings = append(findings, Finding{
+@@ -173,6 +184,16 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
+ 
+ 	// Check Manifest -> Zip (hash, size, mode, missing from zip)
+ 	for _, entry := range manifest.Entries {
++		// Bundle schema check on manifest entries (M15)
++		if entry.Path != "config/lararium.yaml" && !strings.HasPrefix(entry.Path, "tree/") {
++			findings = append(findings, Finding{
++				Class:  "tamper",
++				Path:   entry.Path,
++				Detail: "malformed manifest member path: must start with tree/ or be config/lararium.yaml",
++			})
++			tamperedPaths[entry.Path] = true
++		}
++
+ 		zf, exists := zipByName[entry.Path]
+ 		if !exists {
+ 			findings = append(findings, Finding{
+@@ -184,9 +205,16 @@ func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, e
+ 			continue
+ 		}
+ 
+-		// Check mode
++		// Check mode (B6: unparseable mode string in a manifest entry → tamper finding)
+ 		expectedMode, err := ParseOctalMode(entry.Mode)
+-		if err == nil {
++		if err != nil {
++			findings = append(findings, Finding{
++				Class:  "tamper",
++				Path:   entry.Path,
++				Detail: fmt.Sprintf("unparseable mode string %q: %v", entry.Mode, err),
++			})
++			tamperedPaths[entry.Path] = true
++		} else {
+ 			zipPerm := zf.Mode() & 07777
+ 			expectedPerm := expectedMode & 07777
+ 			if zipPerm != expectedPerm {
+diff --git a/internal/backup/writer.go b/internal/backup/writer.go
+index b127e37..778cc67 100644
+--- a/internal/backup/writer.go
++++ b/internal/backup/writer.go
+@@ -35,13 +35,23 @@ func StatMode(info os.FileInfo) string {
+ 	return fmt.Sprintf("%04o", perm)
+ }
+ 
+-// ParseOctalMode parses an octal mode string like "0755" into os.FileMode.
++// ParseOctalMode parses an octal mode string like "0755" or "4755" into os.FileMode.
+ func ParseOctalMode(modeStr string) (os.FileMode, error) {
+ 	v, err := strconv.ParseUint(modeStr, 8, 32)
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-	return os.FileMode(v), nil
++	perm := os.FileMode(v & 0777)
++	if v&04000 != 0 {
++		perm |= os.ModeSetuid
++	}
++	if v&02000 != 0 {
++		perm |= os.ModeSetgid
++	}
++	if v&01000 != 0 {
++		perm |= os.ModeSticky
++	}
++	return perm, nil
+ }
+ 
+ // WriteBundle takes the staged tree (and optional config) and compresses it into outAbs.
+@@ -95,22 +105,26 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
+ 		return fmt.Errorf("walk staging: %w", err)
+ 	}
+ 
+-	// 2. Add config if requested and exists
++	// 2. Add config if requested (M13: !noConfig && read error → refuse with clear error)
+ 	var configBytes []byte
+-	if !noConfig && configPath != "" {
++	if !noConfig {
++		if configPath == "" {
++			return fmt.Errorf("config in force must be in bundle: no config path provided (M13)")
++		}
+ 		raw, err := os.ReadFile(configPath)
+-		if err == nil {
+-			configBytes = raw
+-			sz := int64(len(raw))
+-			h := sha256.Sum256(raw)
+-			hashStr := hex.EncodeToString(h[:])
+-			entries = append(entries, ManifestEntry{
+-				Path:   "config/lararium.yaml",
+-				Mode:   "0600",
+-				Size:   &sz,
+-				SHA256: hashStr,
+-			})
++		if err != nil {
++			return fmt.Errorf("read config file %s: %w (config in force must be in bundle; silent omission is illegal per M13)", configPath, err)
+ 		}
++		configBytes = raw
++		sz := int64(len(raw))
++		h := sha256.Sum256(raw)
++		hashStr := hex.EncodeToString(h[:])
++		entries = append(entries, ManifestEntry{
++			Path:   "config/lararium.yaml",
++			Mode:   "0600",
++			Size:   &sz,
++			SHA256: hashStr,
++		})
+ 	}
+ 
+ 	// Sort entries deterministically by path
+@@ -180,6 +194,10 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
+ 			Method: zip.Deflate,
+ 		}
+ 		fh.SetMode(mode)
++		if rawMode, err := strconv.ParseUint(entry.Mode, 8, 32); err == nil {
++			typeBits := fh.ExternalAttrs >> 16 & 0xF000
++			fh.ExternalAttrs = (uint32(typeBits|uint32(rawMode&07777)) << 16) | (fh.ExternalAttrs & 0xFFFF)
++		}
+ 
+ 		if entry.Dir {
+ 			if _, err := zw.CreateHeader(fh); err != nil {
+@@ -278,9 +296,13 @@ func CheckSelfInclusion(root, outAbs string) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	rel, err := filepath.Rel(absRoot, outAbs)
++	absOut, err := filepath.Abs(outAbs)
+ 	if err != nil {
+-		return nil
++		return err
++	}
++	rel, err := filepath.Rel(absRoot, absOut)
++	if err != nil {
++		return fmt.Errorf("check self-inclusion: %w", err)
+ 	}
+ 	if !strings.HasPrefix(rel, "..") && rel != "." {
+ 		return fmt.Errorf("--out inside hearth root (self-inclusion refused): %s is inside %s", outAbs, absRoot)
+@@ -324,7 +346,7 @@ func CreateOffline(root string, cfgPath string, outAbs string, noConfig bool, pr
+ 	if err != nil {
+ 		return err
+ 	}
+-	defer os.RemoveAll(stagingDir)
++	defer cleanStaging(stagingDir)
+ 
+ 	if err := StageTree(root, stagingDir); err != nil {
+ 		return fmt.Errorf("stage tree: %w", err)
+@@ -338,8 +360,8 @@ func CreateOffline(root string, cfgPath string, outAbs string, noConfig bool, pr
+ 	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs)
+ }
+ 
+-// CreateFromDaemon performs a full backup from a running daemon (§4.5.3.1).
+-func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool, singleWriterLock func() func(), progress func(string)) error {
++// CreateFromDaemon performs a full backup from a running daemon (§4.5.3.1, B1).
++func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool, singleWriterLock func() (func(), bool), progress func(string)) error {
+ 	if progress == nil {
+ 		progress = func(string) {}
+ 	}
+@@ -361,10 +383,14 @@ func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool,
+ 		return err
+ 	}
+ 
+-	// 3. Single-writer lock and flocks
++	// 3. Single-writer lock and flocks (B1: non-blocking, refuses with ErrBusy if held)
+ 	var releaseSingleWriter func()
+ 	if singleWriterLock != nil {
+-		releaseSingleWriter = singleWriterLock()
++		rel, ok := singleWriterLock()
++		if !ok {
++			return fmt.Errorf("%w: single-writer lock held", ErrBusy)
++		}
++		releaseSingleWriter = rel
+ 		defer func() {
+ 			if releaseSingleWriter != nil {
+ 				releaseSingleWriter()
+@@ -385,7 +411,7 @@ func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool,
+ 	if err != nil {
+ 		return err
+ 	}
+-	defer os.RemoveAll(stagingDir)
++	defer cleanStaging(stagingDir)
+ 
+ 	if err := StageTree(root, stagingDir); err != nil {
+ 		return fmt.Errorf("stage tree: %w", err)
+@@ -402,3 +428,14 @@ func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool,
+ 	progress("compressing archive")
+ 	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs)
+ }
++
++func cleanStaging(dir string) {
++	// Restore write permissions on all dirs before deletion so os.RemoveAll succeeds on read-only dirs (M11)
++	_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
++		if err == nil && fi.IsDir() {
++			_ = syscall.Chmod(p, 0o700)
++		}
++		return nil
++	})
++	_ = os.RemoveAll(dir)
++}
+diff --git a/internal/surface/socket.go b/internal/surface/socket.go
+index 5d5da2d..f96a761 100644
+--- a/internal/surface/socket.go
++++ b/internal/surface/socket.go
+@@ -9,7 +9,9 @@ import (
+ 	"log"
+ 	"net"
+ 	"os"
++	"path/filepath"
+ 	"strings"
++	"sync"
+ 	"time"
+ )
+ 
+@@ -17,17 +19,40 @@ import (
+ // the hearth dir. The CLI writes keys.json itself, then asks a running
+ // daemon to re-read it. One command: RELOAD-KEYS.
+ const (
+-	socketReloadCmd = "RELOAD-KEYS"
+-	socketAck       = "OK\n"
+-	socketTimeout   = 5 * time.Second
++	socketReloadCmd  = "RELOAD-KEYS"
++	socketAck        = "OK\n"
++	socketTimeout    = 5 * time.Second
++	backupAckTimeout = 30 * time.Second
+ )
+ 
++var (
++	serverRootsMu sync.RWMutex
++	serverRoots   = make(map[*Server]string)
++	serverHooksMu sync.RWMutex
++	serverHooks   = make(map[*Server]func(string))
++)
++
++// SetServerHearthHome associates a hearth root directory with a Server instance.
++func SetServerHearthHome(s *Server, root string) {
++	serverRootsMu.Lock()
++	serverRoots[s] = root
++	serverRootsMu.Unlock()
++}
++
++// SetServerBackupHook registers a hook called during backup progress phases (for concurrency testing).
++func SetServerBackupHook(s *Server, hook func(string)) {
++	serverHooksMu.Lock()
++	serverHooks[s] = hook
++	serverHooksMu.Unlock()
++}
++
+ // ServeSocket starts the control socket at path and returns a Closer
+ // that stops accepting and removes the socket file. Stale-file rule
+ // (spec K6): if something is listening on path, refuse; if the file is
+ // there but dead, unlink and bind. reload runs on each RELOAD-KEYS
+ // line; its error text must never contain key material.
+ func (s *Server) ServeSocket(path string, reload func() error) (io.Closer, error) {
++	SetServerHearthHome(s, filepath.Dir(path))
+ 	if _, err := os.Stat(path); err == nil {
+ 		d := net.Dialer{Timeout: socketTimeout}
+ 		conn, dialErr := d.DialContext(context.Background(), "unix", path)
+@@ -76,7 +101,7 @@ func (c *socketCloser) acceptLoop(reload func() error) {
+ 
+ func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
+ 	defer conn.Close()
+-	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
++	_ = conn.SetDeadline(time.Now().Add(backupAckTimeout))
+ 	reader := bufio.NewReader(conn)
+ 	line, err := reader.ReadString('\n')
+ 	if err != nil && line == "" {
+@@ -106,16 +131,45 @@ func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line st
+ 		fmt.Fprint(conn, "ERR backup not supported\n")
+ 		return
+ 	}
+-	parts := strings.Fields(line)
+-	if len(parts) < 2 {
++
++	// Protocol law (§4.5.3.1, M14): request line splits on space into max 3 fields;
++	// out path must not contain whitespace; CLI quotes nothing. If remainder starts with "--" treat as flag else ERR usage.
++	parts := strings.Split(line, " ")
++	if len(parts) < 2 || parts[0] != "backup" || parts[1] == "" {
+ 		fmt.Fprint(conn, "ERR usage: backup <out_abs> [--no-config]\n")
+ 		return
+ 	}
+ 	outAbs := parts[1]
+ 	noConfig := false
+-	for _, p := range parts[2:] {
+-		if p == "--no-config" {
++	if len(parts) == 3 {
++		if parts[2] == "--no-config" {
+ 			noConfig = true
++		} else if strings.HasPrefix(parts[2], "--") {
++			fmt.Fprintf(conn, "ERR unknown flag %s\n", parts[2])
++			return
++		} else {
++			fmt.Fprint(conn, "ERR usage: backup <out_abs> [--no-config]\n")
++			return
++		}
++	} else if len(parts) > 3 {
++		fmt.Fprint(conn, "ERR usage: out path must not contain whitespace; backup <out_abs> [--no-config]\n")
++		return
++	}
++
++	// B3: socket input law — reject non-absolute and out_abs inside hearth root BEFORE ack
++	if !filepath.IsAbs(outAbs) {
++		fmt.Fprint(conn, "ERR out path must be absolute\n")
++		return
++	}
++
++	serverRootsMu.RLock()
++	root := serverRoots[s]
++	serverRootsMu.RUnlock()
++
++	if root != "" {
++		if err := checkSelfInclusionSocket(root, outAbs); err != nil {
++			fmt.Fprintf(conn, "ERR %s\n", err.Error())
++			return
+ 		}
+ 	}
+ 
+@@ -129,6 +183,12 @@ func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line st
+ 
+ 	progress := func(msg string) {
+ 		_ = conn.SetDeadline(time.Now().Add(10 * time.Minute))
++		serverHooksMu.RLock()
++		hook := serverHooks[s]
++		serverHooksMu.RUnlock()
++		if hook != nil {
++			hook(msg)
++		}
+ 		_, _ = fmt.Fprintf(conn, "PROGRESS %s\n", msg)
+ 	}
+ 
+@@ -139,6 +199,25 @@ func (s *Server) handleBackupSocket(conn net.Conn, reader *bufio.Reader, line st
+ 	_, _ = fmt.Fprint(conn, "DONE\n")
+ }
+ 
++func checkSelfInclusionSocket(root, outAbs string) error {
++	absRoot, err := filepath.Abs(root)
++	if err != nil {
++		return fmt.Errorf("resolve root: %w", err)
++	}
++	absOut, err := filepath.Abs(outAbs)
++	if err != nil {
++		return fmt.Errorf("resolve out: %w", err)
++	}
++	rel, err := filepath.Rel(absRoot, absOut)
++	if err != nil {
++		return fmt.Errorf("check self-inclusion: %w", err)
++	}
++	if !strings.HasPrefix(rel, "..") && rel != "." {
++		return fmt.Errorf("--out inside hearth root (self-inclusion refused): %s is inside %s", outAbs, absRoot)
++	}
++	return nil
++}
++
+ func trimCR(s string) string {
+ 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
+ 		s = s[:len(s)-1]
+@@ -212,7 +291,7 @@ func PingViaSocket(path string, timeout time.Duration) error {
+ // BackupViaSocket invokes the control socket verb backup <out_abs> [--no-config] per §4.5.3.1.
+ // Single request line, ack, progress lines, done/error.
+ func BackupViaSocket(path string, outAbs string, noConfig bool, progress func(string)) error {
+-	d := net.Dialer{Timeout: socketTimeout}
++	d := net.Dialer{Timeout: backupAckTimeout}
+ 	conn, err := d.DialContext(context.Background(), "unix", path)
+ 	if err != nil {
+ 		return fmt.Errorf("%w: %w", ErrNotListening, err)
+@@ -223,7 +302,7 @@ func BackupViaSocket(path string, outAbs string, noConfig bool, progress func(st
+ 	if noConfig {
+ 		cmd += " --no-config"
+ 	}
+-	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
++	_ = conn.SetDeadline(time.Now().Add(backupAckTimeout))
+ 	if _, err := fmt.Fprintf(conn, "%s\n", cmd); err != nil {
+ 		return err
+ 	}
+diff --git a/internal/surface/turns.go b/internal/surface/turns.go
+index 90b28d5..9a4e555 100644
+--- a/internal/surface/turns.go
++++ b/internal/surface/turns.go
+@@ -50,11 +50,26 @@ type Hub struct {
+ 	singleWriterMu sync.RWMutex
+ }
+ 
+-// SingleWriterLock acquires the hub's single-writer serialization point (PENATUS §4.5.3.1).
+-func (h *Hub) SingleWriterLock() func() {
+-	h.singleWriterMu.Lock()
++// TrySingleWriterLock attempts to acquire the hub's single-writer serialization point non-blockingly (PENATUS §4.5.3.3).
++func (h *Hub) TrySingleWriterLock() (func(), bool) {
++	if !h.singleWriterMu.TryLock() {
++		return nil, false
++	}
+ 	return func() {
+ 		h.singleWriterMu.Unlock()
++	}, true
++}
++
++// SingleWriterLock acquires the hub's single-writer serialization point non-blockingly (PENATUS §4.5.3.1, §4.5.3.3).
++func (h *Hub) SingleWriterLock() (func(), bool) {
++	return h.TrySingleWriterLock()
++}
++
++// RLock acquires the hub's writer RLock (PENATUS §4.5.3.1, M9).
++func (h *Hub) RLock() func() {
++	h.singleWriterMu.RLock()
++	return func() {
++		h.singleWriterMu.RUnlock()
+ 	}
+ }
+ 

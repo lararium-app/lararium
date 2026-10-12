@@ -1,0 +1,181 @@
+{
+  "$schema": "https://design-tokens.github.io/format/1.0/schema.json",
+  "version": "1.0.0",
+  "name": "Lararium Design Tokens",
+  "description": "Shared design tokens for Lararium web and Android clients",
+  "color": {
+    "background": {
+      "primary": { "value": "#0f1115", "type": "color" },
+      "secondary": { "value": "#15181d", "type": "color" },
+      "tertiary": { "value": "#1a1d24", "type": "color" },
+      "hover": { "value": "#1a1d24", "type": "color" }
+    },
+    "text": {
+      "primary": { "value": "#e6e8ee", "type": "color" },
+      "secondary": { "value": "#9aa0ad", "type": "color" },
+      "muted": { "value": "#6a6f7a", "type": "color" },
+      "on-accent": { "value": "#0f1115", "type": "color" }
+    },
+    "accent": {
+      "primary": { "value": "#7aa2f7", "type": "color" },
+      "hover": { "value": "#8bb3f8", "type": "color" },
+      "focus": { "value": "#7aa2f7", "type": "color" }
+    },
+    "border": {
+      "primary": { "value": "#2a2e36", "type": "color" },
+      "secondary": { "value": "#3a3f4a", "type": "color" },
+      "focus": { "value": "#7aa2f7", "type": "color" }
+    },
+    "status": {
+      "success": { "value": "#6aa84f", "type": "color" },
+      "error": { "value": "#e06c75", "type": "color" },
+      "warning": { "value": "#e6c35c", "type": "color" },
+      "info": { "value": "#7aa2f7", "type": "color" }
+    },
+    "bubble": {
+      "user": { "value": "linear-gradient(135deg, #1a2332 0%, #151a24 100%)", "type": "color" },
+      "user-border": { "value": "#2a3542", "type": "color" },
+      "assistant": { "value": "#1a1d24", "type": "color" },
+      "assistant-border": { "value": "#2a2e36", "type": "color" },
+      "tool": { "value": "#15181d", "type": "color" },
+      "tool-border": { "value": "#2a2e36", "type": "color" },
+      "approval": { "value": "#1a1e2a", "type": "color" },
+      "approval-border": { "value": "#7aa2f7", "type": "color" }
+    },
+    "transport-warning": {
+      "background": { "value": "#3a2a1a", "type": "color" },
+      "border": { "value": "#7a5a2a", "type": "color" }
+    }
+  },
+  "spacing": {
+    "xs": { "value": "0.25rem", "type": "dimension" },
+    "sm": { "value": "0.5rem", "type": "dimension" },
+    "md": { "value": "1rem", "type": "dimension" },
+    "lg": { "value": "1.5rem", "type": "dimension" },
+    "xl": { "value": "2rem", "type": "dimension" }
+  },
+  "borderRadius": {
+    "sm": { "value": "6px", "type": "dimension" },
+    "md": { "value": "8px", "type": "dimension" },
+    "lg": { "value": "10px", "type": "dimension" }
+  },
+  "typography": {
+    "fontFamily": {
+      "base": { "value": "system-ui, -apple-system, sans-serif", "type": "fontFamily" },
+      "mono": { "value": "ui-monospace, SFMono-Regular, Menlo, monospace", "type": "fontFamily" }
+    },
+    "fontSize": {
+      "xs": { "value": "12px", "type": "dimension" },
+      "sm": { "value": "13px", "type": "dimension" },
+      "base": { "value": "14px", "type": "dimension" },
+      "lg": { "value": "1rem", "type": "dimension" }
+    },
+    "lineHeight": {
+      "base": { "value": "1.5", "type": "number" }
+    },
+    "fontWeight": {
+      "normal": { "value": "400", "type": "number" },
+      "medium": { "value": "500", "type": "number" },
+      "semibold": { "value": "600", "type": "number" }
+    }
+  },
+  "shadow": {
+    "drawer": { "value": "0 4px 24px rgba(0,0,0,0.4)", "type": "shadow" }
+  },
+  "breakpoints": {
+    "mobile": { "value": "720px", "type": "dimension" }
+  },
+  "components": {
+    "button": {
+      "primary": {
+        "background": "{color.accent.primary}",
+        "color": "{color.text.on-accent}",
+        "borderRadius": "{borderRadius.md}",
+        "padding": "{spacing.sm} {spacing.md}",
+        "fontWeight": "{typography.fontWeight.semibold}"
+      },
+      "secondary": {
+        "background": "transparent",
+        "color": "{color.text.primary}",
+        "border": "1px solid {color.border.secondary}",
+        "borderRadius": "{borderRadius.md}",
+        "padding": "{spacing.sm} {spacing.md}"
+      },
+      "danger": {
+        "background": "{color.status.error}",
+        "color": "{color.text.on-accent}",
+        "borderRadius": "{borderRadius.md}",
+        "padding": "{spacing.sm} {spacing.md}"
+      }
+    },
+    "input": {
+      "background": "{color.background.secondary}",
+      "border": "1px solid {color.border.secondary}",
+      "borderRadius": "{borderRadius.md}",
+      "padding": "{spacing.sm} {spacing.md}",
+      "color": "{color.text.primary}",
+      "fontSize": "{typography.fontSize.base}",
+      "focusBorder": "{color.accent.focus}"
+    },
+    "select": {
+      "background": "{color.background.secondary}",
+      "border": "1px solid {color.border.secondary}",
+      "borderRadius": "{borderRadius.md}",
+      "padding": "{spacing.xs} {spacing.sm}",
+      "color": "{color.text.primary}",
+      "fontSize": "{typography.fontSize.sm}",
+      "minWidth": "180px",
+      "maxWidth": "280px"
+    },
+    "bubble": {
+      "maxWidth": "85%",
+      "padding": "{spacing.sm} {spacing.md}",
+      "borderRadius": "{borderRadius.lg}",
+      "mobileMaxWidth": "95%"
+    },
+    "drawer": {
+      "width": "min(24rem, 92vw)",
+      "background": "{color.background.secondary}",
+      "border": "1px solid {color.border.primary}",
+      "shadow": "{shadow.drawer}"
+    },
+    "rail": {
+      "width": "14rem",
+      "border": "1px solid {color.border.primary}"
+    },
+    "transcript": {
+      "maxWidth": "46rem"
+    }
+  },
+  "android": {
+    "compose": {
+      "colors": {
+        "background": "#0f1115",
+        "surface": "#15181d",
+        "primary": "#7aa2f7",
+        "onPrimary": "#0f1115",
+        "onSurface": "#e6e8ee",
+        "outline": "#2a2e36",
+        "error": "#e06c75",
+        "success": "#6aa84f"
+      },
+      "typography": {
+        "fontFamily": "sans-serif",
+        "headlineSmall": "1.25rem",
+        "bodyMedium": "1rem",
+        "bodySmall": "0.875rem"
+      },
+      "spacing": {
+        "xs": "4dp",
+        "sm": "8dp",
+        "md": "16dp",
+        "lg": "24dp"
+      },
+      "borderRadius": {
+        "sm": "6dp",
+        "md": "8dp",
+        "lg": "12dp"
+      }
+    }
+  }
+}

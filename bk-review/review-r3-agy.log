@@ -1,0 +1,62 @@
+FINDING 1 [severity: BLOCKER] [section: §4.4]
+Problem: Section 4.4 mandates preserving `dir.pre-swap-*` directories indefinitely for manual operator deletion, yet Row 2 of the crash-point table unconditionally completes an interrupted swap by renaming `staging → dir` whenever `dir` is absent and both `.staging-*` and `.pre-swap-*` are present. When an operator deletes a hearth root and initiates `restore --to <dir>`, the creation of `<dir>.staging-<ts>` immediately triggers Row 2 against any leftover historical pre-swap directory, causing concurrent or subsequent daemon invocations to prematurely rename an incomplete staging tree into `dir`.
+Why it matters: Fresh-root restorations will be silently clobbered and corrupted with incomplete files whenever a pre-swap sibling from an earlier restore exists on the host.
+
+FINDING 2 [severity: BLOCKER] [section: §4.4]
+Problem: Row 3 of the crash-point table instructs the CLI to refuse and "print both sibling paths" when `dir` is absent and `.pre-swap-*` is present, even though staging is explicitly absent and only one sibling path exists. Because this table is evaluated at the start of every `hearthd` or `hearthd restore` invocation (§4.4), an operator who deletes a damaged hearth root to restore a backup via `--to` or `--replace` is permanently refused by Row 3 as long as a leftover `.pre-swap-*` from a prior swap remains in the parent directory.
+Why it matters: Operators attempting disaster recovery on deleted hearth roots are completely locked out of restoring valid backups until they manually identify and delete unmanaged pre-swap directories.
+
+FINDING 3 [severity: BLOCKER] [section: §4]
+Problem: Section 4 claims amendment V10.1 restates the two frozen sentences of CUSTOS-SPEC §4.2 while keeping the enumeration closed in place. However, the replacement text substitutes both clauses with an assertion that dangling intents are superseded in exactly two ways within a live state root, but completely drops the definitions of those two ways (higher persisted generation and `custos restore` swap-time closure), deleting the frozen specification's core WAL intent recovery rules without replacement.
+Why it matters: Implementers following amended CUSTOS-SPEC §4.2 are left without the normative rules governing WAL intent supersession during crash recovery.
+
+FINDING 4 [severity: MAJOR] [section: §3.3]
+Problem: Section 3.3 mandates that restore operations acquire all three flocks (`backup.lock`, `custos.lock`, `keys.lock`) in non-blocking mode ("within a restore the same"). However, §4.4 specifies that `--replace` creates and acquires only `<dir>/backup.lock`, omitting `custos.lock` and `keys.lock` entirely.
+Why it matters: Restores running against stopped daemons can race against concurrent custody mutations or key management operations that only hold `custos.lock` or `keys.lock`, corrupting state mid-swap.
+
+FINDING 5 [severity: MAJOR] [section: §2]
+Problem: Section 2 defines `memory_files` in `manifest.json.counts` using the path pattern `tree/memory/*.md`. Under frozen PENATUS-SPEC §1, all memory files are located in subdirectories (`memory/people/`, `memory/projects/`, `memory/notes/`), meaning a non-recursive glob matches zero files on conforming hearth roots.
+Why it matters: Independent implementations will compute conflicting counts depending on whether they follow the literal glob or recurse, causing manifest validation mismatches.
+
+FINDING 6 [severity: MAJOR] [section: §2]
+Problem: Section 2 requires `backup verify` to report unparseable bytes or transcript sequence gaps/duplicates as integrity findings classified as either `tamper` or `quarantine`. Because unparseable bytes match their manifest SHA-256 digest (failing the definition of tamper) but are not sequence gaps/duplicates (the only condition defined for quarantine in PENATUS-SPEC §2), the classification of unparseable transcript data is undefined.
+Why it matters: A second implementer cannot determine whether bundles containing unparseable JSON lines should be refused as tamper or allowed with warnings as quarantine during restoration.
+
+FINDING 7 [severity: MAJOR] [section: §2]
+Problem: Section 2 specifies that secrets are derived at verify and display time from path patterns such as `keys.json`, `custos/vault.*`, and `lararium.yaml`. In the actual bundle layout, all hearth entries are prefixed with `tree/` and configuration is stored under `config/lararium.yaml`, causing standard path matching against entry paths to miss all secret files.
+Why it matters: Automated secret detection and display logic will fail to identify sensitive keys, tokens, and vault envelopes within backup archives.
+
+FINDING 8 [severity: MAJOR] [section: §3.1]
+Problem: Section 3.1 requires `statfs` checks for staging and compressed estimates before taking locks, and §4.3 mandates checking for staged tree plus safety bundle sizes, but the draft provides no formula or margin for estimating compressed bundle size. Furthermore, §6 contains no test case verifying that insufficient free space triggers the mandated refusals on either backup create or restore.
+Why it matters: Disk space exhaustion can abort backups mid-compression and fail restores mid-staging without enforceable pre-flight validation.
+
+FINDING 9 [severity: MAJOR] [section: §2]
+Problem: Section 2 mandates that `manifest.json` is "strictly the FIRST zip entry" and establishes derived secret path patterns, but §6 provides no test verifying or enforcing first-entry archive ordering or derived secret matching.
+Why it matters: Implementations that write `manifest.json` out of order or fail to detect secret patterns will pass the test suite despite violating normative layout law.
+
+FINDING 10 [severity: MAJOR] [section: §4.3]
+Problem: Section 4.3 asserts that a damaged source root "does NOT block recovery — CLI reports why and requires explicit `--no-safety`", which is internally contradictory because requiring an operator flag halts restoration. Additionally, test BK6 explicitly asserts that a corrupt source refuses until `--no-safety` is passed, confirming that recovery is blocked by default.
+Why it matters: Contradictory text obscures the recovery workflow and risks automated restore pipelines failing unexpectedly when encountering damaged source roots.
+
+FINDING 11 [severity: MINOR] [section: §2]
+Problem: Section 2 records file modes into the manifest and §4 rule 5 applies them during extraction, but neither section specifies masking modes or stripping setuid, setgid, or executable bits.
+Why it matters: Malicious or misconfigured backup archives could extract files with setuid bits enabled, creating local privilege escalation risks.
+
+FINDING 12 [severity: MINOR] [section: §5]
+Problem: Section 5 lists open decisions D1 (SURFACE-SPEC §3A CLI home), D2 (`.lararium-backup` extension), and D6 (heartbeat reminders) as "recommended" rather than "DECIDED", leaving core spec boundaries unratified. Furthermore, D6 asserts zero-mechanism standing order reminders without accounting for the fact that the daemon provides no API or socket endpoint for agents to trigger or inspect backups.
+Why it matters: Unsettled design decisions and uncosted agent interactions undermine the completeness of the specification.
+
+FINDING 13 [severity: MINOR] [section: §6]
+Problem: The verification suite in §6 skips from test BK11 directly to test BK13, omitting BK12 without any explanatory note.
+Why it matters: Discontinuous test numbering creates traceability confusion when mapping specification clauses to test implementations.
+
+FINDING 14 [severity: MINOR] [section: §2]
+Problem: Section 2 states in its schema definition that `entries` covers every zip member including `Directories (incl. empty)`, but its inclusion law subsequently states that only empty directories are added as zip and manifest entries.
+Why it matters: Divergent interpretations will cause some implementations to include non-empty parent directory entries while others omit them, leading to inconsistent directory permissions upon restore.
+
+FINDING 15 [severity: MINOR] [section: §4]
+Problem: Section 4 defines strict TSV output schemas for `hearthd backup list` but leaves the output formatting, structure, and stream conventions for `hearthd backup verify` findings completely unspecified.
+Why it matters: Independent implementations cannot produce compatible machine-parseable output for backup verification results.
+
+CONVERGENCE: 3 blockers, 7 majors, 5 minors; verdict: reject.
+EXIT=0

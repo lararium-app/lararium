@@ -1,0 +1,38 @@
+FINDING 1 [severity: MAJOR] [section: §4.4]
+Problem: Row 2 of the crash recovery table directs recovery to delete staging and the marker and proceed normally when `dir` is present and `pre_swap` is absent, but Row 5 defines any state where `dir` and `staging` are both present as "impossible" and directs the CLI to refuse. Because staging is completed before the marker is written and before rename-1 runs, both `dir` and `staging` are present during any crash prior to rename-1, causing Row 5's condition to contradict and shadow Row 2.
+Why it matters: Implementations evaluating Row 5 before Row 2 or matching on presence of `dir` and `staging` will falsely refuse recovery following an interruption before rename-1.
+
+FINDING 2 [severity: MAJOR] [section: §3.1]
+Problem: Section 3.1 checks free space for staging on the hearth root filesystem and free space for the backup bundle on the `--out` filesystem as independent preconditions of Σ(tree size) each. When `--out` resides on the hearth root filesystem (the default output path), staging and the uncompressed or compressed output file exist simultaneously before staging cleanup, requiring 2 × Σ(tree size) of free space on that shared filesystem.
+Why it matters: Backups targeted to the root filesystem on disks with between 1.0× and 2.0× tree size available will pass preflight checks but fail mid-compression due to disk exhaustion.
+
+FINDING 3 [severity: MAJOR] [section: §3.1]
+Problem: Section 3.1 specifies that `hearthd backup create` resolves `--out` to an absolute path and invokes the control socket verb `backup <out_abs>`, omitting any protocol token or syntax for the `--no-config` option. While Section 2, Section 4, and test BK2 define and test `--no-config`, a running daemon receiving only `backup <out_abs>` cannot determine whether the operator requested excluding configuration.
+Why it matters: Backups executed through the control socket against a running daemon cannot honor the `--no-config` flag.
+
+FINDING 4 [severity: MINOR] [section: §2]
+Problem: Section 2 mandates that `hearthd backup verify` findings output strictly follows the table schema `#columns: class path detail` with exit code 0 if and only if no rows exist, while also requiring `verify` to display derived secrets and print a disk-safety warning. The text does not specify the destination stream or format for secrets and warnings, leaving undefined how they can be displayed without breaking machine parsing of the findings table.
+Why it matters: Automated consumers parsing standard output tables will encounter schema parsing errors when non-finding secret lines and banner text are emitted.
+
+FINDING 5 [severity: MINOR] [section: §6]
+Problem: Section 2 specifies that `manifest.json.counts` includes `sessions` (directories under `tree/sessions/`) and `memory_files` (recursive `tree/memory/**/*.md`), but Section 6 contains no test asserting these values or their recursive calculation.
+Why it matters: Regressions in session counting or non-recursive globbing in independent implementations will pass test verification undetected.
+
+FINDING 6 [severity: MINOR] [section: §3.1]
+Problem: Section 3.1 states that free-space preflight failures print both required numbers referencing test `(BK18)`, but Section 6 and fold-map rev-3 F13 explicitly retired and repurposed BK18 into BK12.
+Why it matters: Outdated test identifiers in the normative text break traceability between specification claims and the verification suite.
+
+FINDING 7 [severity: MINOR] [section: §5]
+Problem: Section 5 leaves open decisions D1 (SURFACE-SPEC §3A CLI home) and D2 (`.lararium-backup` extension) marked as "(recommended)" rather than "DECIDED", despite Section 0, Section 2, and fold-map rev-3 F12 treating them as frozen specification law.
+Why it matters: Retaining recommendation qualifiers on settled architectural decisions creates ambiguity regarding whether CLI surfaces and file formats are finalized.
+
+FINDING 8 [severity: MINOR] [section: §6]
+Problem: Test BK8 specifies exercising SIGKILL at steps "mid-stage, post-rename-1, post-rename-2" across the crash-point recovery table, omitting a test point between swap marker creation and rename-1.
+Why it matters: Row 2 of the crash-point recovery table is left unexercised by the stated SIGKILL test matrix.
+
+FINDING 9 [severity: MINOR] [section: §4.4]
+Problem: The crash-point recovery table covers states where `dir` is absent when both siblings are present (Row 3) or staging is absent (Row 6), but omits the state where `dir` and `pre_swap` are absent while `staging` is present. Additionally, Row 6 mistakenly describes rename-1 as completing a staging move rather than moving the target directory.
+Why it matters: Recovery behavior is unspecified if an interrupted swap experiences deletion of the target directory prior to rename-1.
+
+CONVERGENCE: 0 blockers, 3 majors, 6 minors; verdict: approve-with-changes.
+EXIT=0

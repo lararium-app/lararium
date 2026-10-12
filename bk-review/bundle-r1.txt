@@ -1,0 +1,537 @@
+You are a hostile spec reviewer for a frozen-spec project (Lararium). Your
+job is REVIEW ONLY — do not edit any file, do not propose replacements
+longer than one sentence per finding.
+
+Read, in this order:
+1. draft.md — the amendment draft under review (backup & restore for a
+   local-first personal-agent daemon).
+2. spec-context.md — verbatim excerpts of the frozen specs the draft cites.
+
+Review the draft for:
+A. Internal contradictions (a clause in one section breaking another).
+B. Contradictions or silent overrides of the frozen text in spec-context.md
+   — the draft may ONLY edit the sentence it explicitly quotes in §4
+   (V10.1); anything else that conflicts with frozen text is a finding.
+C. Enforceability gaps: §6 claims every claim in §2–§4 maps to a numbered
+   test. Find claims with no test, and tests that cannot actually reach
+   their claim (e.g. a test the mechanism could satisfy accidentally).
+D. Consistency holes in the backup/restore design itself: crash windows,
+   races between the snapshot walk and writers, restore atomicity gaps,
+   secrets that leak where the draft says they don't, format ambiguities
+   a second implementer could resolve two different ways (zip entry
+   order, path separators, symlinks/hardlinks/devices in the tree,
+   empty dirs, file modes, sparse files, Unicode normalization).
+E. Scope creep or under-specified open decisions (D1–D6) where a
+   recommendation is asserted but its consequences aren't costed.
+
+Output format — one finding per block:
+FINDING <n> [severity: BLOCKER|MAJOR|MINOR] [section: e.g. §3.2]
+Problem: <one or two sentences>
+Why it matters: <one sentence>
+
+End with: CONVERGENCE: <N> blockers, <M> majors, <K> minors; and a one-line
+verdict: approve / approve-with-changes / reject.
+
+===== FILE: draft.md =====
+# Amendment A4 / v10 — Whole-hearth backup & restore (DRAFT)
+
+> **Status: DRAFT — not signed off, not implemented.** Design bundle for
+> Product Owner ratification. Every numbered item below is a proposed
+> amendment; nothing here edits the frozen specs until the PO approves the
+> text (approval covers the TEXT, per gate law).
+
+## 0. Scope and targets
+
+One feature — `hearthd backup` / `hearthd restore` — touching three specs.
+Amendments and their targets:
+
+| # | Target | Change |
+|---|---|---|
+| A4.1 | PENATUS-SPEC §4 (new §4.5) | Freeze the bundle format `backup/1`: layout, manifest, inclusion/exclusion law, integrity rules |
+| A4.2 | PENATUS-SPEC §4 (import contract) | Extend the §4 import contract to bundles (it currently covers only `export.json` exports) |
+| V10.1 | CUSTOS-SPEC §4.2 | Scope the sentence "`custos restore` remains the only way to move the vault backward" (see §3 conflict below) |
+| S10.1 | SURFACE-SPEC new §3A | Freeze `hearthd backup …` / `hearthd restore …` CLI shapes; state the no-API-verb stance explicitly |
+
+Non-targets (explicit): no scheduled/automatic backups in v1; no sync
+protocol (unchanged §4 stance — restic/syncthing still legal for the *raw
+tree*); no encryption-at-rest changes; foreign-format importers stay
+outside the spec (rule 4 of §4).
+
+## 1. What "backup" means here (the one-sentence contract)
+
+**A backup is the whole hearth root as it stood at one instant, in one
+file, restorable on a clean machine to a working daemon with zero manual
+file surgery.** Disk death should cost the transcript between the last
+backup and the crash — nothing else. Partial bundles (chat only, or
+secrets only) are what §4 export and KEYS-SPEC already provide; backup's
+reason to exist is *completeness + consistency + one-step restore*.
+
+## 2. Bundle format `backup/1` (A4.1)
+
+`<name>.lararium-backup` — a ZIP (deflate), created with mode 0600.
+
+```
+manifest.json          # first entry; everything else verified against it
+tree/…                 # every path under the hearth root, verbatim, minus exclusions
+config/lararium.yaml   # the config in force at backup time (only with --with-config)
+```
+
+**manifest.json:**
+
+```json
+{ "backup": 1,
+  "created": "2026-10-09T18:00:00Z",
+  "product": "hearthd/0.7.3",
+  "hearth_id": "<ULID minted at first backup of this root, stored in <hearth>/backup.id>",
+  "source": { "abs_path": "…", "hostname": "…" },
+  "with_config": true,
+  "entries": [ {"path": "tree/sessions/…", "sha256": "…", "size": 1234,
+                "mode": "0600"} ],
+  "counts": { "sessions": 12, "memory_files": 34, "custos_generation": 17 },
+  "secrets": ["tree/keys.json", "tree/tokens.json", "tree/custos/vault.age", "…"] }
+```
+
+**Inclusion law.** Everything under the hearth root is included —
+persona files, `sessions/` (incl. blobs; `--lean` drops blobs > 8 KB that
+have `result_ref` digests, mirroring §4 export's stance), `memory/`,
+`archive/`, `keys.json`, `tokens.json`, `custos/` (state root: vault,
+MAC, key, surrogates, fingerprints, policy, audit chain incl.
+`anchors.json`), `nuntius/` (state, owners, inbox). Excluded, always:
+`memory/index.db` (rule 5: rebuildable), every socket (`.sock`), every
+lock file (`.lock`), `custos/snapshots/` (rollback generations are
+same-disk history, not off-box DR; `--with-snapshots` includes the newest
+generation set). Exclusion list changes are format-minor bumps.
+
+**Integrity.** Every entry carries SHA-256 + size + mode. `hearthd
+backup verify` re-hashes the whole file against the manifest, checks
+`backup: 1` major, checks each `sessions/*/events.jsonl` parses with
+contiguous `seq` (integrity rule §2), and exits non-zero on any failure.
+A bundle that verifies is *provably* restorable-consistent — that claim
+is the product.
+
+**Secrets honesty (PO call, see §5 D3).** The bundle contains every
+secret in exactly its on-disk form: `keys.json` plaintext, `tokens.json`
+hashes, `vault.age` passphrase-encrypted, **`vault.key` plaintext**. The
+manifest's `secrets` array lists them; stdout and `--help` say loudly:
+*a bundle is your disk — store it where your disk would be unsafe.*
+v1 ships no bundle encryption (the vault's own envelope already
+encrypts custody material; `keys.json` is plaintext by frozen KEYS-SPEC
+design). If the PO wants at-rest encryption for bundles, the amendment
+grows an `age` recipient option — flagged as D3, not assumed.
+
+## 3. Consistency: how a bundle is taken while the daemon lives
+
+The append-only rule (§2) makes most of the tree torn-write-tolerant, but
+a `tar` racing an appended line can capture a half-written final event —
+which the integrity rule would then *quarantine on restore*. Unacceptable
+for a backup tool. Contract:
+
+1. **Daemon running (the common case).** `hearthd backup` connects to
+   `<hearth>/hearthd.sock` (the existing control socket) and requests the
+   snapshot: the daemon takes its single-writer lock (the one the P3
+   promise already serializes on), walks the tree itself (holding it),
+   streams the bundle, releases. Point-in-time by construction: no
+   listener, turn, or heartbeat can interleave a write. Backup of an idle
+   daemon returns in file-walk time; a daemon mid-turn blocks the turn
+   for the duration of the walk only.
+2. **Daemon stopped.** CLI walks directly (same code, socket absent).
+   Still single-writer because nothing else runs.
+3. **Custody present.** Before walking `custos/`, the taker acquires
+   `custos.lock` flock with `custos.lock_wait_timeout` (default 10 s);
+   expiry → `lock_timeout` error, non-zero exit, no partial bundle
+   (temp file unlinked). Because every custos mutation holds that flock
+   across its two-file protocol (§4.2), a bundle's vault+MAC+surrogates
+   are always one whole generation — never a mixed set.
+4. **Never** two backups at once: `hearthd.sock` accepts one backup
+   request at a time (second → busy refusal, exit non-zero).
+
+## 4. Restore contract (A4.2, S10.1)
+
+```
+hearthd backup create [--out <path>] [--lean] [--with-snapshots] [--with-config]
+hearthd backup list <file>            # manifest summary, line-oriented per house convention
+hearthd backup verify <file>
+hearthd restore <file> --to <dir>     # fresh root; dir must not exist
+hearthd restore <file> --replace <dir> --yes   # over an existing root
+```
+
+Stdout data / stderr errors / exit codes per the frozen conventions. No
+REST endpoint, no web UI verb, ever in v1 — backup/restore is local
+operator action; surfacing it over the API would trade the whole custody
+story for convenience (stated explicitly so a later PR must amend, not
+creep). **S10.1.**
+
+Restore law, mirroring §4 import (which it extends):
+
+1. Verify first, always: hash manifest, seq contiguity, `backup: 1`
+   major. Unknown major → refuse with pointer to migration docs. Bundle
+   newer than the binary (`product` version) → refuse; the spec's
+   forward-compat rule (ignore unknown fields) covers fields, not
+   wholesale format jumps.
+2. `--to` refuses on an existing directory (same "never merge silently"
+   rule). `--replace` requires `--yes` AND refuses while a daemon serves
+   that root (live `hearthd.sock` answers ping → refuse; deleting the
+   socket file instead of stopping the daemon is operator error, and the
+   safety copy below still bounds it).
+3. `--replace` first takes an automatic safety bundle of the existing
+   root next to the target (`<dir>.pre-restore-<ts>.lararium-backup`),
+   then stages the bundle contents into a sibling temp dir, fsyncs, and
+   renames into place. Interrupt anywhere → the old root is either fully
+   intact or fully swapped; never half.
+4. Restored files get their recorded modes (0600 secrets stay 0600).
+5. First boot after restore is a normal boot with one guarantee and one
+   behavior: **guarantee** — `memory/index.db` missing is rebuilt (rule
+   5, already true); **behavior** — custos first-unlock recovery (§8.1a)
+   runs against the restored state exactly as against surviving state:
+   the restored pair is consistent (§3.3), so recovery is a no-op or a
+   normal dangling-intent closure. Nothing in §8.1a needs to know a
+   restore happened.
+
+**Vault-backward conflict (V10.1).** CUSTOS-SPEC §4.2 says "custos
+restore remains the only way to move the vault backward." Whole-root
+restore can move the vault to an older generation (bundle older than
+latest live state). That sentence is *within-daemon* law — about
+in-place rollback while WAL/audit continuity exists on the same disk.
+Proposed restatement (the only frozen text this amendment edits):
+
+> "`custos restore` remains the only way to move the vault backward
+> **in place**. Whole-hearth restore (PENATUS §4.5) replaces the
+> **entire** state root — vault, MAC, surrogates, registry, audit chain,
+> anchors, and key together, verified as one set — which is an
+> installation event, not a rollback: the restored bundle's own audit
+> chain is the continuity, and there is no surviving prior on-disk state
+> to reconcile against."
+
+Dangling-intent hazard closes for free: the bundle is generation-consistent
+(§3.3), so `restore` swapping under a WAL that references a *newer*
+generation (the §4.2 crash story) cannot occur — the WAL inside the
+bundle matches the vault inside the bundle.
+
+## 5. Open decisions for the PO (D-list)
+
+- **D1 — CLI home.** `hearthd backup`/`hearthd restore` under SURFACE-SPEC
+  §3A (recommended: hearthd's CLI verbs already live there — token, pair)
+  vs. a new standalone spec.
+- **D2 — bundle extension.** `.lararium-backup` (recommended, greppable)
+  vs. plain `.zip`.
+- **D3 — bundle encryption at rest.** v1 plaintext-equals-disk
+  (recommended: simplest honest v1; vault secrets already enveloped;
+  `keys.json` plaintext is a frozen KEYS-SPEC property, and an
+  encrypted-bundle story that can't decrypt `keys.json` differently than
+  disk loss already does is theater). Alt: `--age <recipient>` wrapping
+  the whole file, +small dep surface (age already in go.mod).
+- **D4 — config file.** Exclude by default, `--with-config` opt-in
+  (recommended: config may carry literal `api_key`s — same class as
+  keys.json; but configs also drift and restore-clobbering a fixed
+  config by surprise is its own footgun) vs include-always for true
+  one-step DR.
+- **D5 — custos/snapshots/** excluded by default (recommended,
+  `--with-snapshots` includes newest set) vs include-all-generations.
+- **D6 — heartbeat.** A heartbeat-adjacent standing order
+  ("remind me weekly to run a backup") is the *agent* prompting a manual
+  command — no mechanism needed (recommended for v1) vs scheduled
+  backups with retention in the daemon (deferred, non-target §0).
+
+## 6. Verification suite (every claim above maps to a numbered test)
+
+- **BK1** create→verify→(fresh root) `--to` restore→boot daemon→old
+  session answers + catch-up (§5 SURFACE) works end-to-end. Full
+  round-trip, real files.
+- **BK2** Exclusions asserted: `index.db`, sockets, locks, snapshots
+  absent from a default bundle; `--with-snapshots`/`--with-config`
+  presence asserted when passed.
+- **BK3** Integrity tamper: flip one byte of a `tree/` member → `verify`
+  non-zero, `restore` refuses. Flip one byte of `manifest.json` → same.
+- **BK4** Mid-turn consistency: long streamed turn running; `backup
+  create` via socket; restore to fresh root; assert every
+  `events.jsonl` seq-contiguous (the torn-line regression this whole
+  section exists to kill) AND turn count on restored root == source.
+- **BK5** Custody generation: hammer vault mutations + `backup create`
+  in a loop; every bundle's vault/MAC/surrogates parse as one coherent
+  generation; one case where `custos.lock` is held out-of-band →
+  `lock_timeout`, exit non-zero, no leftover temp file.
+- **BK6** Restore law: `--to` existing dir → refuse; `--replace` on live
+  daemon → refuse; `--replace` without `--yes` → refuse; successful
+  `--replace` leaves a bootable `pre-restore` safety bundle.
+- **BK7** Version law: hand-crafted manifest `backup: 2` → refuse with
+  migration pointer; `product` newer → refuse.
+- **BK8** Atomicity kill matrix: SIGKILL `hearthd restore --replace`
+  mid-rename-swap at each step → either old root intact or new root
+  complete; safety bundle always present and restorable.
+- **BK9** Two concurrent `backup create` → second refuses busy.
+- **BK10** `backup list` line-oriented contract (header-declared TSV,
+  V14-style round-trip parse).
+- **BK11** Restored root first boot: index rebuilt; custos first-unlock
+  recovery clean (no ghosts, §8.1a assertions reused); audit chain
+  verifies (`audit verify` green on restored root).
+- **BK12** `--lean` blob rule: restored bundle plays back a
+  `result_ref`-bearing session (refs still resolve or degrade per §4
+  export's existing stance — pin whichever the text says).
+
+Suite runs in `cmd/hearthd` package (CLI-level), temp-dir roots, no model
+calls (stub router like existing harness).
+
+## 7. What implementation would look like (for effort sizing only — no code until sign-off)
+
+`internal/backup/` (bundle writer/reader/manifest, socket-join path
+reusing existing control-socket plumbing, restore stager) + `cmd/hearthd/`
+verb wiring + BK suite. ~2 slices: bundle core + CLI, then restore +
+atomicity matrix. Custos changes: none in the daemon (V10.1 is a docs
+edit; the flock discipline it relies on already exists).
+
+===== FILE: spec-context.md =====
+# CONTEXT: frozen spec sections referenced by the draft (verbatim excerpts)
+
+=== PENATUS-SPEC.md §1 tree + rules ===
+---
+
+## 1. The household tree
+
+One directory per user (the "hearth root"), canonical name `agent/` inside the cell home:
+
+```
+agent/
+├── SOUL.md            # values, boundaries, voice        (slow-changing)
+├── IDENTITY.md        # name, emoji, avatar, self-facts   (slow-changing)
+├── USER.md            # who the human is                  (slow-changing)
+├── MEMORY.md          # curated long-term memory          (agent-maintained)
+├── HEARTBEAT.md       # proactive standing orders         (user-authored)
+├── memory/
+│   ├── people/
+│   │   └── <slug>.md
+│   ├── projects/
+│   │   └── <slug>.md
+│   ├── notes/
+│   │   └── YYYY-MM-DD.md
+│   └── index.db       # REBUILDABLE: BM25 + sqlite-vec index (not in exports)
+├── sessions/
+│   └── <session-id>/
+│       ├── session.json                    # session header
+│       └── events.jsonl                    # the append-only transcript
+└── archive/            # rotated / deleted-but-tombstoned material
+```
+
+Rules for all markdown files:
+
+- **Header block:** YAML frontmatter (`---` delimited) is the *only* machine-parsed
+  region. Body below is free markdown. Unknown frontmatter keys are preserved
+  round-trip and ignored on read.
+
+=== PENATUS-SPEC.md §2 integrity rules ===
+**events.jsonl** — one event per line, append-only, fsync on every line that isn't
+mid-stream token. Schema: every event has `t` (type), `ts` (ISO-8601 UTC),
+`seq` (monotonic per session, starts 1), and type-specific fields. Parsers skip
+unknown `t` values.
+
+Core event types (v1):
+
+| `t` | Payload fields | Meaning |
+|---|---|---|
+| `msg` | `role` (`user\|assistant\|tool`), `text`, `src` (provenance, below), `model`, `usage`, `update_id` (optional; A3, NUNTIUS-SPEC §7.4: integer, present on both `msg` events — user and assistant — of a nuntius-initiated turn; absent for web/repl. Additive: parsers and field-set verification treat it as optional) | a completed message (streaming deltas are NOT persisted) |
+| `tool_call` | `call_id`, `name`, `args`, `approval` (`auto\|approved:<id>\|denied:<id>`) | dispatch record |
+| `tool_result` | `call_id`, `ok`, `result_digest`, `result_ref` (path under `sessions/<id>/blobs/` if > 8 KB) | outcome |
+| `compact` | see §3 | compaction checkpoint |
+| `tombstone` | `seqs: [n…]`, `reason` | marks earlier messages deleted |
+| `branch` | `from_session`, `from_seq` | side-chat provenance |
+| `meta` | `key`, `value` | rename/title/pin changes |
+
+**Provenance (`src` on `msg`):** `{channel: "pwa|telegram|android|api|heartbeat",
+device: string|null}` — answers "where did this instruction come from" for the audit
+story and for trust scoring later.
+
+**Deletion semantics:** deleting a message appends a `tombstone`
+event naming the target `seq`s. Renderers and the prompt assembler skip
+tombstoned messages. Physical removal happens only in `archive/` during retention
+sweep, which is itself an event. Rewriting `events.jsonl` in place is never valid.
+
+**Integrity rule:** `seq` must increase by 1. A gap or a duplicate means corruption;
+hearthd quarantines the session (opens it read-only, flags it in the UI) rather
+than guessing.
+
+
+=== PENATUS-SPEC.md §4 import/export (full) ===
+## 4. Import / export
+
+**Export** = zip of the hearth tree (all of §1–§2, minus `index.db`, minus blobs
+unless `--full`), plus:
+
+```json
+export.json
+{ "penatus": 1, "exported": "…", "product": "hearthd/0.x",
+  "counts": {"sessions": 12, "memory_files": 34}, "sha256_manifest": true }
+```
+
+**Import contract:**
+
+1. Read `export.json.penatus`. Major `1` → proceed. Unknown major → refuse with
+   pointer to migration docs (never guess).
+2. Minor newer than us → import anyway, dropping unknown fields/events (rule 4),
+   report what was dropped.
+3. Import never merges silently into an existing hearth: it lands as a new
+   hearth directory, or into an existing one only with `--merge` and a full
+   conflict report first (same-slug memory files = rename, not overwrite).
+4. Importers for foreign formats (ChatGPT `conversations.json`, generic markdown
+   dumps) live *outside* the spec — they target it, they don't bend it.
+
+**Sync stance (v1):** no sync protocol. The tree is plain files, so `restic`/`syncthing`
+work today; a first-party sync is a later client of this spec, which is exactly why
+rule 1 (no hidden state) is non-negotiable.
+
+
+=== CUSTOS-SPEC §4.2 protocol (excerpt) ===
+Keyfile mode uses the same structure. `filippo.io/age` enters go.mod
+as the first runtime dependency outside stdlib, pinned
+(`filippo.io/age v1.3.2` in go.mod + go.sum at freeze time — the go.mod
+diff is the pin; no floating versions).
+
+**4.2 — Writes, generation, and the two-file protocol.** `generation`
+is **persisted inside the vault document** (age-authenticated: an
+attacker cannot roll it back without breaking the envelope); it starts
+from the document on unlock, so restarts cannot collide snapshot names.
+Mutation protocol for the vault: acquire `custos.lock` flock
+(**acquisition timeout `custos.lock_wait_timeout` default 10s**, typed
+`lock_timeout` error on expiry — no indefinite hangs) → decrypt →
+modify → generation+1 → WAL intent (§8.1a, includes the new generation,
+a **random nonce**, and an ordered list of the names it touches) →
+encrypt → temps in `<hearth>/custos/` — `vault.age` **and**
+`vault.age.mac` are written as a temp pair, both fsynced, then renamed
+**mac first, envelope second** — so a crash mid-pair leaves (new mac,
+old envelope), which first-unlock recovery resolves (§4.2
+landedness), never a mismatched locked-out state → **fsync(dir)** →
+WAL commit (**flushed, not buffered**, and fsynced only **after** the
+rename-pair and dir fsyncs have returned — the inverse order is
+forbidden: a commit line must never be durable ahead of the renames
+it commits, or a power loss with commit-caching could pair a durable
+`vault_mutation` with a lost envelope, falsifying a chain record) — the
+durability chain inherits KEYS-SPEC's atomic temp+rename doctrine and
+makes every arrow power-loss honest. **The in-memory loaded-state swap
+happens inside the flock, before release** (K6 doctrine inherited):
+after the commit line lands, no reader can observe tables that
+disagree with the committed files, and a revoke's memory removal is
+visible to every later swap-decision. The
+mutation critical section is
+in-process only and never spans a network forward or an approval wait —
+revocation semantics are S7's decision-point rule, not a global lock.
+Mutations that touch the registry (credential removal, surrogate
+revocation) follow **vault-first commit order**: vault commits, then
+registry temp+rename; if the process dies between, first-unlock
+reconciliation (§C3) drops registry entries whose credential no longer
+exists and appends `registry_reconciled` per drop.
+One-way safe: orphan bindings die, credentials never do.
+**WAL recovery is ordered by identity, never file dates:** an intent
+nonce matching a commit nonce closes the pair. **Landedness doctrine:**
+because `generation` lives inside the age-authenticated vault
+document, a mutation has **landed** iff the decrypted document's
+generation equals a dangling intent's generation. First unlock
+(passphrase in hand — recovery never runs locked; **recovery runs
+under `custos.lock` acquired before the first audit append, and a
+concurrent second `unlock` is serialized behind it — recovery is
+exactly-once; a locked daemon's `verify`/`status` needs no recovery
+state: it reports the WAL's dangling-intent lines file-read-only and
+resolution awaits the first unlock**): for each dangling
+intent, landed ⇒ append `vault_mutation_recovered` (the rename was the
+apply point; recognizing it is not auto-applying) and re-emit
+`vault.age.mac` from the surviving envelope bytes if it lags; not
+landed ⇒ append `vault_mutation_aborted` reason `crashed_pre_rename`,
+unlink stale temps, and re-emit `vault.age.mac` over the surviving
+envelope. Either way the intent is **resolved** and the pair on disk
+is consistent before strict MAC verification ever rejects an unlock
+(unlock-time verification runs *after* first-unlock recovery, §4.1);
+nothing is ever *inferred without the pairing or generation-match
+evidence*, and `custos restore` remains the only way to move the vault
+backward (§8.4). An intent is closed `vault_mutation_superseded` in
+exactly two ways:
+the vault's persisted generation is greater than the intent's (a
+later checkpoint rewrote the journal forward), or **`custos restore`
+closes every currently-dangling intent at swap time** (restore runs
+offline under the flock and is itself a checkpoint operation: no
+post-restore boot can ever apply the superseded mutation, and the
+restore audit line is the proof).
+Recovery's own vault rewrite runs its *own* intent/commit pair marked
+
+=== CUSTOS-SPEC §8.4 (full) ===
+**8.4 — Snapshots & restore.** Before every vault mutation: the
+pre-image set (`vault.age`, `vault.age.mac`, `surrogates.age`,
+`fingerprints.json`) is copied
+to `snapshots/gen-<G>/` (keep 8, G = persisted generation, no collision
+across restarts; **ephemeral access-token refreshes write no snapshot**,
+§4.5 — routine hourly churn can never evict the history that matters).
+`policy.json` is **not** snapshotted (no secret material; §6.6's remedy
+for policy corruption is `custos policy reset` + re-declare, not
+restore). `fingerprints.json` **is** (plaintext, name-mirror rows):
+a restore that rolled the vault back past a rename while mirror rows
+stood forward would transiently misroute CA-1(d) locked `PUT`s as
+new-name 423s — the snapshot set keeps vault and mirror moving
+together.
+`custos snapshots list` prints generations. `custos restore <gen>
+--yes` runs **offline under the `custos.lock` flock** — it verifies the
+snapshot's `.mac` with `vault.key` (no passphrase needed; the daemon
+being down or locked is exactly when restore exists), renames the set
+into place atomically, and appends the `vault_mutation_intent`/
+`vault_mutation` pair with reason `restore` to the audit chain — **if
+`anchors.json` is missing or empty, restore bootstraps it from the
+genesis line before verifying (an empty anchor file is not "verified
+against nothing")**, the
+next unlock's first-unlock pass reconciles registry and mirror
+afterwards. Restoring the pair means vault and registry land on the
+same generation: no surrogate ever outlives its credential via restore.
+
+## 9. Security invariants (each maps to a test)
+
+S1. No artifact a turn produces (session log, blobs, audit, proxy
+access log, card text, Telegram messages, worker error strings)
+contains a vault secret. → V3
+S2. A surrogate presented to the wrong host, wrong port, or wrong path
+yields `403 surrogate` + audit; no rewrite, no packet. → V4
+S3. Locked vault ⇒ every credential-bearing request refused; **zero
+egress dials while locked** (dialed-destination counter on the proxy).
+→ V5
+S4. Always-answers write canonical exact-match rules only — payload
+bytes, wildcard fragments, and injection-shaped hosts cannot widen a
+rule; rule construction consumes only grammar-validated request
+fields. → V6
+
+=== CUSTOS-SPEC §11 CLI conventions ===
+## 11. CLI surface (frozen shapes)
+
+`custos init | unlock | lock | status | migrate | export <name> | login
+<connector> [--manual] | surrogate add|list|revoke | revoke <name>
+(`keys rm <name>` under custody — one owner; `keys rm` performs,
+`revoke` is its alias, §4.4) | policy
+add|list|rm|reset
+| approvals [watch] | audit verify | snapshots list | restore <gen> --yes` — all new verbs
+live in the `custos` namespace; KEYS-SPEC's frozen `keys` family gains
+nothing (CA-1). `status` is machine-parseable JSON
+(`{state: locked|unlocked|degraded, credentials: n, surrogates: n,
+surrogates_dropped: n, door: custosd|none, listeners_failed: n}` —
+`degraded` whenever any listener bind failed or a WAL recovery is
+unresolved; `door` reports daemon liveness only, not per-cell bind
+health — that is `listeners_failed`). List commands
+(`surrogate list`, `policy list`, `snapshots list`) are line-oriented:
+one record per line, tab-separated columns in
+header-declared order, no decoration — V14 asserts the headers and one
+round-trip parse, not decoration. Errors to stderr, data to stdout,
+exit 0 on success/ack, non-zero on refusal/parse — the same
+conventions KEYS-SPEC established (stdout data / stderr errors / exit
+codes).
+
+## 12. Open questions — RESOLVED (PO sign-off, 2026-10-05)
+
+=== SURFACE-SPEC §3 auth/tokens (excerpt) ===
+
+## 3. Auth
+
+- Tokens: `hearthd token create <label>` prints `lar1_<32 base62>` once
+  (plus the ready URL `http://127.0.0.1:7717/#lar1_…` for the operator to
+  open) and stores only SHA-256(token) + label + created in
+  `<hearth>/tokens.json` (0600, atomic replace). No listing of values,
+  ever. The plaintext exists exactly twice: that terminal, and the
+  operator's browser — the daemon (`serve`) never sees or prints it.
+- Requests carry `Authorization: Bearer lar1_…`. Compare in constant time
+  (`crypto/subtle`). Failure → 401 `{"error":"unauthorized"}` (no hints why).
+- `hearthd token revoke <label>`; the daemon re-reads `tokens.json` per
+  request, so revocation takes effect on the **next request**. An
+  already-streaming SSE connection is not retroactively cut (documented
+  trade-off: cutting mid-turn would violate P3; the turn completes and
+  persists, later requests 401).
+- The embedded page reads its token from the URL fragment once

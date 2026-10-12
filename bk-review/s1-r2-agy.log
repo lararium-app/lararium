@@ -1,0 +1,18 @@
+root agent idle; waiting up to 30m0s for 1 background task(s)
+I have initiated the test suite execution across `internal/backup/...` and `cmd/hearthd/...` and will examine the results once complete.
+Waiting for the test execution to finish...
+FINDING 1 [severity: MAJOR] [section: §4.5.2 / §4.5.3.1]
+Problem: `IsExcluded` in `staging.go` excludes any relative path whose basename satisfies `strings.Contains(base, ".tmp")`. This exclusion is excessively broad and violates the §4.5.2 inclusion law ("regular files + directories only") by silently omitting legitimate hearth files containing `.tmp` (such as template files `*.tmpl`, e.g. `prompt.tmpl`, markdown notes `notes.tmp.md`, or data files `config.tmp.json`). Furthermore, Round-1 Finding 8 remains unresolved under the round-2 convergence rule because no test was added to pin either the exclusion of transient `tokens-*.tmp` files or the benign skip of vanishing files (`ENOENT`) during staging copy.
+Why it matters: Legitimate hearth files containing `.tmp` are silently dropped from backups, breaching the fundamental §4.5.1 whole-hearth capture contract, while the concurrent token rotation race fix remains unpinned and unexercised in the test suite.
+
+FINDING 2 [severity: MINOR] [section: §4.5.3.4]
+Problem: `CheckSelfInclusion` in `writer.go` and `checkSelfInclusionSocket` in `socket.go` validate output paths using `if !strings.HasPrefix(rel, "..") && rel != "."`. When `--out` targets the hearth root directory itself (`absOut == absRoot`), `filepath.Rel` returns `"."`, causing `rel != "."` to evaluate to `false` and allowing the self-inclusion check to return `nil`.
+Why it matters: Passing the exact hearth root path as `--out` bypasses the self-inclusion refusal law mandated by §4.5.3.4.
+
+FINDING 3 [severity: MINOR] [section: §4.5.3.1 / §4.5.6]
+Problem: `TestBK12_FreeSpacePreflight` in `backup_test.go` overrides `StatfsFunc` with a mock returning `Fsid: 100` unconditionally for all paths. As a result, `parentFS.Fsid == rootFS.Fsid` always holds during tests, and the B4 fallback branch in `CreateStagingDir` (where `parentFS.Fsid != rootFS.Fsid` creates the staging directory inside `root`) is never exercised under distinct filesystem IDs.
+Why it matters: The mount-point fallback branch ensuring staging allocation stays on the hearth root filesystem lacks test verification under differing filesystem IDs.
+
+CONVERGENCE: 0 blockers, 1 major, 2 minors; verdict: approve-with-changes.
+EXIT=0
+EXIT=0

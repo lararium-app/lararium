@@ -19,6 +19,12 @@ type SessionInfo struct {
 	ModelPin *string `json:"model_pin,omitempty"`
 }
 
+// ModelInfo is the wire shape of one model in GET /v1/models.
+type ModelInfo struct {
+	Provider string   `json:"provider"`
+	Models   []string `json:"models"`
+}
+
 // SessionSource is the storage view the handlers need: list, create,
 // and replay session logs. PenatusSource implements it over the frozen
 // Penatus file layer.
@@ -26,6 +32,11 @@ type SessionSource interface {
 	List() ([]SessionInfo, error)
 	Create(title string, modelPin string) (SessionInfo, error)
 	Events(id string, afterSeq int64, limit int) (events []json.RawMessage, inFlight bool, err error)
+}
+
+// ModelSource is the live model list view.
+type ModelSource interface {
+	ListModels() ([]ModelInfo, error)
 }
 
 // TurnHub is the live-turn view the handlers need: the in_flight flag
@@ -45,6 +56,7 @@ type Server struct {
 	Store    *TokenStore
 	Sessions SessionSource
 	Hub      TurnHub
+	Models   ModelSource
 	// OnShutdown is called on shutdown signals before Hub.Shutdown()
 	// (NUNTIUS-SPEC §2: bridge stops before hub drops pending approvals).
 	OnShutdown func()
@@ -54,6 +66,19 @@ type Server struct {
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"0.4.1"}`)
+}
+
+func (s *Server) listModelsHandler(w http.ResponseWriter, _ *http.Request) {
+	if s.Models == nil {
+		writeJSONAny(w, http.StatusOK, []ModelInfo{})
+		return
+	}
+	models, err := s.Models.ListModels()
+	if err != nil {
+		s.error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSONAny(w, http.StatusOK, models)
 }
 
 func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {

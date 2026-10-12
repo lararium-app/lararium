@@ -1,0 +1,78 @@
+FINDING 1 [severity: BLOCKER] [section: §3.3]
+Problem: Section 3.3 mandates that every restore operation acquires `<hearth>/backup.lock` first, but §4.2 specifies that `restore --to <dir>` requires that `<dir>` must not exist. Furthermore, in `restore --replace <dir>`, renaming `dir → dir.pre-swap` moves `backup.lock` away, invalidating the flock descriptor and leaving the restored root unprotected because lock files are excluded from archives.
+Why it matters: Offline restores to fresh directories cannot acquire the mandatory lock before target creation, while in-place replacements lose mutual exclusion mid-protocol and allow concurrent writers to corrupt state.
+
+FINDING 2 [severity: BLOCKER] [section: §4.4]
+Problem: Section 4.4 states that an interrupted swap "completes the swap first", but then parenthetically defines the recovery action as moving `<dir>` away if it was re-created and renaming `pre-swap` back, which rolls back rather than completes the swap. Because §4.4 also mandates leaving `dir.pre-swap-<ts>` behind after every successful restore for manual operator deletion, any subsequent invocation when `<dir>` is absent will falsely detect an interrupted swap and clobber live state with an obsolete pre-swap directory.
+Why it matters: The crash recovery logic is self-contradictory and actively destroys valid restored hearths upon daemon restart.
+
+FINDING 3 [severity: BLOCKER] [section: §6]
+Problem: The rev-1 fold-map claims finding Hermes-2 regarding empty directory preservation was addressed in §2 and test BK13, but BK13 only tests directory permission bits (0700). Neither BK13 nor any other test in §6 contains assertions or fixtures verifying that empty directories are included in archives or recreated upon extraction.
+Why it matters: The fold-map dishonestly claims verification coverage that is completely absent from the test suite, allowing empty directory extraction failures to go undetected.
+
+FINDING 4 [severity: MAJOR] [section: §2]
+Problem: Section 2 mandates that empty directories are stored as ZIP directory entries, but `manifest.json` defines `entries` with SHA-256 digests and file sizes that only apply to regular files. If empty directory entries are omitted from the manifest, `backup verify` fails because entries exist outside the manifest; if included, their hash and size representations are undefined.
+Why it matters: Independent implementations cannot produce archives containing empty directories that pass bundle verification.
+
+FINDING 5 [severity: MAJOR] [section: §4.2]
+Problem: Frozen PENATUS-SPEC §4 Rule 3 explicitly commands that imports never merge silently and may only land in an existing hearth directory using `--merge` with a full conflict report. Section 4 introduces `hearthd restore --replace <dir>`, which atomically wipes and replaces an existing hearth root without `--merge` or conflict reporting, silently overriding Rule 3 without an explicit amendment.
+Why it matters: The draft breaches frozen import specification invariants without proposing the necessary spec amendment.
+
+FINDING 6 [severity: MAJOR] [section: §2]
+Problem: PENATUS-SPEC §2 specifies that a sequence gap or duplicate in `events.jsonl` causes the daemon to quarantine the session while continuing normal operation. Section 2 and §4 rule 1 mandate that `backup verify` strictly rejects any sequence gap or duplicate and that restore always verifies first, causing backups of healthy running daemons that contain historical quarantined sessions to be permanently unrestorable.
+Why it matters: A localized transcript quarantine intended to keep the daemon running becomes a fatal condition that permanently prevents disaster recovery restoration.
+
+FINDING 7 [severity: MAJOR] [section: §3.2]
+Problem: Section 3.2 permits the CLI to fall back to an offline tree walk under flocks if `hearthd.sock` does not answer, warning that the daemon may be dead. If the daemon is alive but temporarily unresponsive under heavy load, the CLI executes the backup walk without holding the daemon's in-memory single-writer lock, racing directly against active memory and transcript writes.
+Why it matters: Latency spikes on the control socket lead to torn reads and corrupt backups captured from live unquiesced daemons.
+
+FINDING 8 [severity: MAJOR] [section: §3.1]
+Problem: Section 3.1 creates the staging copy on the same filesystem as `--out` while holding all flocks and the daemon single-writer lock. When `--out` targets a network share (NFS/SMB) or slow external media, the staging copy runs at network or bus speeds, stalling the daemon and blocking all agent turns.
+Why it matters: The single-writer lock duration remains bound to slow sink throughput, failing to deliver the file-walk snapshot independence promised in rev 1 finding F15.
+
+FINDING 9 [severity: MAJOR] [section: §3.1]
+Problem: Section 3.1 defines the control socket protocol verb as `backup <stagedir>`, transmitting only the staging directory path from the CLI to the daemon. However, §3.1 requires the daemon to compress staging into the bundle at `--out`, a path that is never transmitted over the socket and cannot be resolved if `--out` is relative to the CLI's working directory.
+Why it matters: The daemon lacks the destination path required to write the backup bundle, making socket-initiated backups unimplementable.
+
+FINDING 10 [severity: MAJOR] [section: §2]
+Problem: Section 2 defines the manifest schema version as integer `"backup": 1`, but §4.1 and test BK7 require the restore tool to accept `"backup: 1.<future>"` minor versions while dropping unknown fields. In typed languages like Go, floating-point or semantic string versions cannot unmarshal into an integer struct field, causing parsing errors rather than forward-compatible minor upgrades.
+Why it matters: The forward-compatibility mechanism mandated by PENATUS §4 Rule 2 cannot be implemented or verified as specified.
+
+FINDING 11 [severity: MAJOR] [section: §4]
+Problem: Section 4 defines `hearthd backup list <file>` as outputting TSV data following V14 house conventions, and BK10 asserts round-trip header parsing, but the draft never specifies the column names, order, or data schema.
+Why it matters: Implementers cannot write or verify `backup list` because the required TSV schema is completely missing from the specification.
+
+FINDING 12 [severity: MAJOR] [section: §2]
+Problem: Section 2 defines the ZIP layout with top-level entries `manifest.json`, `tree/...`, and `config/lararium.yaml`, while §4 defines restore solely targeting a hearth root directory. The draft never specifies whether the `tree/` prefix is stripped during extraction into `<dir>`; extracting verbatim creates an invalid `<dir>/tree/` layout, while stripping prefixes leaves the destination of `manifest.json` and `config/` undefined.
+Why it matters: Ambiguity in extraction path translation risks corrupting the directory structure of the restored hearth root.
+
+FINDING 13 [severity: MINOR] [section: §2]
+Problem: Section 2 claims the `secrets` array in `manifest.json` lists all secrets in their on-disk form, but omits `tree/custos/surrogates.age` and historical snapshots under `tree/custos/snapshots/gen-*/`.
+Why it matters: Automated security audits and scrubbing tools relying on the manifest `secrets` array will miss sensitive surrogate credentials and snapshot key material.
+
+FINDING 14 [severity: MINOR] [section: §6]
+Problem: Section 2 mandates that Unicode paths must be stored NFC-normalized, but §6 Verification Suite contains no test case verifying that non-NFC paths are normalized during backup or handled during verify.
+Why it matters: Regressions in Unicode path normalization across platforms will pass test verification undetected.
+
+FINDING 15 [severity: MINOR] [section: §4.4]
+Problem: Section 4.4 contains an unedited sentence fragment ("removes it only with `--yes` double-confirm… v1: prints it, leaves it, operator deletes") indicating an unresolved edit in the text.
+Why it matters: Editorial remnants create ambiguity about whether the CLI supports double-confirmed automated cleanup of pre-swap directories.
+
+FINDING 16 [severity: MINOR] [section: §6]
+Problem: Test BK9 asserts that a second concurrent `backup create` immediately refuses, but §3.3 specifies that each flock acquisition blocks for `custos.lock_wait_timeout` (default 10s). If the first backup completes before the 10-second timeout, the second backup acquires the lock and succeeds rather than refusing.
+Why it matters: The test suite will falsely fail against correct implementations that wait on flocks up to the configured timeout.
+
+FINDING 17 [severity: MINOR] [section: §2]
+Problem: Section 2 includes `custos_generation` in `manifest.json.counts`, but CUSTOS-SPEC §4.2 defines generation as persisted solely inside the age-authenticated vault document. A stopped-daemon backup taken without an operator passphrase cannot decrypt the vault to populate this count.
+Why it matters: Offline backups of locked daemons must either omit the count, guess, or fail unexpectedly.
+
+FINDING 18 [severity: MINOR] [section: §4.3]
+Problem: Section 4.3 requires free disk space equal to "old tree + staged tree" before taking locks for `--replace`. Because the directory swap uses atomic in-place POSIX renames that consume 0 additional bytes, checking for the size of the existing old tree unnecessarily rejects valid restorations on storage-constrained systems.
+Why it matters: Operators in disaster recovery situations with limited disk space will be falsely locked out of restoring valid backups.
+
+FINDING 19 [severity: MINOR] [section: §4]
+Problem: Section 4 does not specify filesystem permissions (such as 0600) when `hearthd backup extract-config` writes the configuration file, risking world-readable credentials on disk. Additionally, no behavior or test is defined for invoking `extract-config` against bundles created with `--no-config`.
+Why it matters: Restored configurations containing sensitive tokens may leak permissions, and missing-config error handling is undefined.
+
+CONVERGENCE: 3 blockers, 9 majors, 7 minors; verdict: reject.
+EXIT=0

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lararium — hearth mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#111418; --bg2:#161a20; --panel:#1a1f26; --panel2:#20262f;
+  --line:#2a323d; --line2:#38424f;
+  --ink:#e8e4dc; --ink2:#a8a99f; --ink3:#767b84;
+  --ember:#e8834a; --ember2:#f2a15f; --ember-glow:rgba(232,131,74,.16);
+  --ok:#7fb37a; --warn:#d9a441;
+  --radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 Inter,system-ui,sans-serif;display:flex;overflow:hidden}
+::selection{background:var(--ember);color:#111316}
+
+/* ── left rail ─────────────────────────── */
+.rail{width:268px;flex:0 0 268px;background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.hearth{padding:18px 16px 14px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px}
+.flame{width:34px;height:34px;border-radius:10px;background:radial-gradient(circle at 50% 30%,var(--ember2),#b9542a 70%);display:grid;place-items:center;font-size:17px;box-shadow:0 0 18px var(--ember-glow)}
+.brand h1{font:600 19px/1.2 Fraunces,Georgia,serif;letter-spacing:.2px}
+.brand small{display:block;font:400 11px/1.4 Inter;color:var(--ink3)}
+.newbtn{margin-top:14px;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line2);background:linear-gradient(180deg,#232a34,#1c222b);color:var(--ink);font:500 13.5px Inter;display:flex;align-items:center;gap:8px;cursor:pointer}
+.newbtn b{color:var(--ember2);font-weight:600}
+.newbtn:hover{border-color:var(--ember)}
+.search{margin:12px 16px 6px;position:relative}
+.search input{width:100%;padding:7px 10px 7px 30px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:400 13px Inter}
+.search:before{content:"⌕";position:absolute;left:9px;top:4px;font-size:16px;color:var(--ink3)}
+.sessions{flex:1;overflow-y:auto;padding:6px 10px}
+.group{font:600 10.5px Inter;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);padding:12px 8px 5px}
+.sess{padding:8px 10px;border-radius:9px;cursor:pointer;display:flex;flex-direction:column;gap:1px;border:1px solid transparent}
+.sess:hover{background:var(--panel)}
+.sess.active{background:var(--panel2);border-color:var(--line2)}
+.sess .t{font:500 13.5px Inter;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess .p{font:400 11.5px Inter;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess .badge{display:inline-block;margin-left:6px;font:600 10px Inter;color:var(--ember2);border:1px solid rgba(232,131,74,.35);border-radius:20px;padding:0 6px;vertical-align:1px}
+.railfoot{border-top:1px solid var(--line);padding:10px;display:flex;justify-content:space-between;align-items:center}
+.iconbtn{width:32px;height:32px;border-radius:8px;border:1px solid transparent;background:none;color:var(--ink2);cursor:pointer;font-size:15px}
+.iconbtn:hover{border-color:var(--line2);color:var(--ink)}
+.status-pill{display:flex;align-items:center;gap:7px;font:500 11.5px Inter;color:var(--ink2)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px rgba(127,179,122,.7)}
+
+/* ── main column ───────────────────────── */
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:56px;flex:0 0 56px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 22px;gap:12px;background:rgba(17,20,24,.8);backdrop-filter:blur(8px)}
+.topbar .title{font:500 14.5px Inter}
+.chip{font:500 11.5px Inter;color:var(--ink2);border:1px solid var(--line2);border-radius:20px;padding:3px 10px;display:inline-flex;align-items:center;gap:6px}
+.chip .caret{color:var(--ink3)}
+.spacer{flex:1}
+.sharebtn{font:500 12px Inter;color:var(--ink2);border:1px solid var(--line2);background:none;border-radius:8px;padding:6px 12px;cursor:pointer}
+
+.stream{flex:1;overflow-y:auto}
+.chat{max-width:760px;margin:0 auto;padding:26px 26px 10px;display:flex;flex-direction:column;gap:22px}
+
+/* custo event card */
+.custo{border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:12px;background:linear-gradient(180deg,var(--panel),var(--bg2));padding:12px 15px;display:flex;gap:12px;align-items:center}
+.custo .ic{width:36px;height:36px;flex:0 0 36px;border-radius:10px;background:rgba(217,164,65,.12);display:grid;place-items:center;font-size:17px}
+.cudo-time{font-size:10.5px;color:var(--ink3);margin-left:10px;font-weight:400}
+.custo .body{font:400 13px Inter;color:var(--ink2)}
+.custo .body b{color:var(--ink);font-weight:600}
+.custobtn{margin-left:auto;flex:0 0 auto;font:500 11.5px Inter;color:var(--ember2);border:1px solid rgba(232,131,74,.4);background:none;border-radius:7px;padding:5px 11px;cursor:pointer}
+
+/* messages */
+.msg{display:flex;gap:13px}
+.avatar{width:30px;height:30px;flex:0 0 30px;border-radius:9px;display:grid;place-items:center;font-size:14px;margin-top:2px}
+.avatar.ember{background:radial-gradient(circle at 50% 30%,var(--ember2),#b9542a 70%);box-shadow:0 0 14px var(--ember-glow)}
+.avatar.you{background:var(--panel2);border:1px solid var(--line2);color:var(--ink2);font:600 12px Inter}
+.mcol{min-width:0;flex:1}
+.meta{font:500 11.5px Inter;color:var(--ink3);margin-bottom:4px}
+.meta b{color:var(--ink2);font-weight:600;margin-right:6px}
+.bubble{font-size:14.8px;color:var(--ink)}
+.bubble p{margin:0 0 10px}
+.bubble p:last-child{margin-bottom:0}
+.msg.user .mcol{display:flex;justify-content:flex-end}
+.msg.user .bubble{background:var(--ember-glow);border:1px solid rgba(232,131,74,.28);padding:9px 14px;border-radius:14px 14px 4px 14px;max-width:85%;font-size:14.3px}
+.bubble code.inline{font:500 13px "JetBrains Mono",monospace;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.codeblock{border:1px solid var(--line);border-radius:11px;overflow:hidden;margin:10px 0;background:#0e1116}
+.codeblock .head{display:flex;align-items:center;padding:7px 13px;border-bottom:1px solid var(--line);font:600 11px Inter;color:var(--ink3);letter-spacing:.06em;text-transform:uppercase}
+.codeblock .copy{margin-left:auto;font:500 11px Inter;color:var(--ink3);border:1px solid var(--line2);border-radius:6px;background:none;padding:3px 9px;cursor:pointer}
+.codeblock pre{font:400 12.6px/1.7 "JetBrains Mono",monospace;padding:13px 15px;overflow-x:auto;color:#c8d2de}
+.k{color:#c792ea}.s{color:#98c379}.c{color:#5c6370;font-style:italic}.n{color:#d19a66}.f{color:#61afef}
+.msg-actions{display:flex;gap:4px;margin-top:9px;opacity:.95}
+.msg-actions button{font:500 11.5px Inter;color:var(--ink3);background:none;border:1px solid transparent;border-radius:7px;padding:4px 9px;cursor:pointer}
+.msg-actions button:hover{border-color:var(--line2);color:var(--ink2)}
+.bullets{margin:6px 0 10px 18px}
+.bullets li{margin:3px 0;font-size:14.5px}
+
+/* streaming */
+.typing{display:inline-flex;gap:4px;align-items:center;color:var(--ink3);font:400 13px Inter}
+.typing i{width:5px;height:5px;border-radius:50%;background:var(--ember2);animation:pulse 1.2s infinite}
+.typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+@keyframes pulse{0%,80%,100%{opacity:.25}40%{opacity:1}}
+
+/* composer */
+.composerwrap{flex:0 0 auto;padding:8px 26px 18px;background:linear-gradient(180deg,transparent,var(--bg) 30%)}
+.composer{max-width:760px;margin:0 auto;border:1px solid var(--line2);border-radius:16px;background:var(--panel);box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.composer:focus-within{border-color:rgba(232,131,74,.5);box-shadow:0 0 0 3px var(--ember-glow),0 8px 30px rgba(0,0,0,.35)}
+.composer textarea{width:100%;border:0;background:none;color:var(--ink);font:400 14.5px/1.55 Inter;padding:14px 16px 4px;resize:none;outline:none;min-height:48px}
+.crow{display:flex;align-items:center;gap:8px;padding:8px 10px 10px 12px}
+.crow .chip{cursor:pointer}
+.crow .attach{font-size:16px}
+.hint{font:400 11px Inter;color:var(--ink3)}
+.send{margin-left:auto;display:flex;align-items:center;gap:8px}
+.stopbtn{font:500 12.5px Inter;color:#e88;border:1px solid rgba(230,130,130,.35);background:rgba(230,130,130,.08);border-radius:9px;padding:7px 14px;cursor:pointer}
+.sendbtn{border:0;background:linear-gradient(180deg,var(--ember2),#d4703a);color:#191210;font:600 13px Inter;border-radius:10px;padding:8px 18px;cursor:pointer;box-shadow:0 3px 14px var(--ember-glow)}
+.disclaimer{text-align:center;font:400 10.5px Inter;color:var(--ink3);margin-top:8px}
+
+/* scrollbars */
+.sessions::-webkit-scrollbar,.stream::-webkit-scrollbar{width:10px}
+.sessions::-webkit-scrollbar-thumb,.stream::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:3px solid transparent;background-clip:content-box}
+</style>
+</head>
+<body>
+
+<aside class="rail">
+  <div class="hearth">
+    <div class="brand">
+      <div class="flame">🔥</div>
+      <div><h1>Lararium</h1><small>house hearth · v0.8</small></div>
+    </div>
+    <button class="newbtn"><b>+</b> New session</button>
+  </div>
+  <div class="search"><input placeholder="Search sessions…"></div>
+  <nav class="sessions">
+    <div class="group">Today</div>
+    <div class="sess active"><span class="t">Overnight door events<span class="badge">2 flags</span></span><span class="p">Overnight the front door opened twice…</span></div>
+    <div class="sess"><span class="t">Kitchen reno budget</span><span class="p">Here's the spreadsheet breakdown with…</span></div>
+    <div class="group">Yesterday</div>
+    <div class="sess"><span class="t">Weekly digest draft</span><span class="p">Summary of 34 notifications worth…</span></div>
+    <div class="sess"><span class="t">Router firmware check</span><span class="p">OpenWrt 24.10.2 includes the kernel…</span></div>
+    <div class="group">Previous 7 days</div>
+    <div class="sess"><span class="t">Grocery autopilot rules</span><span class="p">Three rules saved — milk, eggs, coffee…</span></div>
+    <div class="sess"><span class="t">Trip packing list — Maine</span><span class="p">Forecast says rain Thu–Fri…</span></div>
+    <div class="sess"><span class="t">branched from main</span><span class="p">…</span></div>
+  </nav>
+  <div class="railfoot">
+    <span class="status-pill"><span class="dot"></span>hearth online · 3 doors</span>
+    <span><button class="iconbtn" title="Keys">🗝</button><button class="iconbtn" title="Settings">⚙</button></span>
+  </div>
+</aside>
+
+<main>
+  <div class="topbar">
+    <span class="title">Overnight door events</span>
+    <span class="chip">qwen3.8-flash <span class="caret">▾</span></span>
+    <span class="chip">🔒 loopback</span>
+    <span class="spacer"></span>
+    <button class="sharebtn">⌥ Share</button>
+  </div>
+
+  <div class="stream">
+    <div class="chat">
+
+      <div class="custo">
+        <div class="ic">🚪</div>
+        <div class="body"><b>Front door opened</b> — 2:14 AM · no matching key fob<span class="cudo-time">flagged to your phone</span></div>
+        <button class="custobtn">Review</button>
+      </div>
+
+      <div class="msg user">
+        <div class="mcol"><div class="bubble">What did my door sensors see overnight? Anything weird?</div></div>
+        <div class="avatar you">BC</div>
+      </div>
+
+      <div class="msg">
+        <div class="avatar ember">🔥</div>
+        <div class="mcol">
+          <div class="meta"><b>Hearth</b> 9:41 AM · qwen3.8-flash</div>
+          <div class="bubble">
+            <p>Two events overnight, one worth a look:</p>
+            <ul class="bullets">
+              <li><b>2:14 AM — front door.</b> Opened for 41 s with no key fob and no disarm code. I pushed an alert to your phone at the time; the indoor cam recorded a 12 s clip.</li>
+              <li><b>6:47 AM — front door.</b> Normal exit, matched your fob. Garage and all window sensors stayed sealed the whole night.</li>
+            </ul>
+            <p>I pulled the door log so you can scan it yourself:</p>
+            <div class="codeblock">
+              <div class="head">doors.log<button class="copy">Copy</button></div>
+<pre><span class="c"># 02:14:03  front    OPEN   source=?   (no fob, no code)</span>
+<span class="c"># 02:14:44  front    CLOSE  auto-latch</span>
+<span class="c"># 06:47:12  front    OPEN   fob=brandon</span>
+<span class="k">hearthctl</span> doors inspect --from <span class="s">"2026-10-11T02:00"</span> --clip <span class="n">12</span>
+<span class="c"># → clip saved: /hearth/media/front-0214.mp4</span></pre>
+            </div>
+            <p>Want me to raise the front door to <code class="inline">require-keypad</code> overnight, or watch for a pattern and report in the morning digest?</p>
+          </div>
+          <div class="msg-actions"><button>↪ Reply</button><button>⧉ Copy</button><button>↻ Retry</button><button>✎ Edit</button><button>⑂ Branch</button><button>👍</button><button>👎</button></div>
+        </div>
+      </div>
+
+      <div class="msg user">
+        <div class="mcol"><div class="bubble">Watch it. And add morning digest to every day at 7.</div></div>
+        <div class="avatar you">BC</div>
+      </div>
+
+      <div class="msg">
+        <div class="avatar ember">🔥</div>
+        <div class="mcol">
+          <div class="typing"><i></i><i></i><i></i>&nbsp;Hearth is typing…</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="composerwrap">
+    <div class="composer">
+      <textarea placeholder="Ask your hearth anything…">Summarize the clip and compare against last week'</textarea>
+      <div class="crow">
+        <button class="chip attach">＋</button>
+        <button class="chip">🎤 Voice</button>
+        <button class="chip">🚪 Doors · 3 <span class="caret">▾</span></button>
+        <span class="spacer"></span>
+        <div class="send">
+          <button class="stopbtn">◼ Stop</button>
+          <button class="sendbtn">Send ↵</button>
+        </div>
+      </div>
+    </div>
+    <div class="disclaimer">Hearth can make mistakes — verify before you act. Keys never leave this daemon.</div>
+  </div>
+</main>
+</body>
+</html>
