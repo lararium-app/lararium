@@ -57,4 +57,27 @@ class EndpointPolicyTest {
         assertNull(PairingLink.parse("https://pair?host=x&token=***"))
         assertNull(PairingLink.parse("garbage"))
     }
+
+    @Test fun netRefusesPublicCleartextBeforeAnySocket() {
+        // Enforcement layer, not just the policy: no platform cleartext
+        // escape hatch exists, so this must throw even if Android allowed it.
+        val e = runCatching { app.lararium.data.Net.get("http://example.com/v1/health") }.exceptionOrNull()
+        assertNotNull(e)
+    }
+
+    @Test fun rawHttpAgainstLiveTestHearth() {
+        // LAN-gated integration probe: set LARARIUM_TEST_HEARTH=host:port
+        // where a test hearth is reachable; skipped everywhere else.
+        val target = System.getenv("LARARIUM_TEST_HEARTH")
+        org.junit.Assume.assumeTrue("LARARIUM_TEST_HEARTH not set", target != null)
+        val (host, port) = target!!.split(":")
+        val reachable = try {
+            java.net.Socket().apply { connect(java.net.InetSocketAddress(host, port.toInt()), 400) }
+            true
+        } catch (e: Exception) { false }
+        org.junit.Assume.assumeTrue("test hearth unreachable", reachable)
+        val resp = app.lararium.data.Net.get("http://$target/v1/health")
+        assertEquals(200, resp.status)
+        assertTrue(resp.body.contains("\"ok\":true"))
+    }
 }
