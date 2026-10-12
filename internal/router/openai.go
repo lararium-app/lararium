@@ -96,15 +96,19 @@ func (o *openAI) baseURLHost() string {
 	return u.Host
 }
 
-// isLoopbackURL reports whether the URL host is loopback: 127.0.0.0/8,
-// ::1, "localhost", or an empty/unparseable host (unix sockets).
+// isLoopbackURL reports whether the URL host is loopback-equivalent:
+// 127.0.0.0/8, ::1, "localhost", "host.docker.internal", or an empty/
+// unparseable host (unix sockets). host.docker.internal is Docker's
+// fixed name for the Docker host itself — same machine, same trust as
+// loopback, and the container-form reference config points the local
+// provider at it. (hearthd setup's keyless-local check agrees.)
 func isLoopbackURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return true // unparseable: treat as local, never worse than today
 	}
 	host := u.Hostname()
-	if host == "" || host == "localhost" {
+	if host == "" || host == "localhost" || host == "host.docker.internal" {
 		return true
 	}
 	ip := net.ParseIP(host)
