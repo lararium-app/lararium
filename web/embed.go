@@ -1,3 +1,6 @@
+// Package web holds the embedded single-page chat UI built by Vite
+// (React 18 + TypeScript) and served by the surface at / and under
+// /assets/*.
 package web
 
 import (

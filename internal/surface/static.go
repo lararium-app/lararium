@@ -85,6 +85,8 @@ func RegisterStatic(mux *http.ServeMux, fsys fs.FS) {
 		if clean != "index.html" {
 			w.Header().Set("Cache-Control", "no-cache")
 		}
+		//nolint:gosec // G705: data is a static build artifact read from the
+		// embedded dist fs.FS, never derived from the request.
 		_, _ = w.Write(data)
 	}
 
