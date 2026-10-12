@@ -139,7 +139,8 @@ func TestIsLoopbackURL(t *testing.T) {
 		{"http://127.5.5.5:8080", true}, // whole 127/8
 		{"http://localhost:8080", true},
 		{"http://[::1]:8080/v1", true},
-		{"http:///v1", true}, // empty host (unix-style)
+		{"http:///v1", true},                          // empty host (unix-style)
+		{"http://host.docker.internal:8080/v1", true}, // Docker host = same machine
 		{"https://api.openrouter.example/v1", false},
 		{"http://10.0.0.5:8080", false},
 		{"http://198.51.100.2:13308/v1", false},
