@@ -1,0 +1,7 @@
+# Runtime state the daemon writes through the /hearth bind mount as root.
+# Persona seeds (SOUL.md, IDENTITY.md, USER.md, MEMORY.md) are tracked.
+keys.json
+keys.lock
+tokens.json
+sessions/
+memory/
