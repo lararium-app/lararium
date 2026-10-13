@@ -33,9 +33,6 @@ export default {
       maxHeight: {
         app: "var(--app-h, 100vh)",
       },
-      screens: {
-        short: { raw: "(max-height: 560px)" },
-      },
     },
   },
   plugins: [],
