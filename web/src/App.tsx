@@ -54,6 +54,8 @@ export function App() {
 
     if (tok) {
       setToken(tok);
+      setStatusText("hearth online");
+      setStatusType("ok");
     } else {
       setStatusText("open the URL printed by hearthd token create");
       setStatusType("warn");
@@ -129,8 +131,13 @@ export function App() {
       }
     },
     onError: (err) => {
-      setStatusText(`error: ${err}`);
-      setStatusType("err");
+      if (err.includes("unauthorized")) {
+        setStatusText("unauthorized — token revoked or wrong");
+        setStatusType("err");
+      } else {
+        setStatusText(`error: ${err}`);
+        setStatusType("err");
+      }
     },
   });
 
@@ -155,6 +162,8 @@ export function App() {
         }
         const data: Session[] = await resp.json();
         setSessions(data);
+        setStatusText("hearth online");
+        setStatusType("ok");
 
         if (data.length > 0) {
           const target = selectId || currentSessionId || data[0].id;
@@ -195,6 +204,8 @@ export function App() {
         throw new Error(err.error || resp.statusText);
       }
       const newSess: Session = await resp.json();
+      setStatusText("hearth online");
+      setStatusType("ok");
       await fetchSessions(newSess.id);
       setActiveView("chat");
     } catch (e: any) {
@@ -345,7 +356,10 @@ export function App() {
   const currentSession = sessions.find((s) => s.id === currentSessionId) || null;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-bg text-ink">
+    <div
+      className="flex h-app max-h-app w-full overflow-hidden bg-bg text-ink"
+      style={{ height: "var(--app-h, 100vh)", maxHeight: "var(--app-h, 100vh)" }}
+    >
       <Sidebar
         sessions={sessions}
         currentSessionId={currentSessionId}

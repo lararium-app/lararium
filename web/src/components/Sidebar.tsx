@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { Plus, Search, Key, Palette, MessageSquare, Shield, Cpu, Database } from "lucide-react";
 import { Session } from "../types/hearthd";
 
@@ -51,6 +51,81 @@ export function Sidebar({
   onCloseMobile,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth >= 1024 : false
+  );
+
+  const drawerRef = useRef<HTMLElement | null>(null);
+  const previousActiveElementRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateDesktop = () => {
+      const match = window.innerWidth >= 1024;
+      setIsDesktop(match);
+      if (match) {
+        onCloseMobile();
+      }
+    };
+    updateDesktop();
+    window.addEventListener("resize", updateDesktop);
+    return () => window.removeEventListener("resize", updateDesktop);
+  }, [onCloseMobile]);
+
+  useEffect(() => {
+    if (isDesktop) return;
+    if (isOpenMobile) {
+      previousActiveElementRef.current = document.activeElement as HTMLElement | null;
+      const timer = setTimeout(() => {
+        const focusable = drawerRef.current?.querySelector<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        focusable?.focus();
+      }, 50);
+      return () => clearTimeout(timer);
+    } else if (previousActiveElementRef.current) {
+      previousActiveElementRef.current.focus();
+      previousActiveElementRef.current = null;
+    }
+  }, [isOpenMobile, isDesktop]);
+
+  useEffect(() => {
+    if (!isOpenMobile || isDesktop) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCloseMobile();
+        return;
+      }
+
+      if (e.key === "Tab") {
+        const drawer = drawerRef.current;
+        if (!drawer) return;
+        const focusables = drawer.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            last.focus();
+            e.preventDefault();
+          }
+        } else {
+          if (document.activeElement === last) {
+            first.focus();
+            e.preventDefault();
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpenMobile, isDesktop, onCloseMobile]);
 
   const filteredSessions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -83,15 +158,23 @@ export function Sidebar({
       {/* Mobile backdrop */}
       {isOpenMobile && (
         <div
-          className="fixed inset-0 bg-black/60 z-30 md:hidden"
+          className="fixed inset-0 bg-black/60 z-30 lg:hidden"
+          style={{ height: "var(--app-h, 100vh)" }}
           onClick={onCloseMobile}
         />
       )}
 
       <aside
-        className={`fixed md:static top-0 bottom-0 left-0 w-64 bg-bg2 border-r border-line z-35 flex flex-col transition-transform duration-200 ease-in-out md:translate-x-0 ${
+        ref={drawerRef}
+        aria-hidden={!isDesktop && !isOpenMobile ? "true" : undefined}
+        aria-label="Navigation sidebar"
+        className={`fixed lg:static top-0 bottom-0 left-0 w-64 h-app lg:h-full max-h-app bg-bg2 border-r border-line z-35 flex flex-col transition-transform duration-200 ease-in-out lg:translate-x-0 ${
           isOpenMobile ? "translate-x-0" : "-translate-x-full"
         }`}
+        style={{
+          height: isDesktop ? "100%" : "var(--app-h, 100vh)",
+          maxHeight: isDesktop ? "100%" : "var(--app-h, 100vh)",
+        }}
       >
         {/* Brand & New Session */}
         <div className="p-4 border-b border-line space-y-3">
@@ -108,7 +191,7 @@ export function Sidebar({
               onCreateSession();
               onCloseMobile();
             }}
-            className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-panel hover:bg-panel2 border border-line text-xs font-semibold text-ink transition-colors shadow-2xs"
+            className="w-full min-h-[44px] flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-panel hover:bg-panel2 border border-line text-xs font-semibold text-ink transition-colors shadow-2xs"
           >
             <Plus className="w-4 h-4 text-ember" />
             <span>New session</span>
@@ -123,7 +206,7 @@ export function Sidebar({
               onSelectView("chat");
               onCloseMobile();
             }}
-            className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+            className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
               activeView === "chat"
                 ? "bg-panel text-ember shadow-2xs border border-line"
                 : "text-ink3 hover:text-ink hover:bg-panel/50"
@@ -138,7 +221,7 @@ export function Sidebar({
               onSelectView("doors");
               onCloseMobile();
             }}
-            className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+            className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
               activeView === "doors"
                 ? "bg-panel text-ember shadow-2xs border border-line"
                 : "text-ink3 hover:text-ink hover:bg-panel/50"
@@ -155,7 +238,7 @@ export function Sidebar({
                   onSelectView("cells");
                   onCloseMobile();
                 }}
-                className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+                className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
                   activeView === "cells"
                     ? "bg-panel text-ember shadow-2xs border border-line"
                     : "text-ink3 hover:text-ink hover:bg-panel/50"
@@ -170,7 +253,7 @@ export function Sidebar({
                   onSelectView("memory");
                   onCloseMobile();
                 }}
-                className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+                className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
                   activeView === "memory"
                     ? "bg-panel text-ember shadow-2xs border border-line"
                     : "text-ink3 hover:text-ink hover:bg-panel/50"
@@ -186,13 +269,13 @@ export function Sidebar({
         {/* Session Search */}
         <div className="p-3 border-b border-line">
           <div className="relative">
-            <Search className="w-3.5 h-3.5 text-ink3 absolute left-2.5 top-2.5" />
+            <Search className="w-3.5 h-3.5 text-ink3 absolute left-2.5 top-3" />
             <input
               type="text"
               placeholder="Search sessions…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-ink placeholder-ink3 focus:outline-hidden focus:border-ember"
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-panel border border-line text-base text-ink placeholder-ink3 focus:outline-hidden focus:border-ember"
             />
           </div>
         </div>
@@ -220,7 +303,7 @@ export function Sidebar({
                           onSelectSession(s.id);
                           onCloseMobile();
                         }}
-                        className={`w-full text-left px-2.5 py-2 rounded-lg text-xs transition-colors flex flex-col gap-0.5 ${
+                        className={`w-full min-h-[44px] flex flex-col justify-center text-left px-2.5 py-2 rounded-lg text-xs transition-colors gap-0.5 ${
                           isActive
                             ? "bg-panel text-ink border border-line shadow-2xs font-medium"
                             : "text-ink2 hover:text-ink hover:bg-panel/50"
@@ -267,17 +350,25 @@ export function Sidebar({
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={onOpenKeys}
-              className="p-1.5 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
+              onClick={() => {
+                onOpenKeys();
+                onCloseMobile();
+              }}
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
               title="Provider Keys"
+              aria-label="Provider Keys"
             >
               <Key className="w-4 h-4" />
             </button>
             <button
               type="button"
-              onClick={onToggleTheme}
-              className="p-1.5 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
+              onClick={() => {
+                onToggleTheme();
+                onCloseMobile();
+              }}
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
               title="Theme Settings"
+              aria-label="Theme Settings"
             >
               <Palette className="w-4 h-4" />
             </button>
