@@ -4,15 +4,15 @@ bin/
 tmp/
 *.log
 
-# Runtime state written through the bind mounts by root inside the
-# container. Without these, the SECOND `docker compose up --build` dies:
-#   checking context: no permission to read from .../docker/hearth/keys.lock
-# Persona seeds (SOUL/IDENTITY/USER/MEMORY .md) stay IN the context.
-docker/hearth/keys.json
-docker/hearth/keys.lock
-docker/hearth/tokens.json
-docker/hearth/sessions/
-docker/hearth/memory/
-docker/hearth/*.tmp
-docker/config/.setup-done
-docker/config/*.tmp
+# Runtime territory. The quickstart bind-mounts docker/hearth and
+# docker/config, and the daemon writes root-owned state through them:
+# keys.json/keys.lock/tokens.json (0600), sessions/, memory/, the
+# sideband socket, the custos/ vault dir (0700 — the context walker
+# cannot even open it), nuntius/ inboxes, backup.lock, .setup-done.
+# Any one of them kills the next `docker compose up --build` with
+# "checking context: no permission to read ...". Ignoring the two bind
+# roots ends the whack-a-mole: the image COPYes nothing from either
+# (Dockerfile takes Go source + web/; config and persona land at
+# runtime via the mounts).
+docker/hearth/
+docker/config/
