@@ -236,7 +236,7 @@ export function KeysDrawer({ isOpen, onClose, token }: KeysDrawerProps) {
               placeholder="e.g. openai, anthropic"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg bg-panel border border-line text-xs text-ink placeholder-ink3 focus:outline-hidden focus:border-ember"
+              className="w-full px-3 py-2 rounded-lg bg-panel border border-line text-base text-ink placeholder-ink3 focus:outline-hidden focus:border-ember"
               autoComplete="off"
               spellCheck="false"
             />
@@ -248,13 +248,13 @@ export function KeysDrawer({ isOpen, onClose, token }: KeysDrawerProps) {
               placeholder="api key value"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg bg-panel border border-line text-xs text-ink placeholder-ink3 focus:outline-hidden focus:border-ember font-mono"
+              className="w-full px-3 py-2 rounded-lg bg-panel border border-line text-base text-ink placeholder-ink3 focus:outline-hidden focus:border-ember font-mono"
               autoComplete="new-password"
             />
           </div>
           <button
             type="submit"
-            className="w-full py-2 rounded-lg bg-ember text-bg font-semibold text-xs hover:bg-ember2 transition-colors disabled:opacity-50"
+            className="w-full min-h-[44px] py-2 rounded-lg bg-ember text-bg font-semibold text-xs hover:bg-ember2 transition-colors disabled:opacity-50 flex items-center justify-center"
             disabled={!name.trim() || !value}
           >
             Save Key
