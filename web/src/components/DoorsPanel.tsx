@@ -283,7 +283,7 @@ export function DoorsPanel({ token }: DoorsPanelProps) {
                   <label className="block text-xs font-medium text-ink2 mb-1">Pattern</label>
                   <input
                     type="text"
-                    placeholder="e.g. api.anthropic.com or https://api.openai.com/"
+                    placeholder="e.g. api.anthropic.com or openai.com/v1/*"
                     value={pattern}
                     onChange={(e) => {
                       setPattern(e.target.value);
