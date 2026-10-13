@@ -1,0 +1,18 @@
+.git
+web/node_modules
+bin/
+tmp/
+*.log
+
+# Runtime state written through the bind mounts by root inside the
+# container. Without these, the SECOND `docker compose up --build` dies:
+#   checking context: no permission to read from .../docker/hearth/keys.lock
+# Persona seeds (SOUL/IDENTITY/USER/MEMORY .md) stay IN the context.
+docker/hearth/keys.json
+docker/hearth/keys.lock
+docker/hearth/tokens.json
+docker/hearth/sessions/
+docker/hearth/memory/
+docker/hearth/*.tmp
+docker/config/.setup-done
+docker/config/*.tmp
