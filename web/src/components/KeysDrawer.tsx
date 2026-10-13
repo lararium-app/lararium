@@ -42,6 +42,12 @@ export function KeysDrawer({ isOpen, onClose, token }: KeysDrawerProps) {
         setIsError(true);
         return;
       }
+      if (resp.status === 404) {
+        setStatusMsg("Key resolution is not attached to this daemon");
+        setIsError(true);
+        setKeys([]);
+        return;
+      }
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
         throw new Error(err.error || resp.statusText);

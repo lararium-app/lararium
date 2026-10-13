@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from "react";
-import { Copy, RotateCcw, Check, Square, Send, Paperclip, Mic } from "lucide-react";
+import { Copy, RotateCcw, Check, Square, Send } from "lucide-react";
 import { Session, SurfaceEvent, ApprovalRequest, CustosCard } from "../types/hearthd";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { ToolApprovalCard, CustosApprovalCard } from "./ApprovalCard";
@@ -335,27 +335,7 @@ export function ChatWindow({
               placeholder="Ask your hearth anything…"
               className="w-full bg-transparent text-base text-ink placeholder-ink3 focus:outline-hidden resize-none leading-relaxed"
             />
-            <div className="flex items-center justify-between pt-2 border-t border-line/60 mt-1">
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  disabled
-                  title="coming soon"
-                  className="min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 p-1.5 rounded-lg text-ink3 hover:text-ink disabled:opacity-40 cursor-not-allowed transition-colors flex items-center justify-center"
-                >
-                  <Paperclip className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  disabled
-                  title="coming soon"
-                  className="min-h-[44px] sm:min-h-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-ink3 text-xs disabled:opacity-40 cursor-not-allowed transition-colors"
-                >
-                  <Mic className="w-3.5 h-3.5" />
-                  <span>Voice</span>
-                </button>
-              </div>
-
+            <div className="flex items-center justify-end pt-2 border-t border-line/60 mt-1">
               <div className="flex items-center gap-2">
                 {isStreaming ? (
                   <button
