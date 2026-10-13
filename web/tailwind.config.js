@@ -27,6 +27,12 @@ export default {
         body: ["var(--font-body)", "sans-serif"],
         mono: ["var(--font-mono)", "monospace"],
       },
+      height: {
+        app: "var(--app-h, 100vh)",
+      },
+      maxHeight: {
+        app: "var(--app-h, 100vh)",
+      },
     },
   },
   plugins: [],

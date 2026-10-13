@@ -44,8 +44,9 @@ export function Header({
         <button
           type="button"
           onClick={onToggleMobileNav}
-          className="p-1.5 rounded-lg text-ink2 hover:text-ink hover:bg-panel md:hidden transition-colors"
+          className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-ink2 hover:text-ink hover:bg-panel lg:hidden transition-colors"
           title="Toggle navigation"
+          aria-label="Toggle navigation"
         >
           <Menu className="w-5 h-5" />
         </button>
@@ -82,33 +83,35 @@ export function Header({
         <button
           type="button"
           onClick={onTogglePreviewPanels}
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+          className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-2 lg:px-2.5 lg:py-1 rounded-lg text-xs font-medium border transition-colors ${
             showPreviewPanels
               ? "bg-warn/15 text-warn border-warn/30 hover:bg-warn/20"
               : "bg-panel text-ink3 border-line hover:text-ink hover:bg-panel2"
           }`}
           title="Toggle preview views (Cells & Memory inspectors)"
+          aria-label={`Preview views: ${showPreviewPanels ? "On" : "Off"}`}
         >
           <Layers className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Preview Views:</span>
-          <span>{showPreviewPanels ? "On" : "Off"}</span>
+          <span className="hidden lg:inline ml-1.5">Preview Views: {showPreviewPanels ? "On" : "Off"}</span>
         </button>
 
         {/* Share Button */}
         <button
           type="button"
           onClick={handleShare}
-          className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-panel hover:bg-panel2 text-ink border border-line transition-colors shadow-2xs"
+          className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 lg:px-3 lg:py-1 rounded-lg text-xs font-medium bg-panel hover:bg-panel2 text-ink border border-line transition-colors shadow-2xs"
+          title="Share"
+          aria-label={copied ? "Copied" : "Share"}
         >
           {copied ? (
             <>
               <Check className="w-3.5 h-3.5 text-ok" />
-              <span className="text-ok">Copied</span>
+              <span className="text-ok hidden lg:inline ml-1.5">Copied</span>
             </>
           ) : (
             <>
               <Share2 className="w-3.5 h-3.5 text-ink2" />
-              <span>Share</span>
+              <span className="hidden lg:inline ml-1.5">Share</span>
             </>
           )}
         </button>

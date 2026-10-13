@@ -49,7 +49,7 @@ export function ToolApprovalCard({ request, onResolve }: ToolApprovalCardProps) 
               type="button"
               disabled={submitting}
               onClick={() => handleDecision("allow")}
-              className="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-ok/20 text-ok border border-ok/30 hover:bg-ok/30 disabled:opacity-50 transition-colors"
+              className="min-h-[44px] px-4 py-2 rounded-lg text-xs font-medium bg-ok/20 text-ok border border-ok/30 hover:bg-ok/30 disabled:opacity-50 transition-colors flex items-center justify-center"
             >
               Allow
             </button>
@@ -57,7 +57,7 @@ export function ToolApprovalCard({ request, onResolve }: ToolApprovalCardProps) 
               type="button"
               disabled={submitting}
               onClick={() => handleDecision("deny")}
-              className="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-err/20 text-err border border-err/30 hover:bg-err/30 disabled:opacity-50 transition-colors"
+              className="min-h-[44px] px-4 py-2 rounded-lg text-xs font-medium bg-err/20 text-err border border-err/30 hover:bg-err/30 disabled:opacity-50 transition-colors flex items-center justify-center"
             >
               Deny
             </button>
@@ -145,7 +145,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled={submitting}
               onClick={() => handleResolve("once")}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-ok/20 text-ok border border-ok/30 hover:bg-ok/30 disabled:opacity-50 transition-colors"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-ok/20 text-ok border border-ok/30 hover:bg-ok/30 disabled:opacity-50 transition-colors flex items-center justify-center"
             >
               Allow once
             </button>
@@ -153,7 +153,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled={submitting}
               onClick={() => handleResolve("always")}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-ok/10 text-ok border border-ok/20 hover:bg-ok/20 disabled:opacity-50 transition-colors"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-ok/10 text-ok border border-ok/20 hover:bg-ok/20 disabled:opacity-50 transition-colors flex items-center justify-center"
             >
               Always
             </button>
@@ -161,7 +161,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled={submitting}
               onClick={() => handleResolve("deny")}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-err/20 text-err border border-err/30 hover:bg-err/30 disabled:opacity-50 transition-colors"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-err/20 text-err border border-err/30 hover:bg-err/30 disabled:opacity-50 transition-colors flex items-center justify-center"
             >
               Deny
             </button>
@@ -169,7 +169,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled
               title="not supported by hearthd yet"
-              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-panel2 text-ink3 border border-line cursor-not-allowed opacity-60"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-panel2 text-ink3 border border-line cursor-not-allowed opacity-60 flex items-center justify-center"
             >
               Edit Parameters
             </button>
