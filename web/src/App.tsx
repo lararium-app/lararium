@@ -20,7 +20,7 @@ export function App() {
   const [statusType, setStatusType] = useState<"ok" | "warn" | "err">("ok");
 
   // Feature flag for Cell & Memory placeholder panels
-  const [showPreviewPanels, setShowPreviewPanels] = useState(true);
+  const [showPreviewPanels, setShowPreviewPanels] = useState(false);
 
   // Custos custody cards
   const [custosCards, setCustosCards] = useState<CustosCard[]>([]);
@@ -353,6 +353,16 @@ export function App() {
     await streamResolveApproval(currentSessionId, approvalId, verdict);
   };
 
+  const handleTogglePreviewPanels = () => {
+    setShowPreviewPanels((prev) => {
+      const next = !prev;
+      if (!next && (activeView === "cells" || activeView === "memory")) {
+        setActiveView("chat");
+      }
+      return next;
+    });
+  };
+
   const currentSession = sessions.find((s) => s.id === currentSessionId) || null;
 
   return (
@@ -382,7 +392,7 @@ export function App() {
             activeView === "chat"
               ? currentSession?.title || currentSession?.id || "Lararium"
               : activeView === "doors"
-              ? "Doors & Policy Dashboard"
+              ? "Door policy"
               : activeView === "cells"
               ? "Cells & Sandbox Monitor"
               : "Memory & Session Log Inspector"
@@ -390,7 +400,7 @@ export function App() {
           modelPin={activeView === "chat" ? currentSession?.model_pin : undefined}
           onToggleMobileNav={() => setMobileNavOpen(!mobileNavOpen)}
           showPreviewPanels={showPreviewPanels}
-          onTogglePreviewPanels={() => setShowPreviewPanels(!showPreviewPanels)}
+          onTogglePreviewPanels={handleTogglePreviewPanels}
         />
 
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden relative">

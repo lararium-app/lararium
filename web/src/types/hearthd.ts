@@ -57,12 +57,12 @@ export interface CustosGone {
   reason: string;
 }
 
-export interface DoorPolicy {
-  name: string;
-  status: "open" | "closed" | "guarded" | "restricted";
-  description?: string;
-  allowed_tools?: string[];
-  requires_approval?: boolean;
+export interface PolicyRule {
+  lane: "credential" | "egress";
+  pattern: string;
+  verdict: "auto" | "ask" | "deny";
+  always: boolean;
+  source: string;
 }
 
 export interface CellStatus {
