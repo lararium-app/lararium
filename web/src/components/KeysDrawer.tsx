@@ -159,7 +159,7 @@ export function KeysDrawer({ isOpen, onClose, token }: KeysDrawerProps) {
   return (
     <>
       <div
-        className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 transition-opacity"
+        className="fixed inset-0 bg-scrim animate-[fade-in_var(--dur-fast)_var(--ease-out)] z-40"
         onClick={onClose}
       />
       <aside
