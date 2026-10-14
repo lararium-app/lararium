@@ -24,19 +24,28 @@ export function ToolApprovalCard({ request, onResolve }: ToolApprovalCardProps) 
   };
 
   return (
-    <div className="my-3 p-4 rounded-xl border border-ember/30 bg-panel shadow-sm">
+    <div
+      role="dialog"
+      aria-labelledby={`tool-approval-${request.approval_id}`}
+      className="my-3 p-3 rounded-xl border border-line bg-panel shadow-e2"
+    >
       <div className="flex items-start gap-3">
         <div className="p-2 rounded-lg bg-ember/10 text-ember shrink-0">
           <AlertTriangle className="w-5 h-5" />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between mb-1">
-            <h4 className="font-medium text-ink text-sm">Tool Approval Required</h4>
+            <h4
+              id={`tool-approval-${request.approval_id}`}
+              className="font-medium text-ink text-sm"
+            >
+              Tool Approval Required
+            </h4>
             <span className="text-xs px-2 py-0.5 rounded font-mono bg-panel2 text-ink2 border border-line">
               {request.name}
             </span>
           </div>
-          <div className="text-xs text-ink2 mb-3 font-mono bg-panel2 p-2.5 rounded-lg border border-line break-words whitespace-pre-wrap">
+          <div className="bg-panel2 rounded-lg p-2 text-xs font-mono text-ink2 mb-3 break-words whitespace-pre-wrap">
             {request.args_summary}
           </div>
 
@@ -49,7 +58,7 @@ export function ToolApprovalCard({ request, onResolve }: ToolApprovalCardProps) 
               type="button"
               disabled={submitting}
               onClick={() => handleDecision("allow")}
-              className="min-h-[44px] px-4 py-2 rounded-lg text-xs font-medium bg-ok/20 text-ok border border-ok/30 hover:bg-ok/30 disabled:opacity-50 transition-colors flex items-center justify-center"
+              className="min-h-[44px] px-4 py-2 rounded-lg text-xs font-medium bg-ember hover:bg-ember2 text-bg transition-colors flex items-center justify-center disabled:cursor-not-allowed"
             >
               Allow
             </button>
@@ -57,7 +66,7 @@ export function ToolApprovalCard({ request, onResolve }: ToolApprovalCardProps) 
               type="button"
               disabled={submitting}
               onClick={() => handleDecision("deny")}
-              className="min-h-[44px] px-4 py-2 rounded-lg text-xs font-medium bg-err/20 text-err border border-err/30 hover:bg-err/30 disabled:opacity-50 transition-colors flex items-center justify-center"
+              className="min-h-[44px] px-4 py-2 rounded-lg text-xs font-medium text-ink3 hover:text-err transition-colors flex items-center justify-center disabled:cursor-not-allowed"
             >
               Deny
             </button>
@@ -94,7 +103,11 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
   if (card.cred) metaParts.push(`cred: ${card.cred}`);
 
   return (
-    <div className="mb-3 p-4 rounded-xl border border-ember/40 bg-panel shadow-md">
+    <div
+      role="dialog"
+      aria-labelledby={`custos-card-${card.id}`}
+      className="mb-3 p-3 rounded-xl border border-line bg-panel shadow-e2"
+    >
       <div className="flex items-start gap-3">
         <div className="p-2 rounded-lg bg-ember/15 text-ember shrink-0">
           <Shield className="w-5 h-5" />
@@ -102,7 +115,9 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h4 className="font-semibold text-ink text-sm">Custody Request</h4>
+              <h4 id={`custos-card-${card.id}`} className="font-semibold text-ink text-sm">
+                Custody Request
+              </h4>
               {metaParts.length > 0 && (
                 <span className="text-xs text-ink3">
                   — {metaParts.join(" · ")}
@@ -145,7 +160,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled={submitting}
               onClick={() => handleResolve("once")}
-              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-ok/20 text-ok border border-ok/30 hover:bg-ok/30 disabled:opacity-50 transition-colors flex items-center justify-center"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-ember hover:bg-ember2 text-bg transition-colors flex items-center justify-center disabled:cursor-not-allowed"
             >
               Allow once
             </button>
@@ -153,7 +168,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled={submitting}
               onClick={() => handleResolve("always")}
-              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-ok/10 text-ok border border-ok/20 hover:bg-ok/20 disabled:opacity-50 transition-colors flex items-center justify-center"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium text-ink3 hover:text-ink transition-colors flex items-center justify-center disabled:cursor-not-allowed"
             >
               Always
             </button>
@@ -161,7 +176,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled={submitting}
               onClick={() => handleResolve("deny")}
-              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-err/20 text-err border border-err/30 hover:bg-err/30 disabled:opacity-50 transition-colors flex items-center justify-center"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium text-ink3 hover:text-err transition-colors flex items-center justify-center disabled:cursor-not-allowed"
             >
               Deny
             </button>
@@ -169,7 +184,7 @@ export function CustosApprovalCard({ card, onResolve }: CustosApprovalCardProps)
               type="button"
               disabled
               title="not supported by hearthd yet"
-              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium bg-panel2 text-ink3 border border-line cursor-not-allowed opacity-60 flex items-center justify-center"
+              className="min-h-[44px] px-3.5 py-2 rounded-lg text-xs font-medium text-ink3 cursor-not-allowed flex items-center justify-center"
             >
               Edit Parameters
             </button>

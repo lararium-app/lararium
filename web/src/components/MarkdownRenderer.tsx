@@ -3,6 +3,7 @@ import { Copy, Check } from "lucide-react";
 
 interface MarkdownRendererProps {
   content: string;
+  isStreaming?: boolean;
 }
 
 interface CodeBlockProps {
@@ -148,7 +149,26 @@ function renderInline(text: string): React.ReactNode[] {
   return nodes;
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, isStreaming }: MarkdownRendererProps) {
+  if (isStreaming && (!content || !content.trim())) {
+    return (
+      <div className="flex items-center gap-1.5 py-1 text-ink3" aria-label="Thinking">
+        <style>{`
+          @keyframes dot-cycle {
+            0%, 80%, 100% { opacity: 0.2; }
+            40% { opacity: 1; }
+          }
+          .dot-cycle-1 { animation: dot-cycle 1.4s infinite ease-in-out; }
+          .dot-cycle-2 { animation: dot-cycle 1.4s infinite ease-in-out 0.2s; }
+          .dot-cycle-3 { animation: dot-cycle 1.4s infinite ease-in-out 0.4s; }
+        `}</style>
+        <span className="w-1 h-1 rounded-full bg-ink3 dot-cycle-1" />
+        <span className="w-1 h-1 rounded-full bg-ink3 dot-cycle-2" />
+        <span className="w-1 h-1 rounded-full bg-ink3 dot-cycle-3" />
+      </div>
+    );
+  }
+
   if (!content) return null;
 
   const lines = content.split(/\r?\n/);
@@ -310,6 +330,48 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           ))}
         </p>
       );
+    }
+  }
+
+  if (isStreaming && elements.length > 0) {
+    const caret = (
+      <span
+        key="streaming-caret"
+        className="inline-block w-0.5 h-[1.1em] ml-0.5 align-middle bg-ember animate-pulse"
+        aria-hidden="true"
+      />
+    );
+    const lastIdx = elements.length - 1;
+    const lastElem = elements[lastIdx];
+    if (React.isValidElement(lastElem)) {
+      const props = lastElem.props as any;
+      if (lastElem.type === "ul" || lastElem.type === "ol") {
+        if (Array.isArray(props.children) && props.children.length > 0) {
+          const listItems = [...props.children];
+          const lastLi = listItems[listItems.length - 1];
+          if (React.isValidElement(lastLi)) {
+            const liProps = lastLi.props as any;
+            const liChildren = Array.isArray(liProps.children)
+              ? [...liProps.children, caret]
+              : [liProps.children, caret];
+            listItems[listItems.length - 1] = React.cloneElement(lastLi, {}, liChildren);
+            elements[lastIdx] = React.cloneElement(lastElem, {}, listItems);
+          } else {
+            elements.push(caret);
+          }
+        } else {
+          elements.push(caret);
+        }
+      } else if (props && props.children !== undefined) {
+        const children = Array.isArray(props.children)
+          ? [...props.children, caret]
+          : [props.children, caret];
+        elements[lastIdx] = React.cloneElement(lastElem, {}, children);
+      } else {
+        elements.push(caret);
+      }
+    } else {
+      elements.push(caret);
     }
   }
 
