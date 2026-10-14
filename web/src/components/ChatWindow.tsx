@@ -135,13 +135,31 @@ export function ChatWindow({
   const [inputText, setInputText] = React.useState("");
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
   const [copiedDigestId, setCopiedDigestId] = React.useState<string | null>(null);
+  // Optimistic user bubble: the transcript only surfaces the question on the
+  // post-turn refetch, so keep it visible while the answer streams.
+  const [pendingUser, setPendingUser] = React.useState<string | null>(null);
   const scrollEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Auto-scroll on new events or streaming tokens
   useEffect(() => {
     scrollEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events, streamingText, activeToolCalls, pendingApprovals, custosCards]);
+  }, [events, streamingText, activeToolCalls, pendingApprovals, custosCards, pendingUser]);
+
+  // Drop the optimistic bubble once the real user message lands in the transcript.
+  React.useEffect(() => {
+    if (pendingUser && events.some((ev) => ev.t === "msg" && ev.role === "user" && ev.text === pendingUser)) {
+      setPendingUser(null);
+    }
+  }, [events, pendingUser]);
+
+  // Safety net: the question left no transcript trace (error/cancel) — fade the bubble.
+  React.useEffect(() => {
+    if (pendingUser && !isStreaming) {
+      const id = window.setTimeout(() => setPendingUser(null), 1500);
+      return () => window.clearTimeout(id);
+    }
+  }, [pendingUser, isStreaming]);
 
   const handleCopyMessage = (text: string, id: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -177,6 +195,7 @@ export function ChatWindow({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
+    setPendingUser(trimmed);
     onSendMessage(trimmed);
   };
 
@@ -456,6 +475,16 @@ export function ChatWindow({
 
               return null;
             })
+          )}
+
+          {/* Optimistic user question — visible during the turn, deduped when the
+              server transcript catches up (see effect above). */}
+          {pendingUser && !events.some((ev) => ev.t === "msg" && ev.role === "user" && ev.text === pendingUser) && (
+            <div className="flex justify-end">
+              <div className="max-w-[80%] px-4 py-3 rounded-xl bg-[var(--ember-dim)] border border-ember/25 text-ink text-sm sm:text-[15px] leading-relaxed whitespace-pre-wrap">
+                {pendingUser}
+              </div>
+            </div>
           )}
 
           {/* Active tool calls during streaming */}
