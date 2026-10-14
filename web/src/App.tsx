@@ -390,7 +390,44 @@ export function App() {
         <Header
           title={
             activeView === "chat"
-              ? currentSession?.title || currentSession?.id || "Lararium"
+              ? currentSession?.title ||
+                (currentSession?.created
+                  ? (() => {
+                      const d = new Date(currentSession.created);
+                      if (isNaN(d.getTime())) return "Untitled";
+                      const now = new Date();
+                      const todayStart = new Date(
+                        now.getFullYear(),
+                        now.getMonth(),
+                        now.getDate()
+                      ).getTime();
+                      const pad = (n: number) => n.toString().padStart(2, "0");
+                      const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                      const t = d.getTime();
+                      const rel =
+                        t >= todayStart
+                          ? `Today ${timeStr}`
+                          : t >= todayStart - 86400000
+                          ? `Yesterday ${timeStr}`
+                          : `${
+                              [
+                                "Jan",
+                                "Feb",
+                                "Mar",
+                                "Apr",
+                                "May",
+                                "Jun",
+                                "Jul",
+                                "Aug",
+                                "Sep",
+                                "Oct",
+                                "Nov",
+                                "Dec",
+                              ][d.getMonth()]
+                            } ${d.getDate()} ${timeStr}`;
+                      return `Untitled · ${rel}`;
+                    })()
+                  : "Untitled")
               : activeView === "doors"
               ? "Door policy"
               : activeView === "cells"
