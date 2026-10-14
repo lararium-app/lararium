@@ -35,6 +35,25 @@ function getSessionGroup(createdStr: string) {
   return "Older";
 }
 
+function formatSessionRelativeTime(createdStr?: string) {
+  if (!createdStr) return "";
+  const date = new Date(createdStr);
+  if (isNaN(date.getTime())) return "";
+  const now = new Date();
+
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterdayStart = todayStart - 86400000;
+
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  const timeStr = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+
+  const t = date.getTime();
+  if (t >= todayStart) return `Today ${timeStr}`;
+  if (t >= yesterdayStart) return `Yesterday ${timeStr}`;
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${monthNames[date.getMonth()]} ${date.getDate()} ${timeStr}`;
+}
+
 export function Sidebar({
   sessions,
   currentSessionId,
@@ -158,7 +177,7 @@ export function Sidebar({
       {/* Mobile backdrop */}
       {isOpenMobile && (
         <div
-          className="fixed inset-0 bg-black/60 z-30 lg:hidden"
+          className="fixed inset-0 bg-scrim animate-[fade-in_200ms_var(--ease-out)] z-30 lg:hidden"
           style={{ height: "var(--app-h, 100vh)" }}
           onClick={onCloseMobile}
         />
@@ -168,7 +187,7 @@ export function Sidebar({
         ref={drawerRef}
         aria-hidden={!isDesktop && !isOpenMobile ? "true" : undefined}
         aria-label="Navigation sidebar"
-        className={`fixed lg:static top-0 bottom-0 left-0 w-64 h-app lg:h-full max-h-app bg-bg2 border-r border-line z-35 flex flex-col transition-transform duration-200 ease-in-out lg:translate-x-0 ${
+        className={`fixed lg:static top-0 bottom-0 left-0 w-64 h-app lg:h-full max-h-app bg-bg2 border-r border-line z-[35] flex flex-col transition-transform duration-[var(--dur-base)] ease-[var(--ease-out)] lg:translate-x-0 ${
           isOpenMobile ? "translate-x-0" : "-translate-x-full"
         }`}
         style={{
@@ -179,10 +198,14 @@ export function Sidebar({
         {/* Brand & New Session */}
         <div className="p-4 border-b border-line space-y-3">
           <div className="flex items-center gap-2.5">
-            <span className="text-2xl">🔥</span>
+            <span className="text-ember">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5" aria-hidden="true">
+                <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+              </svg>
+            </span>
             <div>
               <h1 className="font-bold text-ink text-sm tracking-tight font-brand">Lararium</h1>
-              <div className="text-[11px] text-ink3">house hearth · v0.8</div>
+              <div className="text-xs text-ink3">house hearth · v0.8</div>
             </div>
           </div>
           <button
@@ -191,28 +214,28 @@ export function Sidebar({
               onCreateSession();
               onCloseMobile();
             }}
-            className="w-full min-h-[44px] flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-panel hover:bg-panel2 border border-line text-xs font-semibold text-ink transition-colors shadow-2xs"
+            className="w-full min-h-[40px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-ember hover:bg-ember2 text-bg text-xs font-medium transition-colors"
           >
-            <Plus className="w-4 h-4 text-ember" />
+            <Plus className="w-4 h-4" />
             <span>New session</span>
           </button>
         </div>
 
         {/* View Switcher Navigation */}
-        <div className="p-2 border-b border-line grid grid-cols-2 gap-1 text-xs">
+        <div className="p-2 border-b border-line flex flex-col gap-1">
           <button
             type="button"
             onClick={() => {
               onSelectView("chat");
               onCloseMobile();
             }}
-            className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+            className={`w-full flex items-center gap-2 h-10 rounded-lg px-2 text-sm transition-colors ${
               activeView === "chat"
-                ? "bg-panel text-ember shadow-2xs border border-line"
-                : "text-ink3 hover:text-ink hover:bg-panel/50"
+                ? "bg-[var(--ember-dim)] text-ink border-l-2 border-ember font-medium"
+                : "text-ink2 hover:bg-panel2 border-l-2 border-transparent"
             }`}
           >
-            <MessageSquare className="w-3.5 h-3.5" />
+            <MessageSquare className="w-4 h-4" />
             <span>Hearth</span>
           </button>
           <button
@@ -221,13 +244,13 @@ export function Sidebar({
               onSelectView("doors");
               onCloseMobile();
             }}
-            className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+            className={`w-full flex items-center gap-2 h-10 rounded-lg px-2 text-sm transition-colors ${
               activeView === "doors"
-                ? "bg-panel text-ember shadow-2xs border border-line"
-                : "text-ink3 hover:text-ink hover:bg-panel/50"
+                ? "bg-[var(--ember-dim)] text-ink border-l-2 border-ember font-medium"
+                : "text-ink2 hover:bg-panel2 border-l-2 border-transparent"
             }`}
           >
-            <Shield className="w-3.5 h-3.5" />
+            <Shield className="w-4 h-4" />
             <span>Doors</span>
           </button>
           {showPreviewPanels && (
@@ -238,13 +261,13 @@ export function Sidebar({
                   onSelectView("cells");
                   onCloseMobile();
                 }}
-                className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+                className={`w-full flex items-center gap-2 h-10 rounded-lg px-2 text-sm transition-colors ${
                   activeView === "cells"
-                    ? "bg-panel text-ember shadow-2xs border border-line"
-                    : "text-ink3 hover:text-ink hover:bg-panel/50"
+                    ? "bg-[var(--ember-dim)] text-ink border-l-2 border-ember font-medium"
+                    : "text-ink2 hover:bg-panel2 border-l-2 border-transparent"
                 }`}
               >
-                <Cpu className="w-3.5 h-3.5" />
+                <Cpu className="w-4 h-4" />
                 <span>Cells</span>
               </button>
               <button
@@ -253,13 +276,13 @@ export function Sidebar({
                   onSelectView("memory");
                   onCloseMobile();
                 }}
-                className={`min-h-[44px] flex items-center gap-2 px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+                className={`w-full flex items-center gap-2 h-10 rounded-lg px-2 text-sm transition-colors ${
                   activeView === "memory"
-                    ? "bg-panel text-ember shadow-2xs border border-line"
-                    : "text-ink3 hover:text-ink hover:bg-panel/50"
+                    ? "bg-[var(--ember-dim)] text-ink border-l-2 border-ember font-medium"
+                    : "text-ink2 hover:bg-panel2 border-l-2 border-transparent"
                 }`}
               >
-                <Database className="w-3.5 h-3.5" />
+                <Database className="w-4 h-4" />
                 <span>Memory</span>
               </button>
             </>
@@ -275,7 +298,7 @@ export function Sidebar({
               placeholder="Search sessions…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-panel border border-line text-base text-ink placeholder-ink3 focus:outline-hidden focus:border-ember"
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-panel2 border-none text-base lg:text-sm text-ink placeholder-ink3"
             />
           </div>
         </div>
@@ -290,11 +313,13 @@ export function Sidebar({
               if (list.length === 0) return null;
               return (
                 <div key={gKey} className="space-y-1">
-                  <div className="px-2 text-[10px] font-semibold uppercase tracking-wider text-ink3">
+                  <div className="px-2 text-xs uppercase tracking-wide text-ink3 font-medium">
                     {gKey}
                   </div>
                   {list.map((s) => {
                     const isActive = s.id === currentSessionId && activeView === "chat";
+                    const relTime = formatSessionRelativeTime(s.created);
+                    const displayTitle = s.title || (relTime ? `Untitled · ${relTime}` : "Untitled");
                     return (
                       <button
                         key={s.id}
@@ -303,22 +328,22 @@ export function Sidebar({
                           onSelectSession(s.id);
                           onCloseMobile();
                         }}
-                        className={`w-full min-h-[44px] flex flex-col justify-center text-left px-2.5 py-2 rounded-lg text-xs transition-colors gap-0.5 ${
+                        className={`w-full min-h-[40px] flex flex-col justify-center text-left px-2.5 py-2 rounded-lg text-xs transition-colors gap-0.5 ${
                           isActive
-                            ? "bg-panel text-ink border border-line shadow-2xs font-medium"
-                            : "text-ink2 hover:text-ink hover:bg-panel/50"
+                            ? "bg-[var(--ember-dim)] text-ink font-medium"
+                            : "text-ink2 hover:text-ink hover:bg-panel2"
                         }`}
                       >
                         <div className="flex items-center justify-between w-full">
-                          <span className="truncate flex-1">{s.title || s.id}</span>
-                          {(s.kind === "side" || s.parent) && (
-                            <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded bg-panel2 text-ink3 border border-line">
+                          <span className="truncate flex-1">{displayTitle}</span>
+                          {isActive && (s.kind === "side" || s.parent) && (
+                            <span className="ml-1 text-xs px-1.5 py-0.5 rounded bg-panel2 text-ink3 border border-line">
                               branched
                             </span>
                           )}
                         </div>
                         {(s.preview || s.last_message) && (
-                          <span className="text-[11px] text-ink3 truncate">
+                          <span className="text-xs text-ink3 truncate">
                             {s.preview || s.last_message}
                           </span>
                         )}
@@ -343,7 +368,7 @@ export function Sidebar({
                   : "bg-err"
               }`}
             />
-            <span className="text-[11px] text-ink3 truncate max-w-[110px]" title={statusText}>
+            <span className="text-xs text-ink3 truncate max-w-[110px]" title={statusText}>
               {statusText}
             </span>
           </div>
@@ -354,7 +379,7 @@ export function Sidebar({
                 onOpenKeys();
                 onCloseMobile();
               }}
-              className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center p-2 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
               title="Provider Keys"
               aria-label="Provider Keys"
             >
@@ -366,7 +391,7 @@ export function Sidebar({
                 onToggleTheme();
                 onCloseMobile();
               }}
-              className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center p-2 rounded-lg text-ink3 hover:text-ink hover:bg-panel transition-colors"
               title="Theme Settings"
               aria-label="Theme Settings"
             >

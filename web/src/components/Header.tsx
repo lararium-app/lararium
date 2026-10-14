@@ -44,15 +44,15 @@ export function Header({
         <button
           type="button"
           onClick={onToggleMobileNav}
-          className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-ink2 hover:text-ink hover:bg-panel lg:hidden transition-colors"
+          className="min-h-[40px] min-w-[40px] flex items-center justify-center p-2 rounded-lg text-ink2 hover:text-ink hover:bg-panel lg:hidden transition-colors"
           title="Toggle navigation"
           aria-label="Toggle navigation"
         >
-          <Menu className="w-5 h-5" />
+          <Menu className="w-4 h-4" />
         </button>
-        <span className="font-semibold text-sm text-ink truncate font-brand">{title}</span>
+        <span className="text-base font-medium font-brand text-ink truncate">{title}</span>
         {modelPin && (
-          <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-panel text-ink2 border border-line">
+          <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded-md text-xs font-mono bg-panel text-ink2">
             {modelPin}
           </span>
         )}
@@ -60,7 +60,7 @@ export function Header({
 
       <div className="flex items-center gap-2">
         {/* Transport chip */}
-        <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono bg-panel border border-line text-ink2">
+        <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono bg-panel text-ink2">
           {isLoopback ? (
             <>
               <Lock className="w-3 h-3 text-ok" />
@@ -83,34 +83,35 @@ export function Header({
         <button
           type="button"
           onClick={onTogglePreviewPanels}
-          className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-2 lg:px-2.5 lg:py-1 rounded-lg text-xs font-medium border transition-colors ${
-            showPreviewPanels
-              ? "bg-warn/15 text-warn border-warn/30 hover:bg-warn/20"
-              : "bg-panel text-ink3 border-line hover:text-ink hover:bg-panel2"
-          }`}
+          className="min-h-[40px] min-w-[40px] flex items-center justify-center p-2 xl:px-2.5 xl:py-1 rounded-lg text-xs font-medium text-ink3 hover:text-ink hover:bg-panel2 transition-colors gap-1.5"
           title="Toggle preview views (Cells & Memory inspectors)"
           aria-label={`Preview views: ${showPreviewPanels ? "On" : "Off"}`}
         >
           <Layers className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline ml-1.5">Preview Views: {showPreviewPanels ? "On" : "Off"}</span>
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              showPreviewPanels ? "bg-ok" : "bg-ink3"
+            }`}
+          />
+          <span className="hidden xl:inline">Preview</span>
         </button>
 
         {/* Share Button */}
         <button
           type="button"
           onClick={handleShare}
-          className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 lg:px-3 lg:py-1 rounded-lg text-xs font-medium bg-panel hover:bg-panel2 text-ink border border-line transition-colors shadow-2xs"
+          className="min-h-[40px] min-w-[40px] flex items-center justify-center p-2 lg:px-3 lg:py-1 rounded-lg text-xs font-medium bg-ember hover:bg-ember2 text-bg transition-colors"
           title="Share"
           aria-label={copied ? "Copied" : "Share"}
         >
           {copied ? (
             <>
-              <Check className="w-3.5 h-3.5 text-ok" />
-              <span className="text-ok hidden lg:inline ml-1.5">Copied</span>
+              <Check className="w-3.5 h-3.5 text-bg" />
+              <span className="text-bg hidden lg:inline ml-1.5">Copied</span>
             </>
           ) : (
             <>
-              <Share2 className="w-3.5 h-3.5 text-ink2" />
+              <Share2 className="w-3.5 h-3.5" />
               <span className="hidden lg:inline ml-1.5">Share</span>
             </>
           )}
