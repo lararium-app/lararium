@@ -65,7 +65,7 @@ type Server struct {
 type BackupFunc func(outAbs string, noConfig bool, progress func(string)) error
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"0.8.0"}`)
+	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"0.8.2"}`)
 }
 
 func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {
