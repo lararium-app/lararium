@@ -1,0 +1,5 @@
+# Cloudflare Pages rules.
+# The Pages asset store keeps previously uploaded files, so pin the
+# removed demo gif to a redirect to the homepage. Redirects are
+# evaluated even when an asset matches the request.
+/demo.gif  /  301
