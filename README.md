@@ -20,60 +20,57 @@ Your machine, your models, your keys.
 
 ---
 
-Lararium is an open-source, self-hosted AI agent daemon (`hearthd`). It
-runs on hardware you own, remembers everything in plain files you can
-read and edit, points at model providers you choose, and reaches you on
-the screens you already carry.
+Lararium is an open-source, self-hosted AI agent daemon (`hearthd`). It runs on hardware you own,
+remembers everything in plain files you can read and edit, points at model providers you choose,
+and reaches you on the screens you already carry.
 
 ## The covenant
 
-- **Your fire** — bring your own llama.cpp on your own silicon, or an API
-  key for any major provider. No lock-in, no hidden routing.
+- **Your fire** — bring your own llama.cpp on your own silicon, or an API key for any major
+  provider. No lock-in, no hidden routing.
 - **Your memory** — everything the agent knows lives in plain text files
   ([Penatus](docs/PENATUS-SPEC.md)). Export your whole life with one `tar`.
-- **Your keys** — credentials are vaulted and never shown to the model;
-  the network layer injects them, policy-checked, on the way out.
-  *(Planned.)*
-- **Sandboxed work** — agent work executes inside cells
-  ([CELL-SPEC](docs/CELL-SPEC.md)): systemd-nspawn + cgroup2 + overlayfs,
-  fail-closed networking, hard resource caps, snapshot/rollback. The
-  threat model assumes prompt injection *succeeds*; the cage makes
+- **Your keys** — credentials are vaulted and never shown to the model; the network layer injects
+  them, policy-checked, on the way out. *(Planned.)*
+- **Sandboxed work** — agent work executes inside cells ([CELL-SPEC](docs/CELL-SPEC.md)):
+  systemd-nspawn + cgroup2 + overlayfs, fail-closed networking, hard resource caps,
+  snapshot/rollback. The threat model assumes prompt injection *succeeds*; the cage makes
   misbehavior physically expensive below the model.
 
-## Status: public preview (v0.8.0-alpha)
+## Status: public preview (v0.8.2-alpha)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
 > per-component; the wire APIs may still change between releases. Run it on
 > machines you can wipe. Not fit for production or multi-tenant use.
 
-**Working today:** the `hearthd` REPL (append-only event log, context
-compaction, memory tools) · model routing with fallback chains (any
-OpenAI-compatible endpoint — llama.cpp, Ollama, vLLM, OpenRouter, OpenAI,
-Anthropic-compat) · Penatus memory · `hearthd
-serve` — HTTP/SSE API + built-in web chat with streaming and clickable
-tool approvals · **Telegram** (`nuntius`): one-owner bridge with
-pairing codes, streaming replies, and approval cards that resolve
-from the phone · the `cell` sandbox, proven by a C1–C12 containment
-suite on five hosts across two architectures · **the credential vault
-(`custos`)**: `custosd` holds OAuth credentials sealed at rest; a Gmail
-connector sends through a policy gate (auto / ask / deny) over an
-isolated worker lane the agent can never read from, with an append-only
-audit chain — verified live end-to-end (consent → sealed refresh token
-→ policy-checked send → audit line) · **the standalone approval door**:
-`custos approvals` lists pending cards and answers them Allow-once or
-Deny from the owner's terminal, so `ask` verdicts are decidable with no
-`hearthd` running · **card fan-out**: `hearthd` connects to `custosd`
-as a door client, so one custody approval card renders live on the web
-surface and on Telegram at once — answering it from either surface
-settles the parked request and every sibling render, all of it recorded
-in the same audit chain (`via` names the answering surface). Verified
-live end-to-end on real Telegram. See
-[CUSTOS-SPEC.md](docs/CUSTOS-SPEC.md).
+## What works today
 
-**Not built yet:** other messaging channels (Signal, …); voice I/O;
-the Docker quick start does not include `custosd` yet.
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the whole shape.
+- **`hearthd` REPL** — append-only event log, context compaction, and memory tools.
+- **Model routing** — fallback chains across any OpenAI-compatible endpoint: llama.cpp, Ollama,
+  vLLM, OpenRouter, OpenAI, Anthropic-compat.
+- **Penatus memory** — plain-file memory, fully portable.
+- **`hearthd serve`** — HTTP/SSE API plus built-in web chat with streaming and clickable
+  tool approvals.
+- **Telegram (`nuntius`)** — one-owner bridge with pairing codes, streaming replies, and approval
+  cards that resolve from the phone.
+- **Cell sandbox** — proven by a C1–C12 containment suite on five hosts across two architectures.
+- **Credential vault (`custos`)** — `custosd` holds OAuth credentials sealed at rest; a Gmail
+  connector sends through a policy gate (auto / ask / deny) over an isolated worker lane the agent
+  can never read from, with an append-only audit chain. Verified live end-to-end: consent →
+  sealed refresh token → policy-checked send → audit line.
+- **Standalone approval door** — `custos approvals` lists pending cards and answers them Allow-once
+  or Deny from the owner's terminal, so `ask` verdicts are decidable with no `hearthd` running.
+- **Card fan-out** — `hearthd` connects to `custosd` as a door client, so one custody approval
+  card renders live on the web surface and on Telegram at once. Answering from either surface
+  settles the parked request and every sibling render, all recorded in the same audit chain
+  (`via` names the answering surface). Verified live end-to-end on real Telegram.
+  See [CUSTOS-SPEC.md](docs/CUSTOS-SPEC.md).
+
+## What's coming
+
+Other messaging channels (Signal, …), voice I/O, and `custosd` in the Docker quick start are not
+built yet. [ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the whole shape.
 
 ## Platforms
 
@@ -83,19 +80,19 @@ the Docker quick start does not include `custosd` yet.
 | WSL2 (Windows 11) | ✅ | ✅ full cage — enable systemd, one package line |
 | Windows / macOS native | ✅ compiles clean | ❌ cage needs a Linux kernel (or hypervisor backend, planned) — Docker door meanwhile |
 
-The cage is built on kernel features (`systemd-nspawn`, nftables,
-overlayfs, cgroup2), not distro-specific glue — it has run green on
-x86-64 and arm64, three distro families, ext4 and btrfs, bare metal and
-WSL2. On Windows the answer is WSL2: set `[boot] systemd=true` in
-`/etc/wsl.conf`, install `uidmap systemd-container nftables acl
-debootstrap`, and the cell stack behaves exactly as on bare metal.
+The cage is built on kernel features (`systemd-nspawn`, nftables, overlayfs, cgroup2), not
+distro-specific glue. It has run green on x86-64 and arm64, three distro families, ext4 and btrfs,
+bare metal and WSL2.
+
+On Windows, point it at WSL2: set `[boot] systemd=true` in `/etc/wsl.conf`, install
+`uidmap systemd-container nftables acl debootstrap`, and the cell stack behaves exactly as on
+bare metal.
 
 ## Quick start
 
-**Bring your own model.** Lararium talks to any OpenAI-compatible
-endpoint — a llama.cpp / Ollama / vLLM / LM Studio server on your own
-machine, or a hosted key from OpenRouter, OpenAI, Anthropic, &c. There
-is no default provider and no account of ours in the loop.
+**Bring your own model.** Lararium talks to any OpenAI-compatible endpoint — a llama.cpp / Ollama
+/ vLLM / LM Studio server on your own machine, or a hosted key from OpenRouter, OpenAI,
+Anthropic, &c. There is no default provider and no account of ours in the loop.
 
 The supported way to run the alpha is Docker Compose:
 
@@ -105,23 +102,19 @@ cd lararium/docker
 docker compose up --build
 ```
 
-Prefer the wizard on a fresh volume? Run `docker compose exec -it hearthd hearthd setup` before the first start (detached `up -d` never blocks on it).
-
 The reference config points at a model server on **your** machine
-(`http://host.docker.internal:8080/v1`) — serve any model there with
-llama.cpp (or point the reference config at yourself) and it just works,
-key-free. Prefer a hosted endpoint? Uncomment one provider block in
-`docker/config/lararium.yaml`, export its key, and pass it through:
+(`http://host.docker.internal:8080/v1`) — serve any model there with llama.cpp (or point the
+reference config at yourself) and it just works, key-free. To use a hosted endpoint, uncomment
+one provider block in `docker/config/lararium.yaml`, export its key, and pass it through:
 
 ```bash
 OPENAI_API_KEY=*** docker compose up --build
 ```
 
-Keys come from your environment only — nothing secret is baked into the
-image or committed to this repo.
+Keys come from your environment only — nothing secret is baked into the image or committed to
+this repo.
 
-Compose serves the web chat on `http://127.0.0.1:7717`. To open a door
-to it:
+Compose serves the web chat on `http://127.0.0.1:7717`. Open a door to it:
 
 ```bash
 docker compose exec hearthd hearthd token create me
@@ -146,31 +139,29 @@ see [CELL-SPEC.md](docs/CELL-SPEC.md) for the host requirements and
 
 ## What Lararium is *not*
 
-- **Not a cloud service.** There is no hosted backend; if a repo or site
-  claims to be "official Lararium cloud", it isn't us.
-- **Not a multi-tenant platform.** One household, one owner. The security
-  model is single-trust-domain by design.
-- **Not a model zoo.** Lararium orchestrates inference; it does not ship,
-  train, or endorse models.
+- **Not a cloud service.** There is no hosted backend; if a repo or site claims to be
+  "official Lararium cloud", it isn't us.
+- **Not a multi-tenant platform.** One household, one owner. The security model is
+  single-trust-domain by design.
+- **Not a model zoo.** Lararium orchestrates inference; it does not ship, train, or endorse models.
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and feature
-proposals go through the [issue templates](https://github.com/lararium-app/lararium/issues/new/choose).
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and feature proposals go through the
+[issue templates](https://github.com/lararium-app/lararium/issues/new/choose).
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
 Lararium is licensed under the **GNU AGPL-3.0-only** — see [LICENSE](LICENSE).
 
-In short: you may run, study, modify, and share Lararium freely, including
-commercially *as self-hosted software*. If you run a modified version as a
-network service, the AGPL requires you to offer its source to your users.
+In short: you may run, study, modify, and share Lararium freely, including commercially *as
+self-hosted software*. If you run a modified version as a network service, the AGPL requires you
+to offer its source to your users.
 
-**Commercial licensing:** entities that want to embed Lararium in
-closed-source products or appliances may obtain a proprietary license from
-the project. Self-hosting, personal use, and open-source contributions are
-not affected — this clause exists to keep the project funded, not to gate
-the community.
+**Commercial licensing:** entities that want to embed Lararium in closed-source products or
+appliances may obtain a proprietary license from the project. Self-hosting, personal use, and
+open-source contributions are not affected — this clause exists to keep the project funded,
+not to gate the community.
 
 © 2026 The Lararium authors.
