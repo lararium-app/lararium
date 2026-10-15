@@ -45,6 +45,20 @@ carried as a distinct actor so the audit tail distinguishes page
 mutations from ctl and approval-card writes. Audit kind, chain rules,
 and every v7–v10 behavior: unchanged. Zero daemon code (docs edit only;
 the surface-side code lands under SURFACE-SPEC v5.4).
+**Amendment v12 (2026-10-15, PO sign-off with MCP-SPEC G1): MCP
+connector rail.** Adds: `op: "list"` + `ToolLister` + rail credential
+doctrine to §5.1; the `upstream`/`protocol violation` detail template,
+credential-gone template reuse, per-call scrub-needle retention, and
+`upstream`/`denied` reason-set declarations to §5.1a; §4.7 (rail
+identity slot: first-unlock ensure, latch, occupancy refusal); the
+`⚠ destructive ` card prefix for rail tools to §6.4; §6.4c
+(`MCP-STATUS`/`MCP-TOOLS`/`MCP-REFRESH` ctl verbs + the refresh
+deadline override); fingerprint-bound Always revocation via
+`removeRuleWithAudit` to §6.5; six `mcp_*` audit kinds to §8.1;
+`custos mcp status|tools|refresh` to §11; and the V29 conformance
+pointer. Additive: with no rail connectors configured, behavior is
+v7–v11 verbatim. The rail's normative text is MCP-SPEC (v1.2, frozen
+same day); this document owns the custody-side contracts it touches.
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -580,6 +594,34 @@ mirror** for CA-1(c): name set and `sha256_8` while locked come from
 here. Plaintext-safe (8-hex hash of the secret; same exposure class as
 KEYS-SPEC already ships on the wire).
 
+**4.7 — Rail identity slots (amendment v12; MCP-SPEC A7).** Custosd
+**MUST ensure** a vault slot named by each rail connector's config
+`name` (§5.1 credential doctrine) — once per daemon process lifecycle,
+on the first successful unlock, before rail connectors may leave
+`starting` — creating it with an **empty value** when absent
+(idempotent). An empty-valued slot contributes no scrub needle.
+**Latched:** the ensure runs exactly once per process (re-runs only via
+explicit `custos mcp refresh`, §11), so deleting the identity slot to
+disable a connector **survives any number of later lock/unlock cycles**
+— the unlock handler must not resurrect a deliberately deleted slot.
+Ensuring at *config load* is impossible and not claimed: a passphrase
+boot starts locked with the vault sealed, and while locked no rail code
+runs (the frozen locked gate answers first; a connector registered while
+locked simply sits `starting` with an empty catalog). **Occupancy
+refusal:** if the vault already holds a credential named identically to
+a rail connector, the rail does not co-own the name — before the
+identity ensure, at first unlock (credential names are enumerable only
+unsealed), that connector transitions to `disabled` with state reason
+`name_occupied` (MCP-SPEC §9's closed set): no ensure, no spawn,
+refusal persists across lock/unlock cycles until config or vault
+changes; no new audit kind (a lifecycle label). Otherwise `custos
+revoke <name>` and bare `<name>` policy patterns would straddle a real
+secret and a connector. Secrets are **separate** from the identity
+slot: `${vault:<cred-id>}` references (MCP-SPEC §3) name their own
+secrets, and policy patterns never bind secret names — the policy unit
+is `<connector>/<tool>` against the identity slot; the two kill
+switches and their enforcement points are specified in MCP-SPEC §6.
+
 ## 5. Two lanes to a credential
 
 **5.1 — Worker lane (typed, primary, strongest).** Built-in connectors
@@ -595,6 +637,35 @@ field to a verified identity (policy scoping per cell is roadmap —
 the secret enforces attribution, not permission). The agent's view is
 an ordinary tool schema; no surrogate exists here and no raw bytes of
 any upstream exchange are ever returned.
+
+**Rail tools and `op: "list"` (amendment v12; MCP-SPEC A1).** The
+worker lane gains exactly one op, `op: "list"` — a read-only connector
+tool catalog answering `{tools: [{connector, name, title}]}`, ordered by
+connector name, server order within connector: the only discovery path
+by which cells enumerate connector tools (including the MCP rail's).
+`title` is server-supplied display text, sanitized and scrubbed per
+MCP-SPEC §4.2/§2-P1; list rows are exactly these three columns —
+descriptions and schemas deliberately do not travel this path. Dispatch
+gates run in frozen order (op recognized, cell token verified, locked
+gate), so while locked `op:"list"` is rejected exactly as `call` is;
+cells enumerate after unlock. Successful lists audit nothing (read-only,
+like CARDS polling); list-path denials carry empty `connector`/`tool`,
+as connection-level records already do. Enumeration interface:
+**optional** `ToolLister { ListTools() []ToolInfo }` with
+`ToolInfo{Connector, Name, Title string}` — asserted, not required; the
+frozen `Connector` interface gains no method. The rail implements it
+dynamically (current catalog snapshot); `GmailConnector` implements it
+statically; connectors that don't contribute nothing. First-party cell
+implementations MUST render connector tool definitions only from this
+response — a design obligation on first-party cell code; custos cannot
+enforce any guest's internals (MCP-SPEC §2 P1).
+
+**Rail credential doctrine (amendment v12; MCP-SPEC A7).** A rail
+connector's `Credential()` returns its config connector `name` — the
+**identity slot**: the same string as the §6.2 policy-pattern namespace
+and the card credential field, so frozen pattern matching
+(`ParsedCredentialPattern.MatchesWorkerCall`) keeps working verbatim.
+Slot ensure, latch, and occupancy rules: §4.7.
 
 **5.1a — Worker error contract (closed).** Response errors are
 `{ "error_code": <closed enum>, "detail": <scrubbed> }` with
@@ -620,6 +691,26 @@ carries its own credential to that upstream). Substrings shorter than
 8 characters are never replaced in bodies (KEYS-SPEC scrub floor,
 inherited; a <8-char secret echo is a documented limit). The tool_result the model and penatus see
 carries exactly `error_code` + `detail`.
+
+**Rail additions (amendment v12; MCP-SPEC A2).** (i) The closed
+detail-template set gains exactly one constant — code `upstream`, detail
+`protocol violation` (a constant: no status class, no server body; MCP
+JSON-RPC-level failures and rejected server-initiated requests have no
+HTTP status to class, MCP-SPEC §8.3). (ii) No new credential-gone
+template: the rail's `Execute`-entry denial reuses the frozen
+`denied: credential unavailable` detail string verbatim
+(`detailDeniedCredGone`). (iii) **Scrub retention of revoked
+credentials:** scrub needles are snapshotted **per call at injection
+time** and held by that call's context until the call completes — values
+injected into a call stay covered for the call's entire life even if the
+vault forgets them mid-flight; in-memory only, never persisted. No
+vault→WorkerServer hook exists or is needed (`RevokeCredential` touches
+only the vault); without this rule, revocation blinds the scrubber
+mid-flight because `scrubNeedles()` reads `LoadedCredentials()`, which
+revocation purges immediately. Audit-vocabulary **declarations**
+(erratum-style, no template added): reasons `upstream` and `denied` are
+legal emit-site values already produced by frozen code — recorded in the
+§8.1 reason set; this amendment otherwise adds no reason value.
 
 **5.2 — Bearer lane (header swap for plaintext-HTTP BYO endpoints).**
 The custody egress proxy inspects plaintext request headers
@@ -814,6 +905,12 @@ cancel, not settle: no user verdict is implied, CA-3) and closes
 parked flows. A user clicking a race-lost card
 gets the frozen `already answered` hub behavior, same as tool approvals.
 
+**Rail tools (amendment v12; MCP-SPEC A5).** For rail tools only: when
+the tool's annotations carry `destructiveHint == true`, the card's
+review line is prefixed with the constant `⚠ destructive `.
+Prefix-only — the frozen review-field construction (declared schema
+fields, argument digest) is otherwise untouched.
+
 **6.4a — The standalone door (amendment v8).** A card is only useful
 if its owner can answer it. With the `hearthd` integration (web +
 Telegram fan-out) unbuilt, standalone `custosd` would otherwise hold
@@ -922,6 +1019,22 @@ state. The web surface contract for this registry lives in
 SURFACE-SPEC v5.2 (CA-6: the two `/v1/custos/cards` routes and the
 global card stream).
 
+**6.4c — Rail observability verbs (amendment v12; MCP-SPEC A3).** The
+ctl.sock verb set gains `MCP-STATUS <token>`, `MCP-TOOLS <token>
+<name>`, `MCP-REFRESH <token> <name>` (dash style per the frozen verb
+law), each gated by `ctl.token` like every ctl op, plus the matching
+`custos mcp status|tools|refresh` CLI verbs (§11), obeying §11's
+line-oriented list conventions (one record per line, tab-separated,
+header-declared order). Per-verb deadline: the frozen
+`ctlCommandTimeout` (5 s) applies to every command **except**
+`MCP-REFRESH`, whose deadline is that connector's `list_timeout` + 5 s
+grace — a server restart legitimately outlives the generic ctl
+deadline; all other verbs keep the frozen 5 s. The CLI's `mcp refresh`
+builds its client with the matching client-side timeout
+(`NewCtlClient(stateDir, timeout)` — the frozen 5 s default, applied at
+construction, would otherwise abort the very request this amendment
+extends on the server). Verb semantics and output columns: MCP-SPEC §9.
+
 **6.5 — Always rules.** Frozen button set: **Allow once / Always /
 Deny**. Always writes the canonical exact-match form of *this request*
 (§6.2's canonical form, or §6.3's exact host[:port] — never the
@@ -942,6 +1055,21 @@ rule with an `always` marker and source event; `custos policy rm
 entries (frozen confirmation `always-rules cleared`), keeping
 config-declared rules. Table writes: same flock + temp/rename, audit
 `always_rule_added`/`policy_written`.
+
+**Rail Always verdicts (amendment v12; MCP-SPEC A6).** For rail tools,
+an `always` verdict writes the exact `auto` rule on
+`<connector>/<tool>` as frozen — and the rail **MUST revoke** that auto
+rule (audited, never silently) when the tool's fingerprint changes.
+Fingerprint: SHA-256 over RFC 8785 (JCS) canonicalization of `{name,
+title, description, inputSchema, annotations}` — title and description
+text are covered, so a vendor editing prompt-visible prose or the
+card-visible title invalidates standing approval (MCP-SPEC §8.2).
+Implementation shape: frozen `PolicyEngine.RemoveRule` hardcodes
+`policy_written` and cannot carry the revocation payload, so rail
+revocation goes through an unexported variant
+`removeRuleWithAudit(lane, pattern, actor, kind, tool, cred)` emitting
+audit `mcp_always_revoked` (§8.1); `RemoveRule` itself and the
+`policy rm` CLI path are untouched.
 
 **6.6 — Corruption posture.** Strict-parse failure of `policy.json` ⇒
 custosd runs **locked** (P4/P5) with the loud remedy line `custos
@@ -1025,14 +1153,28 @@ from the chain), `vault_mutation_superseded`, `stale_verdict`,
 `swap_allowed`, `swap_denied`, `egress_allowed`,
 `egress_denied`, `worker_call_allowed`, `worker_call_denied`,
 `policy_written`, `always_rule_added`, `policy_reset`,
-`custos_restarted_after_crash`, `audit_pruned`.
+`custos_restarted_after_crash`, `audit_pruned`,
+`mcp_config_literal_env`, `mcp_tool_dropped`, `mcp_catalog_changed`,
+`mcp_result_truncated`, `mcp_always_revoked`, `mcp_refresh`
+(amendment v12, MCP-SPEC A8: payloads ride the frozen `AuditRecord`
+field set only; in these kinds `cred` is the **config connector name**
+— control-plane identity, so catalog audits attribute even while the
+vault is sealed; env values are never recorded; `mcp_result_truncated`
+exists only on calls that actually shrank a response, MCP-SPEC §4.5).
 **`worker_call_denied` reason set (frozen; erratum 2026-10-07 — the
 set shipped in v0.4.1 without appearing in this text):**
 `verdict` (policy says deny), `ask_timeout`, `too_many_asks`,
 `server_closed`, `denied_by_user`, `custos_locked`,
 `credential_revoked`, `no_approval_door`, `policy_changed_during_hold`,
 `cell_token`, `bad_op`, `bad_args`, `unknown_connector`,
-`unknown_tool`, `locked`, `credential_gone`. A new emit-site reason
+`unknown_tool`, `locked`, `credential_gone`, `upstream`, `denied`
+(`upstream` and `denied` are **declared** by amendment v12 as legal
+values frozen code already emits — gmail.go's `upstreamStatusError` →
+`wErr(ErrCodeUpstream)`, recorded via worker.go's
+`auditDenied(…, we.code)`;
+`classifyWorkerError(…).code` feeds `denied` into `auditDenied` on
+credential-gone Execute errors; MCP-SPEC A2(i), erratum-style
+codification, not a new emit path). A new emit-site reason
 requires a spec edit here first (same discipline as the closed worker
 error enum, §5.1a: an undeclared value is a defect at review, not a
 passthrough). `credential_added` is
@@ -1362,6 +1504,13 @@ audit `via`-field honesty (`actor` stays frozen `surface`/`cli`,
 `via` only on door-settled lines); `ip_ask_only` enforced on
 IP-literal targets (`once` still allowed).
 
+**V29 — Rail conformance pointer (amendment v12).** The rail's
+verification suite lives in MCP-SPEC §12 (including the `V16*`
+additions) and runs as its sibling family in the same CI matrix. Rail
+work is additive: with no `connectors.mcp` configured, V1–V28 pass
+unchanged against a tree that includes the rail code — the v12
+amendments change no v7–v11 behavior when no rail connector exists.
+
 ## 11. CLI surface (frozen shapes)
 
 `custos init | unlock | lock | status | migrate | export <name> | login
@@ -1369,7 +1518,7 @@ IP-literal targets (`once` still allowed).
 (`keys rm <name>` under custody — one owner; `keys rm` performs,
 `revoke` is its alias, §4.4) | policy
 add|list|rm|reset
-| approvals [watch] | audit verify | snapshots list | restore <gen> --yes` — all new verbs
+| approvals [watch] | mcp status\|tools\|refresh | audit verify | snapshots list | restore <gen> --yes` — all new verbs
 live in the `custos` namespace; KEYS-SPEC's frozen `keys` family gains
 nothing (CA-1). `status` is machine-parseable JSON
 (`{state: locked|unlocked|degraded, credentials: n, surrogates: n,
@@ -1383,7 +1532,8 @@ header-declared order, no decoration — V14 asserts the headers and one
 round-trip parse, not decoration. Errors to stderr, data to stdout,
 exit 0 on success/ack, non-zero on refusal/parse — the same
 conventions KEYS-SPEC established (stdout data / stderr errors / exit
-codes).
+codes). `mcp refresh` is the one verb whose client timeout exceeds 5 s
+— both deadlines (server and client) are §6.4c's.
 
 ## 12. Open questions — RESOLVED (PO sign-off, 2026-10-05)
 
@@ -1416,6 +1566,24 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
 
 ## Changelog
 
+- v12 (amendment A1–A8, PO sign-off 2026-10-15 via MCP-SPEC G1): MCP
+  connector rail absorbed from docs/MCP-SPEC.md v1.2 (itself the output
+  of nine dual-lane hostile rounds). Integrations, each tagged
+  (v12; MCP-SPEC A#) at its section: §5.1 `op:"list"` + `ToolLister` +
+  rail credential doctrine; §5.1a `upstream`/`protocol violation`
+  template, `detailDeniedCredGone` reuse, per-call scrub-needle
+  retention, `upstream`/`denied` reason declarations; new §4.7 rail
+  identity slots (first-unlock ensure, latch, occupancy refusal →
+  `disabled`/`name_occupied`); §6.4 `⚠ destructive ` prefix
+  (`destructiveHint`); new §6.4c `MCP-STATUS`/`MCP-TOOLS`/`MCP-REFRESH`
+  + refresh deadline (`list_timeout` + 5 s, client and server); §6.5
+  fingerprint-bound Always revocation via `removeRuleWithAudit`
+  (`RemoveRule` and `policy rm` untouched); §8.1 six `mcp_*` kinds
+  (`cred` = config connector name for control-plane audits) +
+  reason-set additions; §11 `custos mcp` family + timeout note; §10 V29
+  pointer (MCP-SPEC §12 sibling suite; V1–V28 must pass unchanged with
+  no rail configured). No daemon code (docs edit only; rail code lands
+  under MCP-SPEC G2+).
 - v11 (amendment CA-7, PO sign-off, 2026-10-12): the `web` audit actor
   for `/v1/policy/rules` writes (SURFACE-SPEC v5.4). Records `web` in
   the §8 actor enumeration; append-only, zero daemon code.
