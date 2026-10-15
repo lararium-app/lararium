@@ -1,6 +1,6 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v0.4** — under review. Not approved; not frozen.
+> Status: **Draft v0.5** — under review. Not approved; not frozen.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -48,16 +48,25 @@ each owns its override explicitly):
   lets a cell discover connector tools). Response
   `{tools: [{connector, name, title}]}`, ordered by connector name, server
   order within connector; `title` is server-provided display text,
-  scrubbed (§2 P1). Read-only: no policy consult, no ask; cell token per
-  existing lane rules. Enumeration mechanism, declared here so it exists:
-  an **optional** interface `ToolLister { ListTools() []ToolInfo }` (a
-  distinct type, asserted — the frozen `Connector` interface itself gains
-  no methods). Every rail handle implements it (dynamic, serving the
-  current catalog snapshot); `GmailConnector` implements it with its
-  static tool table; WorkerServer's `op:"list"` answer = rail snapshots ∪
-  assertion results from non-rail connectors (connector order: names
-  sorted). Connectors that don't implement it contribute nothing.
-  First-party cells render connector tool definitions
+  sanitized (§4.2) and scrubbed (§2 P1). Read-only: no policy consult, no
+  ask; cell token per existing lane rules. **Lane position:** `op:"list"`
+  passes the frozen dispatch gates in the same order as `call` — op
+  recognized, cell token verified, locked gate — so while locked it is
+  rejected at the locked gate exactly as `call` is; A1 adds no new
+  locked-state behavior, and cells enumerate after unlocking. Successful
+  lists audit nothing (read-only, like CARDS polling); list-path denials
+  carry empty `connector`/`tool` fields, as connection-level records
+  already do. Enumeration mechanism, declared here so it exists: an
+  **optional** interface `ToolLister { ListTools() []ToolInfo }` with
+  `ToolInfo{Connector, Name, Title string}` — exactly the three columns
+  the list row renders; descriptions and schemas deliberately do not
+  travel this path. (A distinct type, asserted — the frozen `Connector`
+  interface itself gains no methods.) Every rail handle implements it
+  (dynamic, serving the current catalog snapshot); `GmailConnector`
+  implements it with its static tool table; WorkerServer's `op:"list"`
+  answer = rail snapshots ∪ assertion results from non-rail connectors
+  (connector order: names sorted). Connectors that don't implement it
+  contribute nothing. First-party cells render connector tool definitions
   only from this response (normative for first-party cells; custo cannot
   constrain third-party guest internals — see §2 P1).
 - **A2** — §5.1a (worker error contract), three changes: (i) the closed
@@ -71,13 +80,15 @@ each owns its override explicitly):
   closed `denied` template set (frozen contents: exactly
   `denied: approval`) gains exactly `denied: credential unavailable`, for
   a credential removed between approval and execute (§8.3); (iii) the
-  scrub scope gains **revoked-credential retention**: the §5.1a sentence
-  deriving needles from *loaded vault credentials* is amended to
-  *loaded-or-tombstoned* — a credential removed from the vault remains in
-  the WorkerServer's own needle overlay until every in-flight worker call
-  that could carry it has completed (overlay lives in WorkerServer, not
-  the vault; in-memory only, never persisted; §6). Without (iii)
-  revocation blinds the scrubber mid-flight, because
+  scrub scope gains **revoked-credential retention**: needles are
+  snapshotted **per call at injection time** and held by that call's
+  context until the call completes — values injected into a call stay
+  covered by the scrubber for that call's entire life even if the vault
+  forgets them mid-flight. No vault→WorkerServer notification is
+  required or introduced: the frozen `RevokeCredential` touches only the
+  vault (its only hook is `CancelByCredential`), and this design needs
+  none. In-memory only, never persisted; §6. Without (iii) revocation
+  blinds the scrubber mid-flight, because
   `ws.scrubNeedles()` reads `LoadedCredentials()`, which
   `RevokeCredential` purges immediately.
 - **A3** — §3 (ctl.sock wire protocol) **and** §11 (ctl CLI): the socket
@@ -89,7 +100,10 @@ each owns its override explicitly):
   `ctlCommandTimeout` (5 s, applied via `conn.SetDeadline` to every
   command) is overridden for `MCP-REFRESH` only, to that connector's
   `list_timeout` + 5 s grace — a server restart legitimately outlives the
-  generic ctl deadline; all other verbs keep the frozen 5 s.
+  generic ctl deadline; all other verbs keep the frozen 5 s. The CLI
+  `mcp refresh` passes the matching client-side timeout to `RoundTrip`
+  (the frozen 5 s client default would otherwise abort the very request
+  A3 extends on the server).
 - **A4** — config schema: `custos:` gains `connectors.mcp[]` (§3). The
   loader is strict; these are the exact permitted keys.
 - **A5** — §6.4 (card review fields): for **rail tools only**, when the
@@ -103,35 +117,58 @@ each owns its override explicitly):
   tool's fingerprint changes (§8.2). Fingerprint: SHA-256 over RFC 8785
   (JCS) canonicalization of `{name, description, inputSchema,
   annotations}` — description text is covered, so a vendor editing
-  prompt-visible prose invalidates standing approval.
+  prompt-visible prose invalidates standing approval. Implementation
+  shape: frozen `PolicyEngine.RemoveRule` hardcodes `policy_written` and
+  cannot carry A8's payload, so revocation goes through an unexported
+  variant `removeRuleWithAudit(lane, pattern, actor, kind, tool, cred)`;
+  `RemoveRule` itself and the `policy rm` CLI path are untouched.
 - **A7** — §4 (vault) + §5.1 (worker lane, credential doctrine): a rail
   connector's `Credential()` returns its config `name` — the **identity
   slot**: the same string as the policy pattern namespace (§6.2) and the
   card credential field, so frozen pattern matching
   (`ParsedCredentialPattern.MatchesWorkerCall`, which compares rule name
   against `Credential()`) keeps working verbatim. **custosd MUST ensure a
-  vault slot of that name exists at config load, creating it with an empty
-  value when absent**; an empty-valued slot contributes no scrub needle.
-  Consequences: the frozen `GetCredential` never spuriously fails;
-  `${vault:field}` references (§3) read the slot's JSON value at
-  spawn/request time; deleting the slot is a live kill-switch — every tool
-  of that server takes frozen `credential_gone` from the next call. Gmail
-  (returns `gmail`) is unaffected; lane dispatch code is untouched — the
-  amendment changes vault *contents*, which §4 owns. (An earlier draft —
-  return the constant `none` and skip the lookup — is **rejected**: it
-  decoupled the policy namespace from the credential dimension, which
-  would have made `filesystem deny` and every `filesystem/<tool> auto`
-  rule dead code, and written `none/<tool>` rules on `always` verdicts.)
+  vault slot of that name exists on every successful unlock, before rail
+  connectors leave `starting`, creating it with an empty value when
+  absent** (idempotent). Ensuring at *config load* is impossible and not
+  claimed: a standard passphrase boot starts locked with the vault sealed
+  — so while locked, rail connectors sit in `starting` and every tool
+  answers `credential_unavailable` (§7), which is also the honest locked
+  answer. An empty-valued slot contributes no scrub needle. Consequences:
+  the frozen `GetCredential(conn.Credential())` never spuriously fails
+  once unlocked. **Secrets are separate from the identity slot:**
+  `${vault:<cred-id>}` references (§3) name their own secrets (e.g.
+  `fs-key`), and policy patterns **never** bind secret names —
+  `fs-key deny` matches nothing by design; the policy unit is
+  `<connector>/<tool>` against the identity slot. This splits revocation
+  into two honest kill-switches (§6): deleting the **identity slot** hits
+  the frozen gate (`credential_gone`, all tools of that server);
+  deleting a **referenced secret** is enforced at the injection edge —
+  the rail resolves `${vault:}` references against the live vault at
+  spawn (stdio) / per request (http), caches nothing, and a missing
+  target fails that call `denied: credential unavailable` (A2(ii)). The
+  frozen gate cannot see referenced-secret revocation and the spec does
+  not claim it can. Gmail (returns `gmail`) is unaffected; lane dispatch
+  code is untouched — the amendment changes vault *contents*, which §4
+  owns. (An earlier draft — return the constant `none` and skip the
+  lookup — is **rejected**: it decoupled the policy namespace from the
+  credential dimension, which would have made `filesystem deny` and every
+  `filesystem/<tool> auto` rule dead code, and written `none/<tool>`
+  rules on `always` verdicts.)
 - **A8** — §8.1 (closed audit-kind set): extended with exactly
   `mcp_config_literal_env`, `mcp_tool_dropped`, `mcp_catalog_changed`,
-  `mcp_result_truncated`, `mcp_always_revoked`. Rail calls are audited by
-  the existing `worker_call_allowed`/`worker_call_denied` kinds — the rail
-  adds **no** per-call kind of its own. Payloads ride the frozen
+  `mcp_result_truncated`, `mcp_always_revoked`. Rail calls need no extra
+  per-call audit beyond the frozen `worker_call_allowed`/
+  `worker_call_denied`; the sole exception is `mcp_result_truncated`,
+  which exists only on calls that actually shrank a response (§4.5).
+  Payloads ride the frozen
   `AuditRecord` field set only (`cred`, `host`, `tool`, `names`):
   `mcp_config_literal_env` → `host` + `names=[env-key]` (value never
-  recorded); `mcp_tool_dropped` → `names=[connector, raw-name]`;
-  `mcp_catalog_changed` → `names=["+added"…, "-removed"…,
-  "~fingerprint"…]`; `mcp_result_truncated` →
+  recorded); `mcp_tool_dropped` → `cred` (connector name) +
+  `names=[raw-name]`; `mcp_catalog_changed` → `cred` (connector name) +
+  `names=["+added"…, "-removed"…, "~fingerprint"…]` (qualified tool
+  names); `mcp_result_truncated` → `cred` + `tool` (qualified
+  `<connector>/<tool>`) + `host` (per §4.2) +
   `names=["blocks_collapsed"|"text_truncated"|"structuredContent_dropped"]`;
   `mcp_always_revoked` → `tool` + `cred`. No new audit fields exist.
 
@@ -234,6 +271,14 @@ transitions the handle `starting → ready` (§7).
   `localhost` would collapse every local server into one indistinguishable
   card destination). So destinations read `filesystem:read_file`,
   `api.github.com:create_issue`.
+- **Title/description sanitization at catalog ingestion** (server strings
+  have no name grammar to hide behind): `title` and `description` render
+  as CR/LF/TAB → single space, other C0/C1 control characters removed,
+  whitespace runs collapsed, then truncate to 120 runes with `…`
+  appended, then credential-scrub (§6). Only the sanitized form is ever
+  stored or displayed, so no server string can forge a line-oriented ctl
+  frame, split a TSV column, or smuggle prompt markdown that survives to
+  cards. custo never dereferences server-supplied URIs.
 
 ### 4.3 Catalog snapshots (2026-07-28 cacheability)
 - The catalog is an **immutable snapshot** (tool set + schemas + per-tool
@@ -248,10 +293,14 @@ transitions the handle `starting → ready` (§7).
   The §11 invariant is therefore "no torn reads + fail-closed on
   between-call churn", not per-call pinning.
 - First list at registration; thereafter honor `ttlMs`/`cacheScope` from
-  the server response. `op:"list"` serves snapshots from cache; when a
-  connector's cache has expired, that connector refreshes inline bounded by
-  `list_timeout`, while cached connectors' entries are emitted without
-  waiting. `custos mcp refresh <name>` forces immediate re-list.
+  the server response. `op:"list"` **never blocks on the network**: it
+  answers the current snapshots in the one frozen NDJSON response frame.
+  Expired connectors get an **async**, debounced (one-per-connector
+  in-flight) refresh whose result appears in later lists; a connector
+  whose TTL expired with no usable snapshot renders `state:"starting"`
+  in the list row rather than stalling the frame. The synchronous,
+  wait-for-result path is `custos mcp refresh <name>` alone (A3's
+  per-verb deadline; exit 0 = catalog re-listed).
 - Order: server order verbatim (list results are spec'd deterministic;
   re-sorting churns consumer prompt caches).
 - A refresh that removes a tool takes effect at the next snapshot.
@@ -281,27 +330,26 @@ same revalidation applies at Execute (§4.3).
 - **Budget: 768 KiB measured on the FINAL serialized bytes** (all block
   types, base64 and JSON escape expansion included), under the frozen 1 MiB
   lane line limit (`workerMaxLineBytes = 1 << 20`). Enforcement is a
-  converge loop, not a single branch, with **shrinking steps only**:
+  converge loop, not a single branch. **Progress rule:** every iteration
+  must strictly shrink the serialized bytes; when no step among 2–3 makes
+  strict progress, jump to step 4:
   1. serialize; if ≤ budget, done;
-  2. replace the largest remaining non-text block with `"[content omitted
-     by custos]"`;
-  3. truncate the largest `text` block body (keeping room for the appended
-     `"[truncated by custos]"` block); repeat 2–3 largest-first;
-  4. **collapse floor:** if framing alone defeats the budget (thousands of
-     blocks — `{type,text:""}` — so 2–3 make no progress), replace the
-     entire `content` array with one text block `"[content collapsed by
-     custos]"`;
-  5. if `structuredContent` is present, it counts against the same budget;
-     when it alone or together with content still exceeds budget after
-     steps 2–4, drop it to `null` with `"[structuredContent omitted by
-     custos]"` recorded in the audit.
-  Re-serialize and re-measure after each step; escaping expansion (\\n,
-  \\uXXXX) is therefore always measured, never predicted. Steps 4–5 make
-  termination structural: the floor state is a fixed two-line response
-  well under the budget, so no server payload — however many blocks — can
-  loop the worker thread (V16c). One `mcp_result_truncated` audit per
-  call listing which steps ran. The serialized output can never exceed
-  the budget.
+  2. replace the largest remaining non-text `content` block with `"[content omitted by custos]"` — only if that strictly shrinks the whole;
+  3. truncate the largest `text` block body (keeping room for the appended `"[truncated by custos]"` block) — only if strictly shrinkable; repeat 2–3 largest-first;
+  4. **no-progress floor:** drop `structuredContent` to `null` if present, and replace the entire `content` array with one text block `"[content collapsed by custos]"`. This catches both deadlocks the round-4 review found: framing-only overflow (thousands of `{type,text:""}` blocks) **and** a `structuredContent`-only breach with little or no `content` — under the old ordering step 5 could never be reached from a stalled 2–3 cycle;
+  5. re-serialize and re-measure after each action. Step 4's state is a
+     fixed two-block response well under budget, so at most one further
+     iteration follows it — termination is structural and no server
+     payload, of any block count, can wedge the worker thread (V16c).
+     Escaping expansion (\\n, \\uXXXX) is measured, never predicted. The
+     audit records A8's token names (`blocks_collapsed`,
+     `text_truncated`, `structuredContent_dropped`) — the display strings
+     in steps 2–4 are content, not audit vocabulary. One
+     `mcp_result_truncated` audit per call that fired any step (never on
+     a result already within budget). `op:"list"` responses honor the
+     same budget: drop tail entries and append one `"[truncated by
+     custos]"` marker entry until ≤ budget. The serialized output can
+     never exceed the budget.
 - **Scrub coverage = every string leaf of the delivered result** — text
   block bodies AND `structuredContent` string leaves — against **that
   connector's own injected credential values** before delivery (O(1)
@@ -356,20 +404,26 @@ tool's behalf, Gmail-style:
   **stays registered until every in-flight call that could carry it has
   completed** — revocation removes the *source*, never early scrub
   coverage. The frozen scrubber derives needles from loaded vault
-  credentials, which revocation purges immediately; A2(iii)'s in-memory
-  tombstone is what makes this sentence implementable.
+  credentials, which revocation purges immediately; A2(iii)'s per-call
+  needle snapshot is what makes this sentence implementable — the frozen
+  `RevokeCredential` notifies nothing, and this design needs it to.
 - **Revocation:** on credential revoke (frozen KEYS/CUSTOS path) the
   connector transitions `disabled`, reason `credential_unavailable`; for
   **stdio** the child process **group** is killed immediately (SIGTERM, 5 s
   grace, SIGKILL) — the value dies in memory and stops being readable via
   `/proc/<pid>/environ`; in-flight stdio calls settle `transport`
   (`connection failed before response`) per §7. For **http** in-flight
-  requests complete and their bodies are scrubbed against the tombstoned
-  value (A2(iii)). New calls fail the A2(ii) `denied: credential
-  unavailable` path. For rail connectors, deleting the **identity slot**
-  (A7) is the kill-switch: every tool of that server answers
-  `credential_gone` from the next call. Re-enable by `custos mcp refresh`
-  after the credential is restored (refresh re-ensures the slot).
+  requests complete and their bodies are scrubbed against the value held
+  by that call's needle snapshot (A2(iii)). New calls fail the A2(ii) `denied: credential
+  unavailable` path. Two kill-switches, honestly separated (A7): deleting
+  the **identity slot** hits the frozen gate — every tool of that server
+  answers `credential_gone` from the next call; deleting a **referenced
+  secret** (a `${vault:<cred-id>}` target) is enforced at the injection
+  edge — the rail caches no values, so the next spawn (stdio) or request
+  (http) resolves the missing reference and fails `denied: credential
+  unavailable` (A2(ii)); the frozen gate cannot see that second case and
+  no claim is made that it can. Re-enable by `custos mcp refresh` after
+  the credential is restored (refresh re-ensures the identity slot).
 - **Trust posture (stated plainly):** the stdio child runs at custosd's
   uid — no v1 sandboxing. Installing a server binary is a root-adjacent PO
   act, the same trust class as installing an npm/pip package on the host.
@@ -435,8 +489,9 @@ interface methods Gmail does; nothing else in the order changes.
 | credential missing at call | `denied` | `denied: credential unavailable` (A2(ii)) |
 
 `tools/call` with `isError: true` is NOT in this table — see §4.5 (it is a
-result, audited by the lane's `worker_call_allowed`). The rail emits no
-per-call audit kind of its own (A8).
+result, audited by the lane's `worker_call_allowed`). The rail adds no
+error-path audit kind of its own (A8; its one result-side exception,
+`mcp_result_truncated`, is not an error path — §4.5).
 
 ### 8.4 Elicitation / MRTR
 Under `2026-07-28` a server that needs user input returns
@@ -458,14 +513,18 @@ methods; state, tool enumeration, and refresh are rail-module functions
 over its own registry.
 
 ```
-socket: MCP-STATUS  <token>          → header: name<TAB>state<TAB>tools<TAB>restarts<TAB>reason
-socket: MCP-TOOLS   <token> <name>   → header: name<TAB>flags<TAB>title
+socket: MCP-STATUS  <token>          → OK <json>  [{"name","state","tools","restarts","reason"}…]
+socket: MCP-TOOLS   <token> <name>   → OK <json>  [{"name","flags","title"}…]
 socket: MCP-REFRESH <token> <name>   → OK | ERR <reason>
-CLI:    custos mcp status | tools <name> | refresh <name>   (same tables;
-        refresh exit 0 = refreshed, 1 + stderr reason)
+CLI:    custos mcp status | tools <name> | refresh <name>   (renders the
+        JSON as tables; refresh exit 0 = refreshed, 1 + stderr reason)
 ```
-Line-oriented per §11 (tab-separated, header-declared order, no
-decoration). No secret material ever. Closed sets: `state` per §7;
+Socket responses are the frozen **single-line `OK <json>` / `ERR <reason>`
+frames** `CtlClient.RoundTrip` mandates (one line, `OK `-prefixed — raw
+TSV headers on the wire would die in its `unexpected response` branch);
+the CLI renders them into §11-style line-oriented tables (tab-separated,
+header-declared order, no decoration) — line-oriented governs **stdout**,
+not the socket. No secret material ever. Closed sets: `state` per §7;
 `reason ∈ ok | auth_failed | spawn_failed | list_timeout | protocol |
 credential_unavailable`; `flags` = comma-joined subset of
 `read_only | destructive | open_world` (annotation-derived), or `none`
@@ -509,10 +568,11 @@ when no hint is set.
 - **I9** Revoke, stdio: credential revoked between approval and execute →
   child group dead; in-flight call settles `transport: connection failed
   before response`; new calls `denied: credential unavailable` (A2(ii)).
-- **I10** Revoke, http (A2(iii) tombstone): credential revoked while an
-  http call is in flight → that call completes; a response echoing the
-  old value arrives scrubbed; after drain the connector is `disabled` and
-  no new call can carry the value.
+- **I10** Revoke, http (A2(iii) call-local needle snapshot): credential
+  revoked while an http call is in flight → that call completes; a
+  response echoing the old value arrives scrubbed (the call's own needle
+  snapshot survives vault purge); after drain the connector is `disabled`
+  and no new call can carry the value.
 - **I11** Catalog churn is fail-closed: concurrent refresh + calls under
   `-race`; no torn reads (whole-snapshot visibility); tool removed
   between ValidateArgs and **dispatch** → `unknown_tool`; tool removed
@@ -521,13 +581,18 @@ when no hint is set.
 - **I12** Placeholder safety: a `${vault:missing}` config never spawns a
   child containing the literal `${...}` text; state `disabled`, reason
   `credential_unavailable`.
-- **I13** Identity slot (A7): loading a rail connector creates its empty
-  vault slot at boot when absent; rules keyed to the connector name match
+- **I13** Identity slot (A7): first unlock after loading a rail connector
+  ensures its empty vault slot (locked boot: connector `starting`, tools
+  answer `credential_unavailable`; no vault write is attempted while
+  sealed); rules keyed to the connector name match
   (`filesystem deny` denies every rail tool of `filesystem`; an `always`
   verdict on `filesystem/read_file` writes exactly
   `filesystem/read_file auto`, never `none/…` or a cred-less rule);
   deleting the slot makes all its tools answer `credential_gone` until a
-  `custos mcp refresh` re-ensures it; cards show `filesystem` in the
+  `custos mcp refresh` re-ensures it; deleting a **referenced** secret
+  (`${vault:fs-key}` target) fails the next call `denied: credential
+  unavailable` even though the identity slot stands (injection-edge
+  enforcement, A7's second kill-switch); cards show `filesystem` in the
   credential field.
 
 ## 12. Verification suite (numbered)
@@ -538,7 +603,8 @@ when no hint is set.
   `transport: sse` rejection (legacy SSE is not a transport choice).
 - **V3** fake stdio server fixture: register, first list, 3 tools exposed
   in `op:"list"` shape/order (A1), Gmail's static ToolLister entries also
-  present; grammar drops (I3).
+  present; grammar drops (I3); while locked, `op:"list"` is rejected at
+  the frozen locked gate exactly as `call` is (A1 lane position).
 - **V4** call round-trip via `op:"call"` with a cell token: policy-`auto`
   tool executes; args arrive verbatim; result shape §4.5. Includes the
   namespace probes: `filesystem deny` denies; `filesystem/read_file auto`
@@ -568,22 +634,33 @@ when no hint is set.
 - **V14** stderr rotation: >1 MiB of stderr churn → ≤3 files under
   `<hearth>/connectors/<name>/`, oldest dropped, sentinel scrubbed (§6).
 - **V15** ctl verbs: socket frames `MCP-STATUS`/`MCP-TOOLS`/`MCP-REFRESH`
-  with token framing incl. bad-token `ERR`; exact headers, tab-separated
-  lines, CLI exit codes, unknown `<name>`; **slow-server fixture**: a 6 s
-  stdio server completes `MCP-REFRESH` under the per-verb deadline (A3)
+  with token framing incl. bad-token `ERR`; responses asserted **through
+  `CtlClient.RoundTrip`** — single-line `OK <json>` / `ERR <reason>`
+  frames, its `unexpected response` branch never fires; CLI tables, exit
+  codes, unknown `<name>`; **slow-server fixture**: a 6 s
+  stdio server completes `MCP-REFRESH` under the per-verb deadline (A3,
+  client-side timeout included)
   while a generic verb on the same socket still times out at 5 s (§9).
 - **V16** invariant probes, one named test each:
   V16a I1 env-exact probe; V16b I2 sentinel-echo probe (all surfaces —
   text, structuredContent leaf, stderr file, and base64 image-block echo
   caught at all three alignments per §4.5);
+  V16j title-injection fixture — a tool `title` carrying CR/LF/TAB,
+  control characters, and a sentinel renders sanitized (single-line,
+  ≤120 runes, scrubbed) in `op:"list"`, `MCP-TOOLS`, and cards (§4.2);
+  V16k catalog overflow — a 10k-tool server with 5 KB titles answers
+  `op:"list"` within the serialized budget, tail-dropped with the marker
+  entry (§4.5);
   V16c I6 cap matrix (text-only / image-only / mixed 500+500 KiB /
   escape-heavy 768 KiB text / **35k empty-text-blocks framing bomb →
-  collapse floor, bounded time** / **2 MiB structuredContent → dropped**); V16d I7 process-group probe; V16e I8
+  collapse floor, bounded time** / **2 MiB structuredContent → dropped**);
+  V16d I7 process-group probe; V16e I8
   loopback acceptance probe; V16f I9 stdio revoke probe; V16g I10 http
-  tombstone-echo probe; V16h I12 placeholder probe; V16i I13
-  credential-free probe.
-- Invariant map (reviewer checklist): I1→V16a, I2→V16b, I3→V3, I4→V6,
-  I5→V10, I6→V16c, I7→V16d, I8→V2+V16e, I9→V16f, I10→V16g, I11→V10,
+  snapshot-echo probe; V16h I12 placeholder probe; V16i I13
+  identity-slot probe (both kill-switches, locked-boot `starting`).
+- Invariant map (reviewer checklist): I1→V16a, I2→V16b+V16j, I3→V3,
+  I4→V6,
+  I5→V10, I6→V16c+V16k, I7→V16d, I8→V2+V16e, I9→V16f, I10→V16g, I11→V10,
   I12→V16h, I13→V16i.
 - Live acceptance (non-CI): the official filesystem MCP server on the dev
   box; one remote Streamable-HTTP demo server; cards rendered from the
@@ -615,6 +692,30 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v0.5: round-4 absorption — ctl verbs moved to the frozen **single-line
+  `OK <json>` socket frame** (raw TSV headers would die in
+  `CtlClient.RoundTrip`'s `unexpected response` branch; line-oriented
+  governs CLI stdout only); A7 identity-slot ensuring moved from boot
+  (impossible: locked passphrase boot — deadlock) to first unlock,
+  `starting` + `credential_unavailable` while locked, and revocation
+  doctrine split into two honest kill-switches (identity slot → frozen
+  `credential_gone`; referenced secret → injection-edge
+  `denied: credential unavailable`, with the frozen gate's blindness
+  stated, plus: policy never binds secret names); A2(iii) re-specified as
+  per-call needle snapshots (no vault→WorkerServer hook exists or is
+  needed; the frozen `RevokeCredential` notifies nothing); cap loop given
+  a strict-progress rule with a reachable no-progress floor (fixes the
+  structuredContent-only deadlock) and A8 audit tokens replacing display
+  strings; A1 declares op:list's lane position (frozen locked gate, no
+  new locked behavior, empty connector/tool fields on list-path records);
+  §4.3 op:list made single-frame (snapshot-serve, async debounced
+  refresh — the old inline-refresh sentence could not fit one NDJSON
+  response); server `title`/`description` sanitization (protocol
+  injection via CR/LF/TAB in `MCP-TOOLS`, unbounded catalog overflow)
+  with V16j/V16k; A6 revocation gets an `removeRuleWithAudit` variant
+  (frozen `RemoveRule` hardcodes `policy_written`); A8 payloads carry
+  connector attribution and the per-call-audit contradiction resolved;
+  A3 extended to the CLI-side per-verb timeout; `ToolInfo` declared.
 - v0.4: round-3 absorption — **A7 rewritten as the identity slot**
   (`Credential()` returns the connector name; custosd ensures an
   empty-valued vault slot at load): the earlier `none`-skip draft
