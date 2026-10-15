@@ -1,6 +1,6 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v0.6** — under review. Not approved; not frozen.
+> Status: **Draft v0.7** — under review. Not approved; not frozen.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -166,7 +166,10 @@ each owns its override explicitly):
   rules on `always` verdicts.)
 - **A8** — §8.1 (closed audit-kind set): extended with exactly
   `mcp_config_literal_env`, `mcp_tool_dropped`, `mcp_catalog_changed`,
-  `mcp_result_truncated`, `mcp_always_revoked`. Rail calls need no extra
+  `mcp_result_truncated`, `mcp_always_revoked`, `mcp_refresh`. In these
+  payloads `cred` is the **config connector name** (control-plane
+  identity), not the vault identity slot — so catalog audits carry
+  attribution even while the vault is sealed. Rail calls need no extra
   per-call audit beyond the frozen `worker_call_allowed`/
   `worker_call_denied`; the sole exception is `mcp_result_truncated`,
   which exists only on calls that actually shrank a response (§4.5).
@@ -177,7 +180,8 @@ each owns its override explicitly):
   recorded); `mcp_tool_dropped` → `cred` (connector name) +
   `names=[raw-name]`; `mcp_catalog_changed` → `cred` (connector name) +
   `names=["+added"…, "-removed"…, "~fingerprint"…]` (qualified tool
-  names); `mcp_result_truncated` → `cred` + `tool` (qualified
+  names); `mcp_refresh` → `cred` (one emission per successful
+  `MCP-REFRESH`, §6 trust posture); `mcp_result_truncated` → `cred` + `tool` (qualified
   `<connector>/<tool>`) + `host` (per §4.2) +
   `names=["blocks_collapsed"|"text_truncated"|"structuredContent_dropped"]`;
   `mcp_always_revoked` → `tool` + `cred`. No new audit fields exist.
@@ -319,7 +323,12 @@ transitions the handle `starting → ready` (§7).
   The §11 invariant is therefore "no torn reads + fail-closed on
   between-call churn", not per-call pinning.
 - First list at registration; thereafter honor `ttlMs`/`cacheScope` from
-  the server response. `op:"list"` **never blocks on the network**: it
+  the server response. `notifications/tools/list_changed` (present since
+  the `2025-03-26` floor) is **accepted and treated as a hint only**: it
+  schedules the same debounced async refresh as TTL expiry and never
+  mutates a snapshot inline (a server must not be able to change the
+  catalog between two of its own `tools/list` answers through a side
+  channel). `op:"list"` **never blocks on the network**: it
   answers the current snapshots in the one frozen NDJSON response frame.
   Expired connectors get an **async**, debounced (one-per-connector
   in-flight) refresh whose result appears in later lists. A connector
@@ -329,8 +338,10 @@ transitions the handle `starting → ready` (§7).
   `MCP-STATUS` (§9), never smuggled into the tool array. The
   synchronous, wait-for-result path is `custos mcp refresh <name>` alone
   (A3's per-verb deadline; exit 0 = catalog re-listed).
-- Order: server order verbatim (list results are spec'd deterministic;
-  re-sorting churns consumer prompt caches).
+- Order: server order verbatim, **pinned per snapshot** — the protocol
+  guarantees no cross-response determinism, so each snapshot freezes the
+  arrival order and serving stays byte-stable until the next snapshot
+  (re-sorting churns consumer prompt caches).
 - A refresh that removes a tool takes effect at the next snapshot.
   "In-flight" means precisely: a call whose `tools/call` has **already been
   dispatched to the server** — it completes, because killing it mid-transport
@@ -357,7 +368,10 @@ same revalidation applies at Execute (§4.3).
 parses the MCP result into the declared members only — `content`,
 `structuredContent`, `isError` — and re-serializes from that struct;
 unknown top-level members (`_meta` and any extension field) are
-**discarded at parse and never forwarded**. The worker result is
+**discarded at parse and never forwarded**. Inside `content`, only the
+recognized block types `text | image | audio | resource_link | resource`
+survive parse; any other block shape is discarded too. That closed set
+is what step 2's "non-text block" quantifies over. The worker result is
 `{"content": [ …blocks… ], "structuredContent": …, "isError": …}`.
 - **Budget: 768 KiB measured on the FINAL serialized bytes** (all block
   types, base64 and JSON escape expansion included), under the frozen 1 MiB
@@ -399,6 +413,16 @@ unknown top-level members (`_meta` and any extension field) are
   data) — this is what stops a stdio child, which legitimately holds the
   injected secret in its env, from smuggling it back through a result
   blob. Custos never dereferences resource links or fetches blob URIs.
+  **Decode-or-replace rule:** every base64 block is additionally
+  decoded and its **decoded payload** substring-matched against the
+  needles; a hit — or a base64-encoding alignment hit — replaces the
+  whole block. Decoding after re-encode closes the non-canonical
+  variants (alternative alphabets, dropped/permuted padding) that an
+  alignments-only check misses. Deliberately fragmented or transformed
+  (e.g. reversed, XOR-wrapped) smugglings are out of scope v1 and
+  honestly so: the child only ever holds what injection gave it, so the
+  scrubber bounds echo noise, and the injection edge bounds exposure
+  (V16b probes a non-canonical re-encode).
 - `isError: true` is data, not a custody failure: the flag and (scrubbed,
   capped) content travel as the result. The frozen no-body rule governs
   error `detail` construction; a processed tool error is a result and the
@@ -479,6 +503,15 @@ tool's behalf, Gmail-style:
   credential is restored (refresh re-ensures the identity slot — the
   latch of A7 makes refresh the only re-ensure path after a deliberate
   delete).
+  **Trust posture of catalog mutation:** `ctl.token` is the frozen
+  control-socket credential — its holder can already write policy rules,
+  revoke credentials, and restart the daemon, so `MCP-REFRESH` inherits
+  operator trust and the rail does not treat it as a distinct adversary.
+  What refresh cannot do is launder trust: every successful refresh
+  emits `mcp_refresh` (A8), and refreshed catalogs are still untrusted
+  data — §4.2 sanitization and A6 fingerprint revocation apply to every
+  new snapshot, so a hostile refresh can flip an `auto` tool away from a
+  grant but never silently keep one.
 - **Trust posture (stated plainly):** the stdio child runs at custosd's
   uid — no v1 sandboxing. Installing a server binary is a root-adjacent PO
   act, the same trust class as installing an npm/pip package on the host.
@@ -585,14 +618,21 @@ not the socket. No secret material ever. Closed sets: `state` per §7;
 `read_only | destructive | open_world` (annotation-derived) in the fixed
 canonical order `read_only,destructive,open_world` — set members omitted
 when absent, so output is byte-stable — or `none` when no hint is set.
+`idempotentHint` is deliberately **not** in the flags enum (no v1
+consumer); it still rides the §4.3 per-tool fingerprint, so A6 revocation
+covers changes to it.
 
 ## 10. Dependencies and frozen constants
 
 - `github.com/modelcontextprotocol/go-sdk` (Tier 1; speaks `2026-07-28`,
-  negotiates legacy revisions; MIT/Apache-2.0 — compatible with the
-  AGPL-3.0-only + dual-license posture). Vendored; exact version pinned at
-  transcription with a `go build` + `-race` proof in the first brief.
-  Fallback if migration friction: `mark3labs/mcp-go` (MIT), same pin rule.
+  negotiates legacy revisions). License: **Apache-2.0**, with a small
+  residue of MIT-licensed contributions under the project's in-progress
+  relicensing (LICENSE notice checked at pin time — both are compatible
+  with the AGPL-3.0-only + dual-license posture, as with any Apache-2.0
+  Go dependency). Vendored; exact version pinned at transcription with
+  a `go build` + `-race` proof **and a recorded copy of the pinned
+  LICENSE header** in the first brief. Fallback if migration friction:
+  `mark3labs/mcp-go` (MIT), same pin + license-record rule.
 - Frozen constants this spec cites (verified in tree):
   `workerMaxLineBytes = 1 << 20` (internal/custos/worker.go),
   `DefaultWorkerExecTimeout = 60s` (internal/custos/config.go), frozen
@@ -689,7 +729,9 @@ when absent, so output is byte-stable — or `none` when no hint is set.
   `unknown_tool`; removal after dispatch → in-flight call completes
   (§4.3 two-category rule);
   tightened schema across the ask-hold → `bad_args`; fingerprint-change
-  audit + A6 revocation matrix (description-only edit included); `-race`
+  audit + A6 revocation matrix (description-only edit included), and the
+  revocation audit line's kind is `mcp_always_revoked` — never
+  `policy_written` (`removeRuleWithAudit`, A6/A8); `-race`
   stress (I11, I5).
 - **V11** http transport against in-process fixture: bearer present/
   absent, 401 → disabled `auth_failed`, transport-flip → backoff.
@@ -703,14 +745,17 @@ when absent, so output is byte-stable — or `none` when no hint is set.
   with token framing incl. bad-token `ERR`; responses asserted **through
   `CtlClient.RoundTrip`** — single-line `OK <json>` / `ERR <reason>`
   frames, its `unexpected response` branch never fires; CLI tables, exit
-  codes, unknown `<name>`; **slow-server fixture**: a 6 s
+  codes, unknown `<name>` (the unknown-`<name>` probe applies to
+  `MCP-TOOLS`/`MCP-REFRESH`; `MCP-STATUS` is no-arg — it lists all
+  connectors — and has no name subtest); **slow-server fixture**: a 6 s
   stdio server completes `MCP-REFRESH` under the per-verb deadline (A3,
   client-side timeout included)
   while a generic verb on the same socket still times out at 5 s (§9).
 - **V16** invariant probes, one named test each:
   V16a I1 env-exact probe; V16b I2 sentinel-echo probe (all surfaces —
-  text, structuredContent leaf, stderr file, and base64 image-block echo
-  caught at all three alignments per §4.5);
+  text, structuredContent leaf, stderr file, base64 image-block echo
+  caught at all three alignments per §4.5, **plus a non-canonically
+  re-encoded base64 echo caught by the decode-or-replace rule**);
   V16j title-injection fixture — a tool `title` carrying CR/LF/TAB,
   control characters, and a sentinel renders sanitized (single-line,
   ≤120 runes, scrubbed) in `op:"list"`, `MCP-TOOLS`, and cards (§4.2);
@@ -768,6 +813,23 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v0.7: round-5 delegated-lane absorption (late second opinion on v0.5;
+  the AGY-lane items of that round shipped as v0.6) — `mcp_refresh`
+  audit kind + catalog-mutation trust posture declared (§6: ctl.token =
+  operator trust; refresh audited, catalogs still untrusted via A6);
+  base64 smuggling closed past alignment checks with a decode-or-replace
+  rule + non-canonical V16b probe (claim honestly scoped: exact-needle
+  re-encodings, not a transform oracle); `tools/list_changed` declared
+  hint-only (schedules debounced refresh, never mutates a snapshot
+  inline); per-snapshot order pinning stated (protocol guarantees no
+  cross-response order); closed content-block set named for the cap
+  loop's step 2; `MCP-STATUS` no-arg semantics vs V15 unknown-name probe
+  reconciled; `idempotentHint` stated out of the flags enum (fingerprint
+  still covers it); V10 asserts the revocation audit kind is
+  `mcp_always_revoked`, never `policy_written`; A8 `cred` declared
+  config-identity (vault-independent); §10 SDK license corrected to
+  **Apache-2.0 with MIT residue** (LICENSE file verified upstream) and
+  the pin rule now records the license header.
 - v0.6: round-5 absorption — tool names **normalized into the frozen
   `keyNameRe` grammar** (lowercase/map/prefix/truncate + collision
   suffixes, snapshot keeps the canonical→raw wire mapping; camelCase
