@@ -1,6 +1,6 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v1.1** — under review. Not approved; not frozen.
+> Status: **Draft v1.2** — under review. Not approved; not frozen.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -68,7 +68,7 @@ each owns its override explicitly):
   (connector order: names sorted). Connectors that don't implement it
   contribute nothing. First-party cell implementations MUST render
   connector tool definitions only from this response — a design
-  obligation on first-party cell code, testable there; custo cannot
+  obligation on first-party cell code, testable there; custos cannot
   enforce any guest's internals, first- or third-party (see §2 P1).
 - **A2** — §5.1a (worker error contract), three changes: (i) the closed
   detail-template set gains exactly one constant — code `upstream`, detail
@@ -365,8 +365,12 @@ transitions the handle `starting → ready` (§7).
   leaves a needle fragment the whole-needle scrubber can no longer
   match). Only the sanitized form is ever
   stored or displayed, so no server string can forge a line-oriented ctl
-  frame, split a TSV column, or smuggle prompt markdown that survives to
-  cards. custo never dereferences server-supplied URIs.
+  frame or split a TSV column. Neither string reaches a card at all
+  (§5: card shape frozen, no title/description field; only
+  schema-declared review fields appear there), and the sanitized form is
+  what the cell's tool catalog (§9 `MCP-TOOLS`) shows the model — so a
+  server cannot smuggle prompt markdown into model context either.
+  custos never dereferences server-supplied URIs.
 
 ### 4.3 Catalog snapshots (2026-07-28 cacheability)
 - The catalog is an **immutable snapshot** (tool set + schemas + per-tool
@@ -763,11 +767,16 @@ covers changes to it.
   `mark3labs/mcp-go` (MIT), same pin + license-record rule.
 - Frozen constants this spec cites (verified in tree):
   `workerMaxLineBytes = 1 << 20` (internal/custos/worker.go),
-  `DefaultWorkerExecTimeout = 60s` (internal/custos/config.go — the
-  config-load defaults block, `defaultString(root["worker_exec_timeout"], …)`,
-  not a `Config` struct member; its coupling matters:
-  `DefaultAskHoldTimeout = 5s + DefaultWorkerExecTimeout`, worker.go —
-  any §7 budget test anchors there), frozen
+  `DefaultWorkerExecTimeout = 60s` (exported const, internal/custos/config.go;
+  the `Config.WorkerExecTimeout` struct field takes it via
+  `if c.WorkerExecTimeout <= 0` in config.go's defaulting pass).
+  Timeout couplings (worker.go): `DefaultAskHoldTimeout = 330s` —
+  independent of exec — and the worker connection deadline is
+  `workerConnDeadline = hold + exec + 30s margin` (420 s at defaults);
+  any §7 budget test anchors on `workerConnDeadline`, not on any sum of
+  the two defaults alone. (An interim v1.1 pointer claiming 330 s was
+  `5s + 60s` and denying the Config member was wrong and is retracted.)
+  frozen
   detail-template block (internal/custos/worker.go §5.1a const set).
 
 ## 11. Security invariants (each maps to a test in §12)
@@ -864,7 +873,8 @@ covers changes to it.
   audited once by `worker_call_allowed` — rail adds nothing (A8).
 - **V9** MRTR `input_required` result → `upstream` / `protocol violation`,
   audit reason `upstream` — the record validates against the frozen
-  §8.1 reason enum with the A2(i) addition (§8.4).
+  §8.1 reason enum: `upstream` is **pre-existing** there (A2(i) declares,
+  it does not extend; §8.4).
 - **V10** catalog churn: removal between ValidateArgs and dispatch →
   `unknown_tool`; removal after dispatch → in-flight call completes
   (§4.3 two-category rule);
@@ -904,7 +914,9 @@ covers changes to it.
   in one lane frame, `mcp_result_truncated` audit present;
   V16j title-injection fixture — a tool `title` carrying CR/LF/TAB,
   control characters, and a sentinel renders sanitized (single-line,
-  ≤120 runes, scrubbed) in `op:"list"`, `MCP-TOOLS`, and cards (§4.2);
+  ≤120 runes, scrubbed) in `op:"list"` and `MCP-TOOLS` — cards are NOT
+  in this assertion: title never renders on a card (frozen card shape,
+  §5);
   **V16n** scrub-before-truncate law: a title/arg value with a sentinel
   straddling the 120-rune (title) or 96-rune (review-line) cut renders
   with **no needle fragment** on either side of the `…` (§4.2/§5 —
@@ -970,6 +982,24 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v1.2: round-9 AGY-lane absorption (2 blockers + 2 nits):
+  **§10 retraction** — the v1.1 entry's §10 pointer (and the v1.1 claim
+  `DefaultAskHoldTimeout = 5s + DefaultWorkerExecTimeout`, which that
+  entry repeated) was itself wrong: absorbed from a delegated-lane nit
+  without grepping the one cited line. Verified against config.go /
+  worker.go: `DefaultAskHoldTimeout = 330s` (independent of exec),
+  `WorkerExecTimeout` **is** a `Config` member (defaulted
+  `<= 0 → 60s`), and the §7 budget anchor is
+  `workerConnDeadline = hold + exec + 30s` (420 s defaults).
+  **Card-vs-title contradiction closed** — V16j no longer asserts
+  sanitized-title in cards (frozen `ApprovalCardWire` has no title
+  field); §4.2's threat enumeration rewritten honestly: title never
+  reaches a card (§5); sanitization protects line-oriented frames, TSV
+  columns, and the model-facing `MCP-TOOLS` catalog, not card payloads.
+  V9's stale "with the A2(i) addition" rephrased per R8-1 (declares,
+  does not extend). Typo scrub. Lesson recorded in the review loop:
+  delegated-lane nits are claims, not facts — §10-class code citations
+  get grepped before absorption.
 - v1.1: round-8 absorption (both lanes; AGY 4 blockers/3 nits + delegate
   2 blockers/3 nits, one overlap): **audit-vocabulary honesty** — A2(i)
   no longer claims the §8.1 reason set "gains" `upstream`: frozen Gmail
