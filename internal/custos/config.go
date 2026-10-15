@@ -46,6 +46,11 @@ type Config struct {
 
 	// HeaderExtras is the list of additional request header names to inspect for surrogates (CUSTOS §5.2).
 	HeaderExtras []string `yaml:"header_extras"`
+
+	// Connectors holds external connector configurations per MCP-SPEC §3 (A4).
+	Connectors ConnectorsConfig `yaml:"connectors"`
+
+	unmarshalErr error
 }
 
 // Normalize sets specification defaults for zero-valued configuration fields.
@@ -67,5 +72,14 @@ func (c *Config) Normalize() {
 	}
 	if c.MaxParkedGlobal <= 0 {
 		c.MaxParkedGlobal = DefaultMaxParkedGlobal
+	}
+	for i := range c.Connectors.MCP {
+		c.Connectors.MCP[i].normalize()
+	}
+	if c.unmarshalErr != nil {
+		reportConfigErrorAndExit(c.unmarshalErr)
+	}
+	if c.Connectors.unmarshalErr != nil {
+		reportConfigErrorAndExit(c.Connectors.unmarshalErr)
 	}
 }
