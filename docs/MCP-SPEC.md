@@ -36,18 +36,27 @@ MCP directly.
 MCP); OAuth against remote MCP servers (v1 remote auth = bearer token from
 the vault, §6); connector installation UI.
 
-**Amendments this spec requires of frozen companions** (all to CUSTOS-SPEC):
-- **A1** — §5.1 (worker lane): the frozen error-code enum (§5.1a) gains no
-  codes; instead §8.3 of this spec maps every MCP failure into existing
-  codes. No protocol change to the cell lane. *(Verified at review: if any
-  mapping proves impossible, the missing code joins §5.1a as a numbered
-  sub-amendment, not silently.)*
-- **A2** — §11 (ctl CLI frozen shapes): adds verbs `mcp-status`,
-  `mcp-refresh <name>`, `mcp-tools <name>` (§9).
-- **A3** — config schema: `custos:` section gains `connectors.mcp[]` (§3).
+**Amendments this spec requires of frozen companions** (all to CUSTOS-SPEC;
+each owns its override explicitly):
+- **A1** — §5.1 (worker lane): adds `op: "list"` — the cell-facing connector
+  tool catalog (today only `op: "call"` exists; nothing in the frozen text
+  lets a cell discover connector tools). Response `{tools: [{connector,
+  name, title, annotations}]}`, ordered by connector name, server order
+  within connector. Read-only: no policy consult, no ask; cell token per
+  existing lane rules. Cells MUST NOT render tool definitions from any
+  other source.
+- **A2** — §5.1a (worker error contract): the closed template set gains
+  exactly one constant: code `upstream`, detail `protocol violation` (no
+  status class, no server body — consistent with the no-body rule). Needed
+  because MCP JSON-RPC-level failures and rejected server-initiated
+  requests have no HTTP status to class (§8.3).
+- **A3** — §11 (ctl CLI frozen shapes): adds `custos mcp status`,
+  `custos mcp tools <name>`, `custos mcp refresh <name>` (§9), obeying §11's
+  line-oriented list conventions (tab-separated, header-declared order).
+- **A4** — config schema: `custos:` section gains `connectors.mcp[]` (§3).
   The loader is strict; these are the exact permitted keys.
 
-Stated count: three. Reviewers: check attribution, not just count.
+Stated count: four. Reviewers: check attribution, not just count.
 
 ## 2. Principles (load-bearing)
 
@@ -73,7 +82,9 @@ Stated count: three. Reviewers: check attribution, not just count.
 custos:
   connectors:
     mcp:
-      - name: filesystem            # [a-z][a-z0-9_-]{0,31}; unique; forbidden: "gmail"
+      - name: filesystem            # [a-z][a-z0-9_-]{0,31}; unique; may not
+                                    # collide with a built-in connector name
+                                    # (currently: gmail)
         transport: stdio            # stdio | http
         # --- stdio only:
         command: /usr/local/bin/mcp-filesystem
@@ -119,7 +130,7 @@ tool list is registered but reports no tools (calls → `unknown_tool`).
 
 ### 4.2 Naming (qualified exact)
 - Worker-lane connector name: the config `name`.
-- Agent-visible tool name inside that connector: the MCP tool name verbatim
+- Tool name exposed to cells via `op:"list"` (A1): the MCP tool name verbatim
   after grammar check: `^[A-Za-z0-9_-]{1,64}$`. A tool failing the grammar is
   **dropped at list time**, audited once per connector generation
   (`mcp_tool_dropped`), and absent from cards and prompts.
@@ -128,10 +139,12 @@ tool list is registered but reports no tools (calls → `unknown_tool`).
 
 ### 4.3 Catalog refresh (2026-07-28 cacheability)
 - First list at registration; thereafter honor `ttlMs`/`cacheScope` from the
-  server response: cache until expiry; refresh at expiry only when a new
-  session-start or `mcp-refresh` asks. Deterministic order: preserve server
-  order verbatim (list results are already spec'd deterministic; re-sorting
-  churns prompt caches).
+  server response: cache until expiry. `op:"list"` (A1) is served from cache;
+  when a connector's cache has expired, that connector's entry refreshes
+  inline, bounded by `init_timeout`, and other connectors' cached entries do
+  not wait on it. `custos mcp refresh <name>` (§9) forces immediate re-list.
+  Deterministic order: preserve server order verbatim (list results are
+  spec'd deterministic; re-sorting churns consumer prompt caches).
 - A refresh that **removes** a tool takes effect at the next catalog read;
   in-flight calls to it complete. A refresh that changes a tool's schema is
   audited (`mcp_catalog_changed`, diff of names + schema hash).
@@ -149,12 +162,14 @@ Violation → frozen `bad_args`.
 ### 4.5 Execute
 `tools/call` with the decoded args; MCP result is serialized as:
 `{"content": [ …blocks… ], "structuredContent": …, "isError": …}` with each
-`text` block's body scrubbed (§2.1) and the **whole response capped** by
-reusing `workerMaxLineBytes` budget minus headroom: on overflow, text blocks
-truncate at the cap with a final block `"[truncated by custos]"`, and audit
-records `mcp_result_truncated`. `isError: true` maps §8.3. Image/resource
-blocks pass through with raw refs never dereferenced by custos (cells
-dereference; blobs dir handles size).
+`text` block's body scrubbed (§2.1). The serialized result is capped at
+**768 KiB** by custosd itself (below the 1 MiB lane line budget, so clients
+never face an over-long response): on overflow, text blocks truncate at the
+cap with a final block `"[truncated by custos]"`, and audit records
+`mcp_result_truncated`. Non-text blocks pass through verbatim; custos never
+dereferences resource links or fetches blob URIs. `isError: true` is data,
+not a custody failure: it passes through in the result (§8.3 governs
+custody/transport failures only).
 
 ## 5. Review fields (the card)
 
@@ -173,8 +188,10 @@ the qualified name regardless, which is the trusted part.
 
 - **stdio:** env injection at spawn. Only these reach the child's
   environment: declared `env` entries (resolved), plus a frozen safe base —
-  `PATH` (fixed `/usr/local/bin:/usr/bin:/bin`), `HOME` (connector-private
-  dir under the custos root), `TMPDIR` (same). Everything else, including
+  `PATH` = `/usr/local/bin:/usr/bin:/bin:` + `dirname(command)` (interpreter
+  shebangs like `#!/usr/bin/env node` resolve without inheriting the
+  daemon's PATH), `HOME` (connector-private dir under the custos root),
+  `TMPDIR` (same). Everything else, including
   `*_KEY`/`*_TOKEN`/`*_SECRET` from the daemon's own environment, is withheld.
 - **http:** `bearer` → `Authorization: header verbatim`; nothing else added.
 - Every resolved value registers with the §5.1a detail scrubber for the
@@ -222,39 +239,41 @@ does.
   change: a schema-hash change of that tool revokes its `always` grant
   (audited `mcp_always_revoked`).
 
-### 8.3 Error mapping (into frozen §5.1a codes — no enum change)
-| MCP/transport failure | code | detail template |
+### 8.3 Error mapping (frozen §5.1a codes; one template added by A2)
+| MCP/transport failure | code | detail |
 |---|---|---|
-| child dead / conn lost / http connect fail | `transport` | `connection failed before response` |
-| init or call timeout | `timeout` | `operation deadline exceeded` |
-| server JSON-RPC error, protocol violation, rejected call, elicitation requested | `upstream` | `upstream returned 5xx` if HTTP 5xx, else `upstream returned 4xx` for 4xx, else `invalid arguments` never — **new detail needed**; see note |
-| tool reported `isError: true` | `upstream` | server message (scrubbed, ≤256 runes) — allowed by §5.1a "detail templates frozen" only if enumerated |
-| credential missing at call | `denied` | `denied: credential unavailable` |
+| child dead / conn lost / http connect fail | `transport` | `connection failed before response` (frozen) |
+| http 4xx/5xx transport-level failure | `upstream` | `upstream returned 4xx` / `5xx` (frozen) |
+| init or call deadline | `timeout` | frozen timeout template |
+| JSON-RPC error response; protocol violation; server-initiated request (MRTR/elicitation) present | `upstream` | `protocol violation` (**A2**, constant — no server text, honoring the no-body rule) |
+| credential missing at call | `denied` | `denied: credential unavailable` (frozen) |
 
-**Open defect flagged for G1:** §5.1a freezes *detail templates*; several MCP
-failures have no honest existing template ("upstream tool errored: <msg>").
-Options: (a) amend §5.1a to enumerate one new template
-`tool returned error` for isError mappings (recommended — one line, keeps
-bodies out of details); (b) always map to `upstream` + frozen 5xx/4xx
-templates and lose the message. Draft assumes (a); fold into A1.
+`tools/call` results carrying `isError: true` are NOT worker errors: the
+call was processed; the flag and (scrubbed, capped) content travel as the
+result, so the cell's model sees the server's own failure message while
+custody failure semantics stay template-pure. Audit records `mcp_call` with
+`ok=false` plus a closed reason (`is_error`, `transport`, `timeout`,
+`protocol`, `auth`) — audit reasons are a closed set declared here.
 
 ### 8.4 Elicitation / MRTR
-Server requests user input mid-call → custos answers with the protocol's
-rejection path, and the worker call fails `upstream` /
-`tool returned error` (per 8.3(a)) with the fixed string
-`elicitation not supported`. No card is raised (v1).
+Server returns `resultType: "input_required"` (or any legacy
+elicitation/create request) → custos responds per the protocol's rejection
+path and the worker call fails `upstream` / `protocol violation` (A2).
+Audit reason `protocol`. No card is raised (v1).
 
 ## 9. ctl verbs (amendment A2, frozen shapes)
 
 ```
-mcp-status                → per connector: name state tools last_err_reason restarts
-mcp-tools <name>          → one tool per line: name<TAB>flags<TAB>title
-mcp-refresh <name>        → force re-list (or re-spawn when dead); exits 0 on
-                            refreshed, 1 with `unknown connector` / reason
+custos mcp status          → header `name\tstate\ttools\trestarts\treason`;
+                             one line per connector
+custos mcp tools <name>    → header `name\tflags\ttitle`; one line per tool
+custos mcp refresh <name>  → exit 0 on refreshed; exit 1 + stderr reason
 ```
-Output byte-frozen for tests; no secret material; reasons are a closed set
-(`auth_failed`, `init_timeout`, `spawn_failed`, `protocol`,
-`credential_unavailable`, `ok`).
+Line-oriented per §11 (tab-separated, header-declared order, no decoration;
+V-tests assert headers + one round-trip parse). No secret material. `state ∈
+starting|ready|backoff|disabled` (§7); `reason` closed set: `ok`,
+`auth_failed`, `init_timeout`, `spawn_failed`, `protocol`,
+`credential_unavailable`.
 
 ## 10. Dependencies
 
@@ -268,9 +287,9 @@ Output byte-frozen for tests; no secret material; reasons are a closed set
 
 ## 11. Security invariants (each maps to a test)
 
-- **I1** No env leak: spawned child's environment contains only §6's base +
-  declared entries (test inspects child's `/proc/<pid>/environ` via a probe
-  child).
+- **I1** No env leak: spawned child's environment contains only §6's base
+  (PATH composed exactly as specified) + declared entries (test inspects
+  child's `/proc/<pid>/environ` via a probe child).
 - **I2** Scrub coverage: a sentinel secret injected via `${vault:}` never
   appears in: worker responses, cards, audit files, logs, child stderr file
   (probe child echoes it into stderr and stdout).
@@ -311,7 +330,10 @@ Output byte-frozen for tests; no secret material; reasons are a closed set
   revocation I5 live-matrix (schema change only for the granted tool).
 - **V12** http transport against in-process `httptest` server: bearer
   present/absent, 401 → disabled/auth_failed, transport-flip → backoff.
-- **V13** invariants I1–I10 each have the named test (some fold into V1–V12;
+- **V13** `op:"list"` (A1): shape exact, ordering law holds, expired-cache
+  connector refreshes inline bounded while cached connectors don't wait;
+  grammar-gated tools (§4.2) absent.
+- **V14** invariants I1–I10 each have the named test (some fold into V1–V13;
   the mapping table is the reviewer's checklist).
 - Live acceptance (non-CI): filesystem MCP server (official reference) on
   the dev box + one remote demo server; PO-visible cards from web UI;
