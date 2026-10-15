@@ -1,6 +1,10 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v1.2** — under review. Not approved; not frozen.
+> Status: **FROZEN (v1.2) + PO SIGN-OFF (2026-10-15, chat record)** —
+> nine adversarial review rounds, dual lane (AGY hostile + fresh-context
+> delegate), final round zero blockers both lanes (§14 decisions PO-set,
+> below). Amendments A1–A8 apply to CUSTOS-SPEC in a follow-up docs PR
+> before the first implementation brief lands.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -967,21 +971,25 @@ input, replacing the v1 non-override R3);
 prompts-as-persona surface; MCP-server-mode export of Lararium's own
 tools; connector install flow (ARCHITECTURE's builder).
 
-## 14. Open questions — for the PO
+## 14. PO decisions (settled at G1, 2026-10-15)
 
-1. **Truncation vs refusal for over-cap results.** Recommend truncate +
-   marker (draft's behavior); refusal needs another frozen code.
-2. **Auto-approve `readOnlyHint == true` tools by default.** Recommend
-   **no** (R1 holds): annotations are self-reports; a PO who trusts a
-   server writes one `auto` rule.
-3. **Literal env values.** Recommend: accept + audit-warn (draft §3);
-   hard-ban only once vault UX covers CLI-app friction.
-4. **Both transports in v1 text, stdio first in builds.** Draft keeps one
-   contract so it can never fork; first implementation brief lands stdio,
-   second lands http on the same rail.
+1. **Over-cap results: truncate + marker.** Refusal rejected (would need
+   a new frozen code).
+2. **No auto-approve for `readOnlyHint == true`.** R1 holds: annotations
+   are server self-reports; trust is expressed with an explicit `auto`
+   rule, never a self-report.
+3. **Literal env values: accept + audit-warn** (§3). Hard-ban only once
+   vault UX covers CLI-app friction.
+4. **One v1 contract covering stdio + http.** First implementation
+   brief lands stdio; second lands http on the same rail. The contract
+   never forks.
 
 ## Changelog
 
+- v1.2 FROZEN: G1 signed off by the PO 2026-10-15 (chat record). §14
+  recorded as PO decisions (recommendations adopted as-is). Round-9
+  delegated lane returned zero blockers and independently verified the
+  AGY-driven v1.2 fixes — review closed.
 - v1.2: round-9 AGY-lane absorption (2 blockers + 2 nits):
   **§10 retraction** — the v1.1 entry's §10 pointer (and the v1.1 claim
   `DefaultAskHoldTimeout = 5s + DefaultWorkerExecTimeout`, which that
