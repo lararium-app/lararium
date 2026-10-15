@@ -1,7 +1,7 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v0.3** — under review. Not approved; not frozen.
-> Companion targets: CUSTOS-SPEC (amendments A1–A7 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
+> Status: **Draft v0.3.1** — under review. Not approved; not frozen.
+> Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
 ## 0. The problem
@@ -51,15 +51,18 @@ each owns its override explicitly):
   scrubbed (§2 P1). Read-only: no policy consult, no ask; cell token per
   existing lane rules. Cells MUST NOT render connector tool definitions
   from any other source.
-- **A2** — §5.1a (worker error contract), two changes: (i) the closed
+- **A2** — §5.1a (worker error contract), three changes: (i) the closed
   detail-template set gains exactly one constant — code `upstream`, detail
   `protocol violation` (constant; no status class, no server body, per the
   no-body rule) — because MCP JSON-RPC-level failures and rejected
   server-initiated requests have no HTTP status to class (§8.3); (ii) the
+  closed `denied` template set (frozen contents: exactly
+  `denied: approval`) gains exactly `denied: credential unavailable`, for
+  a credential removed between approval and execute (§8.3); (iii) the
   scrub scope gains **revoked-credential retention**: a credential removed
   from the vault remains in the scrubber's needle set until every in-flight
   worker call that could carry it has completed (in-memory tombstone,
-  never persisted; §6). Without (ii) revocation blinds the scrubber
+  never persisted; §6). Without (iii) revocation blinds the scrubber
   mid-flight.
 - **A3** — §3 (ctl.sock wire protocol) **and** §11 (ctl CLI): the socket
   verb set gains `MCP-STATUS <token>`, `MCP-TOOLS <token> <name>`,
@@ -235,11 +238,17 @@ same revalidation applies at Execute (§4.3).
   One `mcp_result_truncated` audit per call listing which paths ran. An
   empty result fits, so the loop terminates. The serialized output can
   never exceed the budget.
-- `text` block bodies are scrubbed against **that connector's own injected
-  credential values** before delivery (O(1) per-request scope, the
-  bearer-lane analogue; whole-vault scans stay on `detail` per §5.1a's
-  scope split). Custos never dereferences resource links or fetches blob
-  URIs.
+- **Scrub coverage = every string leaf of the delivered result** — text
+  block bodies AND `structuredContent` string leaves — against **that
+  connector's own injected credential values** before delivery (O(1)
+  per-request scope, the bearer-lane analogue; whole-vault scans stay on
+  `detail` per §5.1a's scope split). Base64 blocks (image/audio/resource
+  blobs) are opaque to substring scrubbing, so each is additionally
+  checked against the needles' base64 encodings at all three alignments;
+  a hit replaces the whole block (no mid-stream truncation of encoded
+  data) — this is what stops a stdio child, which legitimately holds the
+  injected secret in its env, from smuggling it back through a result
+  blob. Custos never dereferences resource links or fetches blob URIs.
 - `isError: true` is data, not a custody failure: the flag and (scrubbed,
   capped) content travel as the result. The frozen no-body rule governs
   error `detail` construction; a processed tool error is a result and the
@@ -277,13 +286,13 @@ tool's behalf, Gmail-style:
 - **http:** custos injects exactly one header, `Authorization` with the
   bearer value. Protocol headers the SDK sends (`Mcp-Method`, `Mcp-Name`,
   `MCP-Protocol-Version`) are the SDK's contract, not custos additions.
-- **Scrub retention (the leak window, amendment A2(ii)):** every injected
+- **Scrub retention (the leak window, amendment A2(iii)):** every injected
   value registers with the scrubber (scope: that connector for result
   bodies, §4.5; whole-set for `detail` per §5.1a) at injection and
   **stays registered until every in-flight call that could carry it has
   completed** — revocation removes the *source*, never early scrub
   coverage. The frozen scrubber derives needles from loaded vault
-  credentials, which revocation purges immediately; A2(ii)'s in-memory
+  credentials, which revocation purges immediately; A2(iii)'s in-memory
   tombstone is what makes this sentence implementable.
 - **Revocation:** on credential revoke (frozen KEYS/CUSTOS path) the
   connector transitions `disabled`, reason `credential_unavailable`; for
@@ -292,7 +301,7 @@ tool's behalf, Gmail-style:
   `/proc/<pid>/environ`; in-flight stdio calls settle `transport`
   (`connection failed before response`) per §7. For **http** in-flight
   requests complete and their bodies are scrubbed against the tombstoned
-  value (A2(ii)). New calls fail the frozen `denied: credential
+  value (A2(iii)). New calls fail the A2(ii) `denied: credential
   unavailable` path. Re-enable by `custos mcp refresh` after the
   credential is restored.
 - **Trust posture (stated plainly):** the stdio child runs at custosd's
@@ -357,7 +366,7 @@ interface methods Gmail does; nothing else in the order changes.
 | http 4xx / 5xx at transport level | `upstream` | `upstream returned 4xx` / `5xx` (frozen) |
 | execution or list deadline | `timeout` | `operation deadline exceeded` (frozen) |
 | JSON-RPC error response; protocol violation; MRTR/elicitation present | `upstream` | `protocol violation` (**A2**) |
-| credential missing at call | `denied` | `denied: credential unavailable` (frozen) |
+| credential missing at call | `denied` | `denied: credential unavailable` (A2(ii)) |
 
 `tools/call` with `isError: true` is NOT in this table — see §4.5 (it is a
 result, audited by the lane's `worker_call_allowed`). The rail emits no
@@ -432,8 +441,8 @@ when no hint is set.
   loopback/RFC1918 accepted; `https` accepted.
 - **I9** Revoke, stdio: credential revoked between approval and execute →
   child group dead; in-flight call settles `transport: connection failed
-  before response`; new calls `denied: credential unavailable`.
-- **I10** Revoke, http (A2(ii) tombstone): credential revoked while an
+  before response`; new calls `denied: credential unavailable` (A2(ii)).
+- **I10** Revoke, http (A2(iii) tombstone): credential revoked while an
   http call is in flight → that call completes; a response echoing the
   old value arrives scrubbed; after drain the connector is `disabled` and
   no new call can carry the value.
@@ -485,7 +494,9 @@ when no hint is set.
   with token framing incl. bad-token `ERR`; exact headers, tab-separated
   lines, CLI exit codes, unknown `<name>` (§9).
 - **V16** invariant probes, one named test each:
-  V16a I1 env-exact probe; V16b I2 sentinel-echo probe (all surfaces);
+  V16a I1 env-exact probe; V16b I2 sentinel-echo probe (all surfaces —
+  text, structuredContent leaf, stderr file, and base64 image-block echo
+  caught at all three alignments per §4.5);
   V16c I6 cap matrix (text-only / image-only / mixed 500+500 KiB /
   escape-heavy 768 KiB text); V16d I7 process-group probe; V16e I8
   loopback acceptance probe; V16f I9 stdio revoke probe; V16g I10 http
@@ -524,6 +535,11 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v0.3.1: independent round-1 reviewer's late findings — two still live:
+  `denied: credential unavailable` was mis-labeled frozen (§5.1a's only
+  denied template is `denied: approval`) → A2(ii) owns it; scrub scope
+  extended from text blocks to all result string leaves + three-alignment
+  base64 needle check on blobs. Others already superseded by v0.2/v0.3.
 - v0.3: round-2 absorption — credential-free connectors amended in (A7);
   audit kinds amended in (A8) and the duplicate per-call rail audit
   removed; A2(ii) tombstone makes scrub-retention implementable; A6 MUST +
