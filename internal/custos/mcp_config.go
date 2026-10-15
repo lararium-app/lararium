@@ -1,4 +1,3 @@
-// Package custos implements the credential custody vault core per CUSTOS-SPEC.
 package custos
 
 import (
@@ -272,16 +271,7 @@ func validateRawMCPEntries(rawEntries []rawMCPServerCfg) ([]MCPServerConfig, err
 		seenNames[raw.Name] = true
 
 		switch raw.Transport {
-		case "stdio", "http":
-			// valid transport
-		default:
-			return nil, &ConfigError{
-				Reason:  ReasonBadTransport,
-				Message: fmt.Sprintf("transport %q must be stdio or http", raw.Transport),
-			}
-		}
-
-		if raw.Transport == "stdio" {
+		case "stdio":
 			if raw.Command == "" {
 				return nil, &ConfigError{
 					Reason:  ReasonMissingKey,
@@ -291,7 +281,7 @@ func validateRawMCPEntries(rawEntries []rawMCPServerCfg) ([]MCPServerConfig, err
 			if err := validateExecutableCommand(raw.Command); err != nil {
 				return nil, err
 			}
-		} else if raw.Transport == "http" {
+		case "http":
 			if raw.URL == "" {
 				return nil, &ConfigError{
 					Reason:  ReasonMissingKey,
@@ -300,6 +290,11 @@ func validateRawMCPEntries(rawEntries []rawMCPServerCfg) ([]MCPServerConfig, err
 			}
 			if err := validateHTTPURL(raw.URL); err != nil {
 				return nil, err
+			}
+		default:
+			return nil, &ConfigError{
+				Reason:  ReasonBadTransport,
+				Message: fmt.Sprintf("transport %q must be stdio or http", raw.Transport),
 			}
 		}
 
@@ -523,35 +518,23 @@ func ParseConfig(data []byte) (*Config, error) {
 	}
 
 	if targetNode == nil {
-		hasConnectors := false
-		var mcpValueNode *yaml.Node
 		for i := 0; i < len(docNode.Content); i += 2 {
-			switch docNode.Content[i].Value {
-			case "connectors":
-				hasConnectors = true
-			case "mcp":
-				mcpValueNode = docNode.Content[i+1]
+			if docNode.Content[i].Value == "connectors" {
+				targetNode = docNode
+				break
 			}
 		}
-		if hasConnectors {
-			targetNode = docNode
-		} else if mcpValueNode != nil {
-			targetNode = &yaml.Node{
-				Kind: yaml.MappingNode,
-				Content: []*yaml.Node{
-					{Kind: yaml.ScalarNode, Value: "connectors"},
-					{
-						Kind: yaml.MappingNode,
-						Content: []*yaml.Node{
-							{Kind: yaml.ScalarNode, Value: "mcp"},
-							mcpValueNode,
-						},
-					},
-				},
-			}
-		} else {
-			targetNode = docNode
+	}
+	if targetNode == nil {
+		// No custos/connectors block at all: decode leniently —
+		// §3 strictness governs the custos subtree only, and a
+		// doc without one (e.g. hearth-only) must keep loading.
+		type plainCfg Config
+		if err := docNode.Decode((*plainCfg)(cfg)); err != nil {
+			return nil, fmt.Errorf("failed to decode config: %w", err)
 		}
+		cfg.Normalize()
+		return cfg, nil
 	}
 
 	if err := cfg.unmarshalNode(targetNode); err != nil {
