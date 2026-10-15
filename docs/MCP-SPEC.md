@@ -1,6 +1,6 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v1.0** — under review. Not approved; not frozen.
+> Status: **Draft v1.1** — under review. Not approved; not frozen.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -74,10 +74,21 @@ each owns its override explicitly):
   detail-template set gains exactly one constant — code `upstream`, detail
   `protocol violation` (constant; no status class, no server body, per the
   no-body rule) — because MCP JSON-RPC-level failures and rejected
-  server-initiated requests have no HTTP status to class (§8.3); the
-  frozen closed `worker_call_denied` **reason set (§8.1)** correspondingly
-  gains exactly `upstream`, which is what `ws.auditDenied` records for
-  `we.code` on this path; (ii) the
+  server-initiated requests have no HTTP status to class (§8.3). The
+  frozen closed `worker_call_denied` **reason set (§8.1)** gains **no**
+  value on this path: `upstream` is already a legal frozen audit reason —
+  frozen Gmail records it (`upstreamStatusError` →
+  `wErr(ErrCodeUpstream, …)` → `auditDenied(we.code)`, gmail.go) — so
+  what genuinely amends is the **detail-template** set above; `upstream`
+  is merely declared here as the reason `ws.auditDenied` records for
+  `we.code` on this new path. And — codifying existing frozen-code
+  behavior, erratum-style — `denied` is likewise **declared** a legal
+  reason value: frozen `worker.go` already feeds
+  `classifyWorkerError(…).code` (e.g. `denied` from
+  `detailDeniedCredGone`, Gmail-style credential-gone Execute errors)
+  into `auditDenied` as the reason; the spec codifies what the enum
+  already emits rather than pretending otherwise;
+  (ii) the
   frozen `denied` template set **already contains**
   `denied: credential unavailable` (`detailDeniedCredGone`, worker.go —
   it is what the frozen credential gate answers), so A2(ii) adds **no
@@ -148,7 +159,16 @@ each owns its override explicitly):
   law, quoted verbatim in A1; the rail claims nothing about — and can
   claim nothing about — the locked error code). A connector registered
   while locked simply sits `starting` with an empty catalog. An
-  empty-valued slot contributes no scrub needle. Consequences:
+  empty-valued slot contributes no scrub needle. **Occupancy refusal:**
+  if the vault already holds a **credential named** identically to a
+  rail connector, the rail does not co-own the name — before the
+  identity ensure, at first unlock (credential names enumerable only
+  unsealed), that connector transitions to `disabled`, state reason
+  `name_occupied` (§9): no ensure, no spawn, refusal persists across
+  lock/unlock cycles until config or vault changes (no new audit kind —
+  a lifecycle label, §9's doctrine). Otherwise `custos revoke <name>`
+  and bare `<name>` policy patterns would straddle a real secret and a
+  connector. Consequences:
   the frozen `GetCredential(conn.Credential())` never spuriously fails
   once unlocked. **Secrets are separate from the identity slot:**
   `${vault:<cred-id>}` references (§3) name their own secrets (e.g.
@@ -247,6 +267,10 @@ Rules:
 - `name` participates in tool naming (§4.2) and policy patterns; it MUST NOT
   contain `/`, MUST NOT collide with a built-in connector name (currently:
   gmail), and MUST NOT be the reserved rail namespace `custos` (§4.5).
+  A rail name that exists as a **vault credential name** is also not
+  ownable — but that collision is unenforceable at load time (a sealed
+  vault's names are encrypted and opaque, A7); it is refused at the first
+  unlock (§7 start gate; reason `name_occupied`, §9).
 - Loader rejects (named reason on stderr, exit non-zero — V2's table
   asserts each name): unknown keys
   (existing strictness, reason `unknown_key`); duplicate names
@@ -259,8 +283,10 @@ Rules:
   absolute existing executable (`bad_command`); `url` scheme `http` unless
   host is
   loopback/RFC1918 (mirrors the doors local-host doctrine; `https` always
-  permitted) (`bad_url`); `max_concurrent_calls` outside 1..16
-  (`bad_max_concurrent`).
+  permitted)  (`bad_url`); `max_concurrent_calls` outside 1..16
+  (`bad_max_concurrent`); `name` outside its grammar
+  `[a-z][a-z0-9_-]{0,31}` — the grammar already forbids `/` —
+  (`bad_name`).
 - Literal `env` values are accepted but audited once per connector start
   (`mcp_config_literal_env`, warning kind) — config is readable by anyone
   with repo access; `${vault:}` is the doctrine.
@@ -312,8 +338,16 @@ transitions the handle `starting → ready` (§7).
   name is ever served as bare `t-`.
 - Policy patterns address `<name>` (bare = whole connector) and
   `<name>/<tool>` (exact outranks bare — frozen tier law).
-- The custody card's `tool` field carries `<name>/<tool>`, matching the
-  frozen §6 example shape (`gmail/send`).
+- The rail does **not** qualify the custody card's `tool` field: frozen
+  `askCard` parks `path: tool` (bare `req.Tool`, worker.go) and the
+  frozen doors build the Always rule as `cred + "/" + path`
+  (doors.go) — for a rail call `cred` **is** `<name>`, so the store-always
+  pattern is exactly `<name>/<tool>`, the frozen §6.2 shape
+  (`gmail/send`). The card displays credential `<name>`, tool bare; the
+  §12 always-rule test asserts the stored pattern is 2-part — qualifying
+  `flow.path` would build `notes/notes/readfile` and make
+  `AddCredentialRule` reject with `ErrInvalidPattern` (policy.go). No
+  lane change (principle 4).
 - `Connector.Host()` for rail handles (frozen obligatory method; cards
   build `dest = host + ":" + tool`): **http** connector → URL hostname,
   same parse as Gmail's `Host()`; **stdio** connector → the connector
@@ -325,8 +359,8 @@ transitions the handle `starting → ready` (§7).
   have no name grammar to hide behind): `title` and `description` render
   as CR/LF/TAB → single space, other C0/C1 control characters removed,
   whitespace runs collapsed, then credential-scrub (§6), **then**
-  truncate to 120 runes with `…`
-  appended (scrub precedes truncation at every render site: a cut
+  truncate to 119 runes with `…` appended — total ≤120 runes **including**
+  the ellipsis (suffix budgeted, mirroring §4.5 step 3) (scrub precedes truncation at every render site: a cut
   **after** scrubbing can only split `[redacted]`, while a cut before it
   leaves a needle fragment the whole-needle scrubber can no longer
   match). Only the sanitized form is ever
@@ -418,9 +452,9 @@ is what step 2's "non-text block" quantifies over. The worker result is
      audit records A8's token names (`blocks_collapsed`,
      `text_truncated`, `structuredContent_dropped`) — the display strings
      in steps 2–4 are content, not audit vocabulary. One
-     `mcp_result_truncated` audit per call that fired any of **steps
-     1–5** (never on a result already within budget). **Step 0 (scrub)
-     never triggers it**: A8's `mcp_result_truncated` records shrink
+     `mcp_result_truncated` audit per call that fired any of the
+     **shrinking steps 2–4** (never on a result already within budget).
+     **Step 0 (scrub) and the measure-only steps 1/5 never trigger it**: A8's `mcp_result_truncated` records shrink
      events only (`names` ∈ the three tokens); a scrub-only call —
      under budget, redactions made — carries **no** truncation audit. `op:"list"` responses honor the
      same budget: **first reserve the marker row's serialized size** (its
@@ -594,7 +628,10 @@ States (closed): `starting | ready | backoff | disabled`.
   (`${vault:}` env, bearer) live behind the vault, dispatch is refused at
   the frozen locked gate anyway, and a sealed vault must never be
   consulted for lazy resolution (§3). Connectors registered while locked
-  sit `starting` (A7). On first unlock: ensure the identity slot (A7),
+  sit `starting` (A7). On first unlock: apply the A7 **occupancy
+  refusal** (rail name held as a vault credential name → `disabled`,
+  reason `name_occupied`, no ensure/spawn), then ensure the identity
+  slot (A7),
   then per connector: spawn (stdio) and first `tools/list` within
   `list_timeout`
   (default 30 s; covers child readiness — the `2026-07-28` core needs no
@@ -609,11 +646,12 @@ States (closed): `starting | ready | backoff | disabled`.
   (`connection failed before response`). Custos never retries (the
   at-least-once decision belongs to the caller's turn).
 - **Every exit from a live-child state** — shutdown, revocation,
-  `list_timeout`, restart-budget exhaustion — kills the child's own
+  `list_timeout`, child crash while `ready` — kills the child's own
   process **group** (spawn uses `Setpgid`), SIGTERM → 5 s → SIGKILL,
   **before** the state transition completes: a hung probe child never
-  sits in `backoff` still running, so the five restarts/hour can never
-  accumulate process groups (I7; no orphan grandchildren).
+  sits in `backoff` still running, and crash-cleanup reaps the group
+  (no orphan grandchildren), so the five restarts/hour can never
+  accumulate process groups (I7).
 - http: same state machine minus spawn. Three consecutive transport
   failures → `backoff`; 401/403 → `disabled` with reason `auth_failed`
   (never hammer an auth server).
@@ -701,8 +739,10 @@ the CLI renders them into §11-style line-oriented tables (tab-separated,
 header-declared order, no decoration) — line-oriented governs **stdout**,
 not the socket. No secret material ever. Closed sets: `state` per §7;
 `reason ∈ ok | auth_failed | spawn_failed | list_timeout | protocol |
-`credential_unavailable` — the MCP-STATUS state-reason column, a distinct
-namespace from audit reasons (§8.4); `flags` = comma-joined subset of
+transport | name_occupied | credential_unavailable` — the MCP-STATUS state-reason column,
+a distinct namespace from audit reasons (§8.4); `transport` covers §7's
+transport-failure backoff and the "else last reason" on budget exhaust;
+`flags` = comma-joined subset of
 `read_only | destructive | open_world` (annotation-derived) in the fixed
 canonical order `read_only,destructive,open_world` — set members omitted
 when absent, so output is byte-stable — or `none` when no hint is set.
@@ -723,7 +763,11 @@ covers changes to it.
   `mark3labs/mcp-go` (MIT), same pin + license-record rule.
 - Frozen constants this spec cites (verified in tree):
   `workerMaxLineBytes = 1 << 20` (internal/custos/worker.go),
-  `DefaultWorkerExecTimeout = 60s` (internal/custos/config.go), frozen
+  `DefaultWorkerExecTimeout = 60s` (internal/custos/config.go — the
+  config-load defaults block, `defaultString(root["worker_exec_timeout"], …)`,
+  not a `Config` struct member; its coupling matters:
+  `DefaultAskHoldTimeout = 5s + DefaultWorkerExecTimeout`, worker.go —
+  any §7 budget test anchors there), frozen
   detail-template block (internal/custos/worker.go §5.1a const set).
 
 ## 11. Security invariants (each maps to a test in §12)
@@ -782,7 +826,10 @@ covers changes to it.
   its empty vault slot **once per process** (locked boot: rail never
   touched — dispatch dies at the frozen locked gate `locked` before any
   connector lookup, both `op:"call"` and `op:"list"`; no vault write is
-  ever attempted while sealed); rules keyed to the connector name match
+  ever attempted while sealed); a rail name already held as a **vault
+  credential name** → `disabled` / `name_occupied` at first unlock, no
+  ensure, no spawn (load-time refusal not claimed — names opaque sealed);
+  rules keyed to the connector name match
   (`filesystem deny` denies every rail tool of `filesystem`; an `always`
   verdict on `filesystem/read_file` writes exactly
   `filesystem/read_file auto`, never `none/…` or a cred-less rule);
@@ -876,7 +923,11 @@ covers changes to it.
   group death, **latch across lock/unlock**); V16g I10 http
   snapshot-echo probe; V16h I12 placeholder probe; V16i I13
   identity-slot probe (both kill-switches, locked boot answered by the
-  frozen locked gate before any rail code, latch), **plus the §7 Start
+  frozen locked gate before any rail code, latch, **occupancy subtest
+  with vault unlocked**: vault credential `notes` + rail connector
+  `notes` → `disabled`/`name_occupied`, rail never ensures, spawns, or
+  overwrites — the user's secret value is bit-identical after the
+  attempted start), **plus the §7 Start
   gate: a stdio fixture child never spawns before the first unlock (no
   pid exists while sealed) and reaches `ready` on unlock — including a
   config whose `${vault:}` env is unsatisfiable while sealed**);
@@ -885,10 +936,10 @@ covers changes to it.
   get canonical `keyNameRe` names, `op:"call"` round-trips the raw wire
   name, and `always` on each stores an exact rule with no
   `ErrInvalidPattern`.
-- Invariant map (reviewer checklist): I1→V16a, I2→V16b+V16j, I3→V3+V16l,
-  I4→V6,
-  I5→V10, I6→V16c+V16k, I7→V16d, I8→V2+V16e, I9→V16f, I10→V16g, I11→V10,
-  I12→V16h, I13→V16i.
+- Invariant map (reviewer checklist): I1→V16a, I2→V16b+V16j+V16n,
+  I3→V3+V16l, I4→V6,
+  I5→V10, I6→V16c+V16k+V16m, I7→V16d, I8→V2+V16e, I9→V16f, I10→V16g,
+  I11→V10, I12→V16h, I13→V16i.
 - Live acceptance (non-CI): the official filesystem MCP server on the dev
   box; one remote Streamable-HTTP demo server; cards rendered from the
   web UI; kill -9 churn soak.
@@ -919,6 +970,32 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v1.1: round-8 absorption (both lanes; AGY 4 blockers/3 nits + delegate
+  2 blockers/3 nits, one overlap): **audit-vocabulary honesty** — A2(i)
+  no longer claims the §8.1 reason set "gains" `upstream`: frozen Gmail
+  already records it (gmail.go `upstreamStatusError`→`auditDenied(we.code)`);
+  `upstream` and `denied` are both **declared** (erratum-style) as legal
+  values the frozen code already emits, and the real amendment is the
+  `protocol violation` detail template (§8.3, V9). **Card `tool`
+  doctrine corrected** — frozen askCard parks the bare tool
+  (worker.go `path: tool`) and doors builds the always-rule as
+  `cred + "/" + path` (doors.go), so rail cards display bare tool and
+  store-always writes exactly `<name>/<tool>`; qualifying `flow.path`
+  would produce `ErrInvalidPattern` 3-part rejects (§4.2).
+  **Occupancy refusal (I13/V16i):** a rail name already held as a vault
+  credential name is refused at first unlock — `disabled` / new §9 state
+  reason `name_occupied`, no ensure/spawn, user's secret untouched;
+  load-time refusal abandoned as impossible (sealed names opaque, §3
+  cites A7). §9 state-reason set gains `transport` (was used by §7 but
+  undeclared). Title truncation off-by-one fixed (119 runes + `…` ≤ 120,
+  suffix-budgeted like §4.5 step 3, V16j/n aligned). Loader names
+  `bad_name` (9th reason, V2 table). Truncation audit fires on shrinking
+  steps **2–4** only (1/5 are measure-only; step 0 never). Live-child
+  kill list: `restart-budget exhaustion` → **child crash** (budget
+  exhaust fires during backoff with no child). §10 pointer fixed:
+  `DefaultWorkerExecTimeout` is the config-load defaults block, coupled
+  `DefaultAskHoldTimeout = 5s + 60s` (worker.go) — anchor for §7 budget
+  tests. V16m/V16n joined the invariant map.
 - v1.0: round-7 absorption (AGY convergence pass on v0.8; 7 blockers —
   1 pre-fixed in v0.9 (op:list marker reserve), 6 fixed here — plus 3
   nits): Execute-entry kill audits under the **frozen reason `denied`**
