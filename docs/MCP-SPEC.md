@@ -1,6 +1,6 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v0.9** — under review. Not approved; not frozen.
+> Status: **Draft v1.0** — under review. Not approved; not frozen.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -66,9 +66,10 @@ each owns its override explicitly):
   implements it with its static tool table; WorkerServer's `op:"list"`
   answer = rail snapshots ∪ assertion results from non-rail connectors
   (connector order: names sorted). Connectors that don't implement it
-  contribute nothing. First-party cells render connector tool definitions
-  only from this response (normative for first-party cells; custo cannot
-  constrain third-party guest internals — see §2 P1).
+  contribute nothing. First-party cell implementations MUST render
+  connector tool definitions only from this response — a design
+  obligation on first-party cell code, testable there; custo cannot
+  enforce any guest's internals, first- or third-party (see §2 P1).
 - **A2** — §5.1a (worker error contract), three changes: (i) the closed
   detail-template set gains exactly one constant — code `upstream`, detail
   `protocol violation` (constant; no status class, no server body, per the
@@ -118,9 +119,10 @@ each owns its override explicitly):
   writes an exact `auto` rule on `<connector>/<tool>` as frozen — and the
   rail **MUST** revoke that auto rule (audited, never silently) when the
   tool's fingerprint changes (§8.2). Fingerprint: SHA-256 over RFC 8785
-  (JCS) canonicalization of `{name, description, inputSchema,
-  annotations}` — description text is covered, so a vendor editing
-  prompt-visible prose invalidates standing approval. Implementation
+  (JCS) canonicalization of `{name, title, description, inputSchema,
+  annotations}` — title and description text are covered, so a vendor
+  editing prompt-visible prose or the card-visible title invalidates
+  standing approval. Implementation
   shape: frozen `PolicyEngine.RemoveRule` hardcodes `policy_written` and
   cannot carry A8's payload, so revocation goes through an unexported
   variant `removeRuleWithAudit(lane, pattern, actor, kind, tool, cred)`;
@@ -245,15 +247,20 @@ Rules:
 - `name` participates in tool naming (§4.2) and policy patterns; it MUST NOT
   contain `/`, MUST NOT collide with a built-in connector name (currently:
   gmail), and MUST NOT be the reserved rail namespace `custos` (§4.5).
-- Loader rejects (named reason on stderr, exit non-zero): unknown keys
-  (existing strictness); duplicate names; `name` colliding with a built-in
+- Loader rejects (named reason on stderr, exit non-zero — V2's table
+  asserts each name): unknown keys
+  (existing strictness, reason `unknown_key`); duplicate names
+  (`duplicate_name`); `name` colliding with a built-in
   connector or equal to reserved `custos` (reason `reserved_name` — the
   only way the §4.5 truncation-marker namespace stays unspoofable);
   `transport` other than
-  `stdio|http`; missing per-transport required keys; `command` not an
-  absolute existing executable; `url` scheme `http` unless host is
+  `stdio|http` (`bad_transport`); missing per-transport required keys
+  (`missing_key`); `command` not an
+  absolute existing executable (`bad_command`); `url` scheme `http` unless
+  host is
   loopback/RFC1918 (mirrors the doors local-host doctrine; `https` always
-  permitted); `max_concurrent_calls` outside 1..16.
+  permitted) (`bad_url`); `max_concurrent_calls` outside 1..16
+  (`bad_max_concurrent`).
 - Literal `env` values are accepted but audited once per connector start
   (`mcp_config_literal_env`, warning kind) — config is readable by anyone
   with repo access; `${vault:}` is the doctrine.
@@ -401,7 +408,7 @@ is what step 2's "non-text block" quantifies over. The worker result is
   1. serialize; if ≤ budget, done;
   2. replace the largest remaining non-text `content` block with the text block `{"type": "text", "text": "[content omitted by custos]"}` — only if that strictly shrinks the whole;
   3. truncate the largest `text` block body, appending the inline suffix `" [truncated by custos]"` (budgeting for the suffix itself) — only if strictly shrinkable; repeat 2–3 largest-first;
-  4. **no-progress floor:** drop `structuredContent` to `null` if present, and replace the entire `content` array with one text block `"[content collapsed by custos]"`. This catches every deadlock the round-4/5 reviews found: framing-only overflow (thousands of `{type,text:""}` blocks), a `structuredContent`-only breach, and (with closed parsing above) extension-field payloads such as a multi-megabyte `_meta` — nothing outside the declared struct survives parsing, so the floor's serialization is a true upper bound;
+  4. **no-progress floor:** drop `structuredContent` to `null` if present, and replace the entire `content` array with one typed text block `{"type": "text", "text": "[content collapsed by custos]"}`. This catches every deadlock the round-4/5 reviews found: framing-only overflow (thousands of `{type,text:""}` blocks), a `structuredContent`-only breach, and (with closed parsing above) extension-field payloads such as a multi-megabyte `_meta` — nothing outside the declared struct survives parsing, so the floor's serialization is a true upper bound;
   5. re-serialize and re-measure after each action. Step 4's state is
      one collapsed text block with `structuredContent: null` — a fixed,
      tiny serialization well under budget — so at most one further
@@ -411,8 +418,11 @@ is what step 2's "non-text block" quantifies over. The worker result is
      audit records A8's token names (`blocks_collapsed`,
      `text_truncated`, `structuredContent_dropped`) — the display strings
      in steps 2–4 are content, not audit vocabulary. One
-     `mcp_result_truncated` audit per call that fired any step (never on
-     a result already within budget). `op:"list"` responses honor the
+     `mcp_result_truncated` audit per call that fired any of **steps
+     1–5** (never on a result already within budget). **Step 0 (scrub)
+     never triggers it**: A8's `mcp_result_truncated` records shrink
+     events only (`names` ∈ the three tokens); a scrub-only call —
+     under budget, redactions made — carries **no** truncation audit. `op:"list"` responses honor the
      same budget: **first reserve the marker row's serialized size** (its
      shape is fixed — budget it conservatively), then drop tail entries
      until the total is ≤ budget − reserve, then append **one
@@ -423,10 +433,14 @@ is what step 2's "non-text block" quantifies over. The worker result is
      fail `json.Unmarshal` into `[]ToolInfo`). `custos` is therefore a
      **reserved connector name**: a config entry with `name: custos` is
      a loader error. The serialized output can never exceed the budget.
-- **Scrub coverage = every string in the delivered result** — text
-  block bodies AND, inside `structuredContent`, **object keys as well as
-  string values, recursively** (a hostile server may echo a needle as a
-  property name; keys are strings too) — against **that
+- **Scrub coverage = every string in the delivered result** — every
+  string member of every recognized block that survived parse,
+  recursively: text block bodies, `resource.resource.text`,
+  `resource.resource.uri`, `resource_link.uri`, image/audio metadata
+  strings (their base64 payloads are handled by the base64 rule below)
+  — **and** inside `structuredContent`, object keys as well as string
+  values (a hostile server may echo a needle as a property name; keys
+  are strings too) — against **that
   connector's own injected credential values**. Scrubbing is **step 0 of
   the §4.5 converge loop, before the first budget measurement**: needle
   replacement can expand bytes (8-byte needle → `[redacted]` is +2 per
@@ -439,14 +453,19 @@ is what step 2's "non-text block" quantifies over. The worker result is
   `detail` per §5.1a's scope split). Base64 blocks (image/audio/resource
   blobs) are opaque to substring scrubbing, so each is additionally
   checked against the needles' base64 encodings at all three alignments;
-  a hit replaces the whole block (no mid-stream truncation of encoded
-  data) — this is what stops a stdio child, which legitimately holds the
+  a hit replaces the whole block with the typed text block
+  `{"type": "text", "text": "[redacted]"}` (no mid-stream truncation of
+  encoded data) — this is what stops a stdio child, which legitimately holds the
   injected secret in its env, from smuggling it back through a result
   blob. Custos never dereferences resource links or fetches blob URIs.
   **Decode-or-replace rule:** every base64 block is additionally
   decoded and its **decoded payload** substring-matched against the
   needles; a hit — or a base64-encoding alignment hit — replaces the
-  whole block. Decoding after re-encode closes the non-canonical
+  whole block with the typed text block. **Decode failure fails
+  closed:** a block the strict decoder cannot parse is replaced with
+  the typed text block too — a lenient downstream parser may decode
+  what we could not, so no opaque blob survives scrubbing on a decoder
+  disagreement. Decoding after re-encode closes the non-canonical
   variants (alternative alphabets, dropped/permuted padding) that an
   alignments-only check misses. Deliberately fragmented or transformed
   (e.g. reversed, XOR-wrapped) smugglings are out of scope v1 and
@@ -517,7 +536,10 @@ tool's behalf, Gmail-style:
   connector-state gate, and its credential gate consults only the
   *identity* slot, which survives a referenced-secret delete. `Execute`
   checks state first and answers `denied` (detail
-  `denied: credential unavailable`; audit reason `credential_unavailable`)
+  `denied: credential unavailable`; the audit record is the frozen
+  `auditDenied(we.code)` → reason **`denied`** — the rail cannot inject
+  a custom reason without amending worker.go, and the detail string is
+  the identifying signal)
   before any spawn or upstream request. A frozen ask card may still be
   presented and approved (the state check runs after the frozen policy
   and card gates) — it is inert: approval buys no wire effect; **(b)** for **stdio**, kills the
@@ -586,8 +608,12 @@ States (closed): `starting | ready | backoff | disabled`.
 - Crash with calls in flight: those calls → `transport`
   (`connection failed before response`). Custos never retries (the
   at-least-once decision belongs to the caller's turn).
-- Shutdown / revocation: kill the child's own process **group** (spawn
-  uses `Setpgid`), SIGTERM → 5 s → SIGKILL; no orphan grandchildren (I7).
+- **Every exit from a live-child state** — shutdown, revocation,
+  `list_timeout`, restart-budget exhaustion — kills the child's own
+  process **group** (spawn uses `Setpgid`), SIGTERM → 5 s → SIGKILL,
+  **before** the state transition completes: a hung probe child never
+  sits in `backoff` still running, so the five restarts/hour can never
+  accumulate process groups (I7; no orphan grandchildren).
 - http: same state machine minus spawn. Three consecutive transport
   failures → `backoff`; 401/403 → `disabled` with reason `auth_failed`
   (never hammer an auth server).
@@ -599,10 +625,13 @@ Rail calls travel the frozen dispatch order (locked → unknown_connector →
 unknown_tool → policy → ask → execute). The rail supplies the same seven
 interface methods Gmail does; nothing else in the order changes.
 **Canonical wire codes:** every denial a cell sees carries wire code
-`denied` plus a detail string; names like `credential_gone` and
-`credential_unavailable` are **audit-reason labels, never wire codes**
-(the frozen credential gate answers `denied` / detail
-`denied: credential unavailable`, audit reason `credential_gone`).
+`denied` plus a detail string. `credential_gone` is a **frozen
+audit-reason** the credential gate itself records (that gate answers
+`denied` / detail `denied: credential unavailable`);
+`credential_unavailable` is **not an audit reason at all** — it lives
+only in the MCP-STATUS state-reason column (§9). The Execute-entry kill
+(§6) audits under the frozen reason `denied`; nothing on the rail path
+invents reasons.
 Invariant shorthand like "answers `credential_gone`" means exactly that
 triple.
 
@@ -714,8 +743,8 @@ covers changes to it.
 - **I4** Default ask: fresh rail tool, no rule → dispatch parks an ask;
   `deny` on bare `<name>` covers tools added by later refreshes.
 - **I5** Always scoping (A6): `always` binds exactly `<name>/<tool>`;
-  fingerprint change (including description-only edits, per the JCS
-  fingerprint) MUST revoke it (audit); siblings unaffected.
+  fingerprint change (including description- or title-only edits, per
+  the JCS fingerprint) MUST revoke it (audit); siblings unaffected.
 - **I6** Serialized cap: the converge loop keeps FINAL serialized bytes
   ≤ 768 KiB in every mix (text-only, image-only, mixed, escape-heavy
   text; measured **post-scrub** — scrubbing is step 0, so needle-replacement
@@ -890,6 +919,26 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v1.0: round-7 absorption (AGY convergence pass on v0.8; 7 blockers —
+  1 pre-fixed in v0.9 (op:list marker reserve), 6 fixed here — plus 3
+  nits): Execute-entry kill audits under the **frozen reason `denied`**
+  (worker.go records `we.code`; `credential_unavailable` is a
+  MCP-STATUS state-reason only, never an audit reason — §6/§8.1
+  corrected, detail string is the identifying signal); base64
+  replacement object pinned to the typed text block and **decode
+  failure fails closed** (no opaque blob survives decoder disagreement);
+  `mcp_result_truncated` fires on steps 1–5 only — scrub-only calls are
+  not shrink events (A8 token set honored); scrub coverage extended to
+  **every string member of every surviving block** (`resource.text`,
+  resource URIs, metadata strings) not just text bodies; §3 rejection
+  rules all carry named reasons for V2's table (`unknown_key`,
+  `duplicate_name`, `bad_transport`, `missing_key`, `bad_command`,
+  `bad_url`, `bad_max_concurrent`); **every exit from a live-child
+  state kills the process group first** — `list_timeout` can no longer
+  accumulate hung children through backoff restarts (I7); `title` added
+  to the A6 fingerprint set + I5; A1's cell-render obligation scoped
+  honestly (design obligation, testable in first-party code, not
+  enforceable over a socket); step-4 collapse block typed.
 - v0.9: round-6 delegated-lane absorption (late-arriving fresh-eyes pass
   on v0.6; 4 blockers — 3 already shipped as v0.8 R6-2/R6-3/R6-5 — 2 new
   blockers + 3 new nits fixed here) — §4.5 closed parse and §8.4 MRTR
