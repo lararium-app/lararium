@@ -1,6 +1,6 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v0.8** — under review. Not approved; not frozen.
+> Status: **Draft v0.9** — under review. Not approved; not frozen.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -77,9 +77,11 @@ each owns its override explicitly):
   frozen closed `worker_call_denied` **reason set (§8.1)** correspondingly
   gains exactly `upstream`, which is what `ws.auditDenied` records for
   `we.code` on this path; (ii) the
-  closed `denied` template set (frozen contents: exactly
-  `denied: approval`) gains exactly `denied: credential unavailable`, for
-  a credential removed between approval and execute (§8.3); (iii) the
+  frozen `denied` template set **already contains**
+  `denied: credential unavailable` (`detailDeniedCredGone`, worker.go —
+  it is what the frozen credential gate answers), so A2(ii) adds **no
+  template**: the rail's `Execute`-entry denial (§6) reuses that exact
+  frozen detail string; (iii) the
   scrub scope gains **revoked-credential retention**: needles are
   snapshotted **per call at injection time** and held by that call's
   context until the call completes — values injected into a call stay
@@ -315,8 +317,12 @@ transitions the handle `starting → ready` (§7).
 - **Title/description sanitization at catalog ingestion** (server strings
   have no name grammar to hide behind): `title` and `description` render
   as CR/LF/TAB → single space, other C0/C1 control characters removed,
-  whitespace runs collapsed, then truncate to 120 runes with `…`
-  appended, then credential-scrub (§6). Only the sanitized form is ever
+  whitespace runs collapsed, then credential-scrub (§6), **then**
+  truncate to 120 runes with `…`
+  appended (scrub precedes truncation at every render site: a cut
+  **after** scrubbing can only split `[redacted]`, while a cut before it
+  leaves a needle fragment the whole-needle scrubber can no longer
+  match). Only the sanitized form is ever
   stored or displayed, so no server string can forge a line-oriented ctl
   frame, split a TSV column, or smuggle prompt markdown that survives to
   cards. custo never dereferences server-supplied URIs.
@@ -376,8 +382,10 @@ same revalidation applies at Execute (§4.3).
 
 ### 4.5 Execute and result budget
 `tools/call` with the decoded args. **Closed result parsing:** the rail
-parses the MCP result into the declared members only — `content`,
-`structuredContent`, `isError` — and re-serializes from that struct;
+parses the MCP result into four declared members only — `content`,
+`structuredContent`, `isError`, and the optional `resultType` (the §8.4
+MRTR discriminator: inspected at parse, **never forwarded** — the worker
+result struct has no such member) — and re-serializes from that struct;
 unknown top-level members (`_meta` and any extension field) are
 **discarded at parse and never forwarded**. Inside `content`, only the
 recognized block types `text | image | audio | resource_link | resource`
@@ -405,7 +413,9 @@ is what step 2's "non-text block" quantifies over. The worker result is
      in steps 2–4 are content, not audit vocabulary. One
      `mcp_result_truncated` audit per call that fired any step (never on
      a result already within budget). `op:"list"` responses honor the
-     same budget: drop tail entries until ≤ budget, then append **one
+     same budget: **first reserve the marker row's serialized size** (its
+     shape is fixed — budget it conservatively), then drop tail entries
+     until the total is ≤ budget − reserve, then append **one
      marker row that is a valid `ToolInfo` triple** —
      `{connector: "custos", name: "truncated", title: "[truncated by
      custos — N more tools]"}` — so typed unmarshaling of the tools
@@ -458,7 +468,9 @@ Per frozen §6.4 the review line carries **declared schema fields**; MCP
 servers declare no Lararium review fields, so the rail declares them on the
 tool's behalf, Gmail-style:
 - Up to 3 top-level scalar args (string/number/boolean), in
-  `key=value, key=value` form, each value truncated at 96 runes, scrubbed
+  `key=value, key=value` form, each value scrubbed **then** truncated at
+  96 runes (scrub-first law, §4.2 — truncation must never precede
+  scrubbing)
   (§2 P1, §6); total ≤512 runes; unparseable args → `"?"` (frozen Gmail
   fallback shape). Structured args are named only: `arg=…`.
 - **A5 prefix**: `⚠ destructive ` when `destructiveHint == true`.
@@ -631,8 +643,9 @@ every call result; on `input_required` (or any inbound server-initiated
 request on legacy revisions, which the SDK surfaces) it performs no
 follow-up exchange and the worker call fails
 `upstream` / `protocol violation`, audited with reason `upstream`
-(A2(i); `protocol` names only rail-internal state in §9, never an audit
-reason). No card is raised (v1).
+(A2(i); `protocol` appears only as the §9 MCP-STATUS **state-reason**
+column — a lifecycle label, distinct namespace from audit reasons; the
+audit reason on this path is `upstream`). No card is raised (v1).
 
 ## 9. ctl verbs (amendment A3)
 
@@ -651,13 +664,16 @@ CLI:    custos mcp status | tools <name> | refresh <name>   (renders the
         JSON as tables; refresh exit 0 = refreshed, 1 + stderr reason)
 ```
 Socket responses are the frozen **single-line `OK <json>` / `ERR <reason>`
-frames** `CtlClient.RoundTrip` mandates (one line, `OK `-prefixed — raw
-TSV headers on the wire would die in its `unexpected response` branch);
+frames** `CtlClient.RoundTrip` mandates (one line, `OK `-prefixed;
+RoundTrip passes any other line through verbatim as body, so a multi-line
+payload would break the client's frame contract before the caller ever
+sees it);
 the CLI renders them into §11-style line-oriented tables (tab-separated,
 header-declared order, no decoration) — line-oriented governs **stdout**,
 not the socket. No secret material ever. Closed sets: `state` per §7;
 `reason ∈ ok | auth_failed | spawn_failed | list_timeout | protocol |
-`credential_unavailable`; `flags` = comma-joined subset of
+`credential_unavailable` — the MCP-STATUS state-reason column, a distinct
+namespace from audit reasons (§8.4); `flags` = comma-joined subset of
 `read_only | destructive | open_world` (annotation-derived) in the fixed
 canonical order `read_only,destructive,open_world` — set members omitted
 when absent, so output is byte-stable — or `none` when no hint is set.
@@ -813,6 +829,10 @@ covers changes to it.
   V16j title-injection fixture — a tool `title` carrying CR/LF/TAB,
   control characters, and a sentinel renders sanitized (single-line,
   ≤120 runes, scrubbed) in `op:"list"`, `MCP-TOOLS`, and cards (§4.2);
+  **V16n** scrub-before-truncate law: a title/arg value with a sentinel
+  straddling the 120-rune (title) or 96-rune (review-line) cut renders
+  with **no needle fragment** on either side of the `…` (§4.2/§5 —
+  truncation after scrub may only split `[redacted]`);
   V16k catalog overflow — a 10k-tool server with 5 KB titles answers
   `op:"list"` within the serialized budget, tail-dropped with the
   `custos/truncated` marker row, and the response unmarshals cleanly
@@ -870,6 +890,25 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v0.9: round-6 delegated-lane absorption (late-arriving fresh-eyes pass
+  on v0.6; 4 blockers — 3 already shipped as v0.8 R6-2/R6-3/R6-5 — 2 new
+  blockers + 3 new nits fixed here) — §4.5 closed parse and §8.4 MRTR
+  reconciled: `resultType` is the fourth declared member (inspected at
+  parse, never forwarded; previously closed parsing would have dropped
+  the discriminator before §8.4 could see it); **scrub-before-truncate
+  law** at every render site (§4.2 title/description, §5 review values —
+  a cut before scrubbing left needle fragments outside whole-needle
+  matching; V16n probe); A2(ii) honesty — the frozen template set
+  already contains `denied: credential unavailable`
+  (`detailDeniedCredGone`), so the amendment adds no template, only a
+  new call site for the existing string; `protocol` disambiguated as the
+  MCP-STATUS **state-reason** column (distinct namespace from audit
+  reasons — §8.4 and §9 said contradictory things about the closed
+  sets); `op:"list"` truncation marker size **reserved before** the
+  tail-drop loop (post-append response can no longer overshoot budget);
+  §9's stale "`unexpected response` branch" citation removed (RoundTrip
+  passes unknown lines through verbatim — frame contract, not error
+  branch).
 - v0.8: round-6 absorption (AGY convergence pass on v0.6; 6 blockers,
   4 nits, all confirmed against v0.7 and fixed) — §3 loader rejection
   list now includes `reserved_name` (the `custos` reservation lived only
