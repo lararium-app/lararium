@@ -120,6 +120,42 @@ docker compose exec hearthd hearthd token create me
 
 The command prints a ready URL to open in a browser (shown once).
 
+### Choosing a provider
+
+Pick the model endpoint at any time with the setup wizard — hosted keys
+(OpenRouter, OpenAI, Anthropic, &c.), a custom OpenAI-compatible base URL, or scan for a
+local server:
+
+```bash
+docker compose exec -it hearthd hearthd setup
+```
+
+It writes to `config/lararium.yaml` and is safe to re-run. The image entrypoint launches the
+same wizard on a first run when the container is attached to a terminal; `docker compose up`
+does not allocate one, so on a fresh compose install the command above is how you configure
+the provider.
+
+### Reaching the chat from another machine
+
+By default the door is published on `127.0.0.1:7717` **only** — it is not reachable from
+other devices on purpose. To expose it on your tailnet or LAN, change the port mapping in
+`docker-compose.yml` from `127.0.0.1:7717:7717` to `<host-ip>:7717:7717` (or drop the
+`127.0.0.1:` prefix for all interfaces, not recommended outside a tailnet), then **tell the
+Host gate the address you'll use**. The gate rejects any request whose `Host` header isn't
+loopback or in the allow-list — a DNS-rebinding defense — and returns `403 {"error":"forbidden"}`.
+Add that address to `serve.allowed_hosts` in `config/lararium.yaml`:
+
+```yaml
+serve:
+  listen: "0.0.0.0:7717"
+  allowed_hosts: ["localhost", "127.0.0.1", "[::1]", "100.121.44.7"]  # + your reach-in address
+```
+
+Then `docker compose restart` and open `http://<host-ip>:7717/#<token>`. The scheme is
+plain `http` (TLS is your reverse proxy's job); a ready URL from `token create` prints with
+`http://`. If you still see `{"error":"forbidden"}`, the `Host` you're typing isn't in
+`allowed_hosts` yet.
+
 Build from source with Go 1.26+ (`go build ./cmd/hearthd && go test
 ./...`); run `./hearthd` for the REPL or `./hearthd serve` for the web
 door. Native Linux/WSL2 installs additionally get the `cell` sandbox —
