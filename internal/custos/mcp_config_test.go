@@ -811,3 +811,19 @@ custos:
 		})
 	}
 }
+
+// TestLenientDocWithoutCustosBlock pins that §3 strictness is scoped to
+// the custos subtree: a doc with neither custos: nor connectors:
+// (e.g. hearth-only) must keep loading leniently, as before G2a.
+func TestLenientDocWithoutCustosBlock(t *testing.T) {
+	cfg, err := custos.ParseConfig([]byte(`
+hearth:
+  state_dir: /var/lib/lararium
+`))
+	if err != nil {
+		t.Fatalf("hearth-only doc rejected: %v", err)
+	}
+	if len(cfg.Connectors.MCP) != 0 {
+		t.Fatalf("unexpected connectors: %+v", cfg.Connectors.MCP)
+	}
+}
