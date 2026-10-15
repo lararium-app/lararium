@@ -1,6 +1,6 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **Draft v0.2** — under review. Not approved; not frozen.
+> Status: **Draft v0.3** — under review. Not approved; not frozen.
 > Companion targets: CUSTOS-SPEC (amendments A1–A7 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -20,8 +20,10 @@ payloads through the custody envelope.
 **In:** the MCP **client lane only** — Custos is a client; cells never speak
 MCP directly.
 - Transports: **stdio** (spawned child process) and **Streamable HTTP**
-  (remote server). Legacy HTTP+SSE: rejected at config load (deprecated
-  upstream with a fixed offramp; we do not adopt deprecated surfaces).
+  (remote server). Legacy HTTP+SSE is not offered (`transport` is a closed
+  enum `stdio|http` — the loader cannot probe what a url actually speaks,
+  so an SSE-only server simply fails its first request and lands in
+  backoff, reason `protocol`).
 - Primitives: **tools** only (`tools/list`, `tools/call`). Prompts, resources,
   and the deprecated roots/sampling/logging surfaces are out.
 - Protocol: conform to `2026-07-28` (stateless core — no `initialize`/
@@ -49,14 +51,22 @@ each owns its override explicitly):
   scrubbed (§2 P1). Read-only: no policy consult, no ask; cell token per
   existing lane rules. Cells MUST NOT render connector tool definitions
   from any other source.
-- **A2** — §5.1a (worker error contract): the closed detail-template set
-  gains exactly one constant: code `upstream`, detail `protocol violation`
-  (constant — no status class, no server body, consistent with the no-body
-  rule). Needed because MCP JSON-RPC-level failures and rejected
-  server-initiated requests have no HTTP status to class (§8.3).
-- **A3** — §11 (ctl CLI frozen shapes): adds `custos mcp status`,
-  `custos mcp tools <name>`, `custos mcp refresh <name>` (§9), obeying §11's
-  line-oriented list conventions (tab-separated, header-declared order).
+- **A2** — §5.1a (worker error contract), two changes: (i) the closed
+  detail-template set gains exactly one constant — code `upstream`, detail
+  `protocol violation` (constant; no status class, no server body, per the
+  no-body rule) — because MCP JSON-RPC-level failures and rejected
+  server-initiated requests have no HTTP status to class (§8.3); (ii) the
+  scrub scope gains **revoked-credential retention**: a credential removed
+  from the vault remains in the scrubber's needle set until every in-flight
+  worker call that could carry it has completed (in-memory tombstone,
+  never persisted; §6). Without (ii) revocation blinds the scrubber
+  mid-flight.
+- **A3** — §3 (ctl.sock wire protocol) **and** §11 (ctl CLI): the socket
+  verb set gains `MCP-STATUS <token>`, `MCP-TOOLS <token> <name>`,
+  `MCP-REFRESH <token> <name>` (dash style per frozen verb law), and the
+  `custos` CLI gains the matching `mcp status|tools|refresh` verbs (§9),
+  obeying §11's line-oriented list conventions (tab-separated,
+  header-declared order).
 - **A4** — config schema: `custos:` gains `connectors.mcp[]` (§3). The
   loader is strict; these are the exact permitted keys.
 - **A5** — §6.4 (card review fields): for **rail tools only**, when the
@@ -66,15 +76,26 @@ each owns its override explicitly):
   digest) is untouched.
 - **A6** — §6.5 (Always verdict): for **rail tools**, an `always` verdict
   writes an exact `auto` rule on `<connector>/<tool>` as frozen — and the
-  rail MAY revoke that auto rule (audited, never silently) when the tool's
-  schema hash changes (§8.2).
-- **A7** — §6 (comparator semantics): for **rail tools**, an `auto` rule
-  resolves as `ask` when the tool's `inputSchema` is absent or malformed
-  (§8.2 R3). Downgrade happens inside the policy consult, so the frozen
-  dispatch order and `auto`'s meaning for every non-rail pattern are
-  unchanged.
+  rail **MUST** revoke that auto rule (audited, never silently) when the
+  tool's fingerprint changes (§8.2). Fingerprint: SHA-256 over RFC 8785
+  (JCS) canonicalization of `{name, description, inputSchema,
+  annotations}` — description text is covered, so a vendor editing
+  prompt-visible prose invalidates standing approval.
+- **A7** — §5.1 (worker lane, credential doctrine): a connector whose
+  `Credential()` returns the constant `none` executes **without** the
+  vault lookup — the lane skips `GetCredential`, passes the zero-value
+  credential, and audits `credential: none`. Needed because rail
+  connectors legitimately have no vault secret (stdio server with literal
+  env; http without bearer); Gmail (returns `gmail`) is unaffected.
+  Rail-internal `${vault:}` references (§3) are resolved by the rail
+  itself at spawn/request, never through the lane lookup.
+- **A8** — §8.1 (closed audit-kind set): extended with exactly
+  `mcp_config_literal_env`, `mcp_tool_dropped`, `mcp_catalog_changed`,
+  `mcp_result_truncated`, `mcp_always_revoked`. Rail calls are audited by
+  the existing `worker_call_allowed`/`worker_call_denied` kinds — the rail
+  adds **no** per-call kind of its own.
 
-Stated count: seven. Reviewers: check attribution, not just count.
+Stated count: eight. Reviewers: check attribution, not just count.
 
 ## 2. Principles (load-bearing)
 
@@ -165,10 +186,17 @@ transitions the handle `starting → ready` (§7).
   frozen §6 example shape (`gmail/send`).
 
 ### 4.3 Catalog snapshots (2026-07-28 cacheability)
-- The catalog is an **immutable snapshot** (tool set + schemas + schema
-  hashes). Refresh builds a new snapshot and swaps it via `atomic.Pointer`;
-  readers and in-flight calls pin the snapshot they started with — no torn
-  reads (I11; race-detector test V10).
+- The catalog is an **immutable snapshot** (tool set + schemas + per-tool
+  fingerprints per A6). Refresh builds a new snapshot and swaps it via
+  `atomic.Pointer` — every reader sees a whole snapshot, never a mix (no
+  torn reads; race-detector test V10). Pinning does **not** survive the
+  frozen interface boundary (ValidateArgs and Execute are disjoint calls,
+  the ask-hold can span minutes), so **Execute revalidates against the
+  then-current snapshot**: if the tool vanished → frozen `unknown_tool`; if
+  args now violate the current schema's required/type rules → frozen
+  `bad_args`. Fail closed, no exec, no card change (I11; V10).
+  The §11 invariant is therefore "no torn reads + fail-closed on
+  between-call churn", not per-call pinning.
 - First list at registration; thereafter honor `ttlMs`/`cacheScope` from
   the server response. `op:"list"` serves snapshots from cache; when a
   connector's cache has expired, that connector refreshes inline bounded by
@@ -177,9 +205,9 @@ transitions the handle `starting → ready` (§7).
 - Order: server order verbatim (list results are spec'd deterministic;
   re-sorting churns consumer prompt caches).
 - A refresh that removes a tool takes effect at the next snapshot; in-flight
-  calls to it complete. A schema-hash change is audited
-  (`mcp_catalog_changed`: names added/removed + hash-changed list) and
-  triggers A6 revocation for exactly those tools' auto rules (§8.2).
+  calls to it complete. A fingerprint change is audited
+  (`mcp_catalog_changed`: names added/removed + fingerprint-changed list)
+  and triggers A6 revocation for exactly those tools' auto rules (§8.2).
 
 ### 4.4 ValidateArgs (shallow, deliberate)
 Worker lane runs before policy/ask. v1 validates **structurally, not
@@ -188,19 +216,24 @@ semantically**: args unmarshal to a JSON object; every entry in the tool's
 type-compatible with `inputSchema.properties` (by JSON kind; `enum`
 membership when declared). Nested validation is the server's job.
 Violation → frozen `bad_args` (`invalid arguments`). A tool whose schema is
-absent or malformed accepts any object here (the server is authoritative)
-— the schema problem is handled at policy (R3/A7), not by rejecting calls.
+absent or malformed accepts any object here (the server is authoritative);
+same revalidation applies at Execute (§4.3).
 
 ### 4.5 Execute and result budget
 `tools/call` with the decoded args. The worker result is
 `{"content": [ …blocks… ], "structuredContent": …, "isError": …}`.
-- **Budget: 768 KiB against the fully serialized result** (all block types,
-  base64 included), under the frozen 1 MiB lane line limit
-  (`workerMaxLineBytes = 1 << 20`). Enforcement order: truncate `text`
-  blocks at `768 KiB − marker length` and append the block
-  `"[truncated by custos]"`; if non-text blocks alone exceed the budget,
-  replace them (largest first) with `"[content omitted by custos]"`.
-  Either path audits `mcp_result_truncated`. The serialized output can
+- **Budget: 768 KiB measured on the FINAL serialized bytes** (all block
+  types, base64 and JSON escape expansion included), under the frozen 1 MiB
+  lane line limit (`workerMaxLineBytes = 1 << 20`). Enforcement is a
+  converge loop, not a single branch: serialize → if over budget, replace
+  the largest remaining non-text block with `"[content omitted by
+  custos]"` while any non-text block exceeds the headroom text truncation
+  cannot recover → then truncate `text` blocks (largest first, keeping
+  room for the appended `"[truncated by custos]"` block) and **re-serialize
+  and re-measure**, repeating until serialized size ≤ budget; escaping
+  expansion (\\n, \\uXXXX) is therefore always measured, never predicted.
+  One `mcp_result_truncated` audit per call listing which paths ran. An
+  empty result fits, so the loop terminates. The serialized output can
   never exceed the budget.
 - `text` block bodies are scrubbed against **that connector's own injected
   credential values** before delivery (O(1) per-request scope, the
@@ -209,9 +242,9 @@ absent or malformed accepts any object here (the server is authoritative)
   URIs.
 - `isError: true` is data, not a custody failure: the flag and (scrubbed,
   capped) content travel as the result. The frozen no-body rule governs
-  error `detail` construction; a processed tool error is a result. Audit
-  records it with `ok=false`, reason `is_error`. §8.3 governs
-  custody/transport failures.
+  error `detail` construction; a processed tool error is a result and the
+  lane's existing `worker_call_allowed` audit covers it — the rail emits
+  nothing extra (A8). §8.3 governs custody/transport failures.
 - Concurrency: per-connector counting semaphore, `max_concurrent_calls`;
   an over-limit call waits for a slot, bounded by the frozen execution
   budget (`DefaultWorkerExecTimeout`, 60 s default) → `timeout` on expiry.
@@ -238,24 +271,42 @@ tool's behalf, Gmail-style:
   inheriting the daemon's PATH), `HOME` (connector-private dir under the
   custos root), `TMPDIR` (same). Nothing else — no `*_KEY`/`*_TOKEN`/
   `*_SECRET` from the daemon's own environment.
+  The connector-private dir is `<hearth>/connectors/<name>/` (0700) — a
+  **sibling** of the C2 state root, so connector scratch and stderr files
+  never join (or violate) the `<hearth>/custos/` inventory.
 - **http:** custos injects exactly one header, `Authorization` with the
   bearer value. Protocol headers the SDK sends (`Mcp-Method`, `Mcp-Name`,
   `MCP-Protocol-Version`) are the SDK's contract, not custos additions.
-- **Scrub retention (the leak window):** every injected value registers
-  with the scrubber (scope: that connector for result bodies, §4.5;
-  whole-set for `detail` per §5.1a) at injection and **stays registered
-  until every in-flight call that could carry it has completed** —
-  revocation removes the *source*, never early scrub coverage.
+- **Scrub retention (the leak window, amendment A2(ii)):** every injected
+  value registers with the scrubber (scope: that connector for result
+  bodies, §4.5; whole-set for `detail` per §5.1a) at injection and
+  **stays registered until every in-flight call that could carry it has
+  completed** — revocation removes the *source*, never early scrub
+  coverage. The frozen scrubber derives needles from loaded vault
+  credentials, which revocation purges immediately; A2(ii)'s in-memory
+  tombstone is what makes this sentence implementable.
 - **Revocation:** on credential revoke (frozen KEYS/CUSTOS path) the
   connector transitions `disabled`, reason `credential_unavailable`; for
-  stdio the child process **group** is killed (SIGTERM, 5 s grace, SIGKILL)
-  so the value dies in memory and stops being readable via
-  `/proc/<pid>/environ`; new calls fail the frozen
-  `denied: credential unavailable` path. Re-enable by `custos mcp refresh`
-  after the credential is restored.
-- Child **stderr** (diagnostics) is captured to a rotating file under the
-  custos root — 1 MiB per file, 3 files max — after scrubbing injected
-  values; never forwarded into worker responses or logs.
+  **stdio** the child process **group** is killed immediately (SIGTERM, 5 s
+  grace, SIGKILL) — the value dies in memory and stops being readable via
+  `/proc/<pid>/environ`; in-flight stdio calls settle `transport`
+  (`connection failed before response`) per §7. For **http** in-flight
+  requests complete and their bodies are scrubbed against the tombstoned
+  value (A2(ii)). New calls fail the frozen `denied: credential
+  unavailable` path. Re-enable by `custos mcp refresh` after the
+  credential is restored.
+- **Trust posture (stated plainly):** the stdio child runs at custosd's
+  uid — no v1 sandboxing. Installing a server binary is a root-adjacent PO
+  act, the same trust class as installing an npm/pip package on the host.
+  Env composition, PATH rules, and scrubbing narrow what leaks *through
+  the custody envelope*; they do not confine a hostile binary running as
+  the daemon user. uid-drop/namespaced execution is roadmap (§13). Every
+  MCP host shipping today has this same property; pretending otherwise is
+  the actual vulnerability.
+- Child **stderr** (diagnostics) is captured to a rotating file under
+  `<hearth>/connectors/<name>/` — 1 MiB per file, 3 files max — after
+  scrubbing injected values; never forwarded into worker responses or
+  logs.
 
 ## 7. Lifecycle (stdio unless noted)
 
@@ -289,14 +340,15 @@ interface methods Gmail does; nothing else in the order changes.
 - **R2**: absent annotation flags mean *not read-only* — annotations are
   server self-reports and never auto-approve anything. (They surface in
   `custos mcp tools` flags and, for destructive, as the A5 card prefix.)
-- **R3** (A7): matching `auto` rule + absent/malformed `inputSchema` →
-  resolves as `ask` (downgrade inside the policy consult; audited once per
-  tool per schema state as `mcp_auto_downgraded`).
+- **R3**: the policy engine is frozen deterministic no-I/O and never
+  consults tool schemas; rail tools carry no schema-based policy override
+  in v1. Defense against schema/prose churn lives entirely in Execute-time
+  revalidation (§4.3) and A6 revocation.
 - **Always grants** (A6): `always` on a rail card writes the exact auto
   rule on `<name>/<tool>` (frozen §6.5 shape). A catalog refresh that
-  changes that tool's schema hash **revokes** the auto rule (audit
+  changes that tool's fingerprint **MUST revoke** the auto rule (audit
   `mcp_always_revoked`); sibling tools unaffected. A revoked rule is gone,
-  not demoted — the PO re-approves deliberately against the new schema.
+  not demoted — the PO re-approves deliberately against the new shape.
 
 ### 8.3 Error mapping (frozen §5.1a templates + the one A2 constant)
 | Failure | code | detail |
@@ -308,9 +360,8 @@ interface methods Gmail does; nothing else in the order changes.
 | credential missing at call | `denied` | `denied: credential unavailable` (frozen) |
 
 `tools/call` with `isError: true` is NOT in this table — see §4.5 (it is a
-result). Rail audit kind `mcp_call` records `{connector, tool, ok, reason}`
-with `reason ∈ ok | is_error | transport | timeout | protocol | auth`
-(closed set declared here).
+result, audited by the lane's `worker_call_allowed`). The rail emits no
+per-call audit kind of its own (A8).
 
 ### 8.4 Elicitation / MRTR
 Under `2026-07-28` a server that needs user input returns
@@ -324,14 +375,18 @@ raised (v1).
 ## 9. ctl verbs (amendment A3)
 
 Mechanism: the rail keeps its own handle registry (built from §3 config)
-and answers these verbs on the existing custosd control socket. The
-`Connector` interface and WorkerServer gain **no methods**; state, tool
-enumeration, and refresh are rail-module functions over its own registry.
+and answers these verbs on the existing custosd control socket (amendment
+A3; frozen frame law — `<VERB> <ctl.token> [args...]`, line-oriented
+ASCII, `ERR <reason>` on failure). The `Connector` interface gains **no**
+methods; state, tool enumeration, and refresh are rail-module functions
+over its own registry.
 
 ```
-custos mcp status          → header: name<TAB>state<TAB>tools<TAB>restarts<TAB>reason
-custos mcp tools <name>    → header: name<TAB>flags<TAB>title
-custos mcp refresh <name>  → exit 0 refreshed; exit 1 + stderr reason
+socket: MCP-STATUS  <token>          → header: name<TAB>state<TAB>tools<TAB>restarts<TAB>reason
+socket: MCP-TOOLS   <token> <name>   → header: name<TAB>flags<TAB>title
+socket: MCP-REFRESH <token> <name>   → OK | ERR <reason>
+CLI:    custos mcp status | tools <name> | refresh <name>   (same tables;
+        refresh exit 0 = refreshed, 1 + stderr reason)
 ```
 Line-oriented per §11 (tab-separated, header-declared order, no
 decoration). No secret material ever. Closed sets: `state` per §7;
@@ -366,34 +421,43 @@ when no hint is set.
 - **I4** Default ask: fresh rail tool, no rule → dispatch parks an ask;
   `deny` on bare `<name>` covers tools added by later refreshes.
 - **I5** Always scoping (A6): `always` binds exactly `<name>/<tool>`;
-  schema-hash change revokes it (audit); siblings unaffected.
-- **I6** Auto downgrade (A7/R3): auto rule + malformed schema → ask +
-  `mcp_auto_downgraded` audit; valid schema restores auto behavior.
-- **I7** Serialized cap: result with huge text and huge image serializes
-  ≤ 768 KiB in every mix, marker/placeholder present, audit recorded.
-- **I8** Process group: SIGKILL path on a hanging child also kills a probe
-  grandchild.
-- **I9** http host gate: public `http://` url rejected at load;
+  fingerprint change (including description-only edits, per the JCS
+  fingerprint) MUST revoke it (audit); siblings unaffected.
+- **I6** Serialized cap: the converge loop keeps FINAL serialized bytes
+  ≤ 768 KiB in every mix (text-only, image-only, mixed, escape-heavy
+  text), marker/placeholder present, audit recorded once per call.
+- **I7** Process group: SIGKILL path on a hanging child also kills a
+  probe grandchild.
+- **I8** http host gate: public `http://` url rejected at load;
   loopback/RFC1918 accepted; `https` accepted.
-- **I10** Revoke: credential revoked between approval and execute → frozen
-  `denied: credential unavailable`; stdio child group dead; scrubber keeps
-  the old value until drained (I12).
-- **I11** Catalog race: concurrent refresh + calls under `-race`; in-flight
-  call uses its pinned snapshot's schema for the whole call.
-- **I12** Retention window: after revoke, an in-flight call whose server
-  echoes the old secret still arrives scrubbed; post-drain the connector is
-  `disabled` and no new call can carry the value.
-- **I13** Placeholder safety: a `${vault:missing}` config never spawns a
+- **I9** Revoke, stdio: credential revoked between approval and execute →
+  child group dead; in-flight call settles `transport: connection failed
+  before response`; new calls `denied: credential unavailable`.
+- **I10** Revoke, http (A2(ii) tombstone): credential revoked while an
+  http call is in flight → that call completes; a response echoing the
+  old value arrives scrubbed; after drain the connector is `disabled` and
+  no new call can carry the value.
+- **I11** Catalog churn is fail-closed: concurrent refresh + calls under
+  `-race`; no torn reads (whole-snapshot visibility); tool removed
+  between ValidateArgs and Execute → `unknown_tool`; schema tightened
+  mid-hold so stored args now violate it → `bad_args`; neither executes.
+- **I12** Placeholder safety: a `${vault:missing}` config never spawns a
   child containing the literal `${...}` text; state `disabled`, reason
   `credential_unavailable`.
+- **I13** Credential-free rail (A7): connector with `Credential() ==
+  none` (literal-env stdio server, bearer-less http) executes — no
+  `credential_gone` denial; audit `credential: none`; Gmail path
+  unchanged.
 
 ## 12. Verification suite (numbered)
 
 - **V1** config loader — every legal shape in §3 loads.
 - **V2** loader refusals — each §3 rule rejects with its named reason
-  (table-driven, one subtest per rule); includes I9 host-gate cases.
+  (table-driven, one subtest per rule); includes I8 host-gate cases and
+  `transport: sse` rejection (legacy SSE is not a transport choice).
 - **V3** fake stdio server fixture: register, first list, 3 tools exposed
-  in `op:"list"` shape/order (A1); grammar drops (I3).
+  in `op:"list"` shape/order (A1), Gmail's static ToolLister entries also
+  present; grammar drops (I3).
 - **V4** call round-trip via `op:"call"` with a cell token: policy-`auto`
   tool executes; args arrive verbatim; result shape §4.5.
 - **V5** ask flow: default park; approve-once → executes; deny →
@@ -401,32 +465,35 @@ when no hint is set.
 - **V6** R1/I4 defaults and bare-name deny coverage.
 - **V7** error matrix per §8.3 (kill mid-call; force deadlines; JSON-RPC
   error; HTTP 404/500 via fixture) — exact code+detail per row.
-- **V8** `isError: true` passes through as a result, not an error code
-  (§4.5/§8.3 boundary), with `mcp_call(ok=false, is_error)` audit.
+- **V8** `isError: true` passes through as a result, not an error code,
+  audited once by `worker_call_allowed` — rail adds nothing (A8).
 - **V9** MRTR `input_required` result → `upstream` / `protocol violation`,
   audit `protocol` (§8.4).
-- **V10** catalog snapshots: removal, schema-change audit, A6 revocation
-  matrix, and `-race` stress (I11).
+- **V10** catalog churn: removal between calls → `unknown_tool`;
+  tightened schema across the ask-hold → `bad_args`; fingerprint-change
+  audit + A6 revocation matrix (description-only edit included); `-race`
+  stress (I11, I5).
 - **V11** http transport against in-process fixture: bearer present/
   absent, 401 → disabled `auth_failed`, transport-flip → backoff.
 - **V12** allow/deny filtering: allowlist restricts, deny wins, filtered
   tools absent from `op:"list"` and uncallable.
-- **V13** A7 downgrade round-trip (I6).
-- **V14** concurrency: `max_concurrent_calls=2`, 4 parallel calls — two
+- **V13** concurrency: `max_concurrent_calls=2`, 4 parallel calls — two
   run, two queue, queue expiry → `timeout` (§4.5).
-- **V15** stderr rotation: >1 MiB of stderr churn → ≤3 files, oldest
-  dropped, sentinel scrubbed (§6).
-- **V16** ctl verbs: exact headers, tab-separated lines, exit codes for
-  all three verbs incl. unknown `<name>` (§9).
-- **V17** invariant probes, one named test each:
-  V17a I1 env-exact probe; V17b I2 sentinel-echo probe (all surfaces);
-  V17c I7 cap matrix (text-only / image-only / mixed); V17d I8 process
-  group probe; V17e I9 loopback acceptance probe; V17f I10 revoke
-  mid-flight probe; V17g I12 retention-window probe; V17h I13
-  placeholder probe.
-- Invariant map (reviewer checklist): I1→V17a, I2→V17b, I3→V3, I4→V6,
-  I5→V10, I6→V13, I7→V17c, I8→V17d, I9→V2+V17e, I10→V17f, I11→V10,
-  I12→V17g, I13→V17h.
+- **V14** stderr rotation: >1 MiB of stderr churn → ≤3 files under
+  `<hearth>/connectors/<name>/`, oldest dropped, sentinel scrubbed (§6).
+- **V15** ctl verbs: socket frames `MCP-STATUS`/`MCP-TOOLS`/`MCP-REFRESH`
+  with token framing incl. bad-token `ERR`; exact headers, tab-separated
+  lines, CLI exit codes, unknown `<name>` (§9).
+- **V16** invariant probes, one named test each:
+  V16a I1 env-exact probe; V16b I2 sentinel-echo probe (all surfaces);
+  V16c I6 cap matrix (text-only / image-only / mixed 500+500 KiB /
+  escape-heavy 768 KiB text); V16d I7 process-group probe; V16e I8
+  loopback acceptance probe; V16f I9 stdio revoke probe; V16g I10 http
+  tombstone-echo probe; V16h I12 placeholder probe; V16i I13
+  credential-free probe.
+- Invariant map (reviewer checklist): I1→V16a, I2→V16b, I3→V3, I4→V6,
+  I5→V10, I6→V16c, I7→V16d, I8→V2+V16e, I9→V16f, I10→V16g, I11→V10,
+  I12→V16h, I13→V16i.
 - Live acceptance (non-CI): the official filesystem MCP server on the dev
   box; one remote Streamable-HTTP demo server; cards rendered from the
   web UI; kill -9 churn soak.
@@ -435,7 +502,10 @@ when no hint is set.
 
 Card-backed elicitation (MRTR `input_required` → ask-card round-trip — the
 protocol's design and our approval model were built for each other);
-Tasks-extension long calls; OAuth/CIMD for remote servers;
+Tasks-extension long calls; OAuth/CIMD for remote servers; uid-drop or
+namespaced execution for stdio children; schema-aware policy consult (a
+candidate CUSTOS amendment giving the frozen engine schema facts as pure
+input, replacing the v1 non-override R3);
 prompts-as-persona surface; MCP-server-mode export of Lararium's own
 tools; connector install flow (ARCHITECTURE's builder).
 
@@ -454,6 +524,15 @@ tools; connector install flow (ARCHITECTURE's builder).
 
 ## Changelog
 
+- v0.3: round-2 absorption — credential-free connectors amended in (A7);
+  audit kinds amended in (A8) and the duplicate per-call rail audit
+  removed; A2(ii) tombstone makes scrub-retention implementable; A6 MUST +
+  JCS fingerprint incl. description; A3 re-attributed to §3+§11 with
+  wire verbs; snapshot claim corrected to fail-closed Execute revalidation;
+  cap rewritten as measure-converge loop on serialized bytes; R3 withdrawn
+  (frozen engine is no-I/O — roadmap candidate); I9/I10 split stdio/http;
+  connector dirs out of the C2 root; SSE claim made honestly
+  un-probeable; stdio same-uid trust posture stated plainly.
 - v0.2: first-review absorption — A5/A6/A7 made explicit amendments
   (review-field prefix, always-revoke, auto-downgrade); `allow` renamed to
   frozen `auto`; review line rebuilt on the frozen §6.4 declared-fields
