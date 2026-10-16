@@ -370,88 +370,16 @@ func (s *CtlServer) handleConn(conn net.Conn) {
 
 func (s *CtlServer) handleMcpCmd(conn net.Conn, cmd string, parts []string) bool {
 	switch cmd {
-	case "MCP-STATUS":
-		reg := s.railRegistry()
-		list := []ConnectorStatus{}
-		if reg != nil {
-			for _, c := range reg.Connectors() {
-				list = append(list, c.Status())
-			}
-		}
-		b, err := json.Marshal(list)
-		if err != nil {
-			fmt.Fprintf(conn, "ERR %s\n", err.Error())
-			return true
-		}
-		fmt.Fprintf(conn, "OK %s\n", string(b))
-		return true
-
-	case "MCP-TOOLS":
-		if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
-			fmt.Fprint(conn, "ERR bad_request\n")
-			return true
-		}
-		name := strings.TrimSpace(parts[2])
-		reg := s.railRegistry()
-		if reg == nil {
-			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
-			return true
-		}
-		c := reg.Connector(name)
-		if c == nil {
-			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
-			return true
-		}
-		tools := c.ToolStatuses()
-		if tools == nil {
-			tools = []ToolStatus{}
-		}
-		b, err := json.Marshal(tools)
-		if err != nil {
-			fmt.Fprintf(conn, "ERR %s\n", err.Error())
-			return true
-		}
-		fmt.Fprintf(conn, "OK %s\n", string(b))
-		return true
-
-	case "MCP-REFRESH":
-		if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
-			fmt.Fprint(conn, "ERR bad_request\n")
-			return true
-		}
-		name := strings.TrimSpace(parts[2])
-		reg := s.railRegistry()
-		if reg == nil {
-			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
-			return true
-		}
-		c := reg.Connector(name)
-		if c == nil {
-			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
-			return true
-		}
-
-		// Reply deadline: connector's list_timeout + 5 s grace (A3)
-		timeout := c.cfg.ListTimeout
-		if timeout <= 0 {
-			timeout = DefaultMCPListTimeout
-		}
-		replyDeadline := timeout + 5*time.Second
-		_ = conn.SetDeadline(time.Now().Add(replyDeadline))
-
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-
-		if err := c.ManualRefresh(ctx); err != nil {
-			fmt.Fprintf(conn, "ERR %s\n", err.Error())
-			return true
-		}
-		fmt.Fprint(conn, "OK refreshed\n")
-		return true
-
+	case "MCP-STATUS", "MCP-TOOLS", "MCP-REFRESH":
 	default:
 		return false
 	}
+	var name string
+	hasArg := len(parts) >= 3
+	if hasArg {
+		name = parts[2]
+	}
+	return DispatchMCPVerb(conn, s.railRegistry(), cmd, name, hasArg, nil)
 }
 
 func (s *CtlServer) handleSurrogateCmd(conn net.Conn, cmd string, parts []string) bool {

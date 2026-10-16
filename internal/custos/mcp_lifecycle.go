@@ -101,9 +101,11 @@ func (c *MCPConnector) startLocked(ctx context.Context) error {
 			}
 		}
 		c.cancelRetryLocked()
+		c.notifyChange(false)
 		return nil
 	}
 	c.restarts = append(c.restarts, now)
+	c.notifyChange(false)
 
 	if c.cfg.Transport == "http" {
 		return c.startHTTPLocked(ctx)
@@ -238,6 +240,7 @@ func (c *MCPConnector) startLocked(ctx context.Context) error {
 	c.reason = MCPReasonOK
 	c.backoffDur = time.Second // reset backoff on success
 	c.cancelRetryLocked()
+	c.notifyChange(true)
 
 	// Monitor child process death while ready
 	go c.monitorChildCrash(child)
@@ -285,6 +288,7 @@ func (c *MCPConnector) transitionBackoffLocked(reason string) {
 			}
 		}
 		c.cancelRetryLocked()
+		c.notifyChange(false)
 		return
 	}
 
@@ -296,6 +300,7 @@ func (c *MCPConnector) transitionBackoffLocked(reason string) {
 	}
 
 	c.scheduleRetryLocked(retryDelay)
+	c.notifyChange(false)
 }
 
 func (c *MCPConnector) teardownChildLocked() {
@@ -398,6 +403,7 @@ func (c *MCPConnector) NotifyCredentialGone(name string) {
 	c.reason = MCPReasonCredentialUnavailable
 	c.cancelRetryLocked()
 	c.mu.Unlock()
+	c.notifyChange(false)
 
 	// (b) Kill child process group without c.mu so kill path never lags behind network I/O
 	c.teardownChild()
@@ -584,6 +590,7 @@ func (c *MCPConnector) refreshLive(ctx context.Context, session *mcp.ClientSessi
 		})
 	}
 
+	c.notifyChange(true)
 	return nil
 }
 
@@ -665,6 +672,7 @@ type RailRegistry struct {
 	connectors       map[string]*MCPConnector
 	names            []string
 	firstUnlockCount atomic.Int64
+	changeListener   MCPChangeListener
 }
 
 // NewRailRegistry creates a registry from config entries.
@@ -680,6 +688,16 @@ func NewRailRegistry(cfgs []MCPServerConfig, hearthDir string, opts ...Option) *
 	return reg
 }
 
+// SetChangeListener registers a listener for rail status and tools changes across all connectors.
+func (r *RailRegistry) SetChangeListener(l MCPChangeListener) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.changeListener = l
+	for _, c := range r.connectors {
+		c.SetChangeListener(l)
+	}
+}
+
 // RegisterConnector adds or replaces a connector in the registry.
 func (r *RailRegistry) RegisterConnector(c *MCPConnector) {
 	r.mu.Lock()
@@ -688,6 +706,9 @@ func (r *RailRegistry) RegisterConnector(c *MCPConnector) {
 		r.names = append(r.names, c.Name())
 	}
 	r.connectors[c.Name()] = c
+	if r.changeListener != nil {
+		c.SetChangeListener(r.changeListener)
+	}
 }
 
 // Connector returns the connector by name.

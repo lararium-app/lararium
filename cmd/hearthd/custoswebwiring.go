@@ -21,14 +21,36 @@ func NewCustosWebAdapter(client *custosdoor.Client) surface.CustosRegistry {
 var _ surface.CustosRegistry = (*CustosWebAdapter)(nil)
 
 // Snapshot returns the pending custody cards mapped to surface.CustosCard.
+// Rail state never rides card shapes (CUSTOS-SPEC §6.4a); see ConnectorSnapshot.
 func (a *CustosWebAdapter) Snapshot() []surface.CustosCard {
 	if a == nil || a.client == nil {
 		return nil
 	}
 	snap := a.client.Snapshot()
-	out := make([]surface.CustosCard, len(snap))
-	for i, c := range snap {
-		out[i] = toSurfaceCard(c)
+	out := make([]surface.CustosCard, 0, len(snap))
+	for _, c := range snap {
+		out = append(out, toSurfaceCard(c))
+	}
+	return out
+}
+
+var _ surface.MCPConnectorsSource = (*CustosWebAdapter)(nil)
+
+// ConnectorSnapshot maps the door-client rail statuses onto surface cards.
+func (a *CustosWebAdapter) ConnectorSnapshot() []surface.ConnectorCard {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	statuses := a.client.Statuses()
+	out := make([]surface.ConnectorCard, 0, len(statuses))
+	for _, st := range statuses {
+		out = append(out, surface.ConnectorCard{
+			Name:     st.Name,
+			State:    st.State,
+			Tools:    st.Tools,
+			Restarts: st.Restarts,
+			Reason:   st.Reason,
+		})
 	}
 	return out
 }
@@ -38,7 +60,7 @@ func (a *CustosWebAdapter) Subscribe(f func(card *surface.CustosCard, gone *surf
 	if a == nil || a.client == nil {
 		return func() {}
 	}
-	return a.client.Subscribe(func(c *custosdoor.Card, g *custosdoor.Gone) {
+	cancelCards := a.client.Subscribe(func(c *custosdoor.Card, g *custosdoor.Gone) {
 		var sc *surface.CustosCard
 		if c != nil {
 			card := toSurfaceCard(*c)
@@ -51,6 +73,7 @@ func (a *CustosWebAdapter) Subscribe(f func(card *surface.CustosCard, gone *surf
 		}
 		f(sc, sg)
 	})
+	return cancelCards
 }
 
 // Resolve settles a custody card via web attribution and maps sentinel errors.

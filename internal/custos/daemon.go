@@ -133,6 +133,7 @@ func (d *Daemon) Start() error {
 		WithVault(d.vault),
 		WithWorkers(d.workers),
 		WithProxy(d.proxy),
+		WithRail(d.rail),
 	)
 	if err != nil {
 		_ = ctlServer.Close()

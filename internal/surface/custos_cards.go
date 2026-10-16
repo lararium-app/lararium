@@ -11,17 +11,35 @@ import (
 )
 
 // CustosCard is the uniform wire shape for pending custody approval cards
-// per CUSTOS-SPEC §6.4a and SURFACE-SPEC §4.
-// Field names and JSON tags match internal/custos.ApprovalCardWire verbatim.
+// per CUSTOS-SPEC §6.4a and SURFACE-SPEC §4. Frozen: rail state never rides
+// this shape — see ConnectorCard.
 type CustosCard struct {
-	ID         string `json:"id"`
-	Cell       string `json:"cell"`
-	Cred       string `json:"cred"`
-	Tool       string `json:"tool"`
-	Dest       string `json:"dest"`
-	Review     string `json:"review"`
-	AgeS       int    `json:"age_s"`
-	ExpiresInS int    `json:"expires_in_s"`
+	ID         string `json:"id,omitempty"`
+	Cell       string `json:"cell,omitempty"`
+	Cred       string `json:"cred,omitempty"`
+	Tool       string `json:"tool,omitempty"`
+	Dest       string `json:"dest,omitempty"`
+	Review     string `json:"review,omitempty"`
+	AgeS       int    `json:"age_s,omitempty"`
+	ExpiresInS int    `json:"expires_in_s,omitempty"`
+}
+
+// ConnectorCard is one rail connector's live state, served by the additive
+// GET /v1/mcp/connectors endpoint ({"connectors": [...]}). It deliberately
+// stays off the frozen CustosCard shape (CUSTOS-SPEC §6.4a): rail state is
+// observable inventory, never a resolvable approval.
+type ConnectorCard struct {
+	Name     string `json:"name"`
+	State    string `json:"state"`
+	Tools    int    `json:"tools"`
+	Restarts int    `json:"restarts"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// MCPConnectorsSource is an optional interface a CustosRegistry implements
+// when the MCP rail is wired. The surface serves /v1/mcp/connectors from it.
+type MCPConnectorsSource interface {
+	ConnectorSnapshot() []ConnectorCard
 }
 
 // CustosGone represents a terminal transition for a custody card per CUSTOS-SPEC §6.4b.
@@ -257,4 +275,24 @@ func (s *Server) custosEventsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// mcpConnectorsHandler serves GET /v1/mcp/connectors: the rail inventory.
+// Answers {"connectors":[]} when no registry is wired or it does not expose
+// connectors, so the web UI can poll unconditionally.
+func (s *Server) mcpConnectorsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cards := []ConnectorCard{}
+	s.custosMu.Lock()
+	reg := s.custosReg
+	s.custosMu.Unlock()
+	if src, ok := reg.(MCPConnectorsSource); ok {
+		if got := src.ConnectorSnapshot(); got != nil {
+			cards = got
+		}
+	}
+	writeJSONAny(w, http.StatusOK, map[string]any{"connectors": cards})
 }
