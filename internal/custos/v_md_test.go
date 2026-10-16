@@ -556,7 +556,7 @@ func TestV_MD_7_SlowConsumer(t *testing.T) {
 	// Broadcast 75 frames (exceeding the 64-frame outbound queue)
 	broadcastDone := make(chan struct{})
 	go func() {
-		for i := 0; i < 75; i++ {
+		for range 75 {
 			conn.NotifyChangeForTest(false)
 			time.Sleep(1 * time.Millisecond)
 		}
