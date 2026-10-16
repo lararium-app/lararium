@@ -225,6 +225,13 @@ func (c *MCPConnector) ReviewFields(tool string, args json.RawMessage) string {
 
 // ListTools implements ToolLister.ListTools() (A1).
 func (c *MCPConnector) ListTools() []ToolInfo {
+	c.mu.Lock()
+	if c.state != MCPStateReady {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+
 	snap := c.snapshot.Load()
 	if snap == nil {
 		return nil

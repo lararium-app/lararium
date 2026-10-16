@@ -174,7 +174,18 @@ type WorkerServer struct {
 	mu         sync.Mutex
 	cells      map[string]*cellWorker
 	connectors map[string]Connector
+	rail       *RailRegistry
 	done       chan struct{}
+}
+
+// WorkerServerOption configures NewWorkerServer.
+type WorkerServerOption func(*WorkerServer)
+
+// WithRailRegistry sets an existing RailRegistry on WorkerServer.
+func WithRailRegistry(r *RailRegistry) WorkerServerOption {
+	return func(ws *WorkerServer) {
+		ws.rail = r
+	}
 }
 
 // cellWorker is one bound cell socket with its stored cell_token (§5.1:
@@ -188,8 +199,8 @@ type cellWorker struct {
 }
 
 // NewWorkerServer creates the worker lane service with the v1 gmail
-// connector registered.
-func NewWorkerServer(vault *Vault, hub *surface.ApprovalHub, cfg *Config) *WorkerServer {
+// connector registered and MCP connectors registered via RailRegistry.
+func NewWorkerServer(vault *Vault, hub *surface.ApprovalHub, cfg *Config, opts ...WorkerServerOption) *WorkerServer {
 	if cfg == nil {
 		cfg = &Config{}
 	}
@@ -203,7 +214,58 @@ func NewWorkerServer(vault *Vault, hub *surface.ApprovalHub, cfg *Config) *Worke
 		done:    make(chan struct{}),
 	}
 	_ = ws.RegisterConnector(NewGmailConnector(vault))
+
+	for _, opt := range opts {
+		opt(ws)
+	}
+
+	if ws.rail == nil {
+		mcpCfgs := cfg.MCPServers
+		if len(mcpCfgs) == 0 {
+			mcpCfgs = cfg.Connectors.MCP
+		}
+		hearthDir := ""
+		if vault != nil {
+			hearthDir = filepath.Dir(vault.StateDir())
+		}
+		var railOpts []Option
+		if vault != nil {
+			railOpts = append(railOpts,
+				WithAuditSink(&auditSinkAdapter{logger: vault.Audit()}),
+				WithVaultGate(newVaultGateAdapter(vault)),
+				WithEnvResolver(newEnvResolver(vault)),
+				WithFingerprintRevoker(&policyFingerprintRevoker{policy: vault.Policy()}),
+			)
+		}
+		ws.rail = NewRailRegistry(mcpCfgs, hearthDir, railOpts...)
+	}
+
+	for _, conn := range ws.rail.Connectors() {
+		_ = ws.RegisterConnector(conn)
+	}
+
+	if vault != nil && ws.rail != nil && len(ws.rail.Connectors()) > 0 {
+		reg := ws.rail
+		vault.SetOnFirstUnlock(func() {
+			reg.OnFirstUnlock(context.Background())
+		})
+	}
+
 	return ws
+}
+
+// RailRegistry returns the internal RailRegistry.
+func (ws *WorkerServer) RailRegistry() *RailRegistry {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	return ws.rail
+}
+
+// SetRailRegistry sets the internal RailRegistry.
+func (ws *WorkerServer) SetRailRegistry(r *RailRegistry) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.rail = r
 }
 
 // RegisterConnector adds (or replaces) a connector by name.
@@ -393,8 +455,8 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 		}
 	}()
 
-	// Protocol gate: op must be "call".
-	if req.Op != "call" {
+	// Protocol gate: op must be "call" or "list".
+	if req.Op != "call" && req.Op != "list" {
 		resp = errResponse(ErrCodeBadArgs, detailBadArgs)
 		ws.auditDenied(cw, connector, host, tool, "bad_op")
 		return resp
@@ -419,6 +481,45 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 		resp = errResponse(ErrCodeLocked, detailLocked)
 		ws.auditDenied(cw, connector, host, tool, "locked")
 		return resp
+	}
+
+	// Op "list" enumeration per MCP-SPEC A1 / CUSTOS-SPEC §5.1:
+	// rail snapshots ∪ non-rail ToolLister results, connector order
+	// names-sorted (no first-party privilege), server order within
+	// connector.
+	if req.Op == "list" {
+		var tools []ToolInfo
+		ws.mu.Lock()
+		names := make([]string, 0, len(ws.connectors))
+		for name := range ws.connectors {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if tl, ok := ws.connectors[name].(ToolLister); ok {
+				tools = append(tools, tl.ListTools()...)
+			}
+		}
+		ws.mu.Unlock()
+
+		tools = TruncateToolList(tools, 2<<20)
+
+		raw, err := json.Marshal(struct {
+			Tools []ToolInfo `json:"tools"`
+		}{
+			Tools: tools,
+		})
+		if err != nil {
+			return WorkerResponse{
+				ErrorCode: "marshal_error",
+				Detail:    "marshal tools list: " + err.Error(),
+			}
+		}
+
+		return WorkerResponse{
+			OK:     true,
+			Result: raw,
+		}
 	}
 
 	// 2. unknown connector.

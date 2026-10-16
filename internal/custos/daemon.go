@@ -15,6 +15,7 @@ type Daemon struct {
 	hub        *surface.ApprovalHub
 	proxy      *Proxy
 	workers    *WorkerServer
+	rail       *RailRegistry
 	ctlServer  *CtlServer
 	doorServer *DoorServer
 	stopChan   chan struct{}
@@ -32,6 +33,7 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 	v.SetApprovalHub(hub)
 	proxy := NewProxy(v, hub, cfg)
 	workers := NewWorkerServer(v, hub, cfg)
+	rail := workers.RailRegistry()
 
 	return &Daemon{
 		cfg:      cfg,
@@ -39,6 +41,7 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 		hub:      hub,
 		proxy:    proxy,
 		workers:  workers,
+		rail:     rail,
 		stopChan: make(chan struct{}),
 	}
 }
@@ -56,6 +59,16 @@ func (d *Daemon) Proxy() *Proxy {
 // Workers returns the internal worker lane server (§5.1).
 func (d *Daemon) Workers() *WorkerServer {
 	return d.workers
+}
+
+// Rail returns the internal RailRegistry.
+func (d *Daemon) Rail() *RailRegistry {
+	return d.rail
+}
+
+// RailRegistry returns the internal RailRegistry.
+func (d *Daemon) RailRegistry() *RailRegistry {
+	return d.rail
 }
 
 // Hub returns the internal ApprovalHub.
@@ -112,6 +125,7 @@ func (d *Daemon) Start() error {
 	ctlServer.SetProxy(d.proxy)
 	ctlServer.SetWorkers(d.workers)
 	ctlServer.SetHub(d.hub)
+	ctlServer.SetRailRegistry(d.rail)
 	d.ctlServer = ctlServer
 
 	// 6. Start doors.sock listener per CUSTOS-SPEC §6.4b
