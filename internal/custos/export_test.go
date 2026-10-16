@@ -165,3 +165,17 @@ func (c *MCPConnector) DrainCondBroadcastForTest() {
 	c.drainCond.Broadcast()
 	c.mu.Unlock()
 }
+
+// ConsecutiveFailuresForTest returns current consecutive failures for testing.
+func (c *MCPConnector) ConsecutiveFailuresForTest() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.consecutiveFailures
+}
+
+// HasRetryTimerForTest returns whether retryTimer is scheduled.
+func (c *MCPConnector) HasRetryTimerForTest() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.retryTimer != nil
+}

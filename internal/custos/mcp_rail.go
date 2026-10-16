@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,9 @@ type MCPConnector struct {
 	restarts   []time.Time
 	backoffDur time.Duration
 	retryTimer *time.Timer
+
+	consecutiveFailures int
+	baseTransport       http.RoundTripper
 
 	// Debounced refresh state per §4.3
 	debounceMu sync.Mutex
@@ -129,6 +133,13 @@ func WithExecTimeout(d time.Duration) Option {
 func WithAfterFunc(fn func(time.Duration, func()) *time.Timer) Option {
 	return func(c *MCPConnector) {
 		c.afterFunc = fn
+	}
+}
+
+// WithHTTPRoundTripper sets the base RoundTripper for HTTP client transport.
+func WithHTTPRoundTripper(rt http.RoundTripper) Option {
+	return func(c *MCPConnector) {
+		c.baseTransport = rt
 	}
 }
 
@@ -240,6 +251,8 @@ func (c *MCPConnector) ListTools() []ToolInfo {
 }
 
 // Execute implements Connector.Execute per MCP-SPEC §4.5, §6, §7, §8.3.
+//
+//nolint:contextcheck // background retry timers outlive Execute call context
 func (c *MCPConnector) Execute(
 	ctx context.Context,
 	tool string,
@@ -297,6 +310,9 @@ func (c *MCPConnector) Execute(
 
 	// 5. Dispatch tools/call to MCP server
 	if session == nil {
+		if c.cfg.Transport == "http" {
+			c.recordHTTPTransportFailure()
+		}
 		return nil, wErr(ErrCodeTransport, detailTransport)
 	}
 
@@ -313,11 +329,41 @@ func (c *MCPConnector) Execute(
 		rawToolName = tool
 	}
 
-	callRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+	rec := &httpStatusRecorder{}
+	callCtx := context.WithValue(ctx, httpStatusRecorderKey, rec)
+
+	callRes, err := session.CallTool(callCtx, &mcp.CallToolParams{
 		Name:      rawToolName,
 		Arguments: argsMap,
 	})
 	if err != nil {
+		if c.cfg.Transport == "http" {
+			c.mu.Lock()
+			isDisabledAuthFailed := (c.state == MCPStateDisabled && c.reason == MCPReasonAuthFailed)
+			c.mu.Unlock()
+			if isDisabledAuthFailed || rec.statusCode == 401 || rec.statusCode == 403 {
+				return nil, wErr(ErrCodeUpstream, detailUpstream4xx)
+			}
+			if rec.statusCode >= 500 && rec.statusCode < 600 {
+				c.recordHTTPTransportFailure()
+				return nil, wErr(ErrCodeUpstream, detailUpstream5xx)
+			}
+			if rec.statusCode >= 400 && rec.statusCode < 500 {
+				c.recordHTTPTransportFailure()
+				return nil, wErr(ErrCodeUpstream, detailUpstream4xx)
+			}
+			if isDeadlineErr(err) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				c.recordHTTPTransportFailure()
+				return nil, wErr(ErrCodeTimeout, detailTimeout)
+			}
+			var rpcErr *jsonrpc.Error
+			if errors.As(err, &rpcErr) && rpcErr.Code != -32005 {
+				return nil, wErr(ErrCodeUpstream, DetailProtocolViolation)
+			}
+			c.recordHTTPTransportFailure()
+			return nil, wErr(ErrCodeTransport, detailTransport)
+		}
+
 		if isDeadlineErr(err) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, wErr(ErrCodeTimeout, detailTimeout)
 		}
@@ -326,6 +372,10 @@ func (c *MCPConnector) Execute(
 			return nil, wErr(ErrCodeUpstream, DetailProtocolViolation)
 		}
 		return nil, wErr(ErrCodeTransport, detailTransport)
+	}
+
+	if c.cfg.Transport == "http" {
+		c.recordHTTPTransportSuccess()
 	}
 
 	// 6. Process CallToolResult through closed parse, scrub, and converge loop
