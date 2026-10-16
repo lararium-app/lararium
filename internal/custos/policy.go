@@ -1119,6 +1119,108 @@ func (p *PolicyEngine) RemoveRule(lane, pattern string, actor string) (bool, err
 	return true, nil
 }
 
+// removeRuleWithAudit deletes a rule and persists with a specific audit record (A6 / A8).
+func (p *PolicyEngine) removeRuleWithAudit(lane, pattern, actor, kind, tool, cred string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.isCorrupt {
+		return false, ErrPolicyCorrupt
+	}
+
+	removed := false
+	if lane == "egress" || lane == "" {
+		if _, ok := p.egress[pattern]; ok {
+			delete(p.egress, pattern)
+			removed = true
+		}
+	}
+	if lane == "credential" || lane == "worker" || lane == "bearer" || lane == "" {
+		if _, ok := p.credentialActions[pattern]; ok {
+			delete(p.credentialActions, pattern)
+			removed = true
+		}
+	}
+
+	if !removed {
+		return false, nil
+	}
+
+	unlock, err := p.lockFile.Lock()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+
+	doc := PolicyDoc{
+		Version:           1,
+		EgressStrict:      p.egressStrict,
+		CredentialActions: p.credentialActions,
+		Egress:            p.egress,
+	}
+
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	b = append(b, '\n')
+
+	tmp, err := os.CreateTemp(p.stateDir, "policy-*.tmp")
+	if err != nil {
+		return false, err
+	}
+	defer os.Remove(tmp.Name())
+
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return false, err
+	}
+
+	if err := os.Rename(tmp.Name(), p.PolicyPath()); err != nil {
+		return false, err
+	}
+
+	if df, err := os.Open(p.stateDir); err == nil {
+		_ = df.Sync()
+		_ = df.Close()
+	}
+
+	if p.audit != nil && kind != "" {
+		_ = p.audit.Append(AuditRecord{
+			Kind:  kind,
+			Actor: actor,
+			Tool:  tool,
+			Cred:  cred,
+		})
+	}
+
+	return true, nil
+}
+
+// policyFingerprintRevoker implements FingerprintRevoker for the MCP rail (A6 / A8).
+type policyFingerprintRevoker struct {
+	policy *PolicyEngine
+}
+
+// RevokeAlwaysRule revokes an always rule upon fingerprint change per A6 / A8.
+func (r *policyFingerprintRevoker) RevokeAlwaysRule(connector, tool string) error {
+	if r.policy == nil {
+		return nil
+	}
+	_, err := r.policy.removeRuleWithAudit("worker", tool, "daemon", AuditKindMCPAlwaysRevoked, tool, connector)
+	return err
+}
+
 // Reset clears all always-rules (or all rules on full reset per CUSTOS §6.5, §11).
 // Per §6.5: "custos policy reset wipes all always entries (frozen confirmation always-rules cleared), keeping config-declared rules".
 func (p *PolicyEngine) Reset(actor string) error {

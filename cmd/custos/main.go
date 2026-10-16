@@ -1156,6 +1156,8 @@ func main() {
 		exitCode = runLogin(v, keyfilePath, subArgs)
 	case "approvals":
 		exitCode = runApprovals(stateDir, cfg, subArgs)
+	case "mcp":
+		exitCode = runMCP(stateDir, cfg, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb %q\n", verb)
 		exitCode = 2
@@ -1164,4 +1166,102 @@ func main() {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func runMCP(stateDir string, cfg *custos.Config, subArgs []string) int {
+	if len(subArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: custos mcp status|tools|refresh [args]\n")
+		return 2
+	}
+	switch subArgs[0] {
+	case "status":
+		return runMCPStatus(stateDir, cfg)
+	case "tools":
+		if len(subArgs) < 2 {
+			fmt.Fprintf(os.Stderr, "usage: custos mcp tools <name>\n")
+			return 2
+		}
+		return runMCPTools(stateDir, cfg, subArgs[1])
+	case "refresh":
+		if len(subArgs) < 2 {
+			fmt.Fprintf(os.Stderr, "usage: custos mcp refresh <name>\n")
+			return 2
+		}
+		return runMCPRefresh(stateDir, cfg, subArgs[1])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown mcp subcommand %q\n", subArgs[0])
+		return 2
+	}
+}
+
+func runMCPStatus(stateDir string, cfg *custos.Config) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	resp, err := client.RoundTrip("MCP-STATUS")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	var rows []custos.ConnectorStatus
+	if err := json.Unmarshal([]byte(resp), &rows); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println("name\tstate\ttools\trestarts\treason")
+	for _, r := range rows {
+		fmt.Printf("%s\t%s\t%d\t%d\t%s\n", r.Name, r.State, r.Tools, r.Restarts, r.Reason)
+	}
+	return 0
+}
+
+func runMCPTools(stateDir string, cfg *custos.Config, name string) int {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	resp, err := client.RoundTripWithArg("MCP-TOOLS", name)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	var rows []custos.ToolStatus
+	if err := json.Unmarshal([]byte(resp), &rows); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println("name\tflags\ttitle")
+	for _, r := range rows {
+		fmt.Printf("%s\t%s\t%s\n", r.Name, r.Flags, r.Title)
+	}
+	return 0
+}
+
+func runMCPRefresh(stateDir string, cfg *custos.Config, name string) int {
+	timeout := custos.DefaultMCPListTimeout + 5*time.Second
+	for _, s := range cfg.Connectors.MCP {
+		if s.Name == name && s.ListTimeout > 0 {
+			timeout = s.ListTimeout + 5*time.Second
+			break
+		}
+	}
+	client, err := custos.NewCtlClient(stateDir, timeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	resp, err := client.RoundTripWithArg("MCP-REFRESH", name)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	if resp != "" {
+		fmt.Println(resp)
+	} else {
+		fmt.Println("refreshed")
+	}
+	return 0
 }
