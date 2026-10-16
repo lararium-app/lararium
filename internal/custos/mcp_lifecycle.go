@@ -74,6 +74,21 @@ func (c *MCPConnector) OnFirstUnlock(ctx context.Context) error {
 // startLocked spawns the child process and runs first tools/list within
 // list_timeout.
 //
+// Lock discipline (#87 audit, waived-safe): the spawn + first tools/list run
+// under c.mu deliberately. Fan-out is never under the lock — notifyChange
+// dispatches the doors listener on a fresh goroutine (mcp_rail.go), so no
+// lock cycle c.mu -> doors s.mu is possible while c.mu is held. Every
+// network round trip inside is bounded by list_timeout via ctx (stdio
+// Connect at step 5, HTTP connect in startHTTPLocked); the only unbounded
+// step is exec.CommandContext spawn, where an unfound binary errors
+// immediately. Holding c.mu across start is what makes the state machine
+// (starting/backoff/ready), the 5/h restart budget, and concurrent-start
+// suppression race-free. Cost: MCP-STATUS on the same connector blocks up
+// to list_timeout while a start is in flight — accepted tradeoff (status
+// during start is inherently transient; rail-level status uses atomic
+// pointers elsewhere). Do not "fix" by narrowing the lock without
+// re-auditing the restart-budget accounting.
+//
 //nolint:contextcheck // background retry timers and child monitors outlive startLocked context
 func (c *MCPConnector) startLocked(ctx context.Context) error {
 	if c.state == MCPStateDisabled && c.reason == MCPReasonNameOccupied {
