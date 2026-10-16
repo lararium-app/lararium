@@ -50,6 +50,9 @@ type Config struct {
 	// Connectors holds external connector configurations per MCP-SPEC §3 (A4).
 	Connectors ConnectorsConfig `yaml:"connectors"`
 
+	// MCPServers is the slice alias for Connectors.MCP used across worker and lifecycle integration.
+	MCPServers []MCPServerConfig `yaml:"-"`
+
 	unmarshalErr error
 }
 
@@ -73,8 +76,16 @@ func (c *Config) Normalize() {
 	if c.MaxParkedGlobal <= 0 {
 		c.MaxParkedGlobal = DefaultMaxParkedGlobal
 	}
+	if len(c.MCPServers) == 0 && len(c.Connectors.MCP) > 0 {
+		c.MCPServers = c.Connectors.MCP
+	} else if len(c.Connectors.MCP) == 0 && len(c.MCPServers) > 0 {
+		c.Connectors.MCP = c.MCPServers
+	}
 	for i := range c.Connectors.MCP {
 		c.Connectors.MCP[i].normalize()
+	}
+	for i := range c.MCPServers {
+		c.MCPServers[i].normalize()
 	}
 	if c.unmarshalErr != nil {
 		reportConfigErrorAndExit(c.unmarshalErr)

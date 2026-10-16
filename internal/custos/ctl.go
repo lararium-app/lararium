@@ -122,10 +122,30 @@ type CtlServer struct {
 	vault     *Vault
 	proxy     *Proxy
 	workers   *WorkerServer
+	rail      *RailRegistry
 	hub       *surface.ApprovalHub
 	ln        net.Listener
 	done      chan struct{}
 	onStop    func()
+}
+
+// SetRailRegistry attaches the RailRegistry to the control server (§9).
+func (s *CtlServer) SetRailRegistry(r *RailRegistry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rail = r
+}
+
+func (s *CtlServer) railRegistry() *RailRegistry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.rail != nil {
+		return s.rail
+	}
+	if s.workers != nil {
+		return s.workers.RailRegistry()
+	}
+	return nil
 }
 
 // SetProxy attaches the custody proxy to the control server.
@@ -267,7 +287,7 @@ func (s *CtlServer) handleConn(conn net.Conn) {
 		return
 	}
 
-	if s.handleSurrogateCmd(conn, cmd, parts) || s.handlePolicyCmd(conn, cmd, parts) || s.handleListenerCmd(conn, cmd, parts) || s.handleWorkerCmd(conn, cmd, parts) || s.handleApprovalCmd(conn, cmd, parts) {
+	if s.handleSurrogateCmd(conn, cmd, parts) || s.handlePolicyCmd(conn, cmd, parts) || s.handleListenerCmd(conn, cmd, parts) || s.handleWorkerCmd(conn, cmd, parts) || s.handleApprovalCmd(conn, cmd, parts) || s.handleMcpCmd(conn, cmd, parts) {
 		return
 	}
 
@@ -338,10 +358,99 @@ func (s *CtlServer) handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "ERR %s\n", err.Error())
 			return
 		}
+		if reg := s.railRegistry(); reg != nil {
+			reg.NotifyCredentialGone(parts[2])
+		}
 		fmt.Fprint(conn, "OK revoked\n")
 
 	default:
 		fmt.Fprint(conn, "ERR unknown_command\n")
+	}
+}
+
+func (s *CtlServer) handleMcpCmd(conn net.Conn, cmd string, parts []string) bool {
+	switch cmd {
+	case "MCP-STATUS":
+		reg := s.railRegistry()
+		list := []ConnectorStatus{}
+		if reg != nil {
+			for _, c := range reg.Connectors() {
+				list = append(list, c.Status())
+			}
+		}
+		b, err := json.Marshal(list)
+		if err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return true
+		}
+		fmt.Fprintf(conn, "OK %s\n", string(b))
+		return true
+
+	case "MCP-TOOLS":
+		if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		name := strings.TrimSpace(parts[2])
+		reg := s.railRegistry()
+		if reg == nil {
+			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
+			return true
+		}
+		c := reg.Connector(name)
+		if c == nil {
+			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
+			return true
+		}
+		tools := c.ToolStatuses()
+		if tools == nil {
+			tools = []ToolStatus{}
+		}
+		b, err := json.Marshal(tools)
+		if err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return true
+		}
+		fmt.Fprintf(conn, "OK %s\n", string(b))
+		return true
+
+	case "MCP-REFRESH":
+		if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
+			fmt.Fprint(conn, "ERR bad_request\n")
+			return true
+		}
+		name := strings.TrimSpace(parts[2])
+		reg := s.railRegistry()
+		if reg == nil {
+			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
+			return true
+		}
+		c := reg.Connector(name)
+		if c == nil {
+			fmt.Fprintf(conn, "ERR connector %q not found\n", name)
+			return true
+		}
+
+		// Reply deadline: connector's list_timeout + 5 s grace (A3)
+		timeout := c.cfg.ListTimeout
+		if timeout <= 0 {
+			timeout = DefaultMCPListTimeout
+		}
+		replyDeadline := timeout + 5*time.Second
+		_ = conn.SetDeadline(time.Now().Add(replyDeadline))
+
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		if err := c.ManualRefresh(ctx); err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return true
+		}
+		fmt.Fprint(conn, "OK refreshed\n")
+		return true
+
+	default:
+		return false
 	}
 }
 

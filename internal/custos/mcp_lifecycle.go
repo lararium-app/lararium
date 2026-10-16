@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -620,9 +621,10 @@ func (c *MCPConnector) ToolStatuses() []ToolStatus {
 
 // RailRegistry manages the configured MCP connectors.
 type RailRegistry struct {
-	mu         sync.RWMutex
-	connectors map[string]*MCPConnector
-	names      []string
+	mu               sync.RWMutex
+	connectors       map[string]*MCPConnector
+	names            []string
+	firstUnlockCount atomic.Int64
 }
 
 // NewRailRegistry creates a registry from config entries.
@@ -636,6 +638,16 @@ func NewRailRegistry(cfgs []MCPServerConfig, hearthDir string, opts ...Option) *
 		reg.names = append(reg.names, cfg.Name)
 	}
 	return reg
+}
+
+// RegisterConnector adds or replaces a connector in the registry.
+func (r *RailRegistry) RegisterConnector(c *MCPConnector) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.connectors[c.Name()]; !ok {
+		r.names = append(r.names, c.Name())
+	}
+	r.connectors[c.Name()] = c
 }
 
 // Connector returns the connector by name.
@@ -658,9 +670,15 @@ func (r *RailRegistry) Connectors() []*MCPConnector {
 
 // OnFirstUnlock broadcasts first-unlock signal to all connectors.
 func (r *RailRegistry) OnFirstUnlock(ctx context.Context) {
+	r.firstUnlockCount.Add(1)
 	for _, conn := range r.Connectors() {
 		_ = conn.OnFirstUnlock(ctx)
 	}
+}
+
+// FirstUnlockCount returns the number of times OnFirstUnlock was called.
+func (r *RailRegistry) FirstUnlockCount() int64 {
+	return r.firstUnlockCount.Load()
 }
 
 // NotifyCredentialGone notifies all connectors of credential deletion.

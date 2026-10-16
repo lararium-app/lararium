@@ -41,12 +41,20 @@ type Vault struct {
 	isUnlocked        bool
 	isKeyfile         bool
 	firstUnlockDone   bool // CUSTOS-SPEC §4.1, §4.2: landedness recovery runs once per boot per Vault instance
+	onFirstUnlock     func()
 	degradedHook      func(reason string)
 
 	// Slice 4 (§4.5): per-credential refresh single-flight and the
 	// injectable token-endpoint forward seam (V13 fake servers).
 	refreshInflight map[string]*refreshCall
 	tokenForward    TokenForwardFunc
+}
+
+// SetOnFirstUnlock registers a hook triggered asynchronously after the first successful unlock of the boot.
+func (v *Vault) SetOnFirstUnlock(fn func()) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.onFirstUnlock = fn
 }
 
 // SetTokenForward overrides the token-endpoint forward used by refresh
@@ -441,6 +449,15 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		Gen:   doc.Generation,
 		Actor: "cli",
 	})
+
+	if wasFirstUnlock {
+		v.mu.RLock()
+		fn := v.onFirstUnlock
+		v.mu.RUnlock()
+		if fn != nil {
+			go fn()
+		}
+	}
 
 	return nil
 }
@@ -1216,4 +1233,106 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 	v.mu.Unlock()
 
 	return nil
+}
+
+// auditSinkAdapter wraps an AuditLogger to satisfy AuditSink.
+type auditSinkAdapter struct {
+	logger *AuditLogger
+}
+
+// Append writes an audit record to the audit logger.
+func (s *auditSinkAdapter) Append(rec AuditRecord) error {
+	if s.logger == nil {
+		return nil
+	}
+	return s.logger.Append(rec)
+}
+
+// vaultGateAdapter adapts Vault to VaultGate per MCP-SPEC §7 / A7.
+type vaultGateAdapter struct {
+	vault *Vault
+}
+
+func newVaultGateAdapter(v *Vault) *vaultGateAdapter {
+	return &vaultGateAdapter{vault: v}
+}
+
+// IsOccupied reports whether the credential name is already occupied.
+func (g *vaultGateAdapter) IsOccupied(name string) (bool, error) {
+	if g.vault == nil || !g.vault.IsUnlocked() {
+		return false, nil
+	}
+	cred, ok := g.vault.GetCredential(name)
+	if !ok {
+		return false, nil
+	}
+	// Empty identity slot created by EnsureSlot is not an occupied foreign credential
+	if cred.Kind == "identity" {
+		return false, nil
+	}
+	return true, nil
+}
+
+// EnsureSlot creates an empty identity slot if none exists.
+func (g *vaultGateAdapter) EnsureSlot(name string) error {
+	if g.vault == nil {
+		return errors.New("vault not configured")
+	}
+	if !g.vault.IsUnlocked() {
+		return ErrCustosLocked
+	}
+	if _, ok := g.vault.GetCredential(name); ok {
+		return nil
+	}
+	return g.vault.Mutate("", func(doc *VaultDoc) ([]string, error) {
+		if doc.Credentials == nil {
+			doc.Credentials = make(map[string]Credential)
+		}
+		if _, exists := doc.Credentials[name]; exists {
+			return nil, nil
+		}
+		doc.Credentials[name] = Credential{
+			Kind: "identity",
+		}
+		return []string{name}, nil
+	}, false)
+}
+
+// newEnvResolver resolves ${vault:X} against the unlocked vault, ${env:NAME} against os.Getenv.
+func newEnvResolver(v *Vault) func(string) (string, error) {
+	return func(expr string) (string, error) {
+		if strings.HasPrefix(expr, "${vault:") && strings.HasSuffix(expr, "}") {
+			if v == nil || !v.IsUnlocked() {
+				return "", ErrCustosLocked
+			}
+			credName := strings.TrimSuffix(strings.TrimPrefix(expr, "${vault:"), "}")
+			cred, ok := v.GetCredential(credName)
+			if !ok {
+				return "", fmt.Errorf("credential %q not found", credName)
+			}
+			val := cred.Secret
+			if val == "" {
+				val = cred.AccessToken
+			}
+			if val == "" {
+				val = cred.RefreshToken
+			}
+			if val == "" {
+				val = cred.ClientSecret
+			}
+			if val == "" {
+				return "", fmt.Errorf("credential %q has empty value", credName)
+			}
+			return val, nil
+		}
+		if strings.HasPrefix(expr, "${env:") && strings.HasSuffix(expr, "}") {
+			envName := strings.TrimSuffix(strings.TrimPrefix(expr, "${env:"), "}")
+			val := os.Getenv(envName)
+			if val == "" {
+				return "", fmt.Errorf("environment variable %s missing", envName)
+			}
+			return val, nil
+		}
+		return "", fmt.Errorf("unsupported expression %q", expr)
+	}
 }

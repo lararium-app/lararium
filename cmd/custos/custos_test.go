@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/surface"
@@ -648,5 +651,124 @@ func TestCustosApprovalsCLI(t *testing.T) {
 	<-stderrDone
 	if waitErr != nil {
 		t.Fatalf("watch command exited with error: %v, stderr=%s", waitErr, watchErrStr())
+	}
+}
+
+func TestMCPCLIHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_CLI_HELPER") != "1" {
+		return
+	}
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0"}, nil)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "tool_alpha",
+		Description: "First test tool",
+		Title:       "Tool Alpha",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "ok"}},
+		}, nil, nil
+	})
+	_ = server.Run(context.Background(), &mcp.StdioTransport{})
+	os.Exit(0)
+}
+
+func TestCustosMCP_CLI(t *testing.T) {
+	bin := buildCustosCLI(t)
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	_ = os.MkdirAll(home, 0o700)
+
+	cfgPath := filepath.Join(dir, "lararium.yaml")
+	cfgContent := "hearth:\n  home: " + home + "\n"
+	_ = os.WriteFile(cfgPath, []byte(cfgContent), 0o600)
+
+	pass := "cli-passphrase-mcp"
+
+	_, _, code := runCmd(t, bin, pass+"\n", "--config", cfgPath, "init")
+	if code != 0 {
+		t.Fatalf("init failed")
+	}
+
+	stateDir := filepath.Join(home, "custos")
+	v := custos.NewVault(stateDir, 5*time.Second)
+	if err := v.Unlock(pass, false); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+
+	ctlServer, err := custos.StartCtlServer(stateDir, v, nil)
+	if err != nil {
+		t.Fatalf("start ctl server: %v", err)
+	}
+	defer ctlServer.Close()
+
+	reg := custos.NewRailRegistry(nil, stateDir)
+	readyConn := custos.NewMCPConnector(custos.MCPServerConfig{
+		Name:      "test-conn",
+		Transport: "stdio",
+		Command:   os.Args[0],
+		Args:      []string{"-test.run=TestMCPCLIHelperProcess", "--"},
+		Env: map[string]string{
+			"GO_WANT_CLI_HELPER": "1",
+		},
+	}, stateDir)
+	reg.RegisterConnector(readyConn)
+	if err := readyConn.OnFirstUnlock(context.Background()); err != nil {
+		t.Fatalf("connector OnFirstUnlock: %v", err)
+	}
+	ctlServer.SetRailRegistry(reg)
+
+	// 1. custos mcp status
+	stdout, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "mcp", "status")
+	if code != 0 {
+		t.Fatalf("mcp status failed: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "name\tstate\ttools\trestarts\treason") {
+		t.Errorf("mcp status missing header: %q", stdout)
+	}
+	if !strings.Contains(stdout, "test-conn\tready\t1\t1\tok") {
+		t.Errorf("mcp status output missing connector row: %q", stdout)
+	}
+
+	// 2. custos mcp tools test-conn
+	stdout, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "mcp", "tools", "test-conn")
+	if code != 0 {
+		t.Fatalf("mcp tools failed: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "name\tflags\ttitle") {
+		t.Errorf("mcp tools missing header: %q", stdout)
+	}
+	if !strings.Contains(stdout, "tool_alpha\tread_only\tTool Alpha") {
+		t.Errorf("mcp tools output missing tool row: %q", stdout)
+	}
+
+	// 3. custos mcp tools nonexistent
+	_, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "mcp", "tools", "nonexistent")
+	if code == 0 {
+		t.Errorf("mcp tools nonexistent expected failure, got 0")
+	}
+	if !strings.Contains(stderr, "not found") && !strings.Contains(stderr, "ERR") {
+		t.Errorf("mcp tools nonexistent stderr = %q", stderr)
+	}
+
+	// 4. custos mcp refresh nonexistent
+	_, _, code = runCmd(t, bin, "", "--config", cfgPath, "mcp", "refresh", "nonexistent")
+	if code == 0 {
+		t.Errorf("mcp refresh nonexistent expected failure, got 0")
+	}
+
+	// 5. custos mcp refresh test-conn (happy path)
+	stdout, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "mcp", "refresh", "test-conn")
+	if code != 0 {
+		t.Fatalf("mcp refresh test-conn failed: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "refreshed") && !strings.Contains(stdout, "OK") {
+		t.Errorf("mcp refresh test-conn output = %q, want 'refreshed'", stdout)
+	}
+
+	// 6. custos mcp invalid subcmd
+	_, _, code = runCmd(t, bin, "", "--config", cfgPath, "mcp", "invalid-subcmd")
+	if code == 0 {
+		t.Errorf("mcp invalid-subcmd expected failure, got 0")
 	}
 }

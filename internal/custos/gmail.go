@@ -78,6 +78,14 @@ func (g *GmailConnector) HasTool(name string) bool {
 	return name == "send" || name == "read"
 }
 
+// ListTools implements ToolLister for GmailConnector (A1).
+func (g *GmailConnector) ListTools() []ToolInfo {
+	return []ToolInfo{
+		{Connector: "gmail", Name: "send", Title: "send"},
+		{Connector: "gmail", Name: "read", Title: "read"},
+	}
+}
+
 // sendArgs is the typed `send` tool schema: to []string, subject, body (§5.1).
 type sendArgs struct {
 	To      []string `json:"to"`
