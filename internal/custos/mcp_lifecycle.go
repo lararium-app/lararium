@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -103,6 +104,10 @@ func (c *MCPConnector) startLocked(ctx context.Context) error {
 		return nil
 	}
 	c.restarts = append(c.restarts, now)
+
+	if c.cfg.Transport == "http" {
+		return c.startHTTPLocked(ctx)
+	}
 
 	// Compose child environment and resolve references
 	connectorDir := filepath.Join(c.hearthDir, "connectors", c.cfg.Name)
@@ -474,6 +479,7 @@ func (c *MCPConnector) ManualRefresh(ctx context.Context) error {
 	return c.refreshLive(ctx, session, needles)
 }
 
+//nolint:contextcheck // retry timers and background failures outlive refreshLive context
 func (c *MCPConnector) refreshLive(ctx context.Context, session *mcp.ClientSession, needles []string) error {
 	listTimeout := c.cfg.ListTimeout
 	if listTimeout <= 0 {
@@ -482,8 +488,38 @@ func (c *MCPConnector) refreshLive(ctx context.Context, session *mcp.ClientSessi
 	listCtx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 
-	listRes, err := session.ListTools(listCtx, nil)
+	rec := &httpStatusRecorder{}
+	callCtx := context.WithValue(listCtx, httpStatusRecorderKey, rec)
+
+	listRes, err := session.ListTools(callCtx, nil)
 	if err != nil {
+		if c.cfg.Transport == "http" {
+			c.mu.Lock()
+			isDisabledAuthFailed := (c.state == MCPStateDisabled && c.reason == MCPReasonAuthFailed)
+			c.mu.Unlock()
+			if isDisabledAuthFailed || rec.statusCode == 401 || rec.statusCode == 403 {
+				return errors.New("list tools during refresh: upstream returned 4xx")
+			}
+			if rec.statusCode >= 500 && rec.statusCode < 600 {
+				c.recordHTTPTransportFailure()
+				return errors.New("list tools during refresh: upstream returned 5xx")
+			}
+			if rec.statusCode >= 400 && rec.statusCode < 500 {
+				c.recordHTTPTransportFailure()
+				return errors.New("list tools during refresh: upstream returned 4xx")
+			}
+			if isDeadlineErr(err) || errors.Is(listCtx.Err(), context.DeadlineExceeded) {
+				c.recordHTTPTransportFailure()
+				return errors.New("list tools during refresh: operation deadline exceeded")
+			}
+			var rpcErr *jsonrpc.Error
+			if errors.As(err, &rpcErr) && rpcErr.Code != -32005 {
+				return errors.New("list tools during refresh: protocol violation")
+			}
+			c.recordHTTPTransportFailure()
+			return errors.New("list tools during refresh: connection failed before response")
+		}
+
 		c.mu.Lock()
 		if c.state == MCPStateDisabled {
 			c.mu.Unlock()
@@ -491,6 +527,10 @@ func (c *MCPConnector) refreshLive(ctx context.Context, session *mcp.ClientSessi
 		}
 		c.mu.Unlock()
 		return fmt.Errorf("list tools during refresh: %w", err)
+	}
+
+	if c.cfg.Transport == "http" {
+		c.recordHTTPTransportSuccess()
 	}
 
 	oldSnap := c.snapshot.Load()
