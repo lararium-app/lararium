@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lararium-app/lararium/internal/keystore"
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // DiscoveredServer represents an OpenAI-compatible server found during local discovery.
@@ -476,14 +479,33 @@ func RunSetup(opts SetupOptions) error {
 		}
 	}
 
+	var isMissing bool
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
-		return fmt.Errorf("cannot load existing config %q: %w", cfgPath, err)
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("cannot load existing config %q: %w", cfgPath, err)
+		}
+		isMissing = true
+		cfg = &Config{
+			Hearth: HearthConfig{
+				Home:                 "hearth",
+				CompactionTriggerPct: 80,
+				MaxTokens:            512,
+			},
+			Serve: surface.ServeConfig{
+				Listen:       "0.0.0.0:7717",
+				AllowedHosts: []string{"localhost", "127.0.0.1", "[::1]"},
+			},
+		}
 	}
 
 	// Non-TTY stdin: print current config state + env-var instructions, exit 0, touch NO files.
 	if !opts.IsTTY {
-		printNonTTYState(out, cfgPath, cfg)
+		if isMissing {
+			printNonTTYState(out, cfgPath, nil)
+		} else {
+			printNonTTYState(out, cfgPath, cfg)
+		}
 		return nil
 	}
 
@@ -557,6 +579,9 @@ func RunSetup(opts SetupOptions) error {
 	}
 	if err := updateYAML(cfgPath, providerName, baseURL, apiKeyEnv, defaultModel, compactModel); err != nil {
 		return err
+	}
+	if reloaded, err := LoadConfig(cfgPath); err == nil {
+		cfg = reloaded
 	}
 
 	// FIRST-DOOR & REMOTE-ACCESS STEPS (spec §1, §2)
@@ -632,6 +657,9 @@ func runLocalModels(cfgPath string, cfg *Config, roots []string, discoveryTimeou
 	if err := updateYAML(cfgPath, providerName, baseURL, apiKeyEnv, defaultModel, compactModel); err != nil {
 		return err
 	}
+	if reloaded, err := LoadConfig(cfgPath); err == nil {
+		cfg = reloaded
+	}
 
 	// FIRST-DOOR & REMOTE-ACCESS STEPS (spec §1, §2)
 	if err := runFirstDoorFlow(cfgPath, cfg, out, errOut, readLine, defaultDeviceName); err != nil {
@@ -644,6 +672,17 @@ func runLocalModels(cfgPath string, cfg *Config, roots []string, discoveryTimeou
 }
 
 func printNonTTYState(out io.Writer, cfgPath string, cfg *Config) {
+	if cfg == nil {
+		fmt.Fprintf(out, "Config file: %s\n", cfgPath)
+		fmt.Fprintln(out, "no config yet — run interactively once: hearthd setup")
+		return
+	}
+	if _, err := os.Stat(cfgPath); errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(out, "Config file: %s\n", cfgPath)
+		fmt.Fprintln(out, "no config yet — run interactively once: hearthd setup")
+		return
+	}
+
 	fmt.Fprintln(out, "Current configuration state:")
 	fmt.Fprintf(out, "  Config file: %s\n", cfgPath)
 	fmt.Fprintf(out, "  Hearth home: %s\n", cfg.Hearth.Home)
@@ -929,23 +968,79 @@ func routerIsLoopback(rawURL string) bool {
 	return strings.HasPrefix(host, "127.")
 }
 
+const defaultConfigTemplate = `# Reference config for the Docker form. Container paths only — inside the
+# image the persona home is /hearth and this file lives at
+# /etc/lararium/lararium.yaml. Keys via environment (api_key_env), never
+# literal values in tracked files.
+hearth:
+  home: hearth
+  compaction_trigger_pct: 80
+  max_tokens: 512
+
+# Web chat + HTTP API (` + "`hearthd serve`" + `). Inside the container we bind all
+# interfaces; the compose file publishes the port on 127.0.0.1 only, and
+# the Host gate still applies: only these Host values are accepted. To
+# reach the chat through your own TLS proxy, add its hostname here.
+serve:
+  listen: "0.0.0.0:7717"
+  allowed_hosts: ["localhost", "127.0.0.1", "[::1]"]
+
+# Bring your own model — nothing here is a default we bill you for.
+# The chain below points at a llama.cpp (or any OpenAI-compatible)
+# server running on YOUR machine: host.docker.internal resolves to the
+# Docker host (the compose file enables it on every platform). Serve a
+# model on port 8080 and it just works, key-free. Hosted-endpoint
+# examples are one edit away at the bottom.
+models:
+  default:
+    - local/your-model-id
+  compact:
+    - local/your-model-id
+
+providers:
+  - name: local
+    base_url: http://host.docker.internal:8080/v1   # llama.cpp / Ollama / vLLM / LM Studio
+
+# --- Prefer a hosted endpoint? Uncomment one block, export the key, and
+# --- add its variable to docker-compose.yml's environment: pass-through
+# --- (already done for all three). Then repoint the chains above.
+#
+# - name: openrouter            # one key for many models
+#   base_url: https://openrouter.ai/api/v1
+#   api_key_env: OPENROUTER_API_KEY
+#
+# - name: openai
+#   base_url: https://api.openai.com/v1
+#   api_key_env: OPENAI_API_KEY
+#
+# - name: anthropic             # OpenAI-compatible endpoint
+#   base_url: https://api.anthropic.com/v1
+#   api_key_env: ANTHROPIC_API_KEY
+`
+
 // updateYAML updates lararium.yaml in place with node-level comment preservation,
 // backed up to <path>.bak once, and validated via LoadConfig.
 func updateYAML(path, providerName, baseURL, apiKeyEnv, defaultModel, compactModel string) error {
-	bakPath := path + ".bak"
-	if _, err := os.Stat(bakPath); os.IsNotExist(err) {
-		oldBytes, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading config for backup: %w", err)
+	var raw []byte
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		raw = []byte(defaultConfigTemplate)
+	} else {
+		bakPath := path + ".bak"
+		if _, err := os.Stat(bakPath); os.IsNotExist(err) {
+			oldBytes, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("reading config for backup: %w", err)
+			}
+			if err := atomicWriteFile(bakPath, oldBytes, 0o644); err != nil {
+				return fmt.Errorf("writing backup %q: %w", bakPath, err)
+			}
 		}
-		if err := atomicWriteFile(bakPath, oldBytes, 0o644); err != nil {
-			return fmt.Errorf("writing backup %q: %w", bakPath, err)
-		}
-	}
 
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
+		var err error
+		raw, err = os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading config: %w", err)
+		}
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
