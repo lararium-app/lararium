@@ -192,14 +192,9 @@ func tokenCmd(cfgPath string, args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	store, err := surface.OpenTokenStore(filepath.Join(cfg.Hearth.Home, "tokens.json"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 	switch args[0] {
 	case "create":
-		token, err := store.Create(args[1])
+		token, err := createDoorToken(cfg, args[1])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -207,6 +202,11 @@ func tokenCmd(cfgPath string, args []string) {
 		fmt.Println(token)
 		fmt.Printf("Open: http://%s/#%s\n", serveHostPort(cfg), token)
 	case "revoke":
+		store, err := surface.OpenTokenStore(filepath.Join(cfg.Hearth.Home, "tokens.json"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		ok, err := store.Revoke(args[1])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
