@@ -162,6 +162,43 @@ door. Native Linux/WSL2 installs additionally get the `cell` sandbox —
 see [CELL-SPEC.md](docs/CELL-SPEC.md) for the host requirements and
 `cell doctor` to check yours.
 
+### Connecting an MCP server
+
+MCP is Lararium's connector standard: any [Model Context Protocol](https://modelcontextprotocol.io) server — local command or remote URL — becomes tools your agent can reach, and every one of those tools passes the same policy gate (auto / ask / deny) as everything else. Declare servers in `config/lararium.yaml`:
+
+```yaml
+connectors:
+  mcp:
+    - name: filesystem            # stdio: custos spawns and supervises it
+      transport: stdio
+      command: /usr/local/bin/mcp-server-filesystem  # absolute path, validated at load
+      args: ["/srv/docs"]
+      env:
+        LOG_LEVEL: "warn"         # literal values are audit-warned; prefer ${env:NAME}
+    - name: search
+      transport: http             # custos connects; nothing is spawned
+      url: "http://10.0.0.12:8322/mcp"   # plain http only on LAN/tailnet hosts; use https in the clear
+      bearer: "${vault:search-key}"   # or ${env:SEARCH_KEY}; resolved lazily at
+                                      # connect time — the value renders nowhere
+      tool_allowlist: ["web_search"]  # optional; denylist wins over allowlist
+      list_timeout: 30s
+```
+
+Secrets only ever appear as references (`${env:NAME}`, `${vault:ID}`). Resolved values join the scrub set: they are stripped from tool results, error lines, and audit records — which carry key *names*, never values.
+
+Connectors start when the vault unlocks and supervise themselves: a flapping server retries with doubling backoff, an unknown server never wedges the daemon, and revoking a credential kills the connector's whole process group before the socket replies. Watch and drive it from the CLI:
+
+```console
+$ custos mcp status
+name         state    tools  restarts  reason
+filesystem   ready    14     0         ok
+search       backoff  0      2         transport
+$ custos mcp tools filesystem
+$ custos mcp refresh search
+```
+
+A standing approval on a connector tool is bound to the tool's definition fingerprint: if the server edits the tool's schema or description, the approval is revoked (audited) and the next call asks again. Full contract: [`docs/MCP-SPEC.md`](docs/MCP-SPEC.md).
+
 ## Documentation
 
 | Document | What it freezes |
