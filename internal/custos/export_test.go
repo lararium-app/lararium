@@ -1,6 +1,11 @@
 package custos
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
 
 // SetKillPointHook configures the crash-injection seam for V25 tests.
 // Available only in test binaries.
@@ -51,4 +56,112 @@ func (p *Proxy) RegisterProxyParkForTest(id, cellID, cred, host string, port int
 		review:    review,
 		createdAt: time.Now(),
 	})
+}
+
+// KeyNameReForTest exposes the frozen keyNameRe regexp for V16l tests.
+var KeyNameReForTest = keyNameRe
+
+// ScrubContentBlockForTest exposes scrubContentBlock for V16b tests.
+func ScrubContentBlockForTest(block map[string]any, needles []string) map[string]any {
+	return scrubContentBlock(block, needles)
+}
+
+// ScrubStructuredContentForTest exposes scrubStructuredContent for V16b tests.
+func ScrubStructuredContentForTest(v any, needles []string) any {
+	return scrubStructuredContent(v, needles)
+}
+
+// SetSnapshotForTest sets the catalog snapshot on a connector for unit testing.
+func (c *MCPConnector) SetSnapshotForTest(snap *CatalogSnapshot) {
+	c.snapshot.Store(snap)
+}
+
+// SetStateForTest sets lifecycle state and reason for unit testing.
+func (c *MCPConnector) SetStateForTest(state, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state = state
+	c.reason = reason
+}
+
+// SetSessionForTest sets the client session on a connector for unit testing.
+func (c *MCPConnector) SetSessionForTest(session *mcp.ClientSession) {
+	c.session.Store(session)
+}
+
+// SetChildProcForTest sets the child process on a connector for unit testing.
+func (c *MCPConnector) SetChildProcForTest(proc *ChildProcess) {
+	c.childProc.Store(proc)
+}
+
+// ChildProcForTest gets the child process on a connector for unit testing.
+func (c *MCPConnector) ChildProcForTest() *ChildProcess {
+	return c.childProc.Load()
+}
+
+// ScheduleDebouncedRefreshForTest triggers debounced refresh coalescing for testing.
+func (c *MCPConnector) ScheduleDebouncedRefreshForTest() {
+	c.scheduleDebouncedRefresh()
+}
+
+// SetNeedlesForTest sets injected needles on a connector for unit testing.
+func (c *MCPConnector) SetNeedlesForTest(needles []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.needles = needles
+}
+
+// BackoffDurationForTest returns current backoff duration for testing.
+func (c *MCPConnector) BackoffDurationForTest() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.backoffDur
+}
+
+// TriggerStartLockedForTest triggers startLocked for testing.
+func (c *MCPConnector) TriggerStartLockedForTest(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.startLocked(ctx)
+}
+
+// AcquireSemaphoreSlotForTest acquires a slot in the connector's semaphore.
+func (c *MCPConnector) AcquireSemaphoreSlotForTest() func() {
+	c.semaphore <- struct{}{}
+	return func() { <-c.semaphore }
+}
+
+// TransitionBackoffLockedForTest exercises transitionBackoffLocked for testing.
+func (c *MCPConnector) TransitionBackoffLockedForTest(reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.transitionBackoffLocked(reason)
+}
+
+// SetBackoffDurForTest sets the backoff duration for testing.
+func (c *MCPConnector) SetBackoffDurForTest(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.backoffDur = d
+}
+
+// SetRestartsForTest sets the restart timestamps for testing.
+func (c *MCPConnector) SetRestartsForTest(restarts []time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.restarts = restarts
+}
+
+// SetInFlightForTest sets inFlight counter for testing.
+func (c *MCPConnector) SetInFlightForTest(count int64) {
+	c.mu.Lock()
+	c.inFlight = count
+	c.mu.Unlock()
+}
+
+// DrainCondBroadcastForTest signals drainCond for testing.
+func (c *MCPConnector) DrainCondBroadcastForTest() {
+	c.mu.Lock()
+	c.drainCond.Broadcast()
+	c.mu.Unlock()
 }
