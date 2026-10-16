@@ -32,6 +32,23 @@ type Gone struct {
 	Reason string `json:"reason"`
 }
 
+// ConnectorStatus represents the status row for MCP-STATUS per MCP-SPEC §9.
+type ConnectorStatus struct {
+	Name     string `json:"name"`
+	State    string `json:"state"`
+	Tools    int    `json:"tools"`
+	Restarts int    `json:"restarts"`
+	Reason   string `json:"reason"`
+}
+
+// ToolInfo is one connector tool description row per MCP-SPEC §4.2 / §9.
+type ToolInfo struct {
+	Connector string `json:"connector,omitempty"`
+	Name      string `json:"name"`
+	Flags     string `json:"flags,omitempty"`
+	Title     string `json:"title"`
+}
+
 // Frozen enums and synthesized GONE values.
 const (
 	StateCardDead  = "card_dead"

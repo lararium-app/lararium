@@ -251,6 +251,7 @@ func (c *MCPConnector) startHTTPLocked(ctx context.Context) error {
 	c.backoffDur = time.Second // reset backoff on success
 	c.consecutiveFailures = 0
 	c.cancelRetryLocked()
+	c.notifyChange(true)
 
 	return nil
 }

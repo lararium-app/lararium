@@ -71,19 +71,6 @@ func ScrubStructuredContentForTest(v any, needles []string) any {
 	return scrubStructuredContent(v, needles)
 }
 
-// SetSnapshotForTest sets the catalog snapshot on a connector for unit testing.
-func (c *MCPConnector) SetSnapshotForTest(snap *CatalogSnapshot) {
-	c.snapshot.Store(snap)
-}
-
-// SetStateForTest sets lifecycle state and reason for unit testing.
-func (c *MCPConnector) SetStateForTest(state, reason string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.state = state
-	c.reason = reason
-}
-
 // SetSessionForTest sets the client session on a connector for unit testing.
 func (c *MCPConnector) SetSessionForTest(session *mcp.ClientSession) {
 	c.session.Store(session)

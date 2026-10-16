@@ -40,6 +40,8 @@ type Hub struct {
 	hearthHome           string
 	maxTokens            int
 	compactionTriggerPct int
+	toolsMu              sync.RWMutex
+	dynamicTools         func() []loop.Tool
 	tools                []loop.Tool
 	router               *router.Router
 	ap                   *ApprovalHub
@@ -71,6 +73,29 @@ func (h *Hub) RLock() func() {
 	return func() {
 		h.singleWriterMu.RUnlock()
 	}
+}
+
+// SetDynamicTools registers a dynamic tool provider (e.g. MCP rail tools).
+func (h *Hub) SetDynamicTools(provider func() []loop.Tool) {
+	h.toolsMu.Lock()
+	defer h.toolsMu.Unlock()
+	h.dynamicTools = provider
+}
+
+func (h *Hub) allTools() []loop.Tool {
+	h.toolsMu.RLock()
+	defer h.toolsMu.RUnlock()
+	var tools []loop.Tool
+	tools = append(tools, h.tools...)
+	if h.dynamicTools != nil {
+		tools = append(tools, h.dynamicTools()...)
+	}
+	return tools
+}
+
+// Tools returns all available tools (static plus dynamic).
+func (h *Hub) Tools() []loop.Tool {
+	return h.allTools()
 }
 
 // AttachKeys gives the hub the live key registry (KEYS-SPEC K6).
@@ -526,7 +551,7 @@ func (h *Hub) executeTurn(
 
 	// engineCtx is intentionally not r.Context(): the turn persists after
 	// client disconnect (spec §5 P3), bounded by turn_timeout only.
-	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.tools, approver)
+	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.allTools(), approver)
 	if err != nil {
 		stdlog.Printf("hearthd serve: turn on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours
 		ts.fail()

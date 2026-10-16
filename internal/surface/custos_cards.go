@@ -11,17 +11,22 @@ import (
 )
 
 // CustosCard is the uniform wire shape for pending custody approval cards
-// per CUSTOS-SPEC §6.4a and SURFACE-SPEC §4.
-// Field names and JSON tags match internal/custos.ApprovalCardWire verbatim.
+// per CUSTOS-SPEC §6.4a and SURFACE-SPEC §4, as well as MCP connector status cards.
 type CustosCard struct {
-	ID         string `json:"id"`
-	Cell       string `json:"cell"`
-	Cred       string `json:"cred"`
-	Tool       string `json:"tool"`
-	Dest       string `json:"dest"`
-	Review     string `json:"review"`
-	AgeS       int    `json:"age_s"`
-	ExpiresInS int    `json:"expires_in_s"`
+	ID         string `json:"id,omitempty"`
+	Cell       string `json:"cell,omitempty"`
+	Cred       string `json:"cred,omitempty"`
+	Tool       string `json:"tool,omitempty"`
+	Dest       string `json:"dest,omitempty"`
+	Review     string `json:"review,omitempty"`
+	AgeS       int    `json:"age_s,omitempty"`
+	ExpiresInS int    `json:"expires_in_s,omitempty"`
+
+	Name     string `json:"name,omitempty"`
+	State    string `json:"state,omitempty"`
+	Tools    int    `json:"tools,omitempty"`
+	Restarts int    `json:"restarts,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // CustosGone represents a terminal transition for a custody card per CUSTOS-SPEC §6.4b.

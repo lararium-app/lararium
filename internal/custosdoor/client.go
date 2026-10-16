@@ -84,6 +84,8 @@ type Client struct {
 
 	cmdMu sync.Mutex // one outstanding verb at a time
 
+	mcp *mcpState
+
 	done chan struct{}
 }
 
@@ -119,7 +121,7 @@ func New(o Options) (*Client, error) {
 	if lg == nil {
 		lg = log.Default()
 	}
-	return &Client{
+	c := &Client{
 		opts:    o,
 		name:    name,
 		log:     lg,
@@ -127,7 +129,9 @@ func New(o Options) (*Client, error) {
 		subs:    map[int]func(*Card, *Gone){},
 		evSig:   make(chan struct{}, 1),
 		done:    make(chan struct{}),
-	}, nil
+	}
+	c.initMCP()
+	return c, nil
 }
 
 // Done is closed once Run has returned and the connection is closed.
@@ -291,6 +295,8 @@ func (c *Client) handleLine(s *session, line string) {
 			return
 		}
 		c.remove(g)
+	case strings.HasPrefix(line, "MCP-STATUS ") || strings.HasPrefix(line, "MCP-TOOLS "):
+		c.handleMCPLine(line)
 	case line == "OK" || strings.HasPrefix(line, "OK ") || strings.HasPrefix(line, "ERR "):
 		select {
 		case s.ack <- line:

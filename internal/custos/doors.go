@@ -264,6 +264,7 @@ type DoorServer struct {
 	token     string
 	vault     *Vault
 	workers   *WorkerServer
+	rail      *RailRegistry
 	proxy     *Proxy
 	hub       *surface.ApprovalHub
 	ln        net.Listener
@@ -532,6 +533,9 @@ func (s *DoorServer) handleConn(conn net.Conn) {
 	// Drain any events that arrived during the attach snapshot window
 	client.drainBuffer()
 
+	// Snapshot-on-attach for MCP connectors per issue #83
+	s.sendMCPSnapshot(client)
+
 	// Subsequent command loop
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -546,6 +550,10 @@ func (s *DoorServer) handleConn(conn net.Conn) {
 func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
+		return
+	}
+
+	if s.handleMcpCommand(client, line, fields) {
 		return
 	}
 
@@ -1102,7 +1110,7 @@ func (c *DoorConn) readAck() (string, error) {
 			return "", err
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
-		if strings.HasPrefix(trimmed, "CARD ") || strings.HasPrefix(trimmed, "GONE ") {
+		if strings.HasPrefix(trimmed, "CARD ") || strings.HasPrefix(trimmed, "GONE ") || strings.HasPrefix(trimmed, "MCP-STATUS ") || strings.HasPrefix(trimmed, "MCP-TOOLS ") {
 			select {
 			case c.eventChan <- trimmed:
 			default:
