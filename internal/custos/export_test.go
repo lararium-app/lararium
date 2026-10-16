@@ -13,6 +13,35 @@ func SetKillPointHook(hook func(string)) {
 	killPointHook = hook
 }
 
+// MCPConnector test seams (MCP rail). Production mcp_rail.go stays free of
+// test-only surface; these compile into the test binary only.
+
+// NotifyChangeForTest triggers the change notification manually in tests.
+func (c *MCPConnector) NotifyChangeForTest(toolsChanged bool) {
+	c.notifyChange(toolsChanged)
+}
+
+// SetStateForTest sets lifecycle state and reason for unit testing.
+func (c *MCPConnector) SetStateForTest(state, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state = state
+	c.reason = reason
+}
+
+// SetSnapshotForTest sets the catalog snapshot on a connector for unit testing.
+func (c *MCPConnector) SetSnapshotForTest(snap *CatalogSnapshot) {
+	c.snapshot.Store(snap)
+}
+
+// TriggerRestartForTest simulates a restart event and notifies listeners.
+func (c *MCPConnector) TriggerRestartForTest() {
+	c.mu.Lock()
+	c.restarts = append(c.restarts, time.Now())
+	c.mu.Unlock()
+	c.notifyChange(false)
+}
+
 // NewTestCellWorker builds an unbound cellWorker for direct Dispatch tests
 // (the socket is irrelevant when Dispatch is exercised in-process).
 func NewTestCellWorker(cellID, token, sockPath string) *cellWorker {
@@ -69,19 +98,6 @@ func ScrubContentBlockForTest(block map[string]any, needles []string) map[string
 // ScrubStructuredContentForTest exposes scrubStructuredContent for V16b tests.
 func ScrubStructuredContentForTest(v any, needles []string) any {
 	return scrubStructuredContent(v, needles)
-}
-
-// SetSnapshotForTest sets the catalog snapshot on a connector for unit testing.
-func (c *MCPConnector) SetSnapshotForTest(snap *CatalogSnapshot) {
-	c.snapshot.Store(snap)
-}
-
-// SetStateForTest sets lifecycle state and reason for unit testing.
-func (c *MCPConnector) SetStateForTest(state, reason string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.state = state
-	c.reason = reason
 }
 
 // SetSessionForTest sets the client session on a connector for unit testing.
