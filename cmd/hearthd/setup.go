@@ -421,16 +421,17 @@ func fetchModels(ctx context.Context, baseURL, key string) ([]string, error) {
 
 // SetupOptions bundles dependencies and configuration for RunSetup.
 type SetupOptions struct {
-	ConfigPath       string
-	In               io.Reader
-	Out              io.Writer
-	Err              io.Writer
-	IsTTY            bool
-	DiscoveryRoots   []string
-	DiscoveryTimeout time.Duration
-	FetchTimeout     time.Duration
-	Getenv           func(string) string
-	BaseOverrides    map[string]string
+	ConfigPath        string
+	In                io.Reader
+	Out               io.Writer
+	Err               io.Writer
+	IsTTY             bool
+	DiscoveryRoots    []string
+	DiscoveryTimeout  time.Duration
+	FetchTimeout      time.Duration
+	Getenv            func(string) string
+	BaseOverrides     map[string]string
+	DefaultDeviceName *string
 }
 
 // RunSetup runs the hearthd setup wizard according to the specification.
@@ -517,6 +518,11 @@ func RunSetup(opts SetupOptions) error {
 		return strings.TrimSpace(line), nil
 	}
 
+	defaultDeviceName := defaultHostnameLabel()
+	if opts.DefaultDeviceName != nil {
+		defaultDeviceName = *opts.DefaultDeviceName
+	}
+
 	// MENU loop
 	selectedItem, exitOnly, err := selectMenuProvider(out, readLine)
 	if err != nil || exitOnly {
@@ -525,7 +531,7 @@ func RunSetup(opts SetupOptions) error {
 
 	// Option 1: Local models
 	if selectedItem.Kind == KindLocal {
-		return runLocalModels(cfgPath, roots, discoveryTimeout, fetchTimeout, out, errOut, readLine)
+		return runLocalModels(cfgPath, cfg, roots, discoveryTimeout, fetchTimeout, out, errOut, readLine, defaultDeviceName)
 	}
 
 	providerName, baseURL, apiKeyEnv, isCustom, err := resolveProviderDetails(selectedItem, readLine, errOut, opts.BaseOverrides)
@@ -553,13 +559,18 @@ func RunSetup(opts SetupOptions) error {
 		return err
 	}
 
+	// FIRST-DOOR & REMOTE-ACCESS STEPS (spec §1, §2)
+	if err := runFirstDoorFlow(cfgPath, cfg, out, errOut, readLine, defaultDeviceName); err != nil {
+		return err
+	}
+
 	// DONE LINE
 	printDoneSummary(out, providerName, baseURL, apiKeyEnv, defaultModel, storedInKeystore, envShadowed)
 	touchSetupDone()
 	return nil
 }
 
-func runLocalModels(cfgPath string, roots []string, discoveryTimeout, fetchTimeout time.Duration, out, errOut io.Writer, readLine func(string) (string, error)) error {
+func runLocalModels(cfgPath string, cfg *Config, roots []string, discoveryTimeout, fetchTimeout time.Duration, out, errOut io.Writer, readLine func(string) (string, error), defaultDeviceName string) error {
 	fmt.Fprintln(out, "Scanning this machine…")
 	discovered := DiscoverLocalServers(roots, discoveryTimeout)
 
@@ -577,6 +588,7 @@ func runLocalModels(cfgPath string, roots []string, discoveryTimeout, fetchTimeo
 			if err != nil {
 				return err
 			}
+			cStr = strings.TrimSpace(cStr)
 			idx := 1
 			if cStr != "" {
 				var parseErr error
@@ -598,6 +610,7 @@ func runLocalModels(cfgPath string, roots []string, discoveryTimeout, fetchTimeo
 			if rErr != nil {
 				return rErr
 			}
+			rawURL = strings.TrimSpace(rawURL)
 			u, parseErr := url.Parse(rawURL)
 			if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 				fmt.Fprintln(errOut, "invalid base URL: must have http or https scheme and host")
@@ -620,6 +633,11 @@ func runLocalModels(cfgPath string, roots []string, discoveryTimeout, fetchTimeo
 		return err
 	}
 
+	// FIRST-DOOR & REMOTE-ACCESS STEPS (spec §1, §2)
+	if err := runFirstDoorFlow(cfgPath, cfg, out, errOut, readLine, defaultDeviceName); err != nil {
+		return err
+	}
+
 	printDoneSummary(out, providerName, baseURL, apiKeyEnv, defaultModel, false, false)
 	touchSetupDone()
 	return nil
@@ -637,7 +655,7 @@ func printNonTTYState(out io.Writer, cfgPath string, cfg *Config) {
 	fmt.Fprintf(out, "  Compact chain: %v\n", cfg.Models.Compact)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "To configure via environment variables, export your provider key (e.g. OPENROUTER_API_KEY) and set providers/models in lararium.yaml.")
-	fmt.Fprintln(out, "To run the interactive setup wizard, run hearthd in a terminal with a TTY: hearthd setup")
+	fmt.Fprintln(out, "To run the interactive setup wizard (first-door token creation, remote-access guidance, provider setup), run hearthd in a terminal with a TTY: hearthd setup")
 }
 
 func selectMenuProvider(out io.Writer, readLine func(string) (string, error)) (MenuItem, bool, error) {
@@ -650,6 +668,7 @@ func selectMenuProvider(out io.Writer, readLine func(string) (string, error)) (M
 		if err != nil {
 			return MenuItem{}, false, err
 		}
+		choiceStr = strings.TrimSpace(choiceStr)
 		choice := 1
 		if choiceStr != "" {
 			var parseErr error
@@ -721,6 +740,7 @@ func resolveProviderDetails(item MenuItem, readLine func(string) (string, error)
 			if rErr != nil {
 				return "", "", "", false, rErr
 			}
+			n = strings.TrimSpace(n)
 			if !keystore.ValidName(n) {
 				fmt.Fprintln(errOut, "invalid provider name")
 				continue
@@ -733,6 +753,7 @@ func resolveProviderDetails(item MenuItem, readLine func(string) (string, error)
 			if rErr != nil {
 				return "", "", "", false, rErr
 			}
+			rawURL = strings.TrimSpace(rawURL)
 			u, parseErr := url.Parse(rawURL)
 			if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 				fmt.Fprintln(errOut, "invalid base URL: must have http or https scheme and host")
@@ -808,6 +829,7 @@ func promptModels(cachedModels []string, baseURL, key string, fetchTimeout time.
 		if rErr != nil {
 			return "", "", rErr
 		}
+		mChoice = strings.TrimSpace(mChoice)
 		if mChoice == "" {
 			defaultModel = models[0]
 		} else if idx, aErr := strconv.Atoi(mChoice); aErr == nil && idx >= 1 && idx <= len(models) {
@@ -821,6 +843,7 @@ func promptModels(cachedModels []string, baseURL, key string, fetchTimeout time.
 			if rErr != nil {
 				return "", "", rErr
 			}
+			m = strings.TrimSpace(m)
 			if m != "" {
 				defaultModel = m
 				break
@@ -841,6 +864,7 @@ func promptModels(cachedModels []string, baseURL, key string, fetchTimeout time.
 			if rErr != nil {
 				return "", "", rErr
 			}
+			mChoice = strings.TrimSpace(mChoice)
 			if mChoice == "" {
 				compactModel = models[0]
 			} else if idx, aErr := strconv.Atoi(mChoice); aErr == nil && idx >= 1 && idx <= len(models) {
@@ -854,6 +878,7 @@ func promptModels(cachedModels []string, baseURL, key string, fetchTimeout time.
 				if rErr != nil {
 					return "", "", rErr
 				}
+				m = strings.TrimSpace(m)
 				if m != "" {
 					compactModel = m
 					break
