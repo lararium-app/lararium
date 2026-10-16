@@ -140,6 +140,8 @@ func TestHappyPathHostedPreset(t *testing.T) {
 		"sk-or-secret-key-12345", // API Key
 		"1",                      // Model: first (anthropic/claude-3.5-sonnet)
 		"y",                      // Same model for compact
+		"",                       // Default device name
+		"",                       // Default remote access (N)
 	}, "\n") + "\n"
 
 	var outBuf, errBuf bytes.Buffer
@@ -241,6 +243,8 @@ func TestLocalAutoPick(t *testing.T) {
 		"1", // local server choice
 		"2", // model: mistral-7b
 		"y", // same model for compact
+		"",  // Default device name
+		"",  // Default remote access (N)
 	}, "\n") + "\n"
 
 	var outBuf, errBuf bytes.Buffer
@@ -306,6 +310,8 @@ func TestCustomProviderValidationRejects(t *testing.T) {
 		"",                         // API key (empty allowed for loopback)
 		"my-model",                 // Model ID
 		"y",                        // Compact model
+		"",                         // Default device name
+		"",                         // Default remote access (N)
 	}, "\n") + "\n"
 
 	var outBuf, errBuf bytes.Buffer
@@ -594,7 +600,7 @@ func TestReRunIdempotence(t *testing.T) {
 	defer localSrv.Close()
 
 	// Run 1: pick local, server 1, model m1, compact y
-	input1 := "1\n1\n1\ny\n"
+	input1 := "1\n1\n1\ny\n\n\n"
 	var out1, err1 bytes.Buffer
 	opts1 := SetupOptions{
 		ConfigPath:     cfgPath,
@@ -618,7 +624,7 @@ func TestReRunIdempotence(t *testing.T) {
 	}
 
 	// Run 2: pick local, server 1, model m2, compact y
-	input2 := "1\n1\n2\ny\n"
+	input2 := "1\n1\n2\ny\n\n\n"
 	var out2, err2 bytes.Buffer
 	opts2 := SetupOptions{
 		ConfigPath:     cfgPath,
@@ -747,8 +753,8 @@ func TestNoAutoPoll(t *testing.T) {
 		t.Fatalf("scan did not run after picking 1")
 	}
 
-	// Pick server 1, model 1, compact same (y)
-	_, _ = pw.Write([]byte("1\n1\ny\n"))
+	// Pick server 1, model 1, compact same (y), default device name, default remote (N)
+	_, _ = pw.Write([]byte("1\n1\ny\n\n\n"))
 
 	select {
 	case err := <-doneCh:
