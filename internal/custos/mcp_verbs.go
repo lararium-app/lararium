@@ -34,7 +34,7 @@ func DispatchMCPVerb(conn net.Conn, reg *RailRegistry, cmd string, name string, 
 	}
 
 	switch cmd {
-	case "MCP-STATUS", "STATUS":
+	case "MCP-STATUS":
 		list := []ConnectorStatus{}
 		if reg != nil {
 			for _, c := range reg.Connectors() {
@@ -47,7 +47,7 @@ func DispatchMCPVerb(conn net.Conn, reg *RailRegistry, cmd string, name string, 
 		}
 		return write(fmt.Sprintf("OK %s\n", string(b)))
 
-	case "MCP-TOOLS", "TOOLS":
+	case "MCP-TOOLS":
 		if !hasArg || strings.TrimSpace(name) == "" {
 			return write("ERR bad_request\n")
 		}
@@ -69,7 +69,7 @@ func DispatchMCPVerb(conn net.Conn, reg *RailRegistry, cmd string, name string, 
 		}
 		return write(fmt.Sprintf("OK %s\n", string(b)))
 
-	case "MCP-REFRESH", "REFRESH":
+	case "MCP-REFRESH":
 		if !hasArg || strings.TrimSpace(name) == "" {
 			return write("ERR bad_request\n")
 		}
@@ -95,8 +95,15 @@ func DispatchMCPVerb(conn net.Conn, reg *RailRegistry, cmd string, name string, 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		if err := c.ManualRefresh(ctx); err != nil {
-			return write(fmt.Sprintf("ERR %s\n", err.Error()))
+		refreshErr := c.ManualRefresh(ctx)
+		// doors.sock has no per-command deadline reset (unlike ctl.sock,
+		// whose loop re-arms every read); clear the armed reply deadline so
+		// the long-lived door connection survives a REFRESH.
+		if writeFn != nil && conn != nil {
+			_ = conn.SetDeadline(time.Time{})
+		}
+		if refreshErr != nil {
+			return write(fmt.Sprintf("ERR %s\n", refreshErr.Error()))
 		}
 		return write("OK refreshed\n")
 

@@ -7,9 +7,7 @@ import (
 	"sync"
 
 	"github.com/lararium-app/lararium/internal/custosdoor"
-	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
-	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
@@ -53,29 +51,6 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 	}
 	if srv != nil {
 		srv.SetCustosRegistry(NewCustosWebAdapter(client))
-		if srv.Hub != nil {
-			if dynamic, ok := srv.Hub.(interface{ SetDynamicTools(func() []loop.Tool) }); ok {
-				dynamic.SetDynamicTools(func() []loop.Tool {
-					rawTools := client.ListTools()
-					tools := make([]loop.Tool, len(rawTools))
-					for i, t := range rawTools {
-						ti := t
-						tools[i] = loop.Tool{
-							Spec: router.ToolSpec{
-								Name:             ti.Name,
-								Description:      ti.Title,
-								ParamsJSONSchema: `{"type":"object"}`,
-							},
-							Trusted: false,
-							Run: func(ctx context.Context, argsJSON string) (string, error) {
-								return "", errors.New("mcp execution over doors not supported")
-							},
-						}
-					}
-					return tools
-				})
-			}
-		}
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)

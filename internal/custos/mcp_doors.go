@@ -125,10 +125,10 @@ func (s *DoorServer) broadcastMCPFrame(frame string) {
 }
 
 // handleMcpCommand delegates MCP verbs on doors.sock to the shared dispatcher.
-func (s *DoorServer) handleMcpCommand(client *doorClient, line string, fields []string) bool {
+func (s *DoorServer) handleMcpCommand(client *doorClient, fields []string) bool {
 	cmd := fields[0]
 	switch cmd {
-	case "MCP-STATUS", "STATUS", "MCP-TOOLS", "TOOLS", "MCP-REFRESH", "REFRESH":
+	case "MCP-STATUS", "MCP-TOOLS", "MCP-REFRESH":
 		var arg string
 		hasArg := len(fields) >= 2
 		if hasArg {

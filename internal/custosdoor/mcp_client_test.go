@@ -42,9 +42,9 @@ func setupTestClient(t *testing.T) (*Client, *fakeServer, func()) {
 	return cl, fs, cleanup
 }
 
-func waitAttached(t *testing.T, cl *Client, fs *fakeServer, snap string) *fakeConn {
+func waitAttached(t *testing.T, cl *Client, fs *fakeServer) *fakeConn {
 	t.Helper()
-	fc := fs.hello(t, snap)
+	fc := fs.hello(t, "[]")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		cl.mu.Lock()
@@ -63,12 +63,12 @@ func TestMCPClient_Status(t *testing.T) {
 	cl, fs, cleanup := setupTestClient(t)
 	defer cleanup()
 
-	fc := waitAttached(t, cl, fs, "[]")
+	fc := waitAttached(t, cl, fs)
 
 	// Goroutine to handle STATUS command on fake server
 	go func() {
 		line := fc.recv(t)
-		if line != "STATUS" {
+		if line != "MCP-STATUS" {
 			t.Errorf("expected STATUS, got %q", line)
 		}
 		fc.send(`OK [{"name":"test-conn","state":"ready","tools":2,"restarts":0,"reason":"ok"}]`)
@@ -101,11 +101,11 @@ func TestMCPClient_Tools(t *testing.T) {
 	cl, fs, cleanup := setupTestClient(t)
 	defer cleanup()
 
-	fc := waitAttached(t, cl, fs, "[]")
+	fc := waitAttached(t, cl, fs)
 
 	go func() {
 		line := fc.recv(t)
-		if line != "TOOLS test-conn" {
+		if line != "MCP-TOOLS test-conn" {
 			t.Errorf("expected TOOLS test-conn, got %q", line)
 		}
 		fc.send(`OK [{"name":"op1","flags":"none","title":"Operation 1"},{"name":"op2","flags":"read_only","title":"Operation 2"}]`)
@@ -127,12 +127,12 @@ func TestMCPClient_Refresh(t *testing.T) {
 	cl, fs, cleanup := setupTestClient(t)
 	defer cleanup()
 
-	fc := waitAttached(t, cl, fs, "[]")
+	fc := waitAttached(t, cl, fs)
 
 	// Happy path
 	go func() {
 		line := fc.recv(t)
-		if line != "REFRESH test-conn" {
+		if line != "MCP-REFRESH test-conn" {
 			t.Errorf("expected REFRESH test-conn, got %q", line)
 		}
 		fc.send("OK refreshed")
@@ -161,7 +161,7 @@ func TestMCPClient_PushedFramesAndConvergence(t *testing.T) {
 	cl, fs, cleanup := setupTestClient(t)
 	defer cleanup()
 
-	fc := waitAttached(t, cl, fs, "[]")
+	fc := waitAttached(t, cl, fs)
 
 	// Channel to observe subscriber updates
 	var (

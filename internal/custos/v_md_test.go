@@ -62,7 +62,7 @@ func TestV_MD_1_AttachAfterReady(t *testing.T) {
 
 	// Read initial frames pushed on attach
 	var statusFrame, toolsFrame string
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		frame, err := doorConn.NextFrame(2 * time.Second)
 		if err != nil {
 			t.Fatalf("reading attach frame %d: %v", i, err)
@@ -170,7 +170,7 @@ func TestV_MD_2_AttachBeforeUnlock(t *testing.T) {
 
 	// 3. Client receives pushed update and converges
 	var readyStatusFrame, readyToolsFrame string
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		f, err := doorConn.NextFrame(3 * time.Second)
 		if err != nil {
 			t.Fatalf("reading post-unlock frame %d: %v", i, err)
@@ -235,7 +235,7 @@ func TestV_MD_3_UnauthenticatedSocket(t *testing.T) {
 	defer rawConn.Close()
 
 	_ = rawConn.SetDeadline(time.Now().Add(2 * time.Second))
-	_, _ = rawConn.Write([]byte("STATUS\n"))
+	_, _ = rawConn.Write([]byte("MCP-STATUS\n"))
 
 	reader := bufio.NewReader(rawConn)
 	reply, err := reader.ReadString('\n')
@@ -454,7 +454,7 @@ func TestV_MD_6_RestartPushesStatus(t *testing.T) {
 
 	// Drain all attach frames on both clients (MCP-STATUS and MCP-TOOLS)
 	drainAttach := func(c *custos.DoorConn) {
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			f, err := c.NextFrame(500 * time.Millisecond)
 			if err != nil {
 				break
@@ -546,7 +546,7 @@ func TestV_MD_7_SlowConsumer(t *testing.T) {
 	defer slowRawConn.Close()
 
 	// Perform HELLO on slowRawConn
-	_, _ = slowRawConn.Write([]byte(fmt.Sprintf("HELLO %s slow_reader\n", tok)))
+	_, _ = fmt.Fprintf(slowRawConn, "HELLO %s slow_reader\n", tok)
 	slowReader := bufio.NewReader(slowRawConn)
 	helloResp, err := slowReader.ReadString('\n')
 	if err != nil || !strings.HasPrefix(helloResp, "OK") {

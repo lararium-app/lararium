@@ -553,7 +553,7 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 		return
 	}
 
-	if s.handleMcpCommand(client, line, fields) {
+	if s.handleMcpCommand(client, fields) {
 		return
 	}
 

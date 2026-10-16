@@ -20,8 +20,8 @@ func NewCustosWebAdapter(client *custosdoor.Client) surface.CustosRegistry {
 
 var _ surface.CustosRegistry = (*CustosWebAdapter)(nil)
 
-// Snapshot returns the pending custody cards mapped to surface.CustosCard,
-// and one card per MCP connector from the door-client snapshot.
+// Snapshot returns the pending custody cards mapped to surface.CustosCard.
+// Rail state never rides card shapes (CUSTOS-SPEC §6.4a); see ConnectorSnapshot.
 func (a *CustosWebAdapter) Snapshot() []surface.CustosCard {
 	if a == nil || a.client == nil {
 		return nil
@@ -31,9 +31,20 @@ func (a *CustosWebAdapter) Snapshot() []surface.CustosCard {
 	for _, c := range snap {
 		out = append(out, toSurfaceCard(c))
 	}
-	for _, st := range a.client.Statuses() {
-		out = append(out, surface.CustosCard{
-			ID:       "mcp:" + st.Name,
+	return out
+}
+
+var _ surface.MCPConnectorsSource = (*CustosWebAdapter)(nil)
+
+// ConnectorSnapshot maps the door-client rail statuses onto surface cards.
+func (a *CustosWebAdapter) ConnectorSnapshot() []surface.ConnectorCard {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	statuses := a.client.Statuses()
+	out := make([]surface.ConnectorCard, 0, len(statuses))
+	for _, st := range statuses {
+		out = append(out, surface.ConnectorCard{
 			Name:     st.Name,
 			State:    st.State,
 			Tools:    st.Tools,
@@ -62,23 +73,7 @@ func (a *CustosWebAdapter) Subscribe(f func(card *surface.CustosCard, gone *surf
 		}
 		f(sc, sg)
 	})
-	cancelMCP := a.client.SubscribeMCP(func(statuses []custosdoor.ConnectorStatus, tools []custosdoor.ToolInfo) {
-		for _, st := range statuses {
-			card := surface.CustosCard{
-				ID:       "mcp:" + st.Name,
-				Name:     st.Name,
-				State:    st.State,
-				Tools:    st.Tools,
-				Restarts: st.Restarts,
-				Reason:   st.Reason,
-			}
-			f(&card, nil)
-		}
-	})
-	return func() {
-		cancelCards()
-		cancelMCP()
-	}
+	return cancelCards
 }
 
 // Resolve settles a custody card via web attribution and maps sentinel errors.

@@ -441,29 +441,3 @@ func (c *MCPConnector) notifyChange(toolsChanged bool) {
 		go fn(name, toolsChanged)
 	}
 }
-
-// NotifyChangeForTest triggers the change notification manually in tests.
-func (c *MCPConnector) NotifyChangeForTest(toolsChanged bool) {
-	c.notifyChange(toolsChanged)
-}
-
-// SetStateForTest sets lifecycle state and reason for unit testing.
-func (c *MCPConnector) SetStateForTest(state, reason string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.state = state
-	c.reason = reason
-}
-
-// SetSnapshotForTest sets the catalog snapshot on a connector for unit testing.
-func (c *MCPConnector) SetSnapshotForTest(snap *CatalogSnapshot) {
-	c.snapshot.Store(snap)
-}
-
-// TriggerRestartForTest simulates a restart event and notifies listeners.
-func (c *MCPConnector) TriggerRestartForTest() {
-	c.mu.Lock()
-	c.restarts = append(c.restarts, time.Now())
-	c.mu.Unlock()
-	c.notifyChange(false)
-}

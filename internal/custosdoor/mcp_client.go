@@ -134,7 +134,7 @@ func (c *Client) Status(ctx context.Context) ([]ConnectorStatus, error) {
 	}
 
 	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-	if _, err := s.conn.Write([]byte("STATUS\n")); err != nil {
+	if _, err := s.conn.Write([]byte("MCP-STATUS\n")); err != nil {
 		s.conn.Close()
 		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
 	}
@@ -189,7 +189,7 @@ func (c *Client) Tools(ctx context.Context, name string) ([]ToolInfo, error) {
 	}
 
 	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-	if _, err := s.conn.Write([]byte("TOOLS " + name + "\n")); err != nil {
+	if _, err := s.conn.Write([]byte("MCP-TOOLS " + name + "\n")); err != nil {
 		s.conn.Close()
 		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
 	}
@@ -247,7 +247,7 @@ func (c *Client) Refresh(ctx context.Context, name string) error {
 	}
 
 	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-	if _, err := s.conn.Write([]byte("REFRESH " + name + "\n")); err != nil {
+	if _, err := s.conn.Write([]byte("MCP-REFRESH " + name + "\n")); err != nil {
 		s.conn.Close()
 		return fmt.Errorf("%w: %w", ErrDoorDown, err)
 	}
