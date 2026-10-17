@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/custosdoor"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/surface"
@@ -23,6 +24,8 @@ type CustosConfig struct {
 	DoorName string `yaml:"door_name"`
 	// UnlockKeyfile is the optional path to an unlock keyfile per CUSTOS-SPEC §4.1, §C3, §12 Q1.
 	UnlockKeyfile string `yaml:"unlock_keyfile"`
+	// Connectors holds external connector configurations; ignored here, validated by custosd.
+	Connectors custos.ConnectorsConfig `yaml:"connectors"`
 }
 
 // startCustosDoor starts the door client as a supervised goroutine and
