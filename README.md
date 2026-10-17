@@ -92,6 +92,22 @@ bare metal.
 / vLLM / LM Studio server on your own machine, or a hosted key from OpenRouter, OpenAI,
 Anthropic, &c. There is no default provider and no account of ours in the loop.
 
+### Run it (Docker pull)
+
+```bash
+docker run -d --name lararium \
+  -p 127.0.0.1:7717:7717 \
+  -v lararium-hearth:/hearth \
+  -v lararium-config:/etc/lararium \
+  ghcr.io/lararium-app/hearthd:<version>
+```
+
+First run seeds the persona home and reference config into those volumes, and opens the setup
+wizard if you attach a TTY (`docker run -it …` once) while no provider is configured; image
+tags and the version/arch matrix live on the [releases page](https://github.com/lararium-app/lararium/releases).
+
+### Run it (from source)
+
 The supported way to run the alpha is Docker Compose:
 
 ```bash
