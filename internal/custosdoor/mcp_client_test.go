@@ -280,3 +280,69 @@ func TestMCPClient_DoorDown(t *testing.T) {
 		t.Fatalf("expected ErrDoorDown, got %v", err)
 	}
 }
+
+// TestMCPStatusEmptyPrunesTools verifies that an empty MCP-STATUS frame clears
+// both cached statuses and the tool rows of connectors no longer reported (#96).
+func TestMCPStatusEmptyPrunesTools(t *testing.T) {
+	cl, fs, cleanup := setupTestClient(t)
+	defer cleanup()
+	fc := waitAttached(t, cl, fs)
+	fc.send(`MCP-STATUS [{"name":"alpha","state":"ready","tools":1,"restarts":0,"reason":"ok"}]`)
+	fc.send(`MCP-TOOLS alpha [{"name":"tool_a","flags":"none","title":"Tool A"}]`)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(cl.Statuses()) == 1 && len(cl.ListTools()) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(cl.Statuses()) != 1 || len(cl.ListTools()) != 1 {
+		t.Fatalf("warm-up failed: statuses=%+v tools=%+v", cl.Statuses(), cl.ListTools())
+	}
+
+	fc.send(`MCP-STATUS []`)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(cl.Statuses()) == 0 && len(cl.ListTools()) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("stale state survived empty snapshot: statuses=%+v tools=%+v", cl.Statuses(), cl.ListTools())
+}
+
+// TestDetachClearsMCPState verifies that losing the door session prunes all
+// cached connector cards instead of leaving the previous daemon's set on
+// screen forever (#96).
+func TestDetachClearsMCPState(t *testing.T) {
+	cl, fs, cleanup := setupTestClient(t)
+	defer cleanup()
+	fc := waitAttached(t, cl, fs)
+
+	fc.send(`MCP-STATUS [{"name":"alpha","state":"ready","tools":0,"restarts":0,"reason":"ok"}]`)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(cl.Statuses()) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(cl.Statuses()) != 1 {
+		t.Fatalf("warm-up failed: statuses=%+v", cl.Statuses())
+	}
+
+	// Kill the session from the server side; Run() must detach and clear.
+	_ = fc.c.Close()
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(cl.Statuses()) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("MCP state survived detach: statuses=%+v", cl.Statuses())
+}
