@@ -363,6 +363,19 @@ func (c *Client) detach(s *session) {
 		delete(c.pending, p.card.ID)
 		c.queueLocked(event{gone: &Gone{ID: p.card.ID, State: StateCardDead, Reason: ReasonDoorDown}})
 	}
+	// Drop cached MCP connector state (#96): the daemon behind this door
+	// may come back with a different (or zero) connector set, and no
+	// frame from the dead session may be trusted any more. A fresh
+	// attach re-populates via MCP-STATUS/MCP-TOOLS snapshots.
+	c.mcp.mu.Lock()
+	hadMCP := len(c.mcp.statuses) > 0 || len(c.mcp.tools) > 0
+	c.mcp.statuses = make(map[string]ConnectorStatus)
+	c.mcp.tools = make(map[string][]ToolInfo)
+	subs := c.mcpSubscribersLocked()
+	c.mcp.mu.Unlock()
+	if hadMCP {
+		go dispatchMCPSubs(subs, nil, nil)
+	}
 }
 
 func (c *Client) sorted() []*pendingCard {
