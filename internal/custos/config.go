@@ -24,6 +24,10 @@ const (
 type Config struct {
 	// UnlockKeyfile is the optional path to a keyfile for unlocked-from-boot mode (CUSTOS §4.1, §C3, §12 Q1).
 	UnlockKeyfile string `yaml:"unlock_keyfile"`
+	// DoorsSock, DoorToken, DoorName are ignored; validated by hearthd.
+	DoorsSock string `yaml:"doors_sock"`
+	DoorToken string `yaml:"door_token"`
+	DoorName  string `yaml:"door_name"`
 
 	// LockWaitTimeout is the acquisition timeout for custos.lock (CUSTOS §4.2).
 	LockWaitTimeout time.Duration `yaml:"lock_wait_timeout"`
