@@ -164,24 +164,25 @@ see [CELL-SPEC.md](docs/CELL-SPEC.md) for the host requirements and
 
 ### Connecting an MCP server
 
-MCP is Lararium's connector standard: any [Model Context Protocol](https://modelcontextprotocol.io) server — local command or remote URL — becomes tools your agent can reach, and every one of those tools passes the same policy gate (auto / ask / deny) as everything else. Declare servers in `config/lararium.yaml`:
+MCP is Lararium's connector standard: any [Model Context Protocol](https://modelcontextprotocol.io) server — local command or remote URL — becomes tools your agent can reach, and every one of those tools passes the same policy gate (auto / ask / deny) as everything else. Declare servers under the `custos:` block (custosd reads them; hearthd ignores them, so one shared `lararium.yaml` can serve both daemons):
 
 ```yaml
-connectors:
-  mcp:
-    - name: filesystem            # stdio: custos spawns and supervises it
-      transport: stdio
-      command: /usr/local/bin/mcp-server-filesystem  # absolute path, validated at load
-      args: ["/srv/docs"]
-      env:
-        LOG_LEVEL: "warn"         # literal values are audit-warned; prefer ${env:NAME}
-    - name: search
-      transport: http             # custos connects; nothing is spawned
-      url: "http://10.0.0.12:8322/mcp"   # plain http only on LAN/tailnet hosts; use https in the clear
-      bearer: "${vault:search-key}"   # or ${env:SEARCH_KEY}; resolved lazily at
-                                      # connect time — the value renders nowhere
-      tool_allowlist: ["web_search"]  # optional; denylist wins over allowlist
-      list_timeout: 30s
+custos:
+  connectors:
+    mcp:
+      - name: filesystem          # stdio: custos spawns and supervises it
+        transport: stdio
+        command: /usr/local/bin/mcp-server-filesystem  # absolute path, validated at load
+        args: ["/srv/docs"]
+        env:
+          LOG_LEVEL: "warn"       # literal values are audit-warned; prefer ${env:NAME}
+      - name: search
+        transport: http           # custos connects; nothing is spawned
+        url: "http://10.0.0.12:8322/mcp"   # plain http only on LAN/tailnet hosts; use https in the clear
+        bearer: "${vault:search-key}"   # or ${env:SEARCH_KEY}; resolved lazily at
+                                        # connect time — the value renders nowhere
+        tool_allowlist: ["web_search"]  # optional; denylist wins over allowlist
+        list_timeout: 30s
 ```
 
 Secrets only ever appear as references (`${env:NAME}`, `${vault:ID}`). Resolved values join the scrub set: they are stripped from tool results, error lines, and audit records — which carry key *names*, never values.

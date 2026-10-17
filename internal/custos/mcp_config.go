@@ -109,6 +109,12 @@ var (
 		"max_parked_global":    true,
 		"header_extras":        true,
 		"connectors":           true,
+		// Doors keys belong to hearthd but appear in a shared
+		// lararium.yaml; accepted here so one file can serve both
+		// daemons (#94). custos.Config carries them as inert fields.
+		"doors_sock": true,
+		"door_token": true,
+		"door_name":  true,
 	}
 
 	knownMCPKeys = map[string]bool{
