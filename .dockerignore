@@ -16,3 +16,10 @@ tmp/
 # runtime via the mounts).
 docker/hearth/
 docker/config/
+# ...but the image bakes first-run defaults (issue #49) from the five tracked
+# files in those roots — re-include exactly those. Runtime writes never match.
+!docker/hearth/SOUL.md
+!docker/hearth/IDENTITY.md
+!docker/hearth/USER.md
+!docker/hearth/MEMORY.md
+!docker/config/lararium.yaml

@@ -1,0 +1,76 @@
+# Publishes multi-arch container images on version tags (issue #49).
+# Always pushes to GHCR; pushes to Docker Hub only when the two Docker Hub
+# secrets are configured on the repo.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        env:
+          TAG: ${{ github.ref_name }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -eu
+          GHCR="ghcr.io/${GITHUB_REPOSITORY_OWNER}/hearthd"
+          TAGS="${GHCR}:${TAG}"
+          # Prerelease tags (containing '-') never move :latest.
+          case "$TAG" in
+            *-*) : ;;
+            *) TAGS="${TAGS},${GHCR}:latest" ;;
+          esac
+          if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            DH="docker.io/lararium/hearthd"
+            TAGS="${TAGS},${DH}:${TAG}"
+            case "$TAG" in
+              *-*) : ;;
+              *) TAGS="${TAGS},${DH}:latest" ;;
+            esac
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # Minimal provenance: full attestations have been observed to
+          # block multi-registry pushes on GHCR; mode=min keeps SBOM-free
+          # attestations off the critical path.
+          provenance: mode=min
+          sbom: false
+
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
