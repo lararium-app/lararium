@@ -72,9 +72,10 @@ func (s *DoorServer) sendMCPSnapshot(client *doorClient) {
 }
 
 // BroadcastMCPStatus pushes MCP-STATUS to all attached, authenticated door subscriptions.
+// An empty connector list is still broadcast (#96) so subscribers clear stale cards.
 func (s *DoorServer) BroadcastMCPStatus() {
 	reg := s.railRegistry()
-	if reg == nil || len(reg.Connectors()) == 0 {
+	if reg == nil {
 		return
 	}
 	list := []ConnectorStatus{}

@@ -41,6 +41,13 @@ func (c *Client) handleMCPLine(line string) {
 		for _, st := range list {
 			c.mcp.statuses[st.Name] = st
 		}
+		// Drop cached tool rows for connectors absent from the new
+		// status set, mirroring the wholesale status replacement (#96).
+		for name := range c.mcp.tools {
+			if _, ok := c.mcp.statuses[name]; !ok {
+				delete(c.mcp.tools, name)
+			}
+		}
 		snapStatuses := c.statusesLocked()
 		snapTools := c.listToolsLocked()
 		subs := c.mcpSubscribersLocked()
