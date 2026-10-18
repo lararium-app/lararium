@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // DispatchMCPVerb executes the shared MCP verb logic (STATUS, TOOLS, REFRESH)
@@ -168,9 +169,26 @@ func DispatchMCPCall(conn net.Conn, reg *RailRegistry, name, tool, argsJSON stri
 		_ = conn.SetDeadline(time.Time{})
 	}
 	if err != nil {
-		write(fmt.Sprintf("ERR %s\n", err.Error()))
+		write(fmt.Sprintf("ERR %s\n", oneLineReason(err.Error())))
 		return true
 	}
 	write(fmt.Sprintf("OK %s\n", string(result)))
 	return true
+}
+
+// oneLineReason forces an error string into the frozen single-line
+// frame contract: Execute reasons can embed MCP-server-supplied text
+// (tool errors, validation detail), and an unescaped newline there
+// would forge frames on a control channel. Whitespace runs collapse
+// and the reason is capped.
+func oneLineReason(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if max := 300; len(s) > max {
+		cut := max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
+	}
+	return s
 }

@@ -6,6 +6,7 @@ package custos_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +51,12 @@ func newCallTestRegistry(t *testing.T) *custos.RailRegistry {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: "pong"}},
 		}, nil, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "boom",
+		Description: "fails with a multi-line server error",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, any, error) {
+		return nil, nil, errors.New("server failure\nFORGED OK injected\r\nsecond line")
 	})
 
 	handler := mcp.NewStreamableHTTPHandler(func(req *http.Request) *mcp.Server { return server }, nil)
@@ -103,8 +110,8 @@ func TestMCPCall_ToolsFrameCarriesInputSchema(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &rows); err != nil {
 		t.Fatalf("tools body not JSON: %v (%s)", err, body)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("rows = %+v, want echo+ping", rows)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v, want echo+ping+boom", rows)
 	}
 	var echo *toolRow
 	for i := range rows {
@@ -158,6 +165,25 @@ func TestMCPCall_EmptyArgsDefault(t *testing.T) {
 	custos.DispatchMCPCall(nil, reg, "alpha", "ping", "", captureWrite(t, &got))
 	if !strings.HasPrefix(got, "OK ") || !strings.Contains(got, "pong") {
 		t.Fatalf("empty args should default to {}: %q", got)
+	}
+}
+
+// A server-supplied error must never break the single-line frame
+// contract: newlines in Execute reasons would forge frames on the
+// control channel (oneLineReason sanitizer).
+func TestMCPCall_ServerErrorStaysSingleLine(t *testing.T) {
+	reg := newCallTestRegistry(t)
+
+	var got string
+	custos.DispatchMCPCall(nil, reg, "alpha", "boom", "{}", captureWrite(t, &got))
+	// The SDK surfaces tool failures as an isError result frame (json-
+	// marshaled, so newlines are escaped) or as a Go error (sanitized
+	// by oneLineReason). Both shapes must keep the one-line contract.
+	if !strings.HasPrefix(got, "ERR ") && !strings.HasPrefix(got, "OK ") {
+		t.Fatalf("want ERR or OK, got %q", got)
+	}
+	if strings.ContainsRune(strings.TrimRight(got, "\n"), '\n') || strings.Contains(got, "\r") {
+		t.Fatalf("ERR frame contains raw newlines: %q", got)
 	}
 }
 
