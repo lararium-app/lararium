@@ -152,8 +152,16 @@ func (h *Hub) Cancel(sessionID string) bool {
 	if !ok {
 		return false
 	}
+	// Order is the fix for the mislabeled-cause race (#81): STAMP the
+	// approvals cancelled before tripping the turn's context. Stamping
+	// (not releasing) keeps the engine parked — it exits via the context,
+	// so no tool_result is committed — and the "cancelled" record is in
+	// place before the teardown's deny(disconnected) can overwrite it.
+	// Fan-out still runs without holding h.mu (the 15 s card-edit caveat
+	// above); a turn that completed before we looked makes both calls
+	// no-ops.
+	h.ap.MarkCancelledFor(sessionID, "web")
 	t.cancel()
-	h.ap.CancelAllFor(sessionID, "web")
 	return true
 }
 
