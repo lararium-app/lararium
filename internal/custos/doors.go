@@ -556,18 +556,15 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 	// Handle MCP-CALL specially to preserve args JSON
 	if strings.HasPrefix(line, "MCP-CALL ") {
 		parts := strings.SplitN(line, " ", 4)
-		if len(parts) >= 3 {
-			token := parts[1]
-			tool := parts[2]
-			args := ""
-			if len(parts) == 4 {
-				args = parts[3]
-			}
-			if s.handleMcpCall(client, token, tool, args) {
-				return
-			}
-		} else {
-			_ = client.writeRaw([]byte("ERR bad_source\n"))
+		if len(parts) < 3 {
+			_ = client.writeRaw([]byte("ERR bad_request\n"))
+			return
+		}
+		args := ""
+		if len(parts) == 4 {
+			args = parts[3]
+		}
+		if s.handleMcpCall(client, parts[1], parts[2], args) {
 			return
 		}
 	}

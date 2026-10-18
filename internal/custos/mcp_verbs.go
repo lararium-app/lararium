@@ -119,17 +119,15 @@ func DispatchMCPVerb(conn net.Conn, reg *RailRegistry, cmd string, name string, 
 // `OK <json>` / `ERR <reason>` frame. Shared by ctl.sock and doors.sock.
 // argsJSON is the raw tool arguments object (may be empty → "{}").
 func DispatchMCPCall(conn net.Conn, reg *RailRegistry, name, tool, argsJSON string, writeFn func([]byte) error) bool {
-	write := func(s string) bool {
+	write := func(s string) {
 		data := []byte(s)
 		if writeFn != nil {
 			_ = writeFn(data)
-			return true
+			return
 		}
 		if conn != nil {
 			_, _ = conn.Write(data)
-			return true
 		}
-		return true
 	}
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(tool) == "" {
 		write("ERR bad_request\n")
@@ -183,8 +181,9 @@ func DispatchMCPCall(conn net.Conn, reg *RailRegistry, name, tool, argsJSON stri
 // and the reason is capped.
 func oneLineReason(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if max := 300; len(s) > max {
-		cut := max
+	const reasonLimit = 300
+	if len(s) > reasonLimit {
+		cut := reasonLimit
 		for cut > 0 && !utf8.RuneStart(s[cut]) {
 			cut--
 		}
