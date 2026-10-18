@@ -7,6 +7,7 @@
 package custosdoor
 
 import (
+	"encoding/json"
 	"errors"
 	"regexp"
 )
@@ -47,6 +48,10 @@ type ToolInfo struct {
 	Name      string `json:"name"`
 	Flags     string `json:"flags,omitempty"`
 	Title     string `json:"title"`
+	// InputSchema is the RFC 8785 (JCS) canonical JSON of the tool's
+	// input schema (MCP-SPEC §9 amendment A3; additive — old parsers
+	// ignore it).
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 }
 
 // Frozen enums and synthesized GONE values.

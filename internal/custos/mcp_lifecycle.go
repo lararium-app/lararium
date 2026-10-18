@@ -5,6 +5,7 @@ package custos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -639,9 +640,10 @@ func (c *MCPConnector) Status() ConnectorStatus {
 
 // ToolStatus represents the tool row for MCP-TOOLS per MCP-SPEC §9.
 type ToolStatus struct {
-	Name  string `json:"name"`
-	Flags string `json:"flags"`
-	Title string `json:"title"`
+	Name        string          `json:"name"`
+	Flags       string          `json:"flags"`
+	Title       string          `json:"title"`
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 }
 
 // ToolStatuses returns the tool list formatted for MCP-TOOLS.
@@ -671,10 +673,21 @@ func (c *MCPConnector) ToolStatuses() []ToolStatus {
 			flags = strings.Join(flagParts, ",")
 		}
 
+		// inputSchema: RFC 8785 (JCS) canonical form of the tool's
+		// input schema — single-line, stable, and identical to what
+		// the fingerprint (A6) covers.
+		var schema json.RawMessage
+		if t.InputSchema != nil {
+			if canon, err := CanonicalJSON(t.InputSchema); err == nil && len(canon) > 0 {
+				schema = json.RawMessage(canon)
+			}
+		}
+
 		res = append(res, ToolStatus{
-			Name:  t.Canonical,
-			Flags: flags,
-			Title: t.Title,
+			Name:        t.Canonical,
+			Flags:       flags,
+			Title:       t.Title,
+			InputSchema: schema,
 		})
 	}
 
