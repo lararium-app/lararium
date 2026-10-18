@@ -279,15 +279,25 @@ func (h *ApprovalHub) fanTerminalVia(id, sessionID, state, reason, source, via s
 // settle applies a terminal transition under the caller's lock and
 // reports whether it changed state (first-wins).
 func (ap *approval) settle(state, reason, source string) bool {
-	if ap.state != "pending" {
+	if !ap.stamp(state, reason, source) {
 		return false
 	}
-	ap.state, ap.reason, ap.source = state, reason, source
 	allow := state == "approved"
 	select {
 	case ap.ch <- allow:
 	default:
 	}
+	return true
+}
+
+// stamp marks a resolution WITHOUT releasing the parked waiter: the
+// cancel path uses it so the engine's select cannot wake with a bogus
+// user decision; it exits via its context (V-suite: no tool_result).
+func (ap *approval) stamp(state, reason, source string) bool {
+	if ap.state != "pending" {
+		return false
+	}
+	ap.state, ap.reason, ap.source = state, reason, source
 	if ap.timer != nil {
 		ap.timer.Stop()
 		ap.timer = nil
@@ -448,21 +458,40 @@ func (h *ApprovalHub) SettleCustosLocked(source string) int {
 // DenyAllFor denies every pending approval of a session unconditionally
 // (reason carries the cause, e.g. "cancelled"; source "hub").
 func (h *ApprovalHub) DenyAllFor(sessionID, reason string) {
-	h.denyAllFor(sessionID, reason, "hub")
+	h.denyAllFor(sessionID, reason, "hub", true)
 }
 
 // CancelAllFor denies every pending approval of a cancelled turn (A5):
 // an approval whose turn no longer exists is meaningless; source is the
-// cancelling surface.
+// cancelling surface. Releases waiters with a denial — Hub.Cancel uses
+// MarkCancelledFor instead; see its comment.
 func (h *ApprovalHub) CancelAllFor(sessionID, source string) {
-	h.denyAllFor(sessionID, "cancelled", source)
+	h.denyAllFor(sessionID, "cancelled", source, true)
 }
 
-func (h *ApprovalHub) denyAllFor(sessionID, reason, source string) {
+// MarkCancelledFor stamps every pending approval of a cancelled turn
+// denied:cancelled (A5) WITHOUT releasing the engine's wait, so the
+// engine cannot wake with what looks like a user decision and commit a
+// tool_result (V-suite: the cancel path must write none). Hub.Cancel
+// calls it immediately before cancelling the turn's context — the
+// engine exits via that context instead. Stamping FIRST also wins the
+// record race against the teardown's deny(disconnected), fixing the
+// mislabeled-cause bug (#81).
+func (h *ApprovalHub) MarkCancelledFor(sessionID, source string) {
+	h.denyAllFor(sessionID, "cancelled", source, false)
+}
+
+func (h *ApprovalHub) denyAllFor(sessionID, reason, source string, release bool) {
 	h.mu.Lock()
 	var fired [][3]string
 	for _, ap := range h.bySession[sessionID] {
-		if ap.settle("denied", reason, source) {
+		var ok bool
+		if release {
+			ok = ap.settle("denied", reason, source)
+		} else {
+			ok = ap.stamp("denied", reason, source)
+		}
+		if ok {
 			fired = append(fired, [3]string{ap.id, ap.state, reason})
 		}
 	}

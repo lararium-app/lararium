@@ -234,6 +234,31 @@ func TestResolveFromAttributionAndFirstWins(t *testing.T) {
 	}
 }
 
+// MarkCancelledFor is the Hub.Cancel path's variant: the record is
+// stamped cancelled but the engine's waiter stays parked, so the turn
+// can only exit via its context — a released channel would read as a
+// user denial and let the engine commit a tool_result (V-suite).
+func TestMarkCancelledForStampsWithoutWake(t *testing.T) {
+	ap := NewApprovalHub(time.Hour)
+	fan := &recordingFanout{}
+	ap.SetFanout(fan)
+
+	id, decision := ap.RegisterOn("s1", "echo", "args", true, func(string) {})
+	ap.MarkCancelledFor("s1", "web")
+	select {
+	case got := <-decision:
+		t.Fatalf("stamped approval must not release the waiter (got %v)", got)
+	default:
+	}
+	if r := ap.Reason("s1", id); r != "cancelled" {
+		t.Fatalf("reason = %q, want cancelled", r)
+	}
+	term := fan.terminals()
+	if len(term) != 1 || term[0][3] != "cancelled" {
+		t.Fatalf("terminals = %v", term)
+	}
+}
+
 func TestCancelAllForResolvesPending(t *testing.T) {
 	// A5: cancel denies the turn's pending approvals with cause
 	// "cancelled" before the turn's own terminal event.
