@@ -288,6 +288,74 @@ func (c *Client) Refresh(ctx context.Context, name string) error {
 	}
 }
 
+// Call executes one tool on a connector via doors.sock MCP-CALL per
+// MCP-SPEC §9 (amendment A3): `MCP-CALL <connector> <tool> <args-json>`
+// → `OK <result-json>` | `ERR <reason>`. argsJSON must be a raw JSON
+// object matching the tool's InputSchema (empty → "{}"). The returned
+// bytes are the raw execution result frame (MCP content[] shape, §6.3).
+// Tool execution is slow-path (worker exec timeout + rail budget per
+// §7), so unlike the metadata verbs the reply wait defaults to 90 s.
+func (c *Client) Call(ctx context.Context, connector, tool string, argsJSON json.RawMessage) (json.RawMessage, error) {
+	if connector == "" {
+		return nil, fmt.Errorf("custos: empty connector name")
+	}
+	if tool == "" {
+		return nil, fmt.Errorf("custos: empty tool name")
+	}
+	args := string(argsJSON)
+	if args == "" {
+		args = "{}"
+	}
+
+	c.cmdMu.Lock()
+	defer c.cmdMu.Unlock()
+
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	if s == nil {
+		return nil, ErrDoorDown
+	}
+
+	select {
+	case <-s.ack:
+	default:
+	}
+
+	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if _, err := s.conn.Write([]byte("MCP-CALL " + connector + " " + tool + " " + args + "\n")); err != nil {
+		s.conn.Close()
+		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
+	}
+
+	callTimeout := 90 * time.Second
+	if d, ok := ctx.Deadline(); ok {
+		if rem := time.Until(d); rem > 0 && rem < callTimeout {
+			callTimeout = rem
+		}
+	}
+	t := time.NewTimer(callTimeout)
+	defer t.Stop()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.dead:
+		return nil, ErrDoorDown
+	case <-t.C:
+		s.conn.Close()
+		return nil, errors.New("custos: MCP-CALL reply timed out")
+	case line := <-s.ack:
+		if strings.HasPrefix(line, "OK ") {
+			return json.RawMessage(strings.TrimPrefix(line, "OK ")), nil
+		}
+		if strings.HasPrefix(line, "ERR ") {
+			return nil, mapMCPErr(strings.TrimPrefix(line, "ERR "))
+		}
+		return nil, fmt.Errorf("custos: unexpected reply %q", truncate(line))
+	}
+}
+
 // SubscribeMCP registers a callback for pushed rail status and tools frames.
 // It converges state immediately by handing the current snapshot to the callback.
 func (c *Client) SubscribeMCP(handler func(status []ConnectorStatus, tools []ToolInfo)) (cancel func()) {
@@ -332,6 +400,13 @@ func (r *RailClient) Tools(ctx context.Context, name string) ([]ToolInfo, error)
 // Refresh calls Refresh on the underlying client.
 func (r *RailClient) Refresh(ctx context.Context, name string) error {
 	return r.client.Refresh(ctx, name)
+}
+
+// Call executes one connector tool (MCP-SPEC §9 amendment A3). argsJSON
+// is a raw JSON object matching the tool's InputSchema; the result is
+// the raw MCP result frame.
+func (r *RailClient) Call(ctx context.Context, connector, tool string, argsJSON json.RawMessage) (json.RawMessage, error) {
+	return r.client.Call(ctx, connector, tool, argsJSON)
 }
 
 // Subscribe registers a handler for pushed rail status and tool updates.

@@ -1170,7 +1170,7 @@ func main() {
 
 func runMCP(stateDir string, cfg *custos.Config, subArgs []string) int {
 	if len(subArgs) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: custos mcp status|tools|refresh [args]\n")
+		fmt.Fprintf(os.Stderr, "usage: custos mcp status|tools|refresh|call [args]\n")
 		return 2
 	}
 	switch subArgs[0] {
@@ -1188,6 +1188,16 @@ func runMCP(stateDir string, cfg *custos.Config, subArgs []string) int {
 			return 2
 		}
 		return runMCPRefresh(stateDir, cfg, subArgs[1])
+	case "call":
+		if len(subArgs) < 3 {
+			fmt.Fprintf(os.Stderr, "usage: custos mcp call <name> <tool> [json-args]\n")
+			return 2
+		}
+		args := "{}"
+		if len(subArgs) > 3 {
+			args = strings.Join(subArgs[3:], " ")
+		}
+		return runMCPCall(stateDir, cfg, subArgs[1], subArgs[2], args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mcp subcommand %q\n", subArgs[0])
 		return 2
@@ -1233,10 +1243,38 @@ func runMCPTools(stateDir string, cfg *custos.Config, name string) int {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
-	fmt.Println("name\tflags\ttitle")
+	fmt.Println("name	flags	title	inputSchema")
 	for _, r := range rows {
-		fmt.Printf("%s\t%s\t%s\n", r.Name, r.Flags, r.Title)
+		schema := string(r.InputSchema)
+		if schema == "" {
+			schema = "{}"
+		}
+		fmt.Printf("%s	%s	%s	%s\n", r.Name, r.Flags, r.Title, schema)
 	}
+	return 0
+}
+
+// runMCPCall executes one tool via the ctl.sock MCP-CALL verb
+// (MCP-SPEC §9 amendment A3) and prints the raw result frame. The
+// round-trip waits for the worker exec (default 60 s) plus the rail
+// budget, so the socket deadline carries generous slack.
+func runMCPCall(stateDir string, cfg *custos.Config, name, tool, args string) int {
+	if !json.Valid([]byte(args)) {
+		fmt.Fprintf(os.Stderr, "invalid JSON args: %s\n", args)
+		return 2
+	}
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	callTimeout := custos.DefaultWorkerExecTimeout + 35*time.Second
+	out, err := client.RoundTripWithArgTimeout("MCP-CALL", name+" "+tool+" "+args, callTimeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println(out)
 	return 0
 }
 

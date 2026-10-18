@@ -422,13 +422,20 @@ func (c *CtlClient) RoundTrip(cmd string) (string, error) {
 
 // RoundTripWithArg sends "CMD token arg" and returns the response.
 func (c *CtlClient) RoundTripWithArg(cmd, arg string) (string, error) {
+	return c.RoundTripWithArgTimeout(cmd, arg, c.timeout)
+}
+
+// RoundTripWithArgTimeout is RoundTripWithArg with an explicit full
+// round-trip deadline (slow-path verbs: MCP-CALL waits for a worker
+// exec, which can outlast ctlCommandTimeout).
+func (c *CtlClient) RoundTripWithArgTimeout(cmd, arg string, timeout time.Duration) (string, error) {
 	d := net.Dialer{Timeout: c.timeout}
 	conn, err := d.DialContext(context.Background(), "unix", c.sockPath)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrCtlNotListening, err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	if _, err := fmt.Fprintf(conn, "%s %s %s\n", cmd, c.token, arg); err != nil {
 		return "", err
