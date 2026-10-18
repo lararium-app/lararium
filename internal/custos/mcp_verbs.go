@@ -111,3 +111,66 @@ func DispatchMCPVerb(conn net.Conn, reg *RailRegistry, cmd string, name string, 
 		return false
 	}
 }
+
+// DispatchMCPCall executes the MCP-CALL verb per MCP-SPEC §9 (amendment
+// A3): look up the connector by name, validate the tool against the
+// current snapshot (Execute does this), and write the single-line
+// `OK <json>` / `ERR <reason>` frame. Shared by ctl.sock and doors.sock.
+// argsJSON is the raw tool arguments object (may be empty → "{}").
+func DispatchMCPCall(conn net.Conn, reg *RailRegistry, name, tool, argsJSON string, writeFn func([]byte) error) bool {
+	write := func(s string) bool {
+		data := []byte(s)
+		if writeFn != nil {
+			_ = writeFn(data)
+			return true
+		}
+		if conn != nil {
+			_, _ = conn.Write(data)
+			return true
+		}
+		return true
+	}
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(tool) == "" {
+		write("ERR bad_request\n")
+		return true
+	}
+	if reg == nil {
+		write("ERR no_registry\n")
+		return true
+	}
+	c := reg.Connector(strings.TrimSpace(name))
+	if c == nil {
+		write(fmt.Sprintf("ERR connector %q not found\n", strings.TrimSpace(name)))
+		return true
+	}
+	args := strings.TrimSpace(argsJSON)
+	if args == "" {
+		args = "{}"
+	}
+	if !json.Valid([]byte(args)) {
+		write("ERR bad_args\n")
+		return true
+	}
+	// Execution deadline: worker exec timeout + 30 s slack (§7 budget anchor).
+	timeout := DefaultWorkerExecTimeout + 30*time.Second
+	if c.execTimeout > 0 {
+		timeout = c.execTimeout + 30*time.Second
+	}
+	if conn != nil {
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	result, err := c.Execute(ctx, strings.TrimSpace(tool), json.RawMessage(args), Credential{})
+	// doors.sock has no per-command deadline re-arm; clear the armed
+	// deadline so the long-lived door connection survives the call.
+	if writeFn != nil && conn != nil {
+		_ = conn.SetDeadline(time.Time{})
+	}
+	if err != nil {
+		write(fmt.Sprintf("ERR %s\n", err.Error()))
+		return true
+	}
+	write(fmt.Sprintf("OK %s\n", string(result)))
+	return true
+}

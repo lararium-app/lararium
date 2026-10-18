@@ -110,9 +110,8 @@ each owns its override explicitly):
   `ws.scrubNeedles()` reads `LoadedCredentials()`, which
   `RevokeCredential` purges immediately.
 - **A3** — §3 (ctl.sock wire protocol) **and** §11 (ctl CLI): the socket
-  verb set gains `MCP-STATUS <token>`, `MCP-TOOLS <token> <name>`,
-  `MCP-REFRESH <token> <name>` (dash style per frozen verb law), and the
-  `custos` CLI gains the matching `mcp status|tools|refresh` verbs (§9),
+  gains `MCP-STATUS <token>`, `MCP-TOOLS <token> <name>`, `MCP-REFRESH <token> <name>`, and `MCP-CALL <token> <name> <tool> <args>` (dash style per frozen verb law), and the
+  `custos` CLI gains the matching `mcp status|tools|refresh|call` verbs (§9),
   obeying §11's line-oriented list conventions (tab-separated,
   header-declared order). Per-verb deadline: the frozen
   `ctlCommandTimeout` (5 s, applied via `conn.SetDeadline` to every
@@ -733,9 +732,13 @@ over its own registry.
 
 ```
 socket: MCP-STATUS  <token>          → OK <json>  [{"name","state","tools","restarts","reason"}…]
-socket: MCP-TOOLS   <token> <name>   → OK <json>  [{"name","flags","title"}…]
+socket: MCP-TOOLS   <token> <name>   → OK <json>  [{"name","flags","title","inputSchema"}…]
 socket: MCP-REFRESH <token> <name>   → OK | ERR <reason>
-CLI:    custos mcp status | tools <name> | refresh <name>   (renders the
+socket: MCP-CALL   <token> <name> <tool> <args>   → OK <json> | ERR <reason>
+        (doors.sock: MCP-CALL <name> <tool> <args> — <args> is a JSON object
+         matching the tool's InputSchema; rail validates and ERRs bad_args)
+CLI:    custos mcp status | tools <name> | refresh <name> |
+        custos mcp call <name> <tool> '<json-args>' (renders the
         JSON as tables; refresh exit 0 = refreshed, 1 + stderr reason)
 ```
 Socket responses are the frozen **single-line `OK <json>` / `ERR <reason>`
