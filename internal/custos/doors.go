@@ -553,6 +553,25 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 		return
 	}
 
+	// Handle MCP-CALL specially to preserve args JSON
+	if strings.HasPrefix(line, "MCP-CALL ") {
+		parts := strings.SplitN(line, " ", 4)
+		if len(parts) >= 3 {
+			token := parts[1]
+			tool := parts[2]
+			args := ""
+			if len(parts) == 4 {
+				args = parts[3]
+			}
+			if s.handleMcpCall(client, token, tool, args) {
+				return
+			}
+		} else {
+			_ = client.writeRaw([]byte("ERR bad_source\n"))
+			return
+		}
+	}
+
 	if s.handleMcpCommand(client, fields) {
 		return
 	}
@@ -1189,4 +1208,9 @@ func (c *DoorConn) RawReadLine(timeout time.Duration) (string, error) {
 // Close closes the underlying network connection.
 func (c *DoorConn) Close() error {
 	return c.conn.Close()
+}
+
+func (s *DoorServer) handleMcpCall(client *doorClient, connector, tool, args string) bool {
+	DispatchMCPCall(nil, s.railRegistry(), connector, tool, args, client.writeRaw)
+	return true
 }
