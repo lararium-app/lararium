@@ -46,8 +46,8 @@ release note, doc, or audit transcript), we tag beta.
       frames (auth gate, snapshot races, slow-client DoS)
 - [ ] `govulncheck` clean at the beta tag, and stays clean through the
       release week
-- [ ] Secret hygiene: neutrality scan extended to catch tokens/keys in
-      test fixtures; zero findings at the tag
+- [x] Secret hygiene: neutrality scan extended to catch tokens/keys in
+      test fixtures; zero findings at the tag (scripts/scan-secrets.sh)
 
 ## D. Quality
 

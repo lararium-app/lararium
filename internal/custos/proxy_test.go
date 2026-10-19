@@ -683,7 +683,7 @@ func TestV26_ParkedKnobsAndDenialDrain(t *testing.T) {
 func TestV20_ResponseScrub(t *testing.T) {
 	h := setupProxyHarness(t, nil)
 
-	credSecret := "sk-live-super-secret-key-9999" //nolint:gosec // test fixture, not a live credential
+	credSecret := "fake-scrub-secret-9999" //nolint:gosec // test fixture, not a live credential
 	_ = h.v.Mutate(h.passphrase, func(doc *custos.VaultDoc) ([]string, error) {
 		doc.Credentials["scrub-cred"] = custos.Credential{Kind: "api_key", Secret: credSecret}
 		return []string{"scrub-cred"}, nil

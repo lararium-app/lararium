@@ -100,7 +100,7 @@ func TestCustosWebAdapter_AttachAndSnapshot(t *testing.T) {
 	dir := shortTmp(t)
 	sock := filepath.Join(dir, "doors.sock")
 	tok := filepath.Join(dir, "door.token")
-	if err := os.WriteFile(tok, []byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
+	if err := os.WriteFile(tok, []byte("test-door-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
