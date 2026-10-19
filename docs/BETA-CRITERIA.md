@@ -57,8 +57,10 @@ release note, doc, or audit transcript), we tag beta.
 - [ ] `go test -race ./...` at tag tip, three consecutive runs, zero flakes
 - [x] Hot spots under the soft cap: `worker.go` and `ctl.go` split
   (behavior-free moves only, #93 / 4def5be)
-- [ ] Lock discipline: no network I/O under a held mutex on any daemon
+- [x] Lock discipline: no network I/O under a held mutex on any daemon
       path (audit `startLocked` and friends; race detector + review)
+      — audit transcript: `docs/AUDIT-LOCKS.md` (one bounded, documented
+      waiver at MCP connector start; full `-race` suite green)
 
 ## E. Documentation
 
