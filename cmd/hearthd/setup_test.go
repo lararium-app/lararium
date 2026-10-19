@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/keystore"
+	"github.com/lararium-app/lararium/internal/penatus"
 )
 
 // helper to create a valid minimal lararium.yaml fixture in dir.
@@ -832,5 +833,119 @@ exit 0
 	lines2 := strings.Split(strings.TrimSpace(string(logBytes2)), "\n")
 	if len(lines2) != 1 || lines2[0] != "serve" {
 		t.Errorf("unexpected call log for second run (setup-done exists): %+v", lines2)
+	}
+}
+
+func TestSetup_Defaults_Scaffolds(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	tempCfgDir := t.TempDir()
+	cfgPath := filepath.Join(tempCfgDir, "lararium.yaml")
+
+	var out bytes.Buffer
+	opts := SetupOptions{
+		ConfigPath: cfgPath,
+		Out:        &out,
+		Defaults:   true,
+	}
+
+	if err := RunSetup(opts); err != nil {
+		t.Fatalf("RunSetup --defaults failed: %v", err)
+	}
+
+	expectedHearthHome := filepath.Join(tempHome, ".lararium")
+
+	// Persona trio + MEMORY.md exist with parseable frontmatter
+	for _, name := range []string{"SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"} {
+		p := filepath.Join(expectedHearthHome, name)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("expected persona file %s to exist: %v", name, err)
+		}
+		if _, err := penatus.ParseDoc(data); err != nil {
+			t.Fatalf("file %s failed frontmatter parse: %v", name, err)
+		}
+	}
+
+	// Config exists, loads via LoadConfig
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("expected config file %s to exist: %v", cfgPath, err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed on created config: %v", err)
+	}
+
+	// listen is 127.0.0.1:7717
+	if cfg.Serve.Listen != "127.0.0.1:7717" {
+		t.Errorf("expected listen = 127.0.0.1:7717, got %q", cfg.Serve.Listen)
+	}
+
+	// hearth.home is absolute and equals the temp home
+	if !filepath.IsAbs(cfg.Hearth.Home) {
+		t.Errorf("expected hearth.home to be absolute, got %q", cfg.Hearth.Home)
+	}
+	if cfg.Hearth.Home != expectedHearthHome {
+		t.Errorf("expected hearth.home = %q, got %q", expectedHearthHome, cfg.Hearth.Home)
+	}
+}
+
+func TestSetup_Defaults_NeverClobbers(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	tempCfgDir := t.TempDir()
+	cfgPath := filepath.Join(tempCfgDir, "lararium.yaml")
+
+	// First run to scaffold everything
+	var out1 bytes.Buffer
+	if err := RunDefaults(&out1, cfgPath); err != nil {
+		t.Fatalf("first RunDefaults failed: %v", err)
+	}
+
+	// Modify SOUL.md with custom content to test clobber resistance
+	expectedHearthHome := filepath.Join(tempHome, ".lararium")
+	soulPath := filepath.Join(expectedHearthHome, "SOUL.md")
+	customSoul := "---\npenatus: 1\n---\nCustomized soul content that must not be overwritten.\n"
+	if err := os.WriteFile(soulPath, []byte(customSoul), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read both files before second run
+	origSoulBytes, err := os.ReadFile(soulPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origCfgBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second run
+	var out2 bytes.Buffer
+	if err := RunDefaults(&out2, cfgPath); err != nil {
+		t.Fatalf("second RunDefaults failed: %v", err)
+	}
+
+	// Pre-existing SOUL.md and lararium.yaml are byte-identical after a second run
+	newSoulBytes, err := os.ReadFile(soulPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(origSoulBytes, newSoulBytes) {
+		t.Errorf("SOUL.md was clobbered on second run")
+	}
+
+	newCfgBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(origCfgBytes, newCfgBytes) {
+		t.Errorf("lararium.yaml was clobbered on second run")
+	}
+
+	// Output contains "left in place"
+	out2Str := out2.String()
+	if !strings.Contains(out2Str, "left in place") {
+		t.Errorf("expected output to contain 'left in place', got:\n%s", out2Str)
 	}
 }
