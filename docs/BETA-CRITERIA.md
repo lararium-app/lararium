@@ -73,6 +73,9 @@ release note, doc, or audit transcript), we tag beta.
 - [ ] First MCP server recipe exists and was followed by someone who did
       not write it
 - [ ] Backup → wipe → restore rehearsed on a real box, written up
+      (drilled 2026-10-19, transcript: `docs/RUNBOOK-RECOVERY.md`; stays
+      red until #119 lands — the documented primary path fails on
+      containerized installs; workaround verified end-to-end)
 
 ## Non-goals for beta (named so they don't creep in)
 

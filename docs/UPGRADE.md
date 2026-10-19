@@ -84,6 +84,10 @@ hearthd backup create --out /tmp/post-upgrade-backup.zip
 hearthd backup verify /tmp/post-upgrade-backup.zip
 ```
 
+> Containerized installs: **restore is `--to` into a subdir + copy** until
+> #119 lands — follow `docs/RUNBOOK-RECOVERY.md`; do not run
+> `restore --replace` against a bind/volume mount root.
+
 ---
 
 ## Rollback Procedure
