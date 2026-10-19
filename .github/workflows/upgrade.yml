@@ -1,0 +1,41 @@
+name: Upgrade Drill
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '*.md']
+  pull_request:
+    paths-ignore: ['docs/**', '*.md']
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build current main
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 go build -o bin/hearthd ./cmd/hearthd
+
+      - name: Run upgrade drill
+        run: bash scripts/upgrade-drill.sh
+        env:
+          FROM_VERSION: v0.8.4-alpha
+          TO_BINARY: bin/hearthd
+
+      - name: Always clean drill containers and volumes
+        if: always()
+        run: |
+          docker rm -f "$(docker ps -aq --filter name=hearthd-drill)" 2>/dev/null || true
+          docker volume rm -f "$(docker volume ls -q --filter name=hearth_upgrade)" 2>/dev/null || true

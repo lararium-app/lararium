@@ -22,8 +22,9 @@ release note, doc, or audit transcript), we tag beta.
       `ghcr.io/lararium-app/hearthd:v0.10.0-alpha`: anonymous pull, volume
       seeding, web UI 200 on the loopback publish, foreign Host rejected 403,
       `/v1/health` reports 0.10.0)
-- [ ] Upgrade drill: v0.8 → v1.0-beta on a live hearth with data, one
-      command, verified by CI test
+- [x] Upgrade drill: v0.8 → v1.0-beta on a live hearth with data, one
+      command, verified by CI test (automated via `.github/workflows/upgrade.yml`
+      and `scripts/upgrade-drill.sh`; documented in `docs/UPGRADE.md`)
 - [ ] Uninstall leaves an explicit, documented residue list (keys, hearth)
 
 ## B. Features at beta bar
