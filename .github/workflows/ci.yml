@@ -113,6 +113,10 @@ jobs:
             echo "personal identifiers found in tracked files (list above)"; exit 1
           fi
 
+      - name: Secrets scan
+        run: |
+          bash scripts/scan-secrets.sh
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:
