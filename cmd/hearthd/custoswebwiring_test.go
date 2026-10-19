@@ -181,7 +181,7 @@ func TestCustosWebWiring_Integration(t *testing.T) {
 	}
 	handler := surface.NewServer(srv)
 
-	stopDoor := startCustosDoor(t.Context(), CustosConfig{DoorsSock: sockPath, DoorToken: tokenPath}, nil, srv)
+	stopDoor := startCustosDoor(t.Context(), CustosConfig{DoorsSock: sockPath, DoorToken: tokenPath}, nil, srv, nil)
 	if stopDoor == nil {
 		t.Fatal("startCustosDoor returned nil stop")
 	}

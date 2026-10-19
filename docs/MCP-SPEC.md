@@ -117,7 +117,12 @@ each owns its override explicitly):
   `ctlCommandTimeout` (5 s, applied via `conn.SetDeadline` to every
   command) is overridden for `MCP-REFRESH` only, to that connector's
   `list_timeout` + 5 s grace — a server restart legitimately outlives the
-  generic ctl deadline; all other verbs keep the frozen 5 s. The CLI
+  generic ctl deadline; `MCP-CALL` (2026-10-18) is overridden too, to the
+  connector's worker `exec_timeout` + 30 s slack (default 90 s) — tool
+  execution is slower than listing. The matching door-client default for
+  MCP-CALL replies is 90 s, shrunk by an earlier caller `ctx` deadline
+  (`internal/custosdoor/mcp_client.go` `Client.Call`); all other verbs keep
+  the frozen 5 s. The CLI
   `mcp refresh` builds its client with the matching client-side timeout
   (`NewCtlClient(stateDir, timeout)` — the frozen 5 s default, applied at
   construction, would otherwise abort the very request
@@ -746,6 +751,10 @@ frames** `CtlClient.RoundTrip` mandates (one line, `OK `-prefixed;
 RoundTrip passes any other line through verbatim as body, so a multi-line
 payload would break the client's frame contract before the caller ever
 sees it);
+`ERR` reasons derived from upstream MCP servers pass through a sanitizer
+at dispatch (`oneLineReason` in `internal/custos/mcp_verbs.go`): whitespace
+runs collapse to single spaces and the reason is capped at 300 runes on a
+UTF-8 boundary — server-supplied text can never break the frame law;
 the CLI renders them into §11-style line-oriented tables (tab-separated,
 header-declared order, no decoration) — line-oriented governs **stdout**,
 not the socket. No secret material ever. Closed sets: `state` per §7;

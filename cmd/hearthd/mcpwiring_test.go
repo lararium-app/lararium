@@ -130,7 +130,7 @@ func TestMCPWiring_ConnectorsEndpoint(t *testing.T) {
 	stop := startCustosDoor(context.Background(), CustosConfig{
 		DoorsSock: sockPath,
 		DoorToken: tokenPath,
-	}, nil, srv)
+	}, nil, srv, nil)
 	if stop == nil {
 		t.Fatal("startCustosDoor returned nil stop")
 	}

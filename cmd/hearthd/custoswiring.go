@@ -30,10 +30,12 @@ type CustosConfig struct {
 
 // startCustosDoor starts the door client as a supervised goroutine and
 // feeds the Nuntius sibling feed and web surface (bridge and srv may be nil).
-// It returns nil — having opened no socket, started no goroutine and logged
-// nothing — unless both paths are set. The returned stop closes the door
-// connection and waits for the goroutine; it is idempotent.
-func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge, srv *surface.Server) (stop func()) {
+// When hub is non-nil, its rail tools join the web-chat registry as a
+// dynamic tool source (issue #83). It returns nil — having opened no
+// socket, started no goroutine and logged nothing — unless both paths are
+// set. The returned stop closes the door connection and waits for the
+// goroutine; it is idempotent.
+func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge, srv *surface.Server, hub *surface.Hub) (stop func()) {
 	client, err := custosdoor.New(custosdoor.Options{
 		SockPath:  cfg.DoorsSock,
 		TokenPath: cfg.DoorToken,
@@ -54,6 +56,9 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 	}
 	if srv != nil {
 		srv.SetCustosRegistry(NewCustosWebAdapter(client))
+	}
+	if hub != nil {
+		hub.SetToolSource(mcpToolSource(client))
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
