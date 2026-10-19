@@ -42,7 +42,9 @@ of the mount is fresh, the mount point never is. The `cp -a` is the only
 step the daemon should be doing for us — see #119.
 
 Bare-metal (non-container) installs: `restore --replace <dir> --yes`
-works as documented, since the hearth dir is then renamable.
+works as documented, since the hearth dir is then renamable. Named-volume
+installs have a third path — restore into the daemon's own fresh default
+(`$HOME/.lararium` under `HOME=/hearth`) — see `docs/RECOVERY.md`.
 
 ## Drill protocol (re-run before each release tag)
 
