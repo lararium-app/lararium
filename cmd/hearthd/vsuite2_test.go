@@ -103,6 +103,31 @@ func closeBridgeInboxFile(b *nuntius.Bridge) {
 	}
 }
 
+// waitInboxDrained blocks until the inbox in dir has no not-done records,
+// i.e. every replayed turn has finished and been tombstoned.
+func waitInboxDrained(t *testing.T, dir string, timeout time.Duration) {
+	t.Helper()
+	in, err := nuntius.OpenInbox(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	deadline := time.Now().Add(timeout)
+	for {
+		recs, err := in.Replay()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recs) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("inbox still has %d not-done records after %v", len(recs), timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // blockingSleepProvider simulates a slow LLM completion that times out.
 type blockingSleepProvider struct {
 	delay time.Duration
@@ -334,6 +359,11 @@ func TestV11InboxCrashMatrix(t *testing.T) {
 		if err := tg2.WaitForSends(1, 3*time.Second); err != nil {
 			t.Fatalf("waiting for send on replay: %v", err)
 		}
+
+		// The first send fires on the first streamed delta, before the
+		// assistant event is appended. The tombstone is written only after
+		// the turn returns, so wait for it to know the turn has committed.
+		waitInboxDrained(t, filepath.Join(home, "nuntius"), 5*time.Second)
 
 		// Turn ran EXACTLY once
 		if calls := recEngine2.Calls(); calls != 1 {
