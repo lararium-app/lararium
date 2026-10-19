@@ -84,9 +84,12 @@ hearthd backup create --out /tmp/post-upgrade-backup.zip
 hearthd backup verify /tmp/post-upgrade-backup.zip
 ```
 
-> Containerized installs: **restore is `--to` into a subdir + copy** until
-> #119 lands — follow `docs/RUNBOOK-RECOVERY.md`; do not run
-> `restore --replace` against a bind/volume mount root.
+> Containerized installs: `restore --replace` against a bind/volume mount
+> root works in place (the rename path cannot move a mount point; the
+> daemon detects this and swaps by copy). The copy is not atomic — the
+> safety bundle written next to the target is the recovery anchor, and
+> re-running the same command resumes an interrupted restore. Details:
+> `docs/RUNBOOK-RECOVERY.md`.
 
 ---
 

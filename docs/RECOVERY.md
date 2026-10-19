@@ -43,8 +43,10 @@ Notes from the rehearsal:
 - `--to` creates a fresh root; restoring **over an existing home** uses
   `--replace <dir> --yes` (explicit confirmation required — it refuses both
   flags in `--to` mode, and says so). On a bind/volume mount root,
-  `--replace` currently fails (`EBUSY`, tracked in #119) — use the fresh-root
-  path shown above, never `--replace /hearth`.
+  `--replace` swaps in place by copy (rename cannot move a mount point);
+  it is non-atomic, and the safety bundle beside the target plus the
+  copy-mode marker make it resumable — re-run the same command after a
+  crash.
 - The bind-mount sibling drill lives in `docs/RUNBOOK-RECOVERY.md`.
 - Door tokens survive: the restored `tokens.json` is byte-identical, so
   previously issued URLs and `token create` clients keep working.
