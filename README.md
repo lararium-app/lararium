@@ -106,6 +106,16 @@ First run seeds the persona home and reference config into those volumes, and op
 wizard if you attach a TTY (`docker run -it …` once) while no provider is configured; image
 tags and the version/arch matrix live on the [releases page](https://github.com/lararium-app/lararium/releases).
 
+### Bare host (no Docker)
+
+```bash
+go build -o hearthd ./cmd/hearthd
+./hearthd setup --defaults
+./hearthd setup
+./hearthd serve
+```
+This creates `lararium.yaml` in the working directory and seeds the persona home at `~/.lararium` with `SOUL.md`, `IDENTITY.md`, and `USER.md` templates.
+
 ### Run it (from source)
 
 The supported way to run the alpha is Docker Compose:
@@ -136,16 +146,6 @@ docker compose exec hearthd hearthd token create me
 
 The command prints a ready URL to open in a browser (shown once).
 
-### Bare host (no Docker)
-
-```bash
-go build -o hearthd ./cmd/hearthd
-./hearthd setup --defaults
-./hearthd setup
-./hearthd serve
-```
-This creates `lararium.yaml` in the working directory and seeds the persona home at `~/.lararium` with `SOUL.md`, `IDENTITY.md`, and `USER.md` templates.
-
 ### Choosing a provider
 
 Pick the model endpoint at any time with the setup wizard — hosted keys
@@ -174,7 +174,7 @@ Add that address to `serve.allowed_hosts` in `config/lararium.yaml`:
 ```yaml
 serve:
   listen: "0.0.0.0:7717"
-  allowed_hosts: ["localhost", "127.0.0.1", "[::1]", "100.121.44.7"]  # + your reach-in address
+  allowed_hosts: ["localhost", "127.0.0.1", "[::1]", "100.x.y.z"]  # + your reach-in address (e.g. tailnet IP)
 ```
 
 Then `docker compose restart` and open `http://<host-ip>:7717/#<token>`. The scheme is
