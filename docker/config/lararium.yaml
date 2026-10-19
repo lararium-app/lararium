@@ -2,6 +2,7 @@
 # image the persona home is /hearth and this file lives at
 # /etc/lararium/lararium.yaml. Keys via environment (api_key_env), never
 # literal values in tracked files.
+# On a bare host, hearthd setup --defaults writes the native equivalent.
 hearth:
   home: /hearth
   compaction_trigger_pct: 80

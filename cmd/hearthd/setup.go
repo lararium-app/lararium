@@ -21,6 +21,7 @@ import (
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
+	"github.com/lararium-app/lararium/docker/hearth"
 	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/surface"
 )
@@ -429,6 +430,7 @@ type SetupOptions struct {
 	Out               io.Writer
 	Err               io.Writer
 	IsTTY             bool
+	Defaults          bool
 	DiscoveryRoots    []string
 	DiscoveryTimeout  time.Duration
 	FetchTimeout      time.Duration
@@ -439,13 +441,17 @@ type SetupOptions struct {
 
 // RunSetup runs the hearthd setup wizard according to the specification.
 func RunSetup(opts SetupOptions) error {
-	in := opts.In
-	if in == nil {
-		in = os.Stdin
-	}
 	out := opts.Out
 	if out == nil {
 		out = os.Stdout
+	}
+	if opts.Defaults {
+		return RunDefaults(out, opts.ConfigPath)
+	}
+
+	in := opts.In
+	if in == nil {
+		in = os.Stdin
 	}
 	errOut := opts.Err
 	if errOut == nil {
@@ -675,11 +681,13 @@ func printNonTTYState(out io.Writer, cfgPath string, cfg *Config) {
 	if cfg == nil {
 		fmt.Fprintf(out, "Config file: %s\n", cfgPath)
 		fmt.Fprintln(out, "no config yet — run interactively once: hearthd setup")
+		fmt.Fprintln(out, "non-interactive scaffold: hearthd setup --defaults")
 		return
 	}
 	if _, err := os.Stat(cfgPath); errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintf(out, "Config file: %s\n", cfgPath)
 		fmt.Fprintln(out, "no config yet — run interactively once: hearthd setup")
+		fmt.Fprintln(out, "non-interactive scaffold: hearthd setup --defaults")
 		return
 	}
 
@@ -695,6 +703,7 @@ func printNonTTYState(out io.Writer, cfgPath string, cfg *Config) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "To configure via environment variables, export your provider key (e.g. OPENROUTER_API_KEY) and set providers/models in lararium.yaml.")
 	fmt.Fprintln(out, "To run the interactive setup wizard (first-door token creation, remote-access guidance, provider setup), run hearthd in a terminal with a TTY: hearthd setup")
+	fmt.Fprintln(out, "non-interactive scaffold: hearthd setup --defaults")
 }
 
 func selectMenuProvider(out io.Writer, readLine func(string) (string, error)) (MenuItem, bool, error) {
@@ -1152,7 +1161,7 @@ func updateModelChain(modelsNode *yaml.Node, key, ref string) {
 
 func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G703: operator-owned config/home path
 		return err
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+"-*.tmp")
@@ -1173,23 +1182,145 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, mode); err != nil {
+	if err := os.Chmod(tmpName, mode); err != nil { //nolint:gosec // G703: operator-owned config/home path
 		return err
 	}
-	return os.Rename(tmpName, path)
+	return os.Rename(tmpName, path) //nolint:gosec // G703: operator-owned config/home path
+}
+
+const bareHostConfigTemplate = `# Reference config for hearthd (bare-host).
+hearth:
+  home: %s
+  compaction_trigger_pct: 80
+  max_tokens: 512
+
+serve:
+  listen: "127.0.0.1:7717"
+  allowed_hosts: ["localhost", "127.0.0.1", "[::1]"]
+
+models:
+  default:
+    - local/default
+  compact:
+    - local/default
+
+providers:
+  - name: local
+    base_url: http://127.0.0.1:8080/v1   # local OpenAI-compatible server
+
+# --- Prefer a hosted endpoint? Uncomment one block, export the key, and
+# --- repoint the chains above.
+#
+# - name: hosted
+#   base_url: https://api.example.com/v1
+#   api_key_env: PROVIDER_API_KEY
+`
+
+// RunDefaults scaffolds the bare-host reference config and persona files non-interactively.
+func RunDefaults(out io.Writer, cfgPath string) error {
+	if cfgPath == "" {
+		cfgPath = "lararium.yaml"
+	}
+
+	var homeDir string
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		homeDir = h
+	} else {
+		homeDir = os.Getenv("HOME")
+	}
+
+	defaultHearthHome := filepath.Join(homeDir, ".lararium")
+	if abs, err := filepath.Abs(defaultHearthHome); err == nil {
+		defaultHearthHome = abs
+	}
+
+	var hearthHome string
+	cfgExists := false
+	if _, err := os.Stat(cfgPath); err == nil { //nolint:gosec // G703: operator-owned config path
+		cfgExists = true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("checking config %s: %w", cfgPath, err)
+	}
+
+	if cfgExists {
+		fmt.Fprintf(out, "left in place: %s\n", cfgPath)
+		loaded, err := LoadConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("cannot load existing config %s: %w", cfgPath, err)
+		}
+		hearthHome = loaded.Hearth.Home
+		if strings.HasPrefix(hearthHome, "~/") {
+			hearthHome = filepath.Join(homeDir, hearthHome[2:])
+		}
+		if abs, err := filepath.Abs(hearthHome); err == nil {
+			hearthHome = abs
+		}
+	} else {
+		hearthHome = defaultHearthHome
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil { //nolint:gosec // G703: operator-owned config path
+			return fmt.Errorf("creating directory for config: %w", err)
+		}
+		content := fmt.Sprintf(bareHostConfigTemplate, hearthHome)
+		if err := atomicWriteFile(cfgPath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("writing config %s: %w", cfgPath, err)
+		}
+		fmt.Fprintf(out, "created: %s\n", cfgPath)
+	}
+
+	if err := os.MkdirAll(hearthHome, 0o755); err != nil { //nolint:gosec // G703: operator-owned home path
+		return fmt.Errorf("creating hearth home %s: %w", hearthHome, err)
+	}
+
+	for _, name := range hearth.TemplateFiles {
+		dest := filepath.Join(hearthHome, name)
+		if _, err := os.Stat(dest); err == nil { //nolint:gosec // G703: operator-owned home path
+			fmt.Fprintf(out, "left in place: %s\n", dest)
+			continue
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("checking %s: %w", dest, err)
+		}
+
+		data, err := hearth.Templates.ReadFile(name)
+		if err != nil {
+			return fmt.Errorf("reading embedded template %s: %w", name, err)
+		}
+		if err := atomicWriteFile(dest, data, 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", dest, err)
+		}
+		fmt.Fprintf(out, "created: %s\n", dest)
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "next steps:")
+	fmt.Fprintf(out, "  - edit config: %s\n", cfgPath)
+	fmt.Fprintln(out, "  - run hearthd setup to pick a provider and store keys")
+	fmt.Fprintln(out, "  - run hearthd serve")
+	return nil
 }
 
 func setupCmd(cfgPath string, args []string) {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	cfgFlag := fs.String("config", cfgPath, "path to lararium.yaml")
+	defaultsFlag := fs.Bool("defaults", false, "scaffold bare-host reference config and persona files")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: hearthd setup [--config <path>]\n\nInteractive AI provider and model setup wizard.\n")
+		fmt.Fprintf(os.Stderr, "Usage: hearthd setup [--config <path>] [--defaults]\n\nInteractive AI provider and model setup wizard.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 
 	targetCfg := *cfgFlag
+	if *defaultsFlag {
+		if targetCfg == "" {
+			targetCfg = "lararium.yaml"
+		}
+		if err := RunDefaults(os.Stdout, targetCfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if targetCfg == "" || targetCfg == "lararium.yaml" {
 		if e := os.Getenv("LARARIUM_CONFIG"); e != "" {
 			targetCfg = e

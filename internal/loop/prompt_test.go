@@ -89,3 +89,55 @@ func TestSystemPromptSkipsHeartbeat(t *testing.T) {
 		t.Fatal("HEARTBEAT.md must not be injected into chat turns")
 	}
 }
+
+func TestValidatePersona_Aggregate(t *testing.T) {
+	t.Run("missing trio reports all missing files and hint", func(t *testing.T) {
+		emptyHome := t.TempDir()
+		err := ValidatePersona(emptyHome)
+		if err == nil {
+			t.Fatal("expected error on missing trio, got nil")
+		}
+		msg := err.Error()
+		for _, name := range []string{"SOUL.md", "IDENTITY.md", "USER.md"} {
+			expected := "persona: missing required file " + name
+			if !strings.Contains(msg, expected) {
+				t.Errorf("expected %q in error output, got:\n%s", expected, msg)
+			}
+		}
+		if !strings.Contains(msg, "hint: run 'hearthd setup --defaults'") {
+			t.Errorf("expected hint line in error output, got:\n%s", msg)
+		}
+	})
+
+	t.Run("bad frontmatter does not mask other missing files", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, "SOUL.md"), []byte("no frontmatter block\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := ValidatePersona(home)
+		if err == nil {
+			t.Fatal("expected error on bad frontmatter and missing files, got nil")
+		}
+		msg := err.Error()
+		expectedParse := "persona: parse SOUL.md: no frontmatter"
+		if !strings.Contains(msg, expectedParse) {
+			t.Errorf("expected %q in error output, got:\n%s", expectedParse, msg)
+		}
+		for _, name := range []string{"IDENTITY.md", "USER.md"} {
+			expected := "persona: missing required file " + name
+			if !strings.Contains(msg, expected) {
+				t.Errorf("expected %q in error output, got:\n%s", expected, msg)
+			}
+		}
+		if !strings.Contains(msg, "hint: run 'hearthd setup --defaults'") {
+			t.Errorf("expected hint line in error output, got:\n%s", msg)
+		}
+	})
+
+	t.Run("valid persona passes validation", func(t *testing.T) {
+		home := mkHome(t, validFiles())
+		if err := ValidatePersona(home); err != nil {
+			t.Fatalf("unexpected error on valid persona: %v", err)
+		}
+	})
+}
