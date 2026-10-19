@@ -28,6 +28,9 @@ services:
     # Web chat + API (`hearthd serve`). Published on the host's loopback
     # only — reach it from the machine running Docker, or put your own
     # TLS proxy in front and add its hostname to serve.allowed_hosts.
+    # Note: inside the container the daemon binds 0.0.0.0 and logs
+    # "WARNING: listening beyond loopback" at startup — expected in
+    # containerized mode; host exposure stays loopback-only per this map.
     ports:
       - "127.0.0.1:7717:7717"
     environment:
