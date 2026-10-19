@@ -40,9 +40,11 @@ release note, doc, or audit transcript), we tag beta.
 
 ## C. Security
 
-- [ ] Hostile-install walkthrough on a fresh VM: default loopback posture,
+- [x] Hostile-install walkthrough on a fresh VM: default loopback posture,
       Host allow-list behavior, token rotation, door revocation — executed
-      and transcribed, findings filed and closed
+      and transcribed, findings filed and closed — see
+      `docs/WALKTHROUGH-HOSTILE-INSTALL.md` (fresh clone of the compose
+      install path; finding #117 filed+closed)
 - [x] Threat-model pass over the doors protocol now that it carries MCP
       frames (auth gate, snapshot races, slow-client DoS) — see
       `docs/THREATMODEL-DOORS.md` (F1–F4, all accepted/documented, no
