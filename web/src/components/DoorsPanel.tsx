@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Shield, RefreshCw, Trash2, Plus, Lock, AlertCircle } from "lucide-react";
 import { PolicyRule } from "../types/hearthd";
 import { DoorBadge } from "./DoorBadge";
+import { ConnectorsCard } from "./ConnectorsCard";
 
 interface DoorsPanelProps {
   token: string | null;
@@ -184,6 +185,7 @@ export function DoorsPanel({ token }: DoorsPanelProps) {
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-bg text-ink max-w-4xl mx-auto w-full">
+      <ConnectorsCard token={token} />
       <div className="flex items-center justify-between pb-4 mb-6 border-b border-line">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-panel2 border border-line text-ember">
