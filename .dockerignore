@@ -22,4 +22,5 @@ docker/config/
 !docker/hearth/IDENTITY.md
 !docker/hearth/USER.md
 !docker/hearth/MEMORY.md
+!docker/hearth/*.go
 !docker/config/lararium.yaml

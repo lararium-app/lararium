@@ -3,6 +3,7 @@
 package loop
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,40 @@ import (
 
 	"github.com/lararium-app/lararium/internal/penatus"
 )
+
+// ValidatePersona checks that all required persona files exist, parse with
+// frontmatter, and stay within their byte budgets. All failures are reported
+// together in one error with existing persona: prefixes, followed by a hint line
+// pointing at hearthd setup --defaults.
+func ValidatePersona(home string) error {
+	var failures []string
+	for _, name := range personaOrder {
+		path := filepath.Join(home, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				failures = append(failures, fmt.Sprintf("persona: missing required file %s", name))
+			} else {
+				failures = append(failures, fmt.Sprintf("persona: read %s: %v", name, err))
+			}
+			continue
+		}
+		doc, err := penatus.ParseDoc(data)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("persona: parse %s: %v", name, err))
+			continue
+		}
+		body := strings.TrimSpace(doc.Body)
+		if lim, ok := personaBudget[name]; ok && len(body) > lim {
+			failures = append(failures, fmt.Sprintf("persona: %s body is %d bytes, over budget %d — refusing to start (spec §1.1); edit the file or split content into memory/", name, len(body), lim))
+		}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	failures = append(failures, "hint: run 'hearthd setup --defaults' to scaffold initial persona files")
+	return errors.New(strings.Join(failures, "\n"))
+}
 
 // Persona file budgets in BYTES (spec §1: SOUL 4KB, IDENTITY 2KB, USER 4KB;
 // MEMORY budget is token-based, handled separately via its 2k-line/len check).

@@ -136,6 +136,16 @@ docker compose exec hearthd hearthd token create me
 
 The command prints a ready URL to open in a browser (shown once).
 
+### Bare host (no Docker)
+
+```bash
+go build -o hearthd ./cmd/hearthd
+./hearthd setup --defaults
+./hearthd setup
+./hearthd serve
+```
+This creates `lararium.yaml` in the working directory and seeds the persona home at `~/.lararium` with `SOUL.md`, `IDENTITY.md`, and `USER.md` templates.
+
 ### Choosing a provider
 
 Pick the model endpoint at any time with the setup wizard — hosted keys

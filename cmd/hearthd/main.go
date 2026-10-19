@@ -117,6 +117,58 @@ func modelOf(ref string) string {
 	return ""
 }
 
+func hoistGlobalFlags(args []string) ([]string, error) {
+	var hoisted []string
+	var rest []string
+	stopped := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if stopped {
+			rest = append(rest, arg)
+			continue
+		}
+		if arg == "--" {
+			stopped = true
+			rest = append(rest, arg)
+			continue
+		}
+
+		flagName := ""
+		if strings.HasPrefix(arg, "--") {
+			flagName = arg[2:]
+		} else if strings.HasPrefix(arg, "-") {
+			flagName = arg[1:]
+		}
+
+		if flagName != "" {
+			name := flagName
+			hasEq := false
+			if eq := strings.IndexByte(flagName, '='); eq >= 0 {
+				name = flagName[:eq]
+				hasEq = true
+			}
+			if name == "config" || name == "model" {
+				if hasEq {
+					hoisted = append(hoisted, arg)
+					continue
+				}
+				tail := args[i+1:]
+				if len(tail) == 0 {
+					return nil, fmt.Errorf("flag needs an argument: %s", arg)
+				}
+				i++
+				hoisted = append(hoisted, arg, tail[0])
+				continue
+			}
+		}
+
+		rest = append(rest, arg)
+	}
+
+	return append(hoisted, rest...), nil
+}
+
 func main() {
 	// LARARIUM_CONFIG lets container images set the config path once;
 	// the flag still wins when given.
@@ -130,6 +182,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  setup\n  token create|revoke <label>\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
 		flag.PrintDefaults()
 	}
+
+	hoisted, err := hoistGlobalFlags(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		flag.Usage()
+		os.Exit(2)
+	}
+	os.Args = append(os.Args[:1], hoisted...)
 	flag.Parse()
 
 	args := flag.Args()
@@ -156,6 +216,13 @@ func main() {
 		case "restore":
 			restoreCmd(args[1:])
 			return
+		default:
+			if !strings.HasPrefix(args[0], "-") {
+				fmt.Fprintf(os.Stderr, "hearthd: unknown command %q\n", args[0])
+				flag.Usage()
+				fmt.Fprintf(os.Stderr, "\nexample: hearthd -config ./lararium.yaml token create laptop\n")
+				os.Exit(2)
+			}
 		}
 	}
 
@@ -251,6 +318,10 @@ func serve(cfgPath string) {
 	}
 
 	home := cfg.Hearth.Home
+	if err := loop.ValidatePersona(home); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := backup.RecoverSwap(home); err != nil {
 		fmt.Fprintf(os.Stderr, "swap recovery failed: %v\n", err)
 		os.Exit(1)
