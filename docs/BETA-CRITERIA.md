@@ -43,8 +43,10 @@ release note, doc, or audit transcript), we tag beta.
 - [ ] Hostile-install walkthrough on a fresh VM: default loopback posture,
       Host allow-list behavior, token rotation, door revocation — executed
       and transcribed, findings filed and closed
-- [ ] Threat-model pass over the doors protocol now that it carries MCP
-      frames (auth gate, snapshot races, slow-client DoS)
+- [x] Threat-model pass over the doors protocol now that it carries MCP
+      frames (auth gate, snapshot races, slow-client DoS) — see
+      `docs/THREATMODEL-DOORS.md` (F1–F4, all accepted/documented, no
+      transport bypass found)
 - [ ] `govulncheck` clean at the beta tag, and stays clean through the
       release week
 - [x] Secret hygiene: neutrality scan extended to catch tokens/keys in
