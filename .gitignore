@@ -35,3 +35,4 @@ docker/hearth/tokens.json
 /cell.exe
 agy.log
 briefs/
+web/tsconfig.tsbuildinfo
