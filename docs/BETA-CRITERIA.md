@@ -75,7 +75,12 @@ release note, doc, or audit transcript), we tag beta.
       semantics, container bind law, bearer-token hygiene checklist
 - [ ] First MCP server recipe exists and was followed by someone who did
       not write it
-- [ ] Backup → wipe → restore rehearsed on a real box, written up
+- [x] Backup → wipe → restore rehearsed on a real box, written up —
+      `docs/RECOVERY.md`: full-loss drill executed 2026-10-19 on
+      `v0.10.1-alpha` (both volumes deleted after `backup create`):
+      `restore --to` + `backup extract-config` brought the daemon back with
+      a byte-identical token store and user edits restored; the rehearsal's
+      container quirks are documented and tracked in #110
 
 ## Non-goals for beta (named so they don't creep in)
 
