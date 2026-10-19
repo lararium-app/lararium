@@ -24,7 +24,10 @@ release note, doc, or audit transcript), we tag beta.
       `/v1/health` reports 0.10.0)
 - [ ] Upgrade drill: v0.8 → v1.0-beta on a live hearth with data, one
       command, verified by CI test
-- [ ] Uninstall leaves an explicit, documented residue list (keys, hearth)
+- [x] Uninstall leaves an explicit, documented residue list (keys, hearth)
+      — `docs/UNINSTALL.md`: full path table (config, hearth home, custos
+      vault, backups, Docker volumes) plus the revocation steps `rm` cannot
+      do (upstream OAuth, BotFather, door tokens)
 
 ## B. Features at beta bar
 
@@ -61,8 +64,15 @@ release note, doc, or audit transcript), we tag beta.
 
 ## E. Documentation
 
-- [ ] README install path matches the post-#49 reality (one screen)
-- [ ] Remote access guide: TLS proxy + `allowed_hosts`, tailnet example
+- [x] README install path matches the post-#49 reality (one screen) —
+      verified against the live `v0.10.1-alpha` image: the `docker run`
+      block is the whole install (8 lines, anonymous pull, volume seed),
+      with the bare-host `setup --defaults` path as the second tab
+      (#106); source/compose moved below as the developer path
+- [x] Remote access guide: TLS proxy + `allowed_hosts`, tailnet example
+      — `docs/REMOTE-ACCESS.md`: tailnet-first, Caddy/nginx TLS proxy with
+      SSE-safe settings, SSH tunnel zero-config path, Host allow-list
+      semantics, container bind law, bearer-token hygiene checklist
 - [ ] First MCP server recipe exists and was followed by someone who did
       not write it
 - [ ] Backup → wipe → restore rehearsed on a real box, written up
