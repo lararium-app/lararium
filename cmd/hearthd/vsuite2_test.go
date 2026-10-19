@@ -847,6 +847,10 @@ func TestV11InboxCrashMatrix(t *testing.T) {
 			t.Fatalf("waiting for send on redelivery: %v", err)
 		}
 
+		// Same commit barrier as subtest a: the first send fires on the
+		// first streamed delta, before the assistant event is appended.
+		waitInboxDrained(t, filepath.Join(home, "nuntius"), 5*time.Second)
+
 		// Processed once
 		if calls := recEngine2.Calls(); calls != 1 {
 			t.Fatalf("engine2 calls = %d, want 1", calls)
