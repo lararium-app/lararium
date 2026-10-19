@@ -82,11 +82,11 @@ release note, doc, or audit transcript), we tag beta.
       semantics, container bind law, bearer-token hygiene checklist
 - [ ] First MCP server recipe exists and was followed by someone who did
       not write it
-- [ ] Backup → wipe → restore rehearsed on a real box, written up
+- [x] Backup → wipe → restore rehearsed on a real box, written up
       (drilled twice 2026-10-19: `docs/RECOVERY.md` — named volumes on
-      v0.10.1-alpha; `docs/RUNBOOK-RECOVERY.md` — bind mounts on built
-      main; stays red until #119 lands — the documented primary path
-      fails on containerized installs, both workarounds verified live)
+      v0.10.1-alpha; `docs/RUNBOOK-RECOVERY.md` — bind mounts, re-drilled
+      on the fixed primary path after #119 closed: in-place copy swap,
+      full tree, no residue, safety bundle kept)
 
 ## Non-goals for beta (named so they don't creep in)
 
