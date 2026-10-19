@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const testToken = "test-door-token"
 
 // fakeConn is one accepted door connection; lines the client sent are
 // delivered on rx.

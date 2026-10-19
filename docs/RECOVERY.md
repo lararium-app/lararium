@@ -42,7 +42,10 @@ Notes from the rehearsal:
 
 - `--to` creates a fresh root; restoring **over an existing home** uses
   `--replace <dir> --yes` (explicit confirmation required — it refuses both
-  flags in `--to` mode, and says so).
+  flags in `--to` mode, and says so). On a bind/volume mount root,
+  `--replace` currently fails (`EBUSY`, tracked in #119) — use the fresh-root
+  path shown above, never `--replace /hearth`.
+- The bind-mount sibling drill lives in `docs/RUNBOOK-RECOVERY.md`.
 - Door tokens survive: the restored `tokens.json` is byte-identical, so
   previously issued URLs and `token create` clients keep working.
 - If you wipe and restore on a brand-new box, restore keys (`hearthd keys`,
