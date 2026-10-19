@@ -234,6 +234,7 @@ A standing approval on a connector tool is bound to the tool's definition finger
 | [PENATUS-SPEC.md](docs/PENATUS-SPEC.md) | The on-disk memory formats |
 | [CELL-SPEC.md](docs/CELL-SPEC.md) | The sandbox contract (nspawn + cgroup2 + nftables) |
 | [SURFACE-SPEC.md](docs/SURFACE-SPEC.md) | The HTTP/SSE API and web chat security model |
+| [UPGRADE.md](docs/UPGRADE.md) | One-command upgrade and rollback procedures |
 
 ## What Lararium is *not*
 
