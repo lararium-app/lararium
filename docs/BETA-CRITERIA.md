@@ -17,8 +17,11 @@ release note, doc, or audit transcript), we tag beta.
 ## A. Install & ops
 
 - [x] Setup wizard works on a fresh box with no config (#84, v0.8.4-alpha)
-- [ ] Official Docker image published; install is `docker run`/compose
-      one-liner, no git clone required (#49)
+- [x] Official Docker image published; install is `docker run`/compose
+      one-liner, no git clone required (#49 — verified 2026-10-19 against
+      `ghcr.io/lararium-app/hearthd:v0.10.0-alpha`: anonymous pull, volume
+      seeding, web UI 200 on the loopback publish, foreign Host rejected 403,
+      `/v1/health` reports 0.10.0)
 - [ ] Upgrade drill: v0.8 → v1.0-beta on a live hearth with data, one
       command, verified by CI test
 - [ ] Uninstall leaves an explicit, documented residue list (keys, hearth)
