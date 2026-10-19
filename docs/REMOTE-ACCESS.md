@@ -16,9 +16,9 @@ Put the daemon on a Tailscale interface and never expose it publicly.
 
 ```yaml
 serve:
-  listen: "100.100.100.100:7717"   # the machine's tailnet address
+  listen: "100.x.y.z:7717"   # the machine's tailnet address
   allowed_hosts:
-    - "100.100.100.100:7717"
+    - "100.x.y.z:7717"
     - "hearth.your-tailnet.ts.net:7717"   # if you use ts Serve's hostname
 ```
 

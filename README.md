@@ -174,7 +174,7 @@ Add that address to `serve.allowed_hosts` in `config/lararium.yaml`:
 ```yaml
 serve:
   listen: "0.0.0.0:7717"
-  allowed_hosts: ["localhost", "127.0.0.1", "[::1]", "100.121.44.7"]  # + your reach-in address
+  allowed_hosts: ["localhost", "127.0.0.1", "[::1]", "100.x.y.z"]  # + your reach-in address (e.g. tailnet IP)
 ```
 
 Then `docker compose restart` and open `http://<host-ip>:7717/#<token>`. The scheme is
