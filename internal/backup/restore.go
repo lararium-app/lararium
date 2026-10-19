@@ -36,6 +36,10 @@ func runSwapHook(step string) {
 // PingSocketFunc allows overriding socket ping for tests.
 var PingSocketFunc = surface.PingViaSocket
 
+// RenameFunc is the package-level rename seam (tests inject EBUSY to emulate
+// a mount-root target; production always os.Rename).
+var RenameFunc = os.Rename
+
 // RestoreMarker records swap metadata in a parent-directory dotfile per PENATUS-SPEC §4.5.4 rule 4.
 type RestoreMarker struct {
 	Staging string `json:"staging"`
@@ -43,6 +47,9 @@ type RestoreMarker struct {
 	Target  string `json:"target"`
 	TS      string `json:"ts"`
 	Safety  string `json:"safety,omitempty"`
+	// Mode is "" for the rename swap, "copy" for the mount-root in-place
+	// fallback (#119). Recovery dispatches on it; unknown values refuse.
+	Mode string `json:"mode,omitempty"`
 }
 
 // RestoreTo implements `hearthd restore <file> --to <dir>` (fresh root) per §4.5.4 rule 2.
@@ -266,8 +273,12 @@ func RestoreReplace(bundle, dir string, yes bool, noSafety bool) error {
 
 	runSwapHook("post-marker/pre-rename-1")
 
-	// rename-1: dir → <dir>.pre-swap-<ts>
-	if err := os.Rename(dir, preSwapDir); err != nil {
+	// rename-1: dir → <dir>.pre-swap-<ts>. A mount-root target cannot be
+	// renamed (EBUSY, #119); fall back to an in-place copy swap.
+	if err := RenameFunc(dir, preSwapDir); err != nil {
+		if errors.Is(err, syscall.EBUSY) {
+			return copySwapInPlace(dir, parentDir, stagingDir, markerPath, safetyPath)
+		}
 		cleanStaging(stagingDir)
 		_ = os.Remove(markerPath)
 		fsyncDir(parentDir)
@@ -277,7 +288,7 @@ func RestoreReplace(bundle, dir string, yes bool, noSafety bool) error {
 	runSwapHook("post-rename-1/pre-rename-2")
 
 	// rename-2: staging → dir
-	if err := os.Rename(stagingDir, dir); err != nil {
+	if err := RenameFunc(stagingDir, dir); err != nil {
 		return fmt.Errorf("swap rename-2 staging to dir: %w", err)
 	}
 	fsyncDir(parentDir)
@@ -296,6 +307,151 @@ func RestoreReplace(bundle, dir string, yes bool, noSafety bool) error {
 	// f. Print pre-swap sibling path to stdout and leave deletion to operator
 	fmt.Println(preSwapDir)
 
+	return nil
+}
+
+// copySwapInPlace is the mount-root fallback for --replace (#119): rename(2)
+// on a mount point returns EBUSY, so the swap runs in place instead —
+// clear the root's contents and copy the staged tree into it. Non-atomic by
+// necessity (a mount root cannot be detached atomically from inside the
+// mount); the pre-taken safety bundle is the recovery anchor and the
+// copy-mode marker lets RecoverSwap replay the copy after a crash.
+func copySwapInPlace(dir, parentDir, stagingDir, markerPath, safetyPath string) error {
+	marker := RestoreMarker{Staging: stagingDir, Target: dir, TS: filepath.Base(markerPath), Safety: safetyPath, Mode: "copy"}
+	markerBytes, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal copy-mode restore marker: %w", err)
+	}
+	mf, err := os.OpenFile(markerPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("open copy-mode restore marker: %w", err)
+	}
+	if _, err := mf.Write(markerBytes); err != nil {
+		_ = mf.Close()
+		return fmt.Errorf("write copy-mode restore marker: %w", err)
+	}
+	if err := mf.Sync(); err != nil {
+		_ = mf.Close()
+		return fmt.Errorf("sync copy-mode restore marker: %w", err)
+	}
+	if err := mf.Close(); err != nil {
+		return fmt.Errorf("close copy-mode restore marker: %w", err)
+	}
+	runSwapHook("post-copy-marker/pre-clear")
+
+	// Note: the session lock files (backup.lock, keys.lock, custos/custos.lock)
+	// inside the root are removed with the old contents; flock remains held on
+	// this process's open descriptors, and the next daemon boot recreates
+	// them. A concurrent restorer could slip in mid-copy — same exposure the
+	// rename swap always had, unchanged.
+	if err := clearDirContents(dir); err != nil {
+		return fmt.Errorf("clear mount root for in-place restore (safety bundle: %s; resume with the same command): %w", safetyPath, err)
+	}
+	runSwapHook("post-clear/pre-copy")
+
+	if err := copyTreeInto(stagingDir, dir); err != nil {
+		return fmt.Errorf("in-place copy into %s (safety bundle: %s; resume with the same command): %w", dir, safetyPath, err)
+	}
+
+	cleanStaging(stagingDir)
+	if err := os.Remove(markerPath); err != nil {
+		return fmt.Errorf("delete copy-mode marker: %w", err)
+	}
+	fsyncDir(dir)
+	fsyncDir(parentDir)
+	fmt.Printf("restored in place (mount root — rename unavailable): %s\nsafety bundle: %s\n", dir, safetyPath)
+	return nil
+}
+
+// clearDirContents removes every child of dir but keeps dir itself
+// (mount-root safe). fsyncs the emptied directory.
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	fsyncDir(dir)
+	return nil
+}
+
+// copyTreeInto copies the staged tree (regular files + directories only —
+// extraction already refused everything else) from srcRoot into dstRoot,
+// preserving file modes, then applies directory modes post-order, then fsyncs.
+func copyTreeInto(srcRoot, dstRoot string) error {
+	type dirTarget struct {
+		path string
+		mode os.FileMode
+	}
+	var dirTargets []dirTarget
+	if err := filepath.Walk(srcRoot, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcRoot, p)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dstRoot, rel)
+		if fi.IsDir() {
+			if rel != "." {
+				if err := os.MkdirAll(dst, 0o700); err != nil {
+					return err
+				}
+				dirTargets = append(dirTargets, dirTarget{dst, fi.Mode().Perm()})
+			}
+			return nil
+		}
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
+		return copyFile(p, dst, fi.Mode())
+	}); err != nil {
+		return err
+	}
+	// Post-order mode application (children first, parents last)
+	for i := len(dirTargets) - 1; i >= 0; i-- {
+		if err := os.Chmod(dirTargets[i].path, dirTargets[i].mode); err != nil {
+			return fmt.Errorf("chmod copied dir %s: %w", dirTargets[i].path, err)
+		}
+	}
+	fsyncDir(dstRoot)
+	return nil
+}
+
+// recoverCopySwap replays an interrupted copy-mode swap (§4.5.4 recovery,
+// copy rows): staging survives → clear + copy again (idempotent); staging is
+// gone → the copy completed and only the marker delete was lost.
+func recoverCopySwap(root, markerFile string, marker RestoreMarker) error {
+	if _, err := os.Lstat(marker.Staging); errors.Is(err, syscall.ENOENT) {
+		// Row copy-2: staging cleaned, copy complete; only the marker remains.
+		_ = os.Remove(markerFile)
+		fsyncDir(filepath.Dir(markerFile))
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat copy staging %s: %w", marker.Staging, err)
+	}
+	if _, err := os.Lstat(root); err != nil {
+		if err := os.Mkdir(root, 0o700); err != nil {
+			return fmt.Errorf("recreate restore target %s: %w", root, err)
+		}
+	}
+	if err := clearDirContents(root); err != nil {
+		return fmt.Errorf("recover copy swap clear %s: %w", root, err)
+	}
+	if err := copyTreeInto(marker.Staging, root); err != nil {
+		return fmt.Errorf("recover copy swap copy into %s: %w", root, err)
+	}
+	cleanStaging(marker.Staging)
+	if err := os.Remove(markerFile); err != nil {
+		return fmt.Errorf("recover copy swap marker delete: %w", err)
+	}
+	fsyncDir(filepath.Dir(markerFile))
+	fmt.Fprintf(os.Stderr, "recovered copy-mode restore into %s\n", root)
 	return nil
 }
 
@@ -371,6 +527,21 @@ func RecoverSwap(root string) error {
 		}
 		if filepath.Clean(absTarget) != filepath.Clean(root) && filepath.Clean(marker.Target) != filepath.Clean(root) {
 			continue
+		}
+
+		// Copy-mode markers (#119 mount-root fallback): the swap was an
+		// in-place clear+copy, so replay it from the surviving staging.
+		switch marker.Mode {
+		case "":
+			// rename swap — fall through to the §4.5.4 table rows below
+		case "copy":
+			if err := recoverCopySwap(root, markerFile, marker); err != nil {
+				return err
+			}
+			continue
+		default:
+			fmt.Fprintf(os.Stderr, "unknown restore marker mode %q in %s\nmarker contents:\n%s\nescape hatch: rm %s\n", marker.Mode, markerFile, string(data), markerFile)
+			return fmt.Errorf("unknown restore marker mode %q in %s", marker.Mode, markerFile)
 		}
 
 		_, errDir := os.Lstat(root)
