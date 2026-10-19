@@ -33,3 +33,5 @@ docker/hearth/tokens.json
 /hearthd
 /hearthd.exe
 /cell.exe
+agy.log
+briefs/
