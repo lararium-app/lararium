@@ -7,8 +7,9 @@ release note, doc, or audit transcript), we tag beta.
 
 ## Versioning plan
 
-- **v0.9.0-alpha** — MCP usable from the product, not just the CLI
-  (MCP verbs over doors, web-chat tool injection, connector cards).
+- **v0.9.x line** — MCP usable from the product, not just the CLI
+  (MCP verbs over doors landed in v0.9.0-alpha; web-chat tool injection and
+  connector cards completed the track in v0.10.0-alpha).
 - **v0.9.x** — install + mobile polish, flake elimination, hardening.
 - **v1.0.0-beta1** — first release whose install path, security posture,
   and recovery story are documented and rehearsed end to end.
@@ -24,8 +25,10 @@ release note, doc, or audit transcript), we tag beta.
 
 ## B. Features at beta bar
 
-- [ ] MCP: model can see and call connector tools from web chat (#83)
-- [ ] MCP: connector state + tools visible in the web Cards view (#83)
+- [x] MCP: model can see and call connector tools from web chat (#83,
+      PR #102, v0.10.0-alpha)
+- [x] MCP: connector state + tools visible in the web UI (#83 — shipped as
+      the connectors card in the Doors view, PR #103, v0.10.0-alpha)
 - [ ] Approvals: phone can resolve a pending card from the notification
       (android-client slice 4)
 - [ ] Gmail cell + backup/restore keep their green status (regression
@@ -45,11 +48,11 @@ release note, doc, or audit transcript), we tag beta.
 
 ## D. Quality
 
-- [ ] CI is boringly green: #81 (approval-cancel race) fixed at root, no
-      rerun-to-green in the final two weeks before the tag
+- [x] CI is boringly green: #81 (approval-cancel race) fixed at root (2662e07),
+  no rerun-to-green in the final two weeks before the tag
 - [ ] `go test -race ./...` at tag tip, three consecutive runs, zero flakes
-- [ ] Hot spots under the soft cap: `worker.go` and `ctl.go` split
-      (behavior-free moves only)
+- [x] Hot spots under the soft cap: `worker.go` and `ctl.go` split
+  (behavior-free moves only, #93 / 4def5be)
 - [ ] Lock discipline: no network I/O under a held mutex on any daemon
       path (audit `startLocked` and friends; race detector + review)
 
