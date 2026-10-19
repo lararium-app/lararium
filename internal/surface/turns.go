@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lararium-app/lararium/internal/keystore"
@@ -41,8 +42,11 @@ type Hub struct {
 	maxTokens            int
 	compactionTriggerPct int
 	tools                []loop.Tool
-	router               *router.Router
-	ap                   *ApprovalHub
+	// toolSource, when set, contributes dynamic tools (MCP rail,
+	// issue #83) merged over the static registry at turn start.
+	toolSource atomic.Pointer[func() []loop.Tool]
+	router     *router.Router
+	ap         *ApprovalHub
 	// keys is the live key registry handed to every Session (nil-safe).
 	keys           *keystore.Registry
 	mu             sync.Mutex
@@ -105,6 +109,42 @@ func NewHub(cfg ServeConfig, hearthHome string, maxTokens int, compactionTrigger
 		ap:                   ap,
 		running:              make(map[string]*turn),
 	}
+}
+
+// SetToolSource installs a dynamic tool provider merged over the static
+// registry at every turn start (nil clears). Names already claimed by a
+// static tool lose: the static registry always wins. Safe to call while
+// turns run — each turn snapshots the merged list.
+func (h *Hub) SetToolSource(src func() []loop.Tool) {
+	if src == nil {
+		h.toolSource.Store(nil)
+		return
+	}
+	h.toolSource.Store(&src)
+}
+
+// currentTools snapshots the static registry plus the dynamic source.
+func (h *Hub) currentTools() []loop.Tool {
+	fn := h.toolSource.Load()
+	if fn == nil {
+		return h.tools
+	}
+	extra := (*fn)()
+	if len(extra) == 0 {
+		return h.tools
+	}
+	claimed := make(map[string]bool, len(h.tools))
+	for _, t := range h.tools {
+		claimed[t.Spec.Name] = true
+	}
+	out := make([]loop.Tool, 0, len(h.tools)+len(extra))
+	out = append(out, h.tools...)
+	for _, t := range extra {
+		if !claimed[t.Spec.Name] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // InFlight reports whether a turn is running for the session (the
@@ -534,7 +574,7 @@ func (h *Hub) executeTurn(
 
 	// engineCtx is intentionally not r.Context(): the turn persists after
 	// client disconnect (spec §5 P3), bounded by turn_timeout only.
-	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.tools, approver)
+	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.currentTools(), approver)
 	if err != nil {
 		stdlog.Printf("hearthd serve: turn on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours
 		ts.fail()

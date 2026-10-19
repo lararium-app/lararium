@@ -26,6 +26,12 @@ func loadConfig(cfgPath, hearthOverride string) (string, *custos.Config) {
 	var c ConfigFile
 	if raw, err := os.ReadFile(cfgPath); err == nil { //nolint:gosec // operator-provided config path
 		_ = yaml.Unmarshal(raw, &c)
+		// Dogfooding trap (issue #83): a top-level `connectors:` key
+		// parses cleanly into nothing and rail startup looks silent.
+		// Say it out loud once at boot instead.
+		if w := strayConnectorsWarning(raw); w != "" {
+			fmt.Fprintln(os.Stderr, w)
+		}
 	}
 
 	home := c.Hearth.Home
@@ -43,6 +49,20 @@ func loadConfig(cfgPath, hearthOverride string) (string, *custos.Config) {
 	stateDir := filepath.Join(home, "custos")
 	c.Custos.Normalize()
 	return stateDir, &c.Custos
+}
+
+// strayConnectorsWarning returns the boot warning for a top-level
+// `connectors:` key (ignored by custosd; belongs under `custos:`),
+// or "" when the config is shaped correctly or unparseable.
+func strayConnectorsWarning(raw []byte) string {
+	var top map[string]yaml.Node
+	if yaml.Unmarshal(raw, &top) != nil {
+		return ""
+	}
+	if _, stray := top["connectors"]; stray {
+		return "WARN lararium.yaml: top-level 'connectors:' is ignored by custosd; declare connectors under 'custos.connectors:'"
+	}
+	return ""
 }
 
 func main() {
