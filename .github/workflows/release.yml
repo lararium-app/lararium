@@ -44,6 +44,7 @@ jobs:
             *) TAGS="${TAGS},${GHCR}:latest" ;;
           esac
           if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "has_dockerhub=yes" >> "$GITHUB_OUTPUT"
             DH="docker.io/lararium/hearthd"
             TAGS="${TAGS},${DH}:${TAG}"
             case "$TAG" in
@@ -52,6 +53,18 @@ jobs:
             esac
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        # NOTE: `secrets` is NOT a valid context in step-level `if` — gating
+        # on it made the whole file fail to parse (every push produced a
+        # failing run and no image was ever published). Gate on the step
+        # output computed above instead.
+        if: steps.tags.outputs.has_dockerhub == 'yes'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -67,10 +80,3 @@ jobs:
           provenance: mode=min
           sbom: false
 
-      - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
-        uses: docker/login-action@v3
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
