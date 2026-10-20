@@ -59,6 +59,20 @@ deadline override); fingerprint-bound Always revocation via
 pointer. Additive: with no rail connectors configured, behavior is
 v7–v11 verbatim. The rail's normative text is MCP-SPEC (v1.2, frozen
 same day); this document owns the custody-side contracts it touches.
+**Amendment v13 (2026-10-19, Gmail drift audit): worker-lane status
+classes, audit reasons, refresh skew, gmail/read.** Adds: the 429
+carve-out (`upstreamStatusError`: 429 → `rate_limited` / "upstream
+rate limited"; other 4xx → `upstream` / "upstream returned 4xx") to
+§5.1a as the frozen status classes they are; `rate_limited`,
+`transport`, `timeout`, `internal` to the §8.1 `worker_call_denied`
+reason set as **declared** values frozen code already emits via
+`auditDenied(…, we.code)` (v12-style codification, not a new emit
+path); the 60 s access-token expiry skew on worker refresh to §4.5;
+the `gmail/read` typed result shape and the 2 MiB worker-lane read cap
+to §4.5; and aligns the pre-hold policy-deny audit reason to the
+already-declared `verdict` (the unbounded `policy:<pattern>` value was
+undeclared — code fixes, no new vocabulary). Everything else:
+unchanged.
 Proposes `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -551,7 +565,11 @@ under §4.2's two-file protocol, audits both kinds, one generation.
 **4.5 — OAuth2 credentials (v1: Google/Gmail).** Kind `oauth2` fields,
 all inside the vault envelope: `client_id`, `client_secret`,
 `refresh_token`, `access_token`, `access_expiry`, `scopes`,
-`token_uri`, `auth_uri`, `granted_at`. Entry path:
+`token_uri`, `auth_uri`, `granted_at`. The connector exposes two
+worker tools (v13 codification): `send` (§5.1 wire contract) and
+`read`, whose result is the typed shape `{id, threadId, snippet,
+body}`; worker-lane upstream reads are capped at 2 MiB (a truncated
+body fails to parse and surfaces as `internal`). Entry path:
 `custos login gmail --client-id <id>` (client secret prompted on the
 TTY, never a flag/argv) — prints the consent URL **with a random `state`
 parameter** (generated, stored in memory, validated on callback;
@@ -568,7 +586,10 @@ Refresh happens inside the worker, under a **per-credential refresh
 lock**: the token-endpoint forward is held **outside** the `custos.lock`
 mutation flock (read state → forward → brief flock for the encrypt +
 two-file write, per §4.2); concurrent refreshes of the same credential
-coalesce onto the in-flight one. **Write-back revalidates existence:**
+coalesce onto the in-flight one. An access token is treated as expired
+**60 s before** its stated expiry (v13 codification of the shipped
+skew: a token picked up near expiry is refreshed, never sent).
+**Write-back revalidates existence:**
 the flock-acquired step first checks the credential still exists in the
 vault; if a `custos revoke` committed during the forward, the refresh
 result is **dropped** (audited `credential_rotated` with
@@ -672,8 +693,9 @@ Slot ensure, latch, and occupancy rules: §4.7.
 `error_code ∈ denied | locked | unknown_connector | unknown_tool |
 bad_args | upstream | rate_limited | timeout | transport | internal`
 (frozen). `detail` is built from a closed template per code — HTTP
-upstream failures contribute a status class ("upstream returned 5xx")
-only; transport failures (DNS, refused, no status in `*url.Error`) map
+upstream failures contribute a status class only ("upstream returned
+5xx"; v13: 429 maps to `rate_limited` / "upstream rate limited", other
+4xx to `upstream` / "upstream returned 4xx"); transport failures (DNS, refused, no status in `*url.Error`) map
 to `transport` ("connection failed before response"); deadline-exceeded
 maps to `timeout`. **No URL, no upstream body, no wrapped `error`
 chain** (the worker unwraps `*url.Error` and keeps only its class). Before send, `detail`
@@ -1167,7 +1189,11 @@ set shipped in v0.4.1 without appearing in this text):**
 `server_closed`, `denied_by_user`, `custos_locked`,
 `credential_revoked`, `no_approval_door`, `policy_changed_during_hold`,
 `cell_token`, `bad_op`, `bad_args`, `unknown_connector`,
-`unknown_tool`, `locked`, `credential_gone`, `upstream`, `denied`
+`unknown_tool`, `locked`, `credential_gone`, `upstream`, `denied`,
+`rate_limited`, `transport`, `timeout`, `internal`
+(v13: the last four are **declared** — the remaining `we.code` values
+frozen code records via `auditDenied(…, we.code)`; codification, not
+a new emit path).
 (`upstream` and `denied` are **declared** by amendment v12 as legal
 values frozen code already emits — gmail.go's `upstreamStatusError` →
 `wErr(ErrCodeUpstream)`, recorded via worker.go's

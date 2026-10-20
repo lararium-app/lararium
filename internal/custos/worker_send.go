@@ -162,9 +162,11 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 			Tools: tools,
 		})
 		if err != nil {
+			// v13: §5.1a's error enum is closed — an unreachable
+			// marshal fault maps to `internal`, never a coined code.
 			return WorkerResponse{
-				ErrorCode: "marshal_error",
-				Detail:    "marshal tools list: " + err.Error(),
+				ErrorCode: ErrCodeInternal,
+				Detail:    detailInternal,
 			}
 		}
 
@@ -200,7 +202,7 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 	}
 
 	// 5. policy worker-lane Decide (§6.1/§6.2 tool-qualified patterns).
-	verdict, pattern := ws.vault.Policy().Decide(DecideInput{
+	verdict, _ := ws.vault.Policy().Decide(DecideInput{
 		Lane:       "worker",
 		Credential: conn.Credential(),
 		Tool:       tool,
@@ -210,7 +212,9 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 	switch verdict {
 	case VerdictDeny:
 		resp = errResponse(ErrCodeDenied, detailDeniedPolicy)
-		ws.auditDenied(cw, connector, host, tool, "policy:"+pattern)
+		// v13: record the declared policy-deny reason. The matched
+		// pattern is unbounded vocabulary; §8.1's reason set is closed.
+		ws.auditDenied(cw, connector, host, tool, "verdict")
 		return resp
 
 	case VerdictAsk:
