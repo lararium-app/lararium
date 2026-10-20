@@ -129,7 +129,7 @@ func (g *GmailConnector) ValidateArgs(tool string, args json.RawMessage) error {
 	}
 }
 
-// ReviewFields implements §7 card review fields declared by the tool
+// ReviewFields implements §6.4 card review fields declared by the tool
 // schema: gmail/send declares `to` and `subject`.
 func (g *GmailConnector) ReviewFields(tool string, args json.RawMessage) string {
 	switch tool {

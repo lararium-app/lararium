@@ -38,8 +38,13 @@ release note, doc, or audit transcript), we tag beta.
       the connectors card in the Doors view, PR #103, v0.10.0-alpha)
 - [ ] Approvals: phone can resolve a pending card from the notification
       (android-client slice 4)
-- [ ] Gmail cell + backup/restore keep their green status (regression
-      suite, no spec drift)
+- [x] Gmail cell + backup/restore keep their green status (regression
+      suite, no spec drift). Drift audit 2026-10-19: four worker-lane
+      vocabulary drifts found; closed by CUSTOS-SPEC amendment v13
+      (frozen status classes, declared audit reasons, refresh skew,
+      gmail/read shape) plus code alignment (pre-hold policy deny
+      audits the declared `verdict`; the coined marshal fault maps to
+      `internal`) and audit-reason regression tests.
 
 ## C. Security
 
