@@ -224,7 +224,7 @@ $ custos mcp tools filesystem
 $ custos mcp refresh search
 ```
 
-A standing approval on a connector tool is bound to the tool's definition fingerprint: if the server edits the tool's schema or description, the approval is revoked (audited) and the next call asks again. Full contract: [`docs/MCP-SPEC.md`](docs/MCP-SPEC.md).
+A standing approval on a connector tool is bound to the tool's definition fingerprint: if the server edits the tool's schema or description, the approval is revoked (audited) and the next call asks again. Full contract: [`docs/MCP-SPEC.md`](docs/MCP-SPEC.md). Step-by-step walkthrough: [`docs/MCP-SERVER-RECIPE.md`](docs/MCP-SERVER-RECIPE.md).
 
 ## Documentation
 
