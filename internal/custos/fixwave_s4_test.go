@@ -56,8 +56,10 @@ func TestS4_WorkerNilVaultNoPanic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// S4-2: refresh HTTP failures contribute their status class (§5.1a), not
-// 'internal'. Drives the fake's refreshFail seam through a real worker send.
+// S4-2: refresh HTTP failures contribute their status class (§5.1a
+// incl. the v13 429 carve-out: `rate_limited` / "upstream rate
+// limited"), not 'internal'. Drives the fake's refreshFail seam
+// through a real worker send.
 // ---------------------------------------------------------------------------
 
 func s4StoreExpiringGmail(t *testing.T, h *workerHarness, tokenURI string) {
