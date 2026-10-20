@@ -611,7 +611,8 @@ func TestV13_WorkerGateOrderAndSend(t *testing.T) {
 		t.Fatalf("bad args: %+v", resp)
 	}
 
-	// credential not stored → credential-unavailable denial path
+	// From here the credential is stored: the credential-unavailable
+	// denial path itself is covered by TestS4_* (fixwave_s4_test.go).
 	h.storeGmail(t)
 
 	// policy default ask → auto-approve via hub → send executes.
