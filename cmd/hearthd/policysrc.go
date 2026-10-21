@@ -164,3 +164,23 @@ func (a *policySourceAdapter) Decide(connector, tool string) string {
 	}
 	return verdict
 }
+
+// AddAlwaysRule mints a card-minted always-rule (issue #132;
+// CUSTOS-SPEC §6.5): credential-lane exact pattern "<connector>/<tool>",
+// verdict auto, always=true, source "always" — mirroring the door path's
+// AddCredentialRule(pat, "auto", true, "always", actor). Once present,
+// Decide returns auto for that call and the approval card never
+// re-raises; the rule is visible via GET /v1/policy/rules (always:true)
+// and removable only through policy controls, never page-settable
+// (SURFACE-SPEC §4 CA-7 posture preserved).
+func (a *policySourceAdapter) AddAlwaysRule(pattern string) error {
+	if a == nil || a.vault == nil || !a.vault.IsUnlocked() {
+		return surface.ErrPolicyLocked
+	}
+	pe := a.vault.Policy()
+	if pe == nil {
+		return surface.ErrPolicyLocked
+	}
+	_, err := pe.AddCredentialRule(pattern, "auto", true, "always", "custos")
+	return wrapPolicyErr(err)
+}

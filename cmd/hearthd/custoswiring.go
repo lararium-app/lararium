@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 
@@ -56,6 +57,10 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 	}
 	if srv != nil {
 		srv.SetCustosRegistry(NewCustosWebAdapter(client))
+		// Issue #132: an "always" verdict on a turn-approval card mints
+		// the canonical worker-lane rule (connector/tool -> auto,
+		// always:true) so the next turn's Decide runs the call silently.
+		srv.SetAlwaysRuleHook(turnAlwaysRuleMinter(srv, client))
 	}
 	if hub != nil {
 		var decider PolicyDecider
@@ -81,6 +86,33 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 // serverPolicyDecider adapts surface.Server's PolicySource to PolicyDecider dynamically (issue #129).
 type serverPolicyDecider struct {
 	srv *surface.Server
+}
+
+// alwaysRuleMinter is the mint seam for card-minted always-rules
+// (issue #132); *policySourceAdapter implements it over the custody vault.
+type alwaysRuleMinter interface {
+	AddAlwaysRule(pattern string) error
+}
+
+// turnAlwaysRuleMinter builds the surface hook that mints the
+// "<connector>/<tool>" worker rule for a turn-approval card settled with
+// "always" (issue #132). The minter is resolved dynamically from the
+// server's PolicySource so a vault attached after boot still mints; the
+// rail list is consulted for the authoritative connector/tool pair
+// because the model-facing name is a lossy sanitization.
+func turnAlwaysRuleMinter(srv *surface.Server, lister MCPToolLister) func(toolName string) error {
+	return func(toolName string) error {
+		src := srv.PolicySource()
+		minter, ok := src.(alwaysRuleMinter)
+		if src == nil || !ok {
+			return errors.New("policy backend unavailable: cannot mint always-rule")
+		}
+		pattern, ok := mcpRulePattern(lister, toolName)
+		if !ok {
+			return fmt.Errorf("no rail tool matches %q (stale card or non-rail tool)", toolName)
+		}
+		return minter.AddAlwaysRule(pattern)
+	}
 }
 
 func (d *serverPolicyDecider) Decide(connector, tool string) string {

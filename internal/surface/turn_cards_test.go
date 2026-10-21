@@ -7,6 +7,7 @@ package surface
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -293,5 +294,100 @@ func TestIssue128_HubObserver_TimeoutIsExpired(t *testing.T) {
 		case <-deadline:
 			t.Fatal("no gone event after timeout")
 		}
+	}
+}
+
+// --- Issue #132: verdict "always" must mint a card-derived rule ---
+
+func setupTurnCardServerWithHook(t *testing.T, hub *ApprovalHub, hook func(string) error) (string, http.Handler) {
+	t.Helper()
+	store, err := OpenTokenStore(t.TempDir() + "/tokens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokVal, err := store.Create("turncards-132")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		Store:    store,
+		Sessions: &fakeSessionSource{},
+		Hub:      &fakeHub{},
+		Cfg:      ServeConfig{AllowedHosts: []string{"localhost", "127.0.0.1"}},
+	}
+	srv.SetApprovalHub(hub)
+	srv.SetAlwaysRuleHook(hook)
+	return tokVal, NewServer(srv)
+}
+
+func TestIssue132_AlwaysMintsRule(t *testing.T) {
+	hub := NewApprovalHub(30 * time.Second)
+	var minted []string
+	tok, handler := setupTurnCardServerWithHook(t, hub, func(name string) error {
+		minted = append(minted, name)
+		return nil
+	})
+
+	id, decision := hub.Register("s_01TURN", "mcp__github__create_issue", `{"repo":"x"}`, func(string) {})
+
+	code, body := tcPost(t, handler, tok, "/v1/custos/cards/"+id+"/resolve", `{"verdict":"always"}`)
+	if code != http.StatusOK || !strings.Contains(body, `"approved"`) {
+		t.Fatalf("resolve = %d %s, want 200 approved", code, body)
+	}
+	select {
+	case allow := <-decision:
+		if !allow {
+			t.Error("decision = false, want true on always")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("decision channel never fired")
+	}
+	if len(minted) != 1 || minted[0] != "mcp__github__create_issue" {
+		t.Errorf("minted = %v, want exactly [mcp__github__create_issue]", minted)
+	}
+}
+
+func TestIssue132_OnceAndDenyDoNotMint(t *testing.T) {
+	for _, verdict := range []string{"once", "deny"} {
+		hub := NewApprovalHub(30 * time.Second)
+		mints := 0
+		tok, handler := setupTurnCardServerWithHook(t, hub, func(string) error {
+			mints++
+			return nil
+		})
+		id, _ := hub.Register("s_01TURN", "toolx", "args", func(string) {})
+		if code, body := tcPost(t, handler, tok, "/v1/custos/cards/"+id+"/resolve", `{"verdict":"`+verdict+`"}`); code != http.StatusOK {
+			t.Fatalf("verdict %s: resolve = %d %s", verdict, code, body)
+		}
+		if mints != 0 {
+			t.Errorf("verdict %s minted %d rules, want 0", verdict, mints)
+		}
+	}
+}
+
+// A mint failure must not flip the resolve ack: the approval already
+// settled honestly, and a false 500 would invite double-taps. The loud
+// degradation is the log line (the hook ran; its error is swallowed).
+func TestIssue132_MintFailureStillAcks(t *testing.T) {
+	hub := NewApprovalHub(30 * time.Second)
+	tok, handler := setupTurnCardServerWithHook(t, hub, func(string) error {
+		return errors.New("mint failed (test)")
+	})
+	id, decision := hub.Register("s_01TURN", "toolx", "args", func(string) {})
+	code, body := tcPost(t, handler, tok, "/v1/custos/cards/"+id+"/resolve", `{"verdict":"always"}`)
+	if code != http.StatusOK || !strings.Contains(body, `"approved"`) {
+		t.Fatalf("resolve = %d %s, want 200 approved despite mint failure", code, body)
+	}
+	<-decision
+}
+
+func TestIssue132_NameOf(t *testing.T) {
+	hub := NewApprovalHub(30 * time.Second)
+	id, _ := hub.Register("s_01TURN", "tooly", "args", func(string) {})
+	if name, ok := hub.NameOf(id); !ok || name != "tooly" {
+		t.Errorf("NameOf = %q,%v want tooly,true", name, ok)
+	}
+	if _, ok := hub.NameOf("a_missing0000000000000000"); ok {
+		t.Error("NameOf of unknown id returned ok")
 	}
 }
