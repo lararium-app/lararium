@@ -49,6 +49,11 @@ func (s *Server) getPolicySource() PolicySource {
 	return s.policySrc
 }
 
+// PolicySource returns the attached PolicySource (issue #129).
+func (s *Server) PolicySource() PolicySource {
+	return s.getPolicySource()
+}
+
 // policyPatternGateRe enforces ^[\x21-\x7e]{1,256}$ (printable ASCII, no control chars or spaces, max 256).
 var policyPatternGateRe = regexp.MustCompile(`^[\x21-\x7e]{1,256}$`)
 

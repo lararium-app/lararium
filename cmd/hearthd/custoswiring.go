@@ -31,11 +31,11 @@ type CustosConfig struct {
 // startCustosDoor starts the door client as a supervised goroutine and
 // feeds the Nuntius sibling feed and web surface (bridge and srv may be nil).
 // When hub is non-nil, its rail tools join the web-chat registry as a
-// dynamic tool source (issue #83). It returns nil — having opened no
-// socket, started no goroutine and logged nothing — unless both paths are
+// dynamic tool source with policy gating (issue #83, #129). It returns nil — having
+// opened no socket, started no goroutine and logged nothing — unless both paths are
 // set. The returned stop closes the door connection and waits for the
 // goroutine; it is idempotent.
-func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge, srv *surface.Server, hub *surface.Hub) (stop func()) {
+func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge, srv *surface.Server, hub *surface.Hub, deciders ...PolicyDecider) (stop func()) {
 	client, err := custosdoor.New(custosdoor.Options{
 		SockPath:  cfg.DoorsSock,
 		TokenPath: cfg.DoorToken,
@@ -58,7 +58,13 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 		srv.SetCustosRegistry(NewCustosWebAdapter(client))
 	}
 	if hub != nil {
-		hub.SetToolSource(mcpToolSource(client))
+		var decider PolicyDecider
+		if len(deciders) > 0 && deciders[0] != nil {
+			decider = deciders[0]
+		} else if srv != nil {
+			decider = &serverPolicyDecider{srv: srv}
+		}
+		hub.SetToolSource(mcpToolSource(client, decider))
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -70,6 +76,22 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 			<-client.Done()
 		})
 	}
+}
+
+// serverPolicyDecider adapts surface.Server's PolicySource to PolicyDecider dynamically (issue #129).
+type serverPolicyDecider struct {
+	srv *surface.Server
+}
+
+func (d *serverPolicyDecider) Decide(connector, tool string) string {
+	if d == nil || d.srv == nil {
+		return custos.VerdictAsk
+	}
+	ps := d.srv.PolicySource()
+	if pd, ok := ps.(PolicyDecider); ok && pd != nil {
+		return pd.Decide(connector, tool)
+	}
+	return custos.VerdictAsk
 }
 
 // custodyWire adapts the door client to the Nuntius sibling feed.

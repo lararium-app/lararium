@@ -12,7 +12,7 @@ import (
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
-// policySourceAdapter adapts *custos.Vault to surface.PolicySource.
+// policySourceAdapter adapts *custos.Vault to surface.PolicySource and PolicyDecider.
 type policySourceAdapter struct {
 	vault *custos.Vault
 }
@@ -21,12 +21,15 @@ func newPolicySourceAdapter(vault *custos.Vault) surface.PolicySource {
 	return &policySourceAdapter{vault: vault}
 }
 
-var _ surface.PolicySource = (*policySourceAdapter)(nil)
+var (
+	_ surface.PolicySource = (*policySourceAdapter)(nil)
+	_ PolicyDecider        = (*policySourceAdapter)(nil)
+)
 
 // wireCustosPolicy attaches a policySourceAdapter to srv if the custos vault exists on disk.
-func wireCustosPolicy(srv *surface.Server, home string, cfg CustosConfig) {
+func wireCustosPolicy(srv *surface.Server, home string, cfg CustosConfig) PolicyDecider {
 	if srv == nil {
-		return
+		return nil
 	}
 	stateDir := ""
 	if cfg.DoorsSock != "" {
@@ -35,11 +38,11 @@ func wireCustosPolicy(srv *surface.Server, home string, cfg CustosConfig) {
 		stateDir = filepath.Join(home, "custos")
 	}
 	if stateDir == "" {
-		return
+		return nil
 	}
 	v := custos.NewVault(stateDir, 10*time.Second)
 	if !v.Exists() {
-		return
+		return nil
 	}
 	if cfg.UnlockKeyfile != "" {
 		if keyBytes, err := os.ReadFile(cfg.UnlockKeyfile); err == nil {
@@ -49,7 +52,9 @@ func wireCustosPolicy(srv *surface.Server, home string, cfg CustosConfig) {
 			}
 		}
 	}
-	srv.SetPolicySource(newPolicySourceAdapter(v))
+	adapter := &policySourceAdapter{vault: v}
+	srv.SetPolicySource(adapter)
+	return adapter
 }
 
 // wrapPolicyErr joins surface.ErrPolicyCorrupt with custos.ErrPolicyCorrupt so errors.Is matches either sentinel across the package boundary.
@@ -136,4 +141,26 @@ func (a *policySourceAdapter) RemoveRule(lane, pattern string) (bool, error) {
 		return false, wrapPolicyErr(err)
 	}
 	return removed, nil
+}
+
+// Decide evaluates the policy verdict for an MCP tool call (issue #129).
+// Worker lane semantics: credential=connector, tool=tool.
+func (a *policySourceAdapter) Decide(connector, tool string) string {
+	if a == nil || a.vault == nil {
+		return custos.VerdictAsk
+	}
+	pe := a.vault.Policy()
+	if pe == nil {
+		return custos.VerdictAsk
+	}
+	verdict, _ := pe.Decide(custos.DecideInput{
+		Lane:       "worker",
+		Credential: connector,
+		Tool:       tool,
+		Host:       connector,
+	})
+	if verdict == "" {
+		return custos.VerdictAsk
+	}
+	return verdict
 }
