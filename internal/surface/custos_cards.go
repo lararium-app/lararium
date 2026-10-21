@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"net/http"
 	"sort"
 	"strings"
@@ -244,9 +245,19 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 	// Turn-approval fallback: ids the door registry never saw (web/MCP
 	// rail approvals). Settles the live turn via the hub, source custos.
 	if hub := s.approvalsViaRegistry(); hub != nil {
+		// Issue #132: capture the tool name BEFORE settling so the
+		// mint sees the card's own tool even if terminal entries are
+		// pruned later.
+		toolName := ""
+		if req.Verdict == "always" {
+			toolName, _ = hub.NameOf(id)
+		}
 		allow := req.Verdict != "deny"
 		switch hub.ResolveFromVia("", id, allow, "custos", "") {
 		case 200:
+			if req.Verdict == "always" {
+				s.mintTurnAlwaysRule(id, toolName)
+			}
 			writeJSONAny(w, http.StatusOK, map[string]string{"state": registryAnswerState(req.Verdict)})
 			return
 		case 410:
@@ -259,11 +270,64 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 	s.error(w, "no_such_card", http.StatusNotFound)
 }
 
+// logSanitize removes control characters (newlines included) from
+// request- and model-adjacent strings before they reach the log stream,
+// so a hostile tool name or card id cannot forge log lines (gosec G706).
+func logSanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
 func registryAnswerState(verdict string) string {
 	if verdict == "deny" {
 		return "denied"
 	}
 	return "approved"
+}
+
+// SetAlwaysRuleHook attaches the card-minted always-rule minter used
+// when a turn-approval card settles with verdict "always" (issue #132).
+// The hook receives the model-facing tool name exactly as the approval
+// was raised (mcp__<connector>__<tool> for rail tools); reverse-mapping
+// and rule writing live in the wiring layer so surface never imports
+// custody (frozen import direction). Safe for concurrent use; nil clears.
+func (s *Server) SetAlwaysRuleHook(f func(toolName string) error) {
+	s.alwaysMu.Lock()
+	defer s.alwaysMu.Unlock()
+	s.alwaysHook = f
+}
+
+func (s *Server) getAlwaysRuleHook() func(toolName string) error {
+	s.alwaysMu.RLock()
+	defer s.alwaysMu.RUnlock()
+	return s.alwaysHook
+}
+
+// mintTurnAlwaysRule asks the wiring layer to persist the always-rule
+// for a card just settled with "always" (CUSTOS-SPEC §6.5 card-minted
+// posture, issue #132). The approval already settled when this runs, so
+// a mint failure MUST NOT flip the resolve ack — it degrades the verdict
+// to once and is logged loudly instead. Silent degradation was the bug.
+func (s *Server) mintTurnAlwaysRule(cardID, toolName string) {
+	hook := s.getAlwaysRuleHook()
+	switch {
+	case hook == nil:
+		// #nosec G706 -- cardID is shape-validated ([a-z0-9]{24}) at dispatch and re-sanitized here
+		stdlog.Printf("WARN issue #132: card %s settled 'always' but no always-rule hook is wired; verdict degraded to once", logSanitize(cardID))
+	case toolName == "":
+		// #nosec G706 -- sanitized above; ids and tool names cannot carry control chars here
+		stdlog.Printf("WARN issue #132: card %s settled 'always' but its approval entry carried no tool name; verdict degraded to once", logSanitize(cardID))
+	default:
+		if err := hook(toolName); err != nil {
+			// #nosec G706 -- both values pass logSanitize; err is engine text
+			stdlog.Printf("ERROR issue #132: minting always-rule for card %s (tool %q) failed: %v; verdict degraded to once",
+				logSanitize(cardID), logSanitize(toolName), err)
+		}
+	}
 }
 
 func (s *Server) custosEventsHandler(w http.ResponseWriter, r *http.Request) {
