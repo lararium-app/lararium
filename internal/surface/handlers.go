@@ -63,6 +63,13 @@ type Server struct {
 	policyMu  sync.RWMutex
 	policySrc PolicySource
 
+	// alwaysHook mints the card-minted always-rule when a turn-approval
+	// card settles with "always" (issue #132; SURFACE-SPEC §4: always-
+	// rules are card-minted). Set by wiring; nil-safe: the verdict then
+	// degrades to once, loudly logged.
+	alwaysMu   sync.RWMutex
+	alwaysHook func(toolName string) error
+
 	Backup BackupFunc
 }
 
