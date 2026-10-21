@@ -15,6 +15,8 @@ type fakeSessionSource struct {
 	listErr   error
 	createErr error
 	eventsErr error
+	deleteErr error
+	deleted   []string
 }
 
 func (f *fakeSessionSource) List() ([]SessionInfo, error) {
@@ -29,6 +31,14 @@ func (f *fakeSessionSource) Create(title, modelPin string) (SessionInfo, error) 
 		return SessionInfo{}, f.createErr
 	}
 	return SessionInfo{ID: "s_NEWSESSIONID1234567890", Title: &title, ModelPin: &modelPin}, nil
+}
+
+func (f *fakeSessionSource) Delete(id string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, id)
+	return nil
 }
 
 func (f *fakeSessionSource) Events(id string, afterSeq int64, limit int) ([]json.RawMessage, bool, error) {
@@ -267,4 +277,67 @@ func TestBodyLimitMiddleware(t *testing.T) {
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want %d (413)", w.Code, http.StatusRequestEntityTooLarge)
 	}
+}
+
+func TestDeleteSessionRoute(t *testing.T) {
+	const id = "s_AAAAAAAAAAAAAAAAAAAAAAAAAA" // 28 chars total: prefix + 26
+	store, _ := OpenTokenStore(t.TempDir() + "/tokens.json")
+
+	t.Run("success 204", func(t *testing.T) {
+		sessions := &fakeSessionSource{}
+		srv := &Server{Store: store, Sessions: sessions, Hub: &fakeHub{}}
+		req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+id, nil)
+		w := httptest.NewRecorder()
+		srv.dispatchSession(w, req)
+		if w.Code != http.StatusNoContent {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+		}
+		if len(sessions.deleted) != 1 || sessions.deleted[0] != id {
+			t.Errorf("deleted = %v, want [%s]", sessions.deleted, id)
+		}
+	})
+
+	t.Run("busy 409", func(t *testing.T) {
+		sessions := &fakeSessionSource{}
+		srv := &Server{Store: store, Sessions: sessions, Hub: &fakeHub{inFlight: map[string]bool{id: true}}}
+		req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+id, nil)
+		w := httptest.NewRecorder()
+		srv.dispatchSession(w, req)
+		if w.Code != http.StatusConflict {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+		}
+		if len(sessions.deleted) != 0 {
+			t.Errorf("busy session must not be deleted: %v", sessions.deleted)
+		}
+	})
+
+	t.Run("unknown 404", func(t *testing.T) {
+		srv := &Server{Store: store, Sessions: &fakeSessionSource{deleteErr: ErrNoSession}, Hub: &fakeHub{}}
+		req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+id, nil)
+		w := httptest.NewRecorder()
+		srv.dispatchSession(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("protected 403", func(t *testing.T) {
+		srv := &Server{Store: store, Sessions: &fakeSessionSource{deleteErr: ErrProtectedSession}, Hub: &fakeHub{}}
+		req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+id, nil)
+		w := httptest.NewRecorder()
+		srv.dispatchSession(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
+		}
+	})
+
+	t.Run("malformed id 404", func(t *testing.T) {
+		srv := &Server{Store: store, Sessions: &fakeSessionSource{}, Hub: &fakeHub{}}
+		req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/not-an-id", nil)
+		w := httptest.NewRecorder()
+		srv.dispatchSession(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
 }
