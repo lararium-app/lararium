@@ -75,7 +75,7 @@ $ /ABS/SCRATCH/custos -config /ABS/SCRATCH/lararium.yaml mcp call everything ech
 
 ## Use it in chat
 
-To route chat turns to an LLM provider, configure the `models:` and `providers:` blocks described in [README.md](../README.md#choosing-a-provider).
+To route chat turns to an LLM provider, configure the `models:` and `providers:` blocks described in [README.md](../README.md#quick-start).
 
 When `hearthd` connects to `custosd` over `doors_sock`, tools from active connectors join the chat turn registry automatically. Model-facing tool names follow the pattern:
 
