@@ -56,6 +56,10 @@ type Server struct {
 	custosMu  sync.RWMutex
 	custosReg CustosRegistry
 
+	// approvals bridges turn-approval cards into the custody registry
+	// surface (issue #128). nil-safe: routes behave registry-only.
+	approvals *ApprovalHub
+
 	policyMu  sync.RWMutex
 	policySrc PolicySource
 

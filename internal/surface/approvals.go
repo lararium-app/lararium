@@ -59,7 +59,10 @@ type approval struct {
 	cardDead    bool       // Telegram card undeliverable (A7)
 	cred        string     // CUSTOS CA-3: credential name
 	cell        string     // CUSTOS CA-3: requesting cell id
+	createdAt   time.Time  // issue #128: registry-card age/expiry display
+	expiresAt   time.Time  // issue #128: registry-card age/expiry display
 }
+
 
 // StaleVerdictHook is invoked when an Allow verdict arrives for an already settled/dead approval.
 type StaleVerdictHook func(id, sessionID, cred, cell, reason string)
@@ -77,7 +80,99 @@ type ApprovalHub struct {
 	fanout           ApprovalFanout
 	bridgeLive       func() bool
 	staleVerdictHook StaleVerdictHook
+	obsMu            sync.Mutex
+	observers        map[int64]func(*CustosCard, *CustosGone)
+	obsSeq           int64
 }
+
+// SubscribeCustos registers an observer for turn-approval card lifecycle
+// (issue #128): f is called with (card, nil) when a turn approval becomes
+// pending and (nil, gone) when it settles. Only TURN approvals are
+// published — custos worker-lane cards (cred/cell set) already reach
+// watchers through the door registry, avoiding double publication.
+// Callbacks must not block; the surface delivers via its own buffered
+// channel. Returns a cancel func (idempotent).
+func (h *ApprovalHub) SubscribeCustos(f func(*CustosCard, *CustosGone)) (cancel func()) {
+	h.obsMu.Lock()
+	defer h.obsMu.Unlock()
+	if h.observers == nil {
+		h.observers = make(map[int64]func(*CustosCard, *CustosGone))
+	}
+	h.obsSeq++
+	id := h.obsSeq
+	h.observers[id] = f
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.obsMu.Lock()
+			delete(h.observers, id)
+			h.obsMu.Unlock()
+		})
+	}
+}
+
+func (h *ApprovalHub) observerSnapshot() []func(*CustosCard, *CustosGone) {
+	h.obsMu.Lock()
+	defer h.obsMu.Unlock()
+	if len(h.observers) == 0 {
+		return nil
+	}
+	out := make([]func(*CustosCard, *CustosGone), 0, len(h.observers))
+	for _, f := range h.observers {
+		out = append(out, f)
+	}
+	return out
+}
+
+// hubGoneState maps hub terminal states onto the CUSTOS-SPEC §6.4b gone
+// vocabulary used by registry watchers (timed_out → expired).
+func hubGoneState(state string) string {
+	switch state {
+	case "timed_out":
+		return "expired"
+	default:
+		return state
+	}
+}
+
+// PendingTurnCards snapshots pending TURN approvals in frozen CustosCard
+// shape (issue #128): tool = request name, review = args summary,
+// cell/cred/dest deliberately empty (turn-scoped, no custody lane).
+// Worker-lane cards are excluded — the door registry serves them.
+func (h *ApprovalHub) PendingTurnCards() []CustosCard {
+	now := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []CustosCard
+	for _, session := range h.bySession {
+		for _, ap := range session {
+			if ap.state != "pending" || ap.cred != "" || ap.cell != "" {
+				continue
+			}
+			out = append(out, ap.turnCard(now))
+		}
+	}
+	return out
+}
+
+// turnCard renders the frozen registry shape; caller may hold h.mu.
+func (ap *approval) turnCard(now time.Time) CustosCard {
+	c := CustosCard{ID: ap.id, Tool: ap.name, Review: ap.argsSummary}
+	if !ap.createdAt.IsZero() {
+		c.AgeS = int(now.Sub(ap.createdAt).Seconds())
+		if c.AgeS < 0 {
+			c.AgeS = 0
+		}
+		if !ap.expiresAt.IsZero() {
+			c.ExpiresInS = int(ap.expiresAt.Sub(now).Seconds())
+			if c.ExpiresInS < 0 {
+				c.ExpiresInS = 0
+			}
+		}
+	}
+	return c
+}
+
 
 // NewApprovalHub builds the hub; timeout is serve.approval_timeout —
 // a pending approval auto-denies (reason timed_out) once it elapses.
@@ -165,6 +260,8 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 	if timeout <= 0 {
 		timeout = h.timeout
 	}
+	ap.createdAt = time.Now()
+	ap.expiresAt = ap.createdAt.Add(timeout)
 	ap.timer = time.AfterFunc(timeout, func() { h.resolveTimeout(id) })
 	h.mu.Unlock()
 
@@ -241,6 +338,8 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 	if channels&ChannelWeb != 0 {
 		timeout = h.timeout
 	}
+	ap.createdAt = time.Now()
+	ap.expiresAt = ap.createdAt.Add(timeout)
 	ap.timer = time.AfterFunc(timeout, func() { h.resolveTimeout(id) })
 	h.mu.Unlock()
 
@@ -253,9 +352,20 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 func (h *ApprovalHub) fanPending(id, sessionID, name, argsSummary string) {
 	h.mu.Lock()
 	f := h.fanout
+	ap, ok := h.findLocked(id)
+	var card *CustosCard
+	if ok && ap.cred == "" && ap.cell == "" {
+		c := ap.turnCard(time.Now())
+		card = &c
+	}
 	h.mu.Unlock()
 	if f != nil {
 		f.ApprovalPending(id, sessionID, name, argsSummary)
+	}
+	if card != nil {
+		for _, o := range h.observerSnapshot() {
+			o(card, nil)
+		}
 	}
 }
 
@@ -266,12 +376,20 @@ func (h *ApprovalHub) fanTerminal(id, sessionID, state, reason, source string) {
 func (h *ApprovalHub) fanTerminalVia(id, sessionID, state, reason, source, via string) {
 	h.mu.Lock()
 	f := h.fanout
+	ap, ok := h.findLocked(id)
+	turn := !ok || (ap.cred == "" && ap.cell == "")
 	h.mu.Unlock()
 	if f != nil {
 		if fv, ok := f.(ApprovalTerminalVia); ok {
 			fv.ApprovalTerminalVia(id, sessionID, state, reason, source, via)
 		} else {
 			f.ApprovalTerminal(id, sessionID, state, reason, source)
+		}
+	}
+	if turn {
+		gone := &CustosGone{ID: id, State: hubGoneState(state), Reason: reason}
+		for _, o := range h.observerSnapshot() {
+			o(nil, gone)
 		}
 	}
 }
