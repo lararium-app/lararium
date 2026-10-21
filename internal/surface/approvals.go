@@ -787,6 +787,19 @@ func (h *ApprovalHub) Via(sessionID, id string) string {
 	return ap.via
 }
 
+// NameOf returns the tool name a pending approval was raised for
+// (issue #132: the card-minted always-rule path needs the name before
+// the card settles; after settlement the approval is gone).
+func (h *ApprovalHub) NameOf(id string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ap, ok := h.findLocked(id)
+	if !ok {
+		return "", false
+	}
+	return ap.name, true
+}
+
 // SessionOf maps an approval id to its session (§7.2: Telegram
 // callbacks never name a session; the server resolves it).
 func (h *ApprovalHub) SessionOf(id string) (string, bool) {

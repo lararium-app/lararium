@@ -87,6 +87,28 @@ func mcpToolName(connector, tool string) string {
 	return s
 }
 
+// mcpRulePattern reverse-maps a model-facing tool name back onto the
+// canonical worker-lane rule pattern "<connector>/<tool>" by matching
+// against the rail's live tool list — never by parsing the sanitized
+// name, which is lossy (issue #132). ok=false for names that are not
+// current rail tools (stale card, local tool): the caller must not mint.
+func mcpRulePattern(lister MCPToolLister, modelName string) (string, bool) {
+	if lister == nil || modelName == "" {
+		return "", false
+	}
+	for _, ti := range lister.ListTools() {
+		if mcpToolName(ti.Connector, ti.Name) == modelName {
+			return ti.Connector + "/" + ti.Name, true
+		}
+	}
+	return "", false
+}
+
+// MCPToolLister is the rail tool-listing seam (issue #132).
+type MCPToolLister interface {
+	ListTools() []custosdoor.ToolInfo
+}
+
 // mcpLoopTool adapts one rail tool to the loop registry with policy gating (issue #129).
 func mcpLoopTool(client MCPCaller, ti custosdoor.ToolInfo, deciders ...PolicyDecider) loop.Tool {
 	schema := string(ti.InputSchema)
