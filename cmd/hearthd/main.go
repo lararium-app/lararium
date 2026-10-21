@@ -401,6 +401,9 @@ func serve(cfgPath string) {
 		Sessions: sessions,
 		Hub:      hub,
 	}
+	// Issue #128: turn-approval cards (web chat + MCP rail) become visible
+	// and resolvable through the custody card surface.
+	srv.SetApprovalHub(ap)
 	srv.AttachKeys(&surface.KeysDeps{
 		Store:     kstore,
 		Registry:  keyReg,

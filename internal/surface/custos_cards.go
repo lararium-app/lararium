@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,17 @@ func (s *Server) getCustosRegistry() CustosRegistry {
 	return s.custosReg
 }
 
+// SetApprovalHub bridges turn-approval cards into the custody card
+// surface (issue #128): GET /v1/custos/cards merges pending turn cards,
+// POST /v1/custos/cards/{id}/resolve falls back to the hub when the door
+// registry does not know the id, and the SSE stream emits hub turn-card
+// lifecycle. Safe for concurrent use and nil-safe.
+func (s *Server) SetApprovalHub(h *ApprovalHub) {
+	s.custosMu.Lock()
+	defer s.custosMu.Unlock()
+	s.approvals = h
+}
+
 // custosHeartbeatInterval is the SSE : ping interval (default 5 s per SURFACE-SPEC §5).
 // Internal tests may adjust this for fast execution without sleeps >100ms.
 var custosHeartbeatInterval = 5 * time.Second
@@ -148,22 +160,40 @@ func (s *Server) custosCardsHandler(w http.ResponseWriter, _ *http.Request) {
 	if reg != nil {
 		cards = reg.Snapshot()
 	}
+	// Issue #128: merge pending turn-approval cards. Hub turn cards carry
+	// empty cred/cell, worker-lane cards come from the registry alone;
+	// id de-duplication guards any transient mirror regardless.
+	seen := make(map[string]bool, len(cards))
+	for _, c := range cards {
+		seen[c.ID] = true
+	}
+	if hub := s.approvalsViaRegistry(); hub != nil {
+		for _, c := range hub.PendingTurnCards() {
+			if !seen[c.ID] {
+				cards = append(cards, c)
+				seen[c.ID] = true
+			}
+		}
+	}
 	if cards == nil {
 		cards = []CustosCard{}
 	}
+	sort.Slice(cards, func(i, j int) bool { return cards[i].ID < cards[j].ID })
 	writeJSONAny(w, http.StatusOK, map[string]any{"cards": cards})
+}
+
+// approvalsViaRegistry returns the bridged ApprovalHub when the door
+// registry is wired or explicitly absent — hub-only deployments still
+// get turn cards on the custody surface (issue #128).
+func (s *Server) approvalsViaRegistry() *ApprovalHub {
+	s.custosMu.RLock()
+	defer s.custosMu.RUnlock()
+	return s.approvals
 }
 
 func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id string) {
 	if !ValidApprovalID(id) {
 		s.error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	reg := s.getCustosRegistry()
-	if reg == nil {
-		// Spec ambiguity resolution: unset registry answers 404 no_such_card.
-		s.error(w, "no_such_card", http.StatusNotFound)
 		return
 	}
 
@@ -180,35 +210,60 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	state, err := reg.Resolve(id, req.Verdict)
-	if err != nil {
+	reg := s.getCustosRegistry()
+	if reg != nil {
+		state, err := reg.Resolve(id, req.Verdict)
 		switch {
+		case err == nil:
+			if state == "" {
+				state = registryAnswerState(req.Verdict)
+			}
+			writeJSONAny(w, http.StatusOK, map[string]string{"state": state})
+			return
 		case errors.Is(err, ErrNoSuchCard) || err.Error() == "no_such_card":
-			s.error(w, "no_such_card", http.StatusNotFound)
-		case errors.Is(err, ErrCardAnswered) || err.Error() == "already_answered":
-			s.error(w, "already_answered", http.StatusConflict)
-		case errors.Is(err, ErrStaleVerdict) || err.Error() == "stale_verdict":
-			s.error(w, "stale_verdict", http.StatusConflict)
-		case errors.Is(err, ErrLocked) || err.Error() == "locked":
-			s.error(w, "locked", http.StatusLocked)
-		case errors.Is(err, ErrIPAskOnly) || err.Error() == "ip_ask_only":
-			s.error(w, "ip_ask_only", http.StatusBadRequest)
-		case errors.Is(err, ErrBadSource) || err.Error() == "bad_source":
-			s.error(w, "bad_source", http.StatusBadRequest)
+			// Fall through to the turn-approval hub (issue #128).
 		default:
-			s.error(w, err.Error(), http.StatusInternalServerError)
+			switch {
+			case errors.Is(err, ErrCardAnswered) || err.Error() == "already_answered":
+				s.error(w, "already_answered", http.StatusConflict)
+			case errors.Is(err, ErrStaleVerdict) || err.Error() == "stale_verdict":
+				s.error(w, "stale_verdict", http.StatusConflict)
+			case errors.Is(err, ErrLocked) || err.Error() == "locked":
+				s.error(w, "locked", http.StatusLocked)
+			case errors.Is(err, ErrIPAskOnly) || err.Error() == "ip_ask_only":
+				s.error(w, "ip_ask_only", http.StatusBadRequest)
+			case errors.Is(err, ErrBadSource) || err.Error() == "bad_source":
+				s.error(w, "bad_source", http.StatusBadRequest)
+			default:
+				s.error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
 		}
-		return
 	}
 
-	if state == "" {
-		if req.Verdict == "deny" {
-			state = "denied"
-		} else {
-			state = "approved"
+	// Turn-approval fallback: ids the door registry never saw (web/MCP
+	// rail approvals). Settles the live turn via the hub, source custos.
+	if hub := s.approvalsViaRegistry(); hub != nil {
+		allow := req.Verdict != "deny"
+		switch hub.ResolveFromVia("", id, allow, "custos", "") {
+		case 200:
+			writeJSONAny(w, http.StatusOK, map[string]string{"state": registryAnswerState(req.Verdict)})
+			return
+		case 410:
+			s.error(w, "already_answered", http.StatusConflict)
+			return
 		}
 	}
-	writeJSONAny(w, http.StatusOK, map[string]string{"state": state})
+
+	// Spec ambiguity resolution: nothing knows this id → 404 no_such_card.
+	s.error(w, "no_such_card", http.StatusNotFound)
+}
+
+func registryAnswerState(verdict string) string {
+	if verdict == "deny" {
+		return "denied"
+	}
+	return "approved"
 }
 
 func (s *Server) custosEventsHandler(w http.ResponseWriter, r *http.Request) {
@@ -227,23 +282,30 @@ func (s *Server) custosEventsHandler(w http.ResponseWriter, r *http.Request) {
 	overflowCh := make(chan struct{})
 	var overflowOnce sync.Once
 
+	push := func(card *CustosCard, gone *CustosGone) {
+		if card == nil && gone == nil {
+			return
+		}
+		ev := CustosEvent{Card: card, Gone: gone}
+		select {
+		case events <- ev:
+		default:
+			// Slow client buffer overflow (cap 64): close stream to trigger reconnect resync.
+			overflowOnce.Do(func() {
+				close(overflowCh)
+			})
+		}
+	}
+
 	reg := s.getCustosRegistry()
 	if reg != nil {
-		cancel := reg.Subscribe(func(card *CustosCard, gone *CustosGone) {
-			if card == nil && gone == nil {
-				return
-			}
-			ev := CustosEvent{Card: card, Gone: gone}
-			select {
-			case events <- ev:
-			default:
-				// Slow client buffer overflow (cap 64): close stream to trigger reconnect resync.
-				overflowOnce.Do(func() {
-					close(overflowCh)
-				})
-			}
-		})
+		cancel := reg.Subscribe(push)
 		defer cancel()
+	}
+	// Issue #128: turn-approval cards ride the same stream.
+	if hub := s.approvalsViaRegistry(); hub != nil {
+		cancelHub := hub.SubscribeCustos(push)
+		defer cancelHub()
 	}
 
 	ticker := time.NewTicker(custosHeartbeatInterval)

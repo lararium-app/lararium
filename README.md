@@ -35,7 +35,7 @@ and reaches you on the screens you already carry.
   snapshot/rollback. The threat model assumes prompt injection *succeeds*; the cage makes
   misbehavior physically expensive below the model.
 
-## Status: public preview (v0.10.1-alpha)
+## Status: beta (v1.0.0-beta1)
 
 > [!WARNING]
 > Lararium is **pre-1.0 alpha**. The file formats are specified and frozen
