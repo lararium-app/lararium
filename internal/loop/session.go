@@ -210,6 +210,11 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 	if err := s.appendEvent("msg", userFields); err != nil {
 		return "", fmt.Errorf("log user msg: %w", err)
 	}
+	// Back-fill the session title from the first user message so API-
+	// created chats are listable by name (titles are display metadata;
+	// a header that already names itself is never touched). A failure
+	// here is cosmetic — the turn must not die over a label.
+	_, _ = penatus.SetTitleIfEmpty(s.Log.Dir(), userText)
 
 	var final string
 	for range maxSteps {

@@ -27,6 +27,7 @@ type SessionSource interface {
 	List() ([]SessionInfo, error)
 	Create(title string, modelPin string) (SessionInfo, error)
 	Events(id string, afterSeq int64, limit int) (events []json.RawMessage, inFlight bool, err error)
+	Delete(id string) error
 }
 
 // TurnHub is the live-turn view the handlers need: the in_flight flag
@@ -96,6 +97,31 @@ func (s *Server) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONAny(w, http.StatusCreated, session)
+}
+
+// deleteSessionHandler removes a side chat (DELETE /v1/sessions/{id}).
+// A turn in flight answers 409 busy; the main session is protected;
+// unknown ids are a plain 404.
+func (s *Server) deleteSessionHandler(w http.ResponseWriter, id string) {
+	if !ValidSessionID(id) {
+		s.error(w, "no such session", http.StatusNotFound)
+		return
+	}
+	if s.Hub != nil && s.Hub.InFlight(id) {
+		s.error(w, "session busy", http.StatusConflict)
+		return
+	}
+	err := s.Sessions.Delete(id)
+	switch {
+	case errors.Is(err, ErrNoSession):
+		s.error(w, "no such session", http.StatusNotFound)
+	case errors.Is(err, ErrProtectedSession):
+		s.error(w, "session is protected", http.StatusForbidden)
+	case err != nil:
+		s.error(w, "delete failed", http.StatusInternalServerError)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (s *Server) eventsHandler(w http.ResponseWriter, r *http.Request) {

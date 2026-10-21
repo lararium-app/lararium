@@ -46,6 +46,51 @@ func NewID() string {
 	return sb.String()
 }
 
+// maxAutoTitle caps back-filled titles (display width, in runes).
+const maxAutoTitle = 64
+
+// SetTitleIfEmpty back-fills the header title of the session stored at
+// sessDir, writing only when the header carries no title at all (a nil
+// field; an explicit "" is the owner's placeholder, kept verbatim).
+// Trims and collapses whitespace in the candidate and caps it at
+// maxAutoTitle runes. Reports whether a write happened; an empty
+// candidate after trimming never writes.
+func SetTitleIfEmpty(sessDir, title string) (bool, error) {
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" {
+		return false, nil
+	}
+	if r := []rune(title); len(r) > maxAutoTitle {
+		title = string(r[:maxAutoTitle])
+	}
+
+	sessionPath := filepath.Join(sessDir, "session.json")
+	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return false, err
+	}
+	var header SessionHeader
+	if err := json.Unmarshal(data, &header); err != nil {
+		return false, fmt.Errorf("parse session header: %w", err)
+	}
+	if header.Title != nil {
+		return false, nil
+	}
+	header.Title = &title
+	out, err := json.MarshalIndent(header, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := sessionPath + ".tmp"
+	if err := os.WriteFile(tmpPath, out, 0o600); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, sessionPath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // SessionHeader represents the session.json file per spec §2.
 type SessionHeader struct {
 	Penatus  int     `json:"penatus"`

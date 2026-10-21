@@ -686,3 +686,90 @@ func TestCreateSessionSide(t *testing.T) {
 
 	_ = log // log is valid
 }
+
+func TestSetTitleIfEmpty(t *testing.T) {
+	root := t.TempDir()
+	log, err := CreateSession(root, "", "side")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Back-fill from messy first text: trims and collapses whitespace.
+	wrote, err := SetTitleIfEmpty(log.Dir(), "  hello\n\tworld  ")
+	if err != nil || !wrote {
+		t.Fatalf("first back-fill: wrote=%v err=%v", wrote, err)
+	}
+	h, err := readHeaderForTest(t, log.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Title == nil || *h.Title != "hello world" {
+		t.Fatalf("title = %v, want \"hello world\"", h.Title)
+	}
+
+	// Second call never overwrites.
+	wrote, err = SetTitleIfEmpty(log.Dir(), "second question")
+	if err != nil || wrote {
+		t.Fatalf("second back-fill must no-op: wrote=%v err=%v", wrote, err)
+	}
+
+	// Empty candidate never writes.
+	if wrote, err := SetTitleIfEmpty(log.Dir(), "   \n "); wrote || err != nil {
+		t.Fatalf("empty candidate must no-op: wrote=%v err=%v", wrote, err)
+	}
+}
+
+func TestSetTitleIfEmptyKeepsExplicitEmpty(t *testing.T) {
+	root := t.TempDir()
+	log, err := CreateSession(root, "", "side")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Owner explicitly set an empty title (placeholder).
+	empty := ""
+	h, err := readHeaderForTest(t, log.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Title = &empty
+	data, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(log.Dir()+"/session.json", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := SetTitleIfEmpty(log.Dir(), "back-filled"); wrote || err != nil {
+		t.Fatalf("explicit empty title must be kept: wrote=%v err=%v", wrote, err)
+	}
+}
+
+func TestSetTitleIfEmptyTruncates(t *testing.T) {
+	root := t.TempDir()
+	log, err := CreateSession(root, "", "side")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	long := strings.Repeat("é", 200)
+	if _, err := SetTitleIfEmpty(log.Dir(), long); err != nil {
+		t.Fatal(err)
+	}
+	h, err := readHeaderForTest(t, log.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Title == nil || len([]rune(*h.Title)) != 64 {
+		t.Fatalf("title rune len = %d, want 64", len([]rune(*h.Title)))
+	}
+}
+
+func readHeaderForTest(t *testing.T, dir string) (SessionHeader, error) {
+	t.Helper()
+	data, err := os.ReadFile(dir + "/session.json")
+	if err != nil {
+		return SessionHeader{}, err
+	}
+	var h SessionHeader
+	err = json.Unmarshal(data, &h)
+	return h, err
+}

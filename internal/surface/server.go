@@ -100,6 +100,8 @@ func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case rest == "":
 		s.error(w, "not found", http.StatusNotFound)
+	case !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
+		s.deleteSessionHandler(w, rest)
 	case strings.HasSuffix(rest, "/events") && r.Method == http.MethodGet:
 		s.eventsHandler(w, r)
 	case strings.HasSuffix(rest, "/cancel") && r.Method == http.MethodPost:

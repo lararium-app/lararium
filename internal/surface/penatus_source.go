@@ -103,6 +103,35 @@ func (p *PenatusSource) List() ([]SessionInfo, error) {
 	return sessions, nil
 }
 
+// ErrProtectedSession marks a session that outlives client deletion (the
+// main session); handlers map it to 403, never silently succeed.
+var ErrProtectedSession = errors.New("session is protected")
+
+// Delete removes a side session directory from disk. main is the
+// hearth's own lifetime session and always answers
+// ErrProtectedSession; an unknown id is ErrNoSession. Callers must
+// reject live turns before deleting (409 lives in the handler).
+func (p *PenatusSource) Delete(id string) error {
+	if !ValidSessionID(id) {
+		return ErrNoSession
+	}
+	// ValidSessionID whitelists ids (^s_ + 26 safe chars), so the joins
+	// below cannot escape the sessions root.
+	dir := filepath.Join(p.root, "sessions", id)                 // #nosec G703
+	data, err := os.ReadFile(filepath.Join(dir, "session.json")) // #nosec G703
+	if err != nil {
+		return ErrNoSession
+	}
+	var header penatus.SessionHeader
+	if err := json.Unmarshal(data, &header); err != nil {
+		return ErrNoSession
+	}
+	if header.Kind != "side" {
+		return ErrProtectedSession
+	}
+	return os.RemoveAll(dir) // #nosec G703
+}
+
 // Create makes a side chat branched from main: header with parent,
 // optional title/model_pin, and the branch event (PENATUS §2).
 func (p *PenatusSource) Create(title string, modelPin string) (SessionInfo, error) {
