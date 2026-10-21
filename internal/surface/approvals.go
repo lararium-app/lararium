@@ -63,7 +63,6 @@ type approval struct {
 	expiresAt   time.Time  // issue #128: registry-card age/expiry display
 }
 
-
 // StaleVerdictHook is invoked when an Allow verdict arrives for an already settled/dead approval.
 type StaleVerdictHook func(id, sessionID, cred, cell, reason string)
 
@@ -172,7 +171,6 @@ func (ap *approval) turnCard(now time.Time) CustosCard {
 	}
 	return c
 }
-
 
 // NewApprovalHub builds the hub; timeout is serve.approval_timeout —
 // a pending approval auto-denies (reason timed_out) once it elapses.
