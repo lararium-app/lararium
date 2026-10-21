@@ -7,18 +7,39 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/custosdoor"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/router"
 )
 
+// PolicyDecider evaluates policy verdicts for connector tool calls (issue #129).
+type PolicyDecider interface {
+	Decide(connector, tool string) string
+}
+
+// MCPCaller executes an MCP tool call (issue #129 seam).
+type MCPCaller interface {
+	Call(ctx context.Context, connector, tool string, args json.RawMessage) (json.RawMessage, error)
+}
+
+// MCPToolClient provides tool listing and execution (issue #129 seam).
+type MCPToolClient interface {
+	MCPCaller
+	ListTools() []custosdoor.ToolInfo
+}
+
 // mcpToolSource builds the dynamic tool provider for the web-chat Hub
 // from the custody door client's rail state (issue #83): tools of every
 // READY connector, pulled fresh at each turn start. Execution rides
-// MCP-CALL over doors.sock (MCP-SPEC §9, amendment A3), so approval,
-// policy, and scrubbing all stay inside custosd — hearthd only ferries
-// the frame. Tools stay untrusted: every call asks the approver.
-func mcpToolSource(client *custosdoor.Client) func() []loop.Tool {
+// MCP-CALL over doors.sock (MCP-SPEC §9, amendment A3). Gated by the
+// policy engine (issue #129): auto silences cards, deny blocks execution,
+// ask requires human approval.
+func mcpToolSource(client MCPToolClient, deciders ...PolicyDecider) func() []loop.Tool {
+	var decider PolicyDecider
+	if len(deciders) > 0 {
+		decider = deciders[0]
+	}
 	return func() []loop.Tool {
 		infos := client.ListTools()
 		if len(infos) == 0 {
@@ -27,7 +48,7 @@ func mcpToolSource(client *custosdoor.Client) func() []loop.Tool {
 		out := make([]loop.Tool, 0, len(infos))
 		seen := make(map[string]bool, len(infos))
 		for _, ti := range infos {
-			lt := mcpLoopTool(client, ti)
+			lt := mcpLoopTool(client, ti, decider)
 			// Two connectors exposing tools that sanitize to the
 			// same model-facing name: first wins, second skipped
 			// (a duplicate spec name would poison the whole list).
@@ -66,21 +87,60 @@ func mcpToolName(connector, tool string) string {
 	return s
 }
 
-// mcpLoopTool adapts one rail tool to the loop registry.
-func mcpLoopTool(client *custosdoor.Client, ti custosdoor.ToolInfo) loop.Tool {
+// mcpLoopTool adapts one rail tool to the loop registry with policy gating (issue #129).
+func mcpLoopTool(client MCPCaller, ti custosdoor.ToolInfo, deciders ...PolicyDecider) loop.Tool {
 	schema := string(ti.InputSchema)
 	if schema == "" || schema == "null" {
 		schema = `{"type":"object"}`
 	}
 	connector, tool := ti.Connector, ti.Name
+
+	var decider PolicyDecider
+	if len(deciders) > 0 {
+		decider = deciders[0]
+	}
+
+	verdict := custos.VerdictAsk
+	if decider != nil {
+		verdict = decider.Decide(connector, tool)
+	}
+
+	trusted := false
+	switch verdict {
+	case custos.VerdictAuto:
+		trusted = true
+	case custos.VerdictDeny:
+		// Deny must return an error result to the model without presenting an approval
+		// card (issue #129); setting Trusted: true ensures Gate passes execution to Run,
+		// which returns the policy rejection error.
+		trusted = true
+	default:
+		// Ask or no matching rule -> untrusted: routes to human approver (fail-closed default).
+		trusted = false
+	}
+
 	return loop.Tool{
 		Spec: router.ToolSpec{
 			Name:             mcpToolName(connector, tool),
 			Description:      ti.Title,
 			ParamsJSONSchema: schema,
 		},
-		Trusted: false,
+		Trusted: trusted,
 		Run: func(ctx context.Context, argsJSON string) (string, error) {
+			// Re-decide at execution time (issue #129): deny always
+			// blocks; a trusted tool whose policy flipped to ask
+			// mid-turn must NOT execute silently either — a card was
+			// never raised for the new state, so fail closed.
+			if decider != nil {
+				curVerdict := decider.Decide(connector, tool)
+				if curVerdict == custos.VerdictDeny {
+					return "", fmt.Errorf("mcp %s/%s: blocked by policy", connector, tool)
+				}
+				if curVerdict == custos.VerdictAsk && trusted {
+					return "", fmt.Errorf("mcp %s/%s: policy changed to ask; retry the turn", connector, tool)
+				}
+			}
+
 			if argsJSON == "" {
 				argsJSON = "{}"
 			}
