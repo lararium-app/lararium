@@ -1,10 +1,9 @@
 # MCP-SPEC — the connector rail: external tool servers as Custos connectors
 
-> Status: **FROZEN (v1.2) + PO SIGN-OFF (2026-10-15, chat record)** —
-> nine adversarial review rounds, dual lane (AGY hostile + fresh-context
-> delegate), final round zero blockers both lanes (§14 decisions PO-set,
-> below). Amendments A1–A8 apply to CUSTOS-SPEC in a follow-up docs PR
-> before the first implementation brief lands.
+> Status: **FROZEN (v1.2), approved 2026-10-15** after nine independent
+> review passes (final pass: zero blocking findings). Design decisions:
+> §14. Amendments A1–A8 are integrated into CUSTOS-SPEC as its
+> amendment v12.
 > Companion targets: CUSTOS-SPEC (amendments A1–A8 below), SURFACE-SPEC (none), ARCHITECTURE §"MCP is the connector standard" (already ratified; this spec implements it).
 > Protocol baseline: MCP `2026-07-28` revision, negotiating down per server to `2025-03-26`+.
 
@@ -34,7 +33,7 @@ MCP directly.
   `Mcp-Session-Id`; per-request client metadata in `_meta`; cacheable list
   results). Negotiation with legacy revisions (`2025-11-25`, `2025-06-18`,
   `2025-03-26`) — including their handshake machinery — is delegated to the
-  vendored SDK and invisible above the transport layer.
+  pinned SDK dependency and invisible above the transport layer.
 - Server-initiated interaction (MRTR `input_required`, legacy
   elicitation/create): **rejected** in v1 (§8.4); card-backed elicitation is
   a reserved future amendment.
@@ -221,7 +220,7 @@ each owns its override explicitly):
   `names=["blocks_collapsed"|"text_truncated"|"structuredContent_dropped"]`;
   `mcp_always_revoked` → `tool` + `cred`. No new audit fields exist.
 
-Stated count: eight. Reviewers: check attribution, not just count.
+Stated count: eight.
 
 ## 2. Principles (load-bearing)
 
@@ -243,7 +242,7 @@ Stated count: eight. Reviewers: check attribution, not just count.
    (tier 1). Default is `ask`, always, for a never-seen tool.
 4. **Cells stay protocol-illiterate.** MCP exists only inside custosd; the
    worker lane changes only by A1.
-5. **Borrow & pin.** Vendored, version-pinned MCP SDK (§10), no runtime
+5. **Borrow & pin.** Go-module-pinned MCP SDK (§10), no runtime
    fetching, no CGo requirement.
 
 ## 3. Config (amendment A4)
@@ -258,7 +257,7 @@ custos:
         transport: stdio            # stdio | http
         # --- stdio only:
         command: /usr/local/bin/mcp-filesystem
-        args: ["--root", "/srv/books"]
+        args: ["--root", "/srv/data"]
         env:                        # KEY: ${vault:<cred-id>} | ${env:NAME} | literal
           API_KEY: ${vault:fs-key}  #   vault form is doctrine; literals audited
         # --- http only:
@@ -454,7 +453,7 @@ is what step 2's "non-text block" quantifies over. The worker result is
   1. serialize; if ≤ budget, done;
   2. replace the largest remaining non-text `content` block with the text block `{"type": "text", "text": "[content omitted by custos]"}` — only if that strictly shrinks the whole;
   3. truncate the largest `text` block body, appending the inline suffix `" [truncated by custos]"` (budgeting for the suffix itself) — only if strictly shrinkable; repeat 2–3 largest-first;
-  4. **no-progress floor:** drop `structuredContent` to `null` if present, and replace the entire `content` array with one typed text block `{"type": "text", "text": "[content collapsed by custos]"}`. This catches every deadlock the round-4/5 reviews found: framing-only overflow (thousands of `{type,text:""}` blocks), a `structuredContent`-only breach, and (with closed parsing above) extension-field payloads such as a multi-megabyte `_meta` — nothing outside the declared struct survives parsing, so the floor's serialization is a true upper bound;
+  4. **no-progress floor:** drop `structuredContent` to `null` if present, and replace the entire `content` array with one typed text block `{"type": "text", "text": "[content collapsed by custos]"}`. This catches every known deadlock case: framing-only overflow (thousands of `{type,text:""}` blocks), a `structuredContent`-only breach, and (with closed parsing above) extension-field payloads such as a multi-megabyte `_meta` — nothing outside the declared struct survives parsing, so the floor's serialization is a true upper bound;
   5. re-serialize and re-measure after each action. Step 4's state is
      one collapsed text block with `structuredContent: null` — a fixed,
      tiny serialization well under budget — so at most one further
@@ -620,7 +619,7 @@ tool's behalf, Gmail-style:
   new snapshot, so a hostile refresh can flip an `auto` tool away from a
   grant but never silently keep one.
 - **Trust posture (stated plainly):** the stdio child runs at custosd's
-  uid — no v1 sandboxing. Installing a server binary is a root-adjacent PO
+  uid — no v1 sandboxing. Installing a server binary is a root-adjacent operator
   act, the same trust class as installing an npm/pip package on the host.
   Env composition, PATH rules, and scrubbing narrow what leaks *through
   the custody envelope*; they do not confine a hostile binary running as
@@ -699,7 +698,7 @@ triple.
   rule on `<name>/<tool>` (frozen §6.5 shape). A catalog refresh that
   changes that tool's fingerprint **MUST revoke** the auto rule (audit
   `mcp_always_revoked`); sibling tools unaffected. A revoked rule is gone,
-  not demoted — the PO re-approves deliberately against the new shape.
+  not demoted — the operator re-approves deliberately against the new shape.
 
 ### 8.3 Error mapping (frozen §5.1a templates + the one A2 constant)
 | Failure | code | detail |
@@ -777,9 +776,11 @@ covers changes to it.
   residue of MIT-licensed contributions under the project's in-progress
   relicensing (LICENSE notice checked at pin time — both are compatible
   with the AGPL-3.0-only + dual-license posture, as with any Apache-2.0
-  Go dependency). Vendored; exact version pinned at transcription with
+  Go dependency). Module-pinned (go.mod); exact version fixed at
+  transcription with
   a `go build` + `-race` proof **and a recorded copy of the pinned
-  LICENSE header** in the first brief. Fallback if migration friction:
+  LICENSE header** alongside the pin
+  (`third_party/licenses/modelcontextprotocol-go-sdk.LICENSE`). Fallback if migration friction:
   `mark3labs/mcp-go` (MIT), same pin + license-record rule.
 - Frozen constants this spec cites (verified in tree):
   `workerMaxLineBytes = 1 << 20` (internal/custos/worker.go),
@@ -790,8 +791,7 @@ covers changes to it.
   independent of exec — and the worker connection deadline is
   `workerConnDeadline = hold + exec + 30s margin` (420 s at defaults);
   any §7 budget test anchors on `workerConnDeadline`, not on any sum of
-  the two defaults alone. (An interim v1.1 pointer claiming 330 s was
-  `5s + 60s` and denying the Config member was wrong and is retracted.)
+  the two defaults alone.
   frozen
   detail-template block (internal/custos/worker.go §5.1a const set).
 
@@ -968,8 +968,8 @@ covers changes to it.
   I3→V3+V16l, I4→V6,
   I5→V10, I6→V16c+V16k+V16m, I7→V16d, I8→V2+V16e, I9→V16f, I10→V16g,
   I11→V10, I12→V16h, I13→V16i.
-- Live acceptance (non-CI): the official filesystem MCP server on the dev
-  box; one remote Streamable-HTTP demo server; cards rendered from the
+- Live acceptance (non-CI): the official filesystem MCP server on a
+  development host; one remote Streamable-HTTP demo server; cards rendered from the
   web UI; kill -9 churn soak.
 
 ## 13. Roadmap (non-normative)
@@ -983,7 +983,7 @@ input, replacing the v1 non-override R3);
 prompts-as-persona surface; MCP-server-mode export of Lararium's own
 tools; connector install flow (ARCHITECTURE's builder).
 
-## 14. PO decisions (settled at G1, 2026-10-15)
+## 14. Design decisions (settled 2026-10-15)
 
 1. **Over-cap results: truncate + marker.** Refusal rejected (would need
    a new frozen code).
@@ -992,21 +992,21 @@ tools; connector install flow (ARCHITECTURE's builder).
    rule, never a self-report.
 3. **Literal env values: accept + audit-warn** (§3). Hard-ban only once
    vault UX covers CLI-app friction.
-4. **One v1 contract covering stdio + http.** First implementation
-   brief lands stdio; second lands http on the same rail. The contract
+4. **One v1 contract covering stdio + http.** Both transports are
+   implemented on the same rail (stdio first, then http). The contract
    never forks.
 
 ## Changelog
 
-- v1.2 FROZEN: G1 signed off by the PO 2026-10-15 (chat record). §14
-  recorded as PO decisions (recommendations adopted as-is). Round-9
-  delegated lane returned zero blockers and independently verified the
-  AGY-driven v1.2 fixes — review closed.
-- v1.2: round-9 AGY-lane absorption (2 blockers + 2 nits):
+- v1.2 FROZEN: approved 2026-10-15. §14 records the design decisions
+  (recommendations adopted as-is). The final review pass returned zero
+  blocking findings and independently verified the v1.2 fixes — review
+  closed.
+- v1.2: review fixes (2 blocking + 2 minor):
   **§10 retraction** — the v1.1 entry's §10 pointer (and the v1.1 claim
   `DefaultAskHoldTimeout = 5s + DefaultWorkerExecTimeout`, which that
-  entry repeated) was itself wrong: absorbed from a delegated-lane nit
-  without grepping the one cited line. Verified against config.go /
+  entry repeated) was itself wrong: absorbed from a review note
+  without re-checking the one cited line. Verified against config.go /
   worker.go: `DefaultAskHoldTimeout = 330s` (independent of exec),
   `WorkerExecTimeout` **is** a `Config` member (defaulted
   `<= 0 → 60s`), and the §7 budget anchor is
@@ -1016,12 +1016,11 @@ tools; connector install flow (ARCHITECTURE's builder).
   field); §4.2's threat enumeration rewritten honestly: title never
   reaches a card (§5); sanitization protects line-oriented frames, TSV
   columns, and the model-facing `MCP-TOOLS` catalog, not card payloads.
-  V9's stale "with the A2(i) addition" rephrased per R8-1 (declares,
-  does not extend). Typo scrub. Lesson recorded in the review loop:
-  delegated-lane nits are claims, not facts — §10-class code citations
-  get grepped before absorption.
-- v1.1: round-8 absorption (both lanes; AGY 4 blockers/3 nits + delegate
-  2 blockers/3 nits, one overlap): **audit-vocabulary honesty** — A2(i)
+  V9's stale "with the A2(i) addition" rephrased (declares,
+  does not extend). Typo scrub. §10-class code citations are now
+  verified against source before being recorded.
+- v1.1: review fixes from two independent reviews (6 blocking, 6
+  minor, one overlap): **audit-vocabulary honesty** — A2(i)
   no longer claims the §8.1 reason set "gains" `upstream`: frozen Gmail
   already records it (gmail.go `upstreamStatusError`→`auditDenied(we.code)`);
   `upstream` and `denied` are both **declared** (erratum-style) as legal
@@ -1046,9 +1045,9 @@ tools; connector install flow (ARCHITECTURE's builder).
   `DefaultWorkerExecTimeout` is the config-load defaults block, coupled
   `DefaultAskHoldTimeout = 5s + 60s` (worker.go) — anchor for §7 budget
   tests. V16m/V16n joined the invariant map.
-- v1.0: round-7 absorption (AGY convergence pass on v0.8; 7 blockers —
-  1 pre-fixed in v0.9 (op:list marker reserve), 6 fixed here — plus 3
-  nits): Execute-entry kill audits under the **frozen reason `denied`**
+- v1.0: review fixes (convergence review of v0.8; 7 blocking —
+  1 already fixed in v0.9 (op:list marker reserve), 6 fixed here — plus 3
+  minor): Execute-entry kill audits under the **frozen reason `denied`**
   (worker.go records `we.code`; `credential_unavailable` is a
   MCP-STATUS state-reason only, never an audit reason — §6/§8.1
   corrected, detail string is the identifying signal); base64
@@ -1066,9 +1065,9 @@ tools; connector install flow (ARCHITECTURE's builder).
   to the A6 fingerprint set + I5; A1's cell-render obligation scoped
   honestly (design obligation, testable in first-party code, not
   enforceable over a socket); step-4 collapse block typed.
-- v0.9: round-6 delegated-lane absorption (late-arriving fresh-eyes pass
-  on v0.6; 4 blockers — 3 already shipped as v0.8 R6-2/R6-3/R6-5 — 2 new
-  blockers + 3 new nits fixed here) — §4.5 closed parse and §8.4 MRTR
+- v0.9: review fixes (late independent review of v0.6; most of its
+  blocking findings had already shipped in v0.8 — 2 new blocking + 3
+  new minor fixed here) — §4.5 closed parse and §8.4 MRTR
   reconciled: `resultType` is the fourth declared member (inspected at
   parse, never forwarded; previously closed parsing would have dropped
   the discriminator before §8.4 could see it); **scrub-before-truncate
@@ -1085,8 +1084,8 @@ tools; connector install flow (ARCHITECTURE's builder).
   §9's stale "`unexpected response` branch" citation removed (RoundTrip
   passes unknown lines through verbatim — frame contract, not error
   branch).
-- v0.8: round-6 absorption (AGY convergence pass on v0.6; 6 blockers,
-  4 nits, all confirmed against v0.7 and fixed) — §3 loader rejection
+- v0.8: review fixes (convergence review of v0.6; 6 blocking,
+  4 minor, all confirmed against v0.7 and fixed) — §3 loader rejection
   list now includes `reserved_name` (the `custos` reservation lived only
   in §4.5's prose); **§7 Start gate**: no spawn/tools/list before the
   first unlock (sealed-vault `${vault:}` resolution can no longer
@@ -1105,8 +1104,8 @@ tools; connector install flow (ARCHITECTURE's builder).
   replacement is a typed text block; A3 CLI timeout phrasing matches
   `NewCtlClient`; V15 asserts frame shape, not a nonexistent
   `unexpected response` branch.
-- v0.7: round-5 delegated-lane absorption (late second opinion on v0.5;
-  the AGY-lane items of that round shipped as v0.6) — `mcp_refresh`
+- v0.7: review fixes (second independent review of v0.5; the
+  first review's items shipped as v0.6) — `mcp_refresh`
   audit kind + catalog-mutation trust posture declared (§6: ctl.token =
   operator trust; refresh audited, catalogs still untrusted via A6);
   base64 smuggling closed past alignment checks with a decode-or-replace
@@ -1122,7 +1121,7 @@ tools; connector install flow (ARCHITECTURE's builder).
   config-identity (vault-independent); §10 SDK license corrected to
   **Apache-2.0 with MIT residue** (LICENSE file verified upstream) and
   the pin rule now records the license header.
-- v0.6: round-5 absorption — tool names **normalized into the frozen
+- v0.6: review fixes — tool names **normalized into the frozen
   `keyNameRe` grammar** (lowercase/map/prefix/truncate + collision
   suffixes, snapshot keeps the canonical→raw wire mapping; camelCase
   servers no longer poison `always` rules with `ErrInvalidPattern`; drop
@@ -1139,7 +1138,7 @@ tools; connector install flow (ARCHITECTURE's builder).
   as a connector name; async-refresh row myth deleted (rows are pure
   triples; state lives in `MCP-STATUS`); audit payload and flag-column
   field orders pinned; §6 notification prose and §7 cross-refs fixed.
-- v0.5: round-4 absorption — ctl verbs moved to the frozen **single-line
+- v0.5: review fixes — ctl verbs moved to the frozen **single-line
   `OK <json>` socket frame** (raw TSV headers would die in
   `CtlClient.RoundTrip`'s `unexpected response` branch; line-oriented
   governs CLI stdout only); A7 identity-slot ensuring moved from boot
@@ -1163,7 +1162,7 @@ tools; connector install flow (ARCHITECTURE's builder).
   (frozen `RemoveRule` hardcodes `policy_written`); A8 payloads carry
   connector attribution and the per-call-audit contradiction resolved;
   A3 extended to the CLI-side per-verb timeout; `ToolInfo` declared.
-- v0.4: round-3 absorption — **A7 rewritten as the identity slot**
+- v0.4: review fixes — **A7 rewritten as the identity slot**
   (`Credential()` returns the connector name; custosd ensures an
   empty-valued vault slot at load): the earlier `none`-skip draft
   decoupled the §6.2 policy namespace from the credential dimension
@@ -1178,12 +1177,12 @@ tools; connector install flow (ARCHITECTURE's builder).
   MCP-REFRESH; A8 payloads mapped onto frozen `AuditRecord` fields;
   `Host()` defined per transport; Principle 1 escaping claim corrected to
   the surface's own path; guest-facing MUST NOT down-scoped.
-- v0.3.1: independent round-1 reviewer's late findings — two still live:
+- v0.3.1: late findings from the first independent review — two still live:
   `denied: credential unavailable` was mis-labeled frozen (§5.1a's only
   denied template is `denied: approval`) → A2(ii) owns it; scrub scope
   extended from text blocks to all result string leaves + three-alignment
   base64 needle check on blobs. Others already superseded by v0.2/v0.3.
-- v0.3: round-2 absorption — credential-free connectors amended in (A7);
+- v0.3: review fixes — credential-free connectors amended in (A7);
   audit kinds amended in (A8) and the duplicate per-call rail audit
   removed; A2(ii) tombstone makes scrub-retention implementable; A6 MUST +
   JCS fingerprint incl. description; A3 re-attributed to §3+§11 with
@@ -1192,7 +1191,7 @@ tools; connector install flow (ARCHITECTURE's builder).
   (frozen engine is no-I/O — roadmap candidate); I9/I10 split stdio/http;
   connector dirs out of the C2 root; SSE claim made honestly
   un-probeable; stdio same-uid trust posture stated plainly.
-- v0.2: first-review absorption — A5/A6/A7 made explicit amendments
+- v0.2: first review fixes — A5/A6/A7 made explicit amendments
   (review-field prefix, always-revoke, auto-downgrade); `allow` renamed to
   frozen `auto`; review line rebuilt on the frozen §6.4 declared-fields
   shape; catalog snapshots + atomic swap (race fix); serialized-result cap

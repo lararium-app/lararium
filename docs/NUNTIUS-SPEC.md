@@ -1,9 +1,9 @@
 # NUNTIUS-SPEC — the Telegram channel bridge
 
-Status: **DRAFT v8 — G1 review passed (round 8: zero blocking).** Proposes
-the first channel bridge (nuntius): a Telegram bot that reaches the same
-agent, sessions, and approval hub as the web chat. Nothing here is built
-yet; every behavior statement is a requirement, not an observation.
+Status: **APPROVED (v1.0.0-beta1).** Specifies the first channel bridge
+(nuntius): a Telegram bot that reaches the same agent, sessions, and
+approval hub as the web chat. Every behavior statement is a requirement,
+not an observation.
 Companion specs: SURFACE-SPEC (the HTTP/SSE door this one parallels; this
 spec carries seven explicit amendments, §7.4 A1–A7 — six to
 SURFACE-SPEC (A1, A2, A4–A7) and one to PENATUS-SPEC (A3)),
@@ -381,9 +381,8 @@ mutex-guarded, unchanged.
   question "which surface caused the denial" has a truthful answer:
   neither did.
 
-### 7.4 Amendments to companion specs (carried here; all approved at G1
-pass; SURFACE-SPEC's changelog must cite A1, A2, A4–A7 and
-PENATUS-SPEC's changelog must cite A3)
+### 7.4 Amendments to companion specs (carried here; ratified;
+SURFACE-SPEC cites A1, A2, A4–A7 and PENATUS-SPEC cites A3)
 
 - **A1 — §5 presence rule** generalizes from "SSE listener" to "at least
   one live approver channel (SSE listener or paired nuntius bridge)".
@@ -649,7 +648,7 @@ V17. Abort rendering: turn killed by `turn_timeout` (short knob) → final
 - E2E encryption, secret chats, or any claim that Telegram is private.
   It isn't. §0/P3 say so twice on purpose.
 
-## 12. Resolved at G1 round 1 (was: open questions)
+## 12. Resolved design decisions
 
 Q1. In-process bridge — kept in-process (§2); blast radius argument
     tightened: nuntius holds no privilege the web surface lacks.
@@ -666,115 +665,82 @@ Q4. Timer attribution — resolved: chosen at creation from the live
 
 ## Changelog
 
-**v8.** G1 round 8 applied (0 blocking, 1 minor): `/pair` replay routing
-unified with §3 — once paired, a replayed redacted `/pair` answers
-`already paired`/non-owner refusal without evaluating the code; only
-the still-unpaired replay answers `invalid code`. **G1 review passed:
-round 8 returned ZERO BLOCKING.**
+**v8.** Specification refinement: `/pair` replay routing unified with §3 —
+once paired, a replayed redacted `/pair` answers `already paired`/non-owner
+refusal without evaluating the code; only the still-unpaired replay
+answers `invalid code`.
 
-**v7.** G1 round 7 applied (1 blocking, 2 minor): inbox payloads are
-sanitized at append — a `/pair <code>` lands as `/pair <redacted>`, so
-plaintext pairing codes never touch `inbox.jsonl` (N3/V2 held; the
-append-vs-redeem crash window fails closed to `invalid code` and a
-re-send); A5's cancel transition carries the internal cause
-`denied:cancelled` so fan-out can render §7.5's distinct card edit
-without inventing an audit reason; tombstone `session_id` is `null`
-for sessionless terminal outcomes (unpaired commands, gate drops,
-non-owner refusals).
+**v7.** Security and audit refinements: inbox payloads are sanitized at
+append — a `/pair <code>` lands as `/pair <redacted>`, so plaintext
+pairing codes never touch `inbox.jsonl` (N3/V2 held; the append-vs-redeem
+crash window fails closed to `invalid code` and a re-send); A5's cancel
+transition carries the internal cause `denied:cancelled` so fan-out can
+render §7.5's distinct card edit without inventing an audit reason;
+tombstone `session_id` is `null` for sessionless terminal outcomes
+(unpaired commands, gate drops, non-owner refusals).
 
-**v6.** G1 round 6 applied (2 blocking, 3 minor): the undeliverable-card
-path gets its mechanism — amendment A7 adds `MarkUndeliverable` to the
-hub (sole channel → immediate `denied:undeliverable`; dual channel →
-per-approval `card_dead` flag), A1 refined so a `card_dead` bridge is
-not a live approver **for that approval**, closing the
-SSE-drops-after-card-failure freeze without pretending reload recovery
-exists (V13 citation was wrong — approval_request is stream-only, no
+**v6.** Undeliverable card and session routing refinements: the
+undeliverable-card path gets its mechanism — amendment A7 adds
+`MarkUndeliverable` to the hub (sole channel → immediate
+`denied:undeliverable`; dual channel → per-approval `card_dead` flag),
+A1 refined so a `card_dead` bridge is not a live approver **for that
+approval**, closing the SSE-drops-after-card-failure freeze without
+pretending reload recovery exists (approval_request is stream-only, no
 list endpoint in v1; safety comes from presence accounting, V8 gains
-case (c)); amendment scope corrected: seven amendments, six to
-SURFACE-SPEC, A3 to PENATUS-SPEC, changelog duties split accordingly;
-`/sessions <ref>` success reply defined (`active <id8> <title>`);
-inbox records no longer bind `session_id` at append time (a batch
-containing a switch-then-message would misroute replays) — routing is
-resolved at execution, replay follows inbox order, tombstones record
-the session used, and `active_session` persists at switch time.
+case (c)); amendment scope clarified: seven amendments, six to
+SURFACE-SPEC, A3 to PENATUS-SPEC; `/sessions <ref>` success reply defined
+(`active <id8> <title>`); inbox records no longer bind `session_id` at
+append time (routing resolved at execution, replay follows inbox order,
+tombstones record session used, `active_session` persists at switch time).
 
-**v5.** G1 round 5 applied (4 blocking, 3 minor): offset persistence
-gated on "durably in the inbox (fresh or deduped)", not on a new append
-— a skipped duplicate can no longer strand the watermark in a redelivery
-loop; §7.6's SSE-drop claim corrected to what the hub can actually do
-(bridge keeps it pending, web reload lists it, timer denies at worst —
-no invented disconnect signal); amendment A6 added so the
-channel-selected timeout is a listed amendment, not a silent override of
-frozen SURFACE-SPEC §5; V7's cancel-path toast unified to
-`already resolved` (approval is known-and-terminal in the live hub;
-`not pending` is reserved for unknown ids); A5's SURFACE-SPEC ask
-scoped to the hub side (frozen spec's suite has no Telegram mocks);
-shutdown finalizes drains by the terminal-event rule (completed drains
-never read as aborted); §5 `/cancel` row carries the queued-reply
-variant.
+**v5.** Reliability refinements: offset persistence gated on "durably
+in the inbox (fresh or deduped)", not on a new append — a skipped
+duplicate can no longer strand the watermark in a redelivery loop;
+§7.6's SSE-drop behavior aligned with hub capabilities; amendment A6
+added so the channel-selected timeout is a listed amendment to
+SURFACE-SPEC §5; V7's cancel-path toast unified to `already resolved`;
+A5's SURFACE-SPEC scope focused on the hub side; shutdown finalizes
+drains by the terminal-event rule; §5 `/cancel` row carries the
+queued-reply variant.
 
-**v4.** G1 round 4 applied (5 blocking, 4 minor): V7 audit assertions
-rewritten to what the frozen schema can express (human resolutions are
-`reason:"ok"`; a cancelled turn commits no tool_result — the absence IS
-the record; A5 no longer invents a `cancelled` reason); V11(d) fixed —
-a pre-append crash never reached the inbox, so redelivery processes as
-new (inbox dedupe covers the post-append window only); callback replay
-across restart toasts `not pending` (hub state never crosses restart),
-in-process replays toast `already resolved`; pairing reply gap becomes
-the `pair_reply_gap` knob so V2's mute assertions are unambiguous;
-successful pairing reply text defined; abandoned-card + SSE-drop
-resolves `denied:disconnected` (no freeze); amendment count in §0
-corrected to five; A3/N6 state `update_id` rides both msg events of a
-nuntius turn.
+**v4.** Audit and recovery alignments: V7 audit assertions aligned with
+frozen schema (human resolutions are `reason:"ok"`; cancelled turn
+commits no tool_result); V11(d) clarified for pre-append crash handling;
+callback replay across restart toasts `not pending`, in-process replays
+toast `already resolved`; pairing reply gap exposed as `pair_reply_gap`
+knob; successful pairing reply text defined; abandoned-card + SSE-drop
+resolves `denied:disconnected`; A3/N6 state `update_id` rides both msg
+events of a nuntius turn.
 
-**v3.** G1 round 3 applied (5 blocking, 5 minor): replay dedupe keys on
-the committed `msg` event carrying `update_id` (a crash mid-turn leaves
-no committed msg, so the turn re-runs exactly once — the previous
-user-event key would have dropped crashed turns); inbox records bind
-`session_id` at append time (no cross-session replay misroute); the
-Telegram watermark model corrected (offset acks on the next poll; a
-pre-append crash redelivers and inbox dedupe absorbs it — V11 rewritten,
-lossless in every window); amendment A5: cancelling a turn resolves its
-pending approvals `denied` reason `cancelled` (no orphan cards
-authorizing dead turns; V7 gains the cancel case); group-drop vs
-non-owner-refuse wording unified across §3/V3/§11; unpaired callbacks
-toast instead of texting; streaming cut rule gains newline/whitespace
-fallbacks for code/JSON output; abort + final-render rules reconciled
-(in-memory render source, fresh-send fallback); `pair_fail_window`/
-`pair_mute` config knobs make V2's lockout CI-testable; A3 re-cited to
-PENATUS-SPEC §2 (SURFACE-SPEC §6 has no user-event schema).
+**v3.** Delivery and streaming semantics: replay dedupe keys on the
+committed `msg` event carrying `update_id`; Telegram watermark model
+clarified (offset acks on next poll, pre-append crash redelivers into
+inbox dedupe); amendment A5: cancelling a turn resolves pending
+approvals `denied`; group-drop vs non-owner-refuse wording unified;
+unpaired callbacks toast instead of texting; streaming cut rule gains
+newline/whitespace fallbacks; abort and final-render rules reconciled;
+`pair_fail_window`/`pair_mute` config knobs added; A3 cited to
+PENATUS-SPEC §2.
 
-**v2.** G1 round 2 applied (6 blocking, 6 minor): delivery doctrine
-rewritten as a durable write-ahead inbox (inbox.jsonl + offset + done
-tombstones + startup replay) — fixes the getUpdates-watermark deadlock
-(polling must advance during turns for /cancel and callbacks), the
-aborted-turn redelivery loop, and command/callback dedupe; amendments
-A3 (optional `update_id` on user events) and A4 (`reason:"undeliverable"`)
-added, A2 gains `source:"hub"` — undeliverable denials are now
-schema-valid; §7.6 fail-fast restricted to the sole-channel case (a
-broken Telegram door can no longer cancel a web-reviewed approval);
-gate drop-vs-refuse wording fixed incl. the unpaired state; `main`
-display defined; `/cancel` keeps the queued message; unknown approval
-ids toast `not pending`; `pair_code_ttl` knob makes V2 testable; V4
-final-edit exemption; V8 two-channel case; V11 rewritten as the inbox
-crash matrix.
+**v2.** Durable inbox architecture: delivery doctrine structured as a
+durable write-ahead inbox (inbox.jsonl + offset + done tombstones +
+startup replay); amendments A3 (`update_id`) and A4 (`undeliverable`
+reason) added, A2 gains `source:"hub"`; §7.6 fail-fast restricted to
+sole-channel case; gate drop-vs-refuse wording aligned; `main` display
+defined; `/cancel` preserves queued message; unknown approval ids toast
+`not pending`; `pair_code_ttl` knob added; V4 final-edit exemption, V8
+two-channel case, V11 inbox crash matrix added.
 
-**v1.** G1 round 1 applied (two independent reviews, 12–14 blocking
-findings; union fixed): presence rule generalized via amendment A1
-(fixes the hub contradiction); timer chosen from channel set at creation
-(fixes causality); audit enum amended via A2 with `timer`/`shutdown`
-causes (fixes frozen-schema mutation + attribution); offset persisted
-after commit with penatus-log dedupe by update_id (fixes crash loss and
-the false concurrency-gate claim); queue-depth contradiction removed;
-edit throttle is interval-gated, sentence rule picks the cut only;
-plain-text splitter does verbatim slices, no fence repair, hard-splits
-at 3900; card cleanup on every terminal transition; undeliverable cards
-deny fast; `/cancel` added; group-chat gate explicit; callback refusal
-for non-owners is a toast, not a text; owners.json re-read per poll
-(SIGHUP promise deleted); V2 rewritten to reachable states; V7/V9/V16/
-V17 added; V15 covers owners.json; id8 defined; card body specified;
-per-chat rate bucket added; abort rendering defined.
+**v1.** Core specification baseline: presence rule generalized via
+amendment A1; timer chosen from channel set at creation; audit enum
+amended via A2 with `timer`/`shutdown` causes; offset persisted after
+commit with penatus-log dedupe by update_id; queue depth defined;
+edit throttle interval-gated; plain-text splitter does verbatim slices
+hard-split at 3900; card cleanup on terminal transition; undeliverable
+cards deny fast; `/cancel` added; group-chat gate explicit; callback
+refusal for non-owners is a toast; owners.json re-read per poll;
+verification suite expanded (V7, V9, V15, V16, V17).
 
-**v0.** Initial draft from PO brief (long polling, allowlist + pairing
+**v0.** Initial specification draft (long polling, allowlist + pairing
 code, shared ApprovalHub, edit-throttled streaming, queue-one
 backpressure, plain-text rendering, env-var token).
