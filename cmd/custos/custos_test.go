@@ -772,3 +772,74 @@ func TestCustosMCP_CLI(t *testing.T) {
 		t.Errorf("mcp invalid-subcmd expected failure, got 0")
 	}
 }
+
+func TestCustosMCP_TrustDistrustCLI(t *testing.T) {
+	bin := buildCustosCLI(t)
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	_ = os.MkdirAll(home, 0o700)
+	cfgPath := filepath.Join(dir, "lararium.yaml")
+	_ = os.WriteFile(cfgPath, []byte("hearth:\n  home: "+home+"\n"), 0o600)
+
+	if _, stderr, code := runCmd(t, bin, "cli-passphrase-1234\n", "--config", cfgPath, "init"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+
+	decide := func() string {
+		v := custos.NewVault(filepath.Join(home, "custos"), time.Second)
+		if err := v.Policy().LoadStrict(); err != nil {
+			t.Fatalf("load policy: %v", err)
+		}
+		verdict, _ := v.Policy().Decide(custos.DecideInput{Lane: "worker", Credential: "dd", Tool: "anytool"})
+		return verdict
+	}
+	hasRule := func() bool {
+		stdout, _, _ := runCmd(t, bin, "", "--config", cfgPath, "policy", "list")
+		for _, l := range strings.Split(stdout, "\n") {
+			f := strings.Split(l, "\t")
+			if len(f) >= 3 && f[0] == "credential" && f[1] == "dd/*" && f[2] == "auto" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if got := decide(); got != custos.VerdictAsk {
+		t.Fatalf("baseline verdict = %q, want ask", got)
+	}
+
+	for i := 0; i < 2; i++ { // second pass proves idempotence
+		stdout, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "mcp", "trust", "dd")
+		if code != 0 {
+			t.Fatalf("trust #%d: code %d stderr %s", i, code, stderr)
+		}
+		if !strings.Contains(stdout, "ALL current AND FUTURE tools") {
+			t.Errorf("trust stdout missing warning: %q", stdout)
+		}
+		if !hasRule() {
+			t.Fatalf("trust #%d: dd/* auto rule missing", i)
+		}
+		if got := decide(); got != custos.VerdictAuto {
+			t.Fatalf("after trust verdict = %q, want auto", got)
+		}
+	}
+
+	stdout, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "mcp", "distrust", "dd")
+	if code != 0 {
+		t.Fatalf("distrust: code %d stderr %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "distrusted dd") {
+		t.Errorf("distrust stdout = %q", stdout)
+	}
+	if hasRule() {
+		t.Fatal("dd/* rule still present after distrust")
+	}
+	if got := decide(); got != custos.VerdictAsk {
+		t.Fatalf("after distrust verdict = %q, want ask", got)
+	}
+
+	stdout, _, code = runCmd(t, bin, "", "--config", cfgPath, "mcp", "distrust", "dd")
+	if code != 0 || !strings.Contains(stdout, "nothing changed") {
+		t.Fatalf("second distrust: code %d stdout %q", code, stdout)
+	}
+}
