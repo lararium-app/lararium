@@ -36,7 +36,9 @@ release note, doc, or audit transcript), we tag beta.
       PR #102, v0.10.0-alpha)
 - [x] MCP: connector state + tools visible in the web UI (#83 — shipped as
       the connectors card in the Doors view, PR #103, v0.10.0-alpha)
-- [ ] Approvals: phone can resolve a pending card from the notification
+- [x] Approvals: phone can resolve a pending card from the notification
+      (v1.0.0-beta1 E2E verification — push → one-tap resolve → gated tool — and
+      PO dogfood confirmation 2026-10-22)
       (android-client slice 4)
 - [x] Gmail cell + backup/restore keep their green status (regression
       suite, no spec drift). Drift audit 2026-10-19: four worker-lane
@@ -57,7 +59,9 @@ release note, doc, or audit transcript), we tag beta.
       frames (auth gate, snapshot races, slow-client DoS) — see
       `docs/THREATMODEL-DOORS.md` (F1–F4, all accepted/documented, no
       transport bypass found)
-- [ ] `govulncheck` clean at the beta tag, and stays clean through the
+- [x] `govulncheck` clean at the beta tag, and stays clean through the
+      (0 reachable vulns at `7766a88` / tag `v1.0.0-beta2`; the CI vulncheck gate
+      runs on every PR to keep it that way)
       release week
 - [x] Secret hygiene: neutrality scan extended to catch tokens/keys in
       test fixtures; zero findings at the tag (scripts/scan-secrets.sh)
@@ -66,7 +70,12 @@ release note, doc, or audit transcript), we tag beta.
 
 - [x] CI is boringly green: #81 (approval-cancel race) fixed at root (2662e07),
   no rerun-to-green in the final two weeks before the tag
-- [ ] `go test -race ./...` at tag tip, three consecutive runs, zero flakes
+- [x] `go test -race ./...` at tag tip, three consecutive runs, zero flakes
+      (`v1.0.0-beta2` tip `7766a88`: three full `-race` suites clean;
+      `govulncheck` 0 reachable. Caveat logged: one arm64-only CI flake is
+      tracked and reproduced in #137 — root cause (unlocked shared HTTP
+      status recorder, visible only under arm64 weak ordering) fixed in the
+      PR carrying this closeout; 100× native arm64 race hammer green.)
 - [x] Hot spots under the soft cap: `worker.go` and `ctl.go` split
   (behavior-free moves only, #93 / 4def5be)
 - [x] Lock discipline: no network I/O under a held mutex on any daemon
