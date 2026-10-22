@@ -110,7 +110,27 @@ type parkManager struct {
 	maxGlobal   int
 	holdTimeout time.Duration
 	byCell      map[string]map[string]*parkedFlow
+	pending     map[pendingKey]*pendingCard
 	totalParked int
+}
+
+// pendingKey identifies a worker ask card for dedupe: concurrent calls to
+// the same connector+tool in one cell share a single card.
+type pendingKey struct {
+	cellID string
+	cred   string
+	tool   string
+}
+
+// pendingCard is the shared outcome of one deduped worker ask card. The
+// leader flow resolves it exactly once; followers wait on done.
+type pendingCard struct {
+	key     pendingKey
+	cardID  string
+	done    chan struct{}
+	allowed bool
+	reason  string
+	resp    WorkerResponse
 }
 
 func newParkManager(maxPerCell, maxGlobal int, holdTimeout time.Duration) *parkManager {
@@ -128,6 +148,7 @@ func newParkManager(maxPerCell, maxGlobal int, holdTimeout time.Duration) *parkM
 		maxGlobal:   maxGlobal,
 		holdTimeout: holdTimeout,
 		byCell:      make(map[string]map[string]*parkedFlow),
+		pending:     make(map[pendingKey]*pendingCard),
 	}
 }
 
@@ -996,6 +1017,10 @@ func (pm *parkManager) addParkLocked(f *parkedFlow) {
 }
 
 func (pm *parkManager) removeParkLocked(f *parkedFlow) {
+	key := pendingKey{cellID: f.cellID, cred: f.cred, tool: f.path}
+	if pc, ok := pm.pending[key]; ok && pc.cardID == f.id {
+		delete(pm.pending, key)
+	}
 	if cellMap, exists := pm.byCell[f.cellID]; exists {
 		if _, ok := cellMap[f.id]; ok {
 			delete(cellMap, f.id)
