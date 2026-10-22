@@ -32,12 +32,12 @@ custos:
         list_timeout: 60s
 ```
 
-Initialize the custody vault and start the daemons:
+Initialize the custody vault and start the daemons. Below, `$REPO` is your Lararium checkout; build the `custos`, `custosd`, and `hearthd` binaries into `$REPO/bin/` and keep `lararium.yaml` at `$REPO/lararium.yaml`:
 
 ```console
-$ /ABS/SCRATCH/custos -config /ABS/SCRATCH/lararium.yaml init
-$ /ABS/SCRATCH/custosd -config /ABS/SCRATCH/lararium.yaml serve
-$ /ABS/SCRATCH/hearthd -config /ABS/SCRATCH/lararium.yaml serve
+$ $REPO/bin/custos -config $REPO/lararium.yaml init
+$ $REPO/bin/custosd -config $REPO/lararium.yaml serve
+$ $REPO/bin/hearthd -config $REPO/lararium.yaml serve
 ```
 
 `custosd` and `hearthd` are independent daemons; neither launches the other.
@@ -49,7 +49,7 @@ Verify connector health, list discovered tools, and execute a tool directly usin
 Check connector status:
 
 ```console
-$ /ABS/SCRATCH/custos -config /ABS/SCRATCH/lararium.yaml mcp status
+$ $REPO/bin/custos -config $REPO/lararium.yaml mcp status
 name        state    tools  restarts  reason
 everything  ready    14     1         ok
 ```
@@ -57,7 +57,7 @@ everything  ready    14     1         ok
 List tools registered by the connector:
 
 ```console
-$ /ABS/SCRATCH/custos -config /ABS/SCRATCH/lararium.yaml mcp tools everything
+$ $REPO/bin/custos -config $REPO/lararium.yaml mcp tools everything
 name                            flags       title                       inputSchema
 echo                            read_only   Echo Tool                   {"$schema":"http://json-schema.org/draft-07/schema#","properties":{"message":{"description":"Message to echo","type":"string"}},"required":["message"],"type":"object"}
 get-sum                         read_only   Get Sum Tool                {"$schema":"http://json-schema.org/draft-07/schema#","properties":{"a":{"description":"First number","type":"number"},"b":{"description":"Second number","type":"number"}},"required":["a","b"],"type":"object"}
@@ -69,7 +69,7 @@ toggle-simulated-logging        none        Toggle Simulated Logging    {"$schem
 Execute a tool call round-trip using arguments defined in the tool inputSchema:
 
 ```console
-$ /ABS/SCRATCH/custos -config /ABS/SCRATCH/lararium.yaml mcp call everything echo '{"message":"Hello from Lararium"}'
+$ $REPO/bin/custos -config $REPO/lararium.yaml mcp call everything echo '{"message":"Hello from Lararium"}'
 {"content":[{"text":"Echo: Hello from Lararium","type":"text"}],"structuredContent":null}
 ```
 
