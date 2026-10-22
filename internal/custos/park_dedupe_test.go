@@ -37,6 +37,7 @@ func setupDedupe(t *testing.T) *workerHarness {
 }
 
 func (h *workerHarness) callAsync(t *testing.T, tool string) <-chan custos.WorkerResponse {
+	t.Helper()
 	ch := make(chan custos.WorkerResponse, 1)
 	go func() {
 		ch <- h.send(t, custos.WorkerRequest{Op: "call", Connector: "dd", Tool: tool, CellToken: v13CellToken})
