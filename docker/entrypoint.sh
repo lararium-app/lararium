@@ -27,13 +27,13 @@ if ! sed 's/#.*//' "$CONFIG" 2>/dev/null | grep -Eq '^[[:space:]]*-[[:space:]]*n
 	if [ -t 0 ]; then
 		hearthd -config "$CONFIG" setup
 	else
-		echo "lararium: no provider configured; run interactively once: docker run -it --rm lararium/hearthd setup"
+		echo "lararium: no provider configured; run interactively once: docker run -it --rm ghcr.io/lararium-app/hearthd setup"
 		echo "lararium: (with -v volumes mounted so the wizard's output persists)"
 		exit 2
 	fi
 fi
 
-# 4. Explicit arguments are hearthd subcommands (`docker run lararium/hearthd
+# 4. Explicit arguments are hearthd subcommands (`docker run ghcr.io/lararium-app/hearthd
 #    token create x`); with none, serve the web chat + API. For a shell,
 #    override --entrypoint.
 if [ "$#" -gt 0 ]; then

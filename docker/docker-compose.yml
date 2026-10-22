@@ -1,4 +1,4 @@
-# Prefer pulling a published image? See README → "Run it (Docker pull)".
+# Prefer pulling a published image? See README → "Docker pull (recommended)".
 # hearthd in Docker — see docker/config/lararium.yaml (config) and
 # docker/hearth/ (persona home: SOUL.md, IDENTITY.md, USER.md, MEMORY.md,
 # sessions/). API keys come from the host environment or keys.json; nothing secret
