@@ -346,14 +346,14 @@ func (c *MCPConnector) Execute(
 			c.mu.Lock()
 			isDisabledAuthFailed := (c.state == MCPStateDisabled && c.reason == MCPReasonAuthFailed)
 			c.mu.Unlock()
-			if isDisabledAuthFailed || rec.statusCode == 401 || rec.statusCode == 403 {
+			if isDisabledAuthFailed || rec.statusCode.Load() == 401 || rec.statusCode.Load() == 403 {
 				return nil, wErr(ErrCodeUpstream, detailUpstream4xx)
 			}
-			if rec.statusCode >= 500 && rec.statusCode < 600 {
+			if rec.statusCode.Load() >= 500 && rec.statusCode.Load() < 600 {
 				c.recordHTTPTransportFailure()
 				return nil, wErr(ErrCodeUpstream, detailUpstream5xx)
 			}
-			if rec.statusCode >= 400 && rec.statusCode < 500 {
+			if rec.statusCode.Load() >= 400 && rec.statusCode.Load() < 500 {
 				c.recordHTTPTransportFailure()
 				return nil, wErr(ErrCodeUpstream, detailUpstream4xx)
 			}
