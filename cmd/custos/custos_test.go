@@ -808,7 +808,7 @@ func TestCustosMCP_TrustDistrustCLI(t *testing.T) {
 		t.Fatalf("baseline verdict = %q, want ask", got)
 	}
 
-	for i := 0; i < 2; i++ { // second pass proves idempotence
+	for i := range 2 { // second pass proves idempotence
 		stdout, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "mcp", "trust", "dd")
 		if code != 0 {
 			t.Fatalf("trust #%d: code %d stderr %s", i, code, stderr)
