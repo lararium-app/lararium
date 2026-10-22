@@ -519,14 +519,14 @@ func (c *MCPConnector) refreshLive(ctx context.Context, session *mcp.ClientSessi
 			c.mu.Lock()
 			isDisabledAuthFailed := (c.state == MCPStateDisabled && c.reason == MCPReasonAuthFailed)
 			c.mu.Unlock()
-			if isDisabledAuthFailed || rec.statusCode == 401 || rec.statusCode == 403 {
+			if isDisabledAuthFailed || rec.statusCode.Load() == 401 || rec.statusCode.Load() == 403 {
 				return errors.New("list tools during refresh: upstream returned 4xx")
 			}
-			if rec.statusCode >= 500 && rec.statusCode < 600 {
+			if rec.statusCode.Load() >= 500 && rec.statusCode.Load() < 600 {
 				c.recordHTTPTransportFailure()
 				return errors.New("list tools during refresh: upstream returned 5xx")
 			}
-			if rec.statusCode >= 400 && rec.statusCode < 500 {
+			if rec.statusCode.Load() >= 400 && rec.statusCode.Load() < 500 {
 				c.recordHTTPTransportFailure()
 				return errors.New("list tools during refresh: upstream returned 4xx")
 			}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,9 +19,14 @@ type httpStatusRecorderKeyType struct{}
 
 var httpStatusRecorderKey = httpStatusRecorderKeyType{}
 
+// httpStatusRecorder captures the last HTTP response status observed on a
+// connector request. It is shared through the request context and written by
+// every RoundTrip goroutine — including asynchronous SDK sends (jsonrpc2
+// notifications) and requests abandoned after a list/call timeout — while the
+// main start/execute path reads it on error. Every field is therefore atomic;
+// a plain int raced under arm64's weak memory ordering (issue #137).
 type httpStatusRecorder struct {
-	statusCode int
-	err        error
+	statusCode atomic.Int32
 }
 
 // mcpHTTPRoundTripper injects the Authorization: Bearer header when bearer is configured,
@@ -46,9 +52,8 @@ func (t *mcpHTTPRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	resp, err := base.RoundTrip(req2)
 	if rec, ok := req.Context().Value(httpStatusRecorderKey).(*httpStatusRecorder); ok {
 		if resp != nil {
-			rec.statusCode = resp.StatusCode
+			rec.statusCode.Store(int32(resp.StatusCode)) //nolint:gosec // G115: HTTP status codes are 100-999 by construction
 		}
-		rec.err = err
 	}
 
 	if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
@@ -188,7 +193,7 @@ func (c *MCPConnector) startHTTPLocked(ctx context.Context) error {
 	session, err := client.Connect(connectCtx, transport, nil)
 	if err != nil {
 		c.teardownChildLocked()
-		if rec.statusCode == http.StatusUnauthorized || rec.statusCode == http.StatusForbidden {
+		if rec.statusCode.Load() == http.StatusUnauthorized || rec.statusCode.Load() == http.StatusForbidden {
 			c.recordHTTPAuthFailureLocked()
 			return nil
 		}
@@ -205,7 +210,7 @@ func (c *MCPConnector) startHTTPLocked(ctx context.Context) error {
 	listRes, err := session.ListTools(connectCtx, nil)
 	if err != nil {
 		c.teardownChildLocked()
-		if rec.statusCode == http.StatusUnauthorized || rec.statusCode == http.StatusForbidden {
+		if rec.statusCode.Load() == http.StatusUnauthorized || rec.statusCode.Load() == http.StatusForbidden {
 			c.recordHTTPAuthFailureLocked()
 			return nil
 		}
