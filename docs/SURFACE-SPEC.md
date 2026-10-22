@@ -1,17 +1,16 @@
 # SURFACE-SPEC — the HTTP/SSE API and the web chat
 
-Status: FROZEN — G1 approved by the Product Owner 2026-10-02 (port,
-serving, model_pin, timeout decisions in §10). Freezes the transport between
-the hearth (hearthd) and its clients, and the first client: a built-in web
+Status: FROZEN — Ratified 2026-10-02 (port, serving, model_pin,
+timeout specifications in §10). Freezes the transport between the
+hearth (hearthd) and its clients, and the first client: a built-in web
 chat. Changelog at bottom. Post-freeze amendments A1, A2, A4–A7 (approval
 channels, audit enums, cancel semantics, MarkUndeliverable) and K-A1 (the
-three /v1/keys routes) applied 2026-10-04 as approved at NUNTIUS-SPEC/
-KEYS-SPEC G1 pass — see changelog; CA-5 (the `ctl` audit source,
-CUSTOS-SPEC amendment v8) applied 2026-10-07 — see changelog v5.1;
+three /v1/keys routes) applied 2026-10-04 — see changelog; CA-5 (the `ctl`
+audit source, CUSTOS-SPEC amendment v8) applied 2026-10-07 — see changelog v5.1;
 CA-6 (custody-card fan-out: two /v1/custos/cards routes, the global
 custos card stream, the render rule, V16; CUSTOS-SPEC amendment v9)
-applied 2026-10-08 — see changelog v5.2; S10 (amendment A4 §S10.1, PO
-sign-off 2026-10-09) adds §3A — whole-hearth backup/restore CLI shapes,
+applied 2026-10-08 — see changelog v5.2; S10 (amendment A4 §S10.1,
+ratified 2026-10-09) adds §3A — whole-hearth backup/restore CLI shapes,
 the control-socket `backup` verb, and the explicit no-REST-verb stance —
 see changelog v5.3; CA-7 (policy rules on the surface: three
 /v1/policy/rules routes, V17; CUSTOS-SPEC amendment v11) applied
@@ -432,19 +431,19 @@ V17. Policy rules (CA-7): with an unlocked vault —
     bearer → 401. Audit tail shows `actor:"web"` on both writes.
     (§4/§9, CUSTOS §6.5/§6.6/§11)
 
-## 10. PO decisions (settled 2026-10-02)
+## 10. Configuration decisions (settled 2026-10-02)
 
 Q1. Port **7717** — approved as default.
 Q2. Page served at `/` on the same origin as the API — approved.
 Q3. `model_pin` API-only in v1 (header field exists; UI later) — approved.
 Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
-    default 300 s) — PO-set.
+    default 300 s) — configured default.
 
 ---
 
 ## Changelog
 
-**v5.4 (amendment CA-7, 2026-10-12).** PO sign-off on CA-7 (policy rules
+**v5.4 (amendment CA-7, 2026-10-12).** Ratified CA-7 (policy rules
 on the surface): §4 route table gains `GET /v1/policy/rules`,
 `PUT /v1/policy/rules`, `DELETE /v1/policy/rules/{pattern}` —
 read/write of the frozen `PolicyEngine` rule set over the bearer gate,
@@ -453,23 +452,21 @@ engine semantics, no doors.sock or ctl protocol changes. §9 gains V17.
 CUSTOS-SPEC amendment v11 records the `web` audit actor.
 No frozen turn-stream behavior changed.
 
-**v5.3 (amendment S10.1 / A4, 2026-10-09).** PO sign-off on amendment
-A4/V10/S10 (whole-hearth backup & restore; four hostile review rounds,
-converged 0 blockers): new §3A freezes the `hearthd backup …` /
-`hearthd restore …` CLI shapes, the control-socket `backup` verb, and
-the explicit no-REST-verb stance for v1. No frozen HTTP/SSE behavior
-changed.
+**v5.3 (amendment S10.1 / A4, 2026-10-09).** Ratified amendment
+A4/V10/S10 (whole-hearth backup & restore): new §3A freezes the
+`hearthd backup …` / `hearthd restore …` CLI shapes, the control-socket
+`backup` verb, and the explicit no-REST-verb stance for v1. No frozen
+HTTP/SSE behavior changed.
 
 **v5.2 (amendment CA-6, 2026-10-08).** CUSTOS-SPEC amendment v9's
-fan-out applied per its PO sign-off: §4 route table gains
-`GET /v1/custos/cards` and `POST /v1/custos/cards/{id}/resolve`
-(status-code contract 200/400/404/409/423, id gate same as S4);
-§5 gains the global `GET /v1/custos/cards/events` stream
-(`custos_card`/`custos_gone`) and the custody-card exemption from
-disconnect auto-denial (S6/S9/V6b do not apply); §6 gains the
-custody-card render rule (main page, distinct style, §6.5 button set,
-no optimistic resolution); §9 gains V16. No frozen turn-stream behavior
-changed.
+fan-out applied: §4 route table gains `GET /v1/custos/cards` and
+`POST /v1/custos/cards/{id}/resolve` (status-code contract
+200/400/404/409/423, id gate same as S4); §5 gains the global
+`GET /v1/custos/cards/events` stream (`custos_card`/`custos_gone`)
+and the custody-card exemption from disconnect auto-denial
+(S6/S9/V6b do not apply); §6 gains the custody-card render rule
+(main page, distinct style, §6.5 button set, no optimistic resolution);
+§9 gains V16. No frozen turn-stream behavior changed.
 
 **v5.1 (amendment CA-5, 2026-10-07).** §6 audit `source` enum gains
 `ctl` per CUSTOS-SPEC amendment v8 CA-5: a verdict delivered through
@@ -477,8 +474,8 @@ custos' control socket (the standalone approval door, CUSTOS-SPEC
 §6.4a), parallel to `web` and `telegram` — the symmetric completion of
 CA-3. No frozen web behavior changed.
 
-**v5 (amendments, 2026-10-04).** Applied the amendments approved at
-NUNTIUS-SPEC G1 (A1, A2, A4–A7) and KEYS-SPEC G1 (K-A1): §5 presence rule
+**v5 (amendments, 2026-10-04).** Applied companion amendments (A1, A2,
+A4–A7 from NUNTIUS-SPEC, K-A1 from KEYS-SPEC): §5 presence rule
 generalized to live approver channels incl. paired nuntius bridge, with
 per-approval `card_dead` refinement (A1); §6 audit `source` enum extended
 `telegram|timer|shutdown|hub` (A2) and `reason` enum `undeliverable` (A4);
@@ -488,9 +485,8 @@ set (A6); §5 `MarkUndeliverable` transition (A7); §4 route table gains the
 three `/v1/keys` routes and §2 proxy note gains request-body logging for
 them (K-A1). No frozen web-only behavior changed.
 
-**v4 (freeze).** Second-opinion reviewer (fresh context) verified all
-round-1 areas FIXED and added: catch-up protocol was undefined — now
-specified (persisted vs stream-only vocabulary, `in_flight` flag on
+**v4 (freeze).** Specification frozen: catch-up protocol specified
+(persisted vs stream-only vocabulary, `in_flight` flag on
 `GET …/events`, poll contract, V14); session gate made atomic with
 `turn_timeout` + `POST …/cancel` escape hatches (V15/V15b); SSE 5 s
 heartbeat + mandated context-cancellation disconnect detection (V15d);
@@ -498,11 +494,10 @@ approval ids scoped per session, 404-vs-410 defined (V15d); events
 `limit` clamp + invalid-input behavior tested (V15c); audit schema frozen
 in §6 (V10 rewritten to diff against the schema, not the REPL); CSP gains
 `frame-ancestors 'none'` + `nosniff` (V3); proxy header-logging caveat
-(§2); V9 fires POSTs concurrently; V11 grep hardened. PO settled Q1–Q4
-(§10). Status → FROZEN.
+(§2); V9 fires POSTs concurrently; V11 grep hardened. Parameters settled
+Q1–Q4 (§10). Status → FROZEN.
 
-**v3 (G1 round 3).** Round-3 review: all 6 round-2 fixes verified; 2 new
-blocking + 3 minor, all applied: Host gate now uses an explicit
+**v3.** Specification refinement: Host gate now uses an explicit
 `serve.allowed_hosts` allowlist (wildcard bind + tailnet/reverse-proxy
 Hosts were 403-locked out; non-loopback bind without the list refuses to
 start); token survives reload via `sessionStorage` (in-memory-only +
@@ -511,9 +506,8 @@ guarantee was dead); health-route "ONLY" wording scoped to `/v1/`; S8/V3
 CSP strings aligned with §7; §7 file count corrected; V13 added for the
 allowlist matrix.
 
-**v2 (G1 round 2).** Round-2 review (independent model): all 8 round-1
-areas verified FIXED; 4 new blocking + 2 minor found, all applied: static
-asset routes added (`/app.js`, `/app.css` — the CSP-forbids-inline +
+**v2.** Specification refinement: static asset routes added
+(`/app.js`, `/app.css` — the CSP-forbids-inline +
 frozen-set-with-no-asset-route deadlock made the page dead on arrival);
 ready-URL printing moved from `serve` to `token create` (the daemon cannot
 and must not print plaintext tokens); Host gate now strips the port before
@@ -523,8 +517,7 @@ to `/v1/` (static page is legitimately tokenless); CSP gains explicit
 `style-src 'self'` (inline styles would otherwise be blocked with no CSS
 route). V5 rewritten to match the token-create flow.
 
-**v1 (G1 round 1).** Independent review returned 8 blocking + 9 minor
-findings; all triaged and applied: concurrency gate narrowed to the
+**v1.** Initial specification baseline: concurrency gate narrowed to the
 messages route (approvals must never 409); shutdown semantics unified
 (SIGTERM → deny-pending immediately, 60 s drain, no partial events);
 approval resolution is a mutex state machine with 410 on double-resolve;

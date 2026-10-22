@@ -1,7 +1,7 @@
 # CELL-SPEC — sandbox contract (`cell/1`)
 
-Status: **FROZEN — approved 2026-09-29.** Changes require a version bump
-and re-approval. Defines the **cell**: the per-user sandbox
+Status: **FROZEN (v1.0.0-beta1).** Changes require a version bump.
+Defines the **cell**: the per-user sandbox
 container that executes tools. The daemon (hearthd) never executes tools in its
 own process space; it dispatches them into a running cell.
 
@@ -46,7 +46,7 @@ throwaway-overlay mount probe), idmapped-bind probe above. Anything missing →
 refuse to start a cell, never start a half-caged one.
 
 Registration note: nspawn from a raw ssh/sudo session cannot register with
-machined (`--register=yes` refused — hit in the spike). `cell start` boots
+machined (`--register=yes` refused). `cell start` boots
 via a transient **systemd unit** (root-mode or delegated user-scope), never a
 bare foreground spawn — the unit is what `cell run` targets.
 
@@ -86,8 +86,7 @@ bare foreground spawn — the unit is what `cell run` targets.
   - `lowerdir` = template (RO, shared by all cells),
   - `upperdir` = `cells/<id>/upper/`, `workdir` = `cells/<id>/work/` (same fs),
   - merged `cells/<id>/merged/` is what nspawn boots; the overlay is mounted
-    host-side (root) **before** the idmapped view is applied (§1 ordering —
-    spike must verify this boot path first).
+    host-side (root) **before** the idmapped view is applied (§1 ordering).
   - **create** = mkdir three dirs → **seed `upper/` from the host while it is
     still unmounted** (guest `.network` drop-in, §4) → overlay mount
     (instantaneous, any filesystem; mutating `upper/` behind a live mount is
@@ -203,7 +202,7 @@ in filter hooks):
      the host-veth naming namespace for cells: `cell start` renames the
      resolved host end to exactly `v-lar-<hash8>` — first 8 hex of
      sha256(cell id) — before addressing; cell.json records the name.
-     Erratum 2026-09-30, PO-approved: literal `v-lar-<id>` breaks on ids
+     Erratum 2026-09-30: literal `v-lar-<id>` breaks on ids
      over 9 chars (IFNAMSIZ=15); the glob is unchanged. TCP from cells gets
      `meta l4proto tcp reject with tcp reset`, not silent `drop`, so C6
      observes a refusal (ECONNREFUSED) instead of a timeout (erratum
@@ -212,7 +211,7 @@ in filter hooks):
      drop. `forward`
      chain stays a pure drop — a forward-path reset would leak host
      topology.)
-   - **Firewall interop (erratum E3, 2026-10-01, bench #2):** nft and
+   - **Firewall interop (erratum E3, 2026-10-01):** nft and
      iptables register as **separate hook chains on the same hook** and
      the strictest verdict wins — an nft `accept` cannot bypass an
      iptables `INPUT` policy `DROP` (ufw/firewalld/legacy stacks drop
@@ -225,8 +224,8 @@ in filter hooks):
      `iptables` binary is absent (nft-only hosts). Scope is exactly the
      two cooperative flows — every other cell verdict still belongs to
      the nft filter table. `net-remove` unwires it.
-   - **Boot-window + ingress hardening (erratum E4, 2026-10-01, review
-     round 2):** (a) nspawn names the host end of its `--network-veth`
+   - **Boot-window + ingress hardening (erratum E4, 2026-10-01):** (a) nspawn
+     names the host end of its `--network-veth`
      `ve-<machine>` and brings it UP *before* our rename to `v-lar-*`
      lands — during that window the interface matches none of the
      `v-lar-*` rules, so the filter table additionally rejects

@@ -1,4 +1,4 @@
-# Lock discipline audit (beta criterion D)
+# Lock discipline audit
 
 Date: 2026-10-19. Scope: all long-lived daemons (`hearthd`, `custosd`)
 under `internal/`. Standard: no network I/O under a held mutex, except a
@@ -16,17 +16,17 @@ path with an explicit, bounded, documented waiver.
    reading — locks released before the I/O line).
 3. **Cross-function lock propagation** reviewed by hand for the one
    known case (below); scanners do not follow call graphs.
-4. **Race detector.** `go test -race ./...` on `main`
-   (`532b132`-lineage, post #111/#112): full suite green, zero data
-   races (`cmd/hearthd` included; 90 s crash-matrix suite exercised).
+4. **Race detector.** `go test -race ./...` on `main`:
+   full suite green, zero data races (`cmd/hearthd` included; 90 s
+   crash-matrix suite exercised).
 
 ## Findings
 
 ### Waived-safe (documented, bounded) — MCP connector start
 
 `MCPConnector.startLocked` (and `startHTTPLocked`) run spawn + first
-`tools/list` under `c.mu` **deliberately** (original audit: #87;
-rationale annotated at the function). Bound analysis:
+`tools/list` under `c.mu` **deliberately** (rationale annotated at the
+function). Bound analysis:
 
 - every network step inside takes `ctx`, capped by `list_timeout`
   (default `DefaultMCPListTimeout`);

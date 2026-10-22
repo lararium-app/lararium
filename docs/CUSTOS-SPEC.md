@@ -1,33 +1,27 @@
 # CUSTOS-SPEC — the security envelope: vault, surrogation, policy, audit
 
-Status: **FROZEN (v7) + PO SIGN-OFF (2026-10-05) — round 6 both
-confirmation passes CONVERGED (pass A 0B/0M; pass B 0B/5M, all five
-minors folded per reviewer prescription: WAL-commit-after-rename fsync
-order, fingerprint mirror inside recovery rewrite + snapshot set,
-migrate-deletion audit lines, `--port` grammar, writer-path-only
-note). All six open questions decided by the PO (§12). Suite V1–V26.
-Implementation may begin.**
-**Amendment v8 (2026-10-07): PO SIGN-OFF (2026-10-07).** Adds §6.4a (the
+Status: **FROZEN (v7), approved 2026-10-05; amended through v13
+(below).** All six design questions are decided (§12). Base suite
+V1–V26; amendments extend it through V29.
+**Amendment v8 (approved 2026-10-07).** Adds §6.4a (the
 standalone ctl door: CARDS/APPROVE/DENY + `custos approvals`), CA-5
 (SURFACE-SPEC `source` enum gains `ctl`), the `approval_answered`
 kind, the frozen `worker_call_denied` reason set (erratum: shipped
-v0.4.1 undeclared), and V27. Everything merged to date implements the
-v7 text; v8 is additive — no v7 behavior changes. Implemented and
-merged with V27 green (§6.4a door, CA-5, `approval_answered`, frozen
-`worker_call_denied` erratum).
-**Amendment v9 (2026-10-08): PO SIGN-OFF (2026-10-08).** Adds §6.4b (the
+v0.4.1 undeclared), and V27. v8 is additive — no v7 behavior changes.
+Implemented with V27 green (§6.4a door, CA-5, `approval_answered`,
+frozen `worker_call_denied` erratum).
+**Amendment v9 (approved 2026-10-08).** Adds §6.4b (the
 fan-out door channel: `doors.sock` + `door.token` for hearthd/nuntius
 web+Telegram fan-out), CA-6 (SURFACE-SPEC §4/§5/§6/§9 amendments),
 amended §6.4 (custody cards hosted by custosd hub, not surface
 ApprovalHub), `door.token` 64-char hex encoding, `via` field on
 `approval_answered` (closed enum `web|telegram`), V28 (doors.sock
 contract). Additive to v7/v8 — no behavior change when no door attaches.
-Spec transcription PO-reviewed 2026-10-08 (two fidelity rounds; second
-CONVERGED); implementation of V28 begins on merge. §6.4b error set
-ratified post-implementation (PO, 2026-10-08): HELLO with a valid token
-but invalid `name` answers `ERR bad_name` + close (V28 subtest C).
-**Amendment v10 (amendment A4 §V10.1, PO sign-off 2026-10-09): the
-installation-event scoping sentence.** Appends one clarifying statement
+§6.4b error set ratified post-implementation (2026-10-08): HELLO with a
+valid token but invalid `name` answers `ERR bad_name` + close (V28
+subtest C).
+**Amendment v10 (PENATUS-SPEC amendment A4 §V10.1, approved 2026-10-09):
+the installation-event scoping sentence.** Appends one clarifying statement
 to §4.2 (WAL supersession enumeration): "move the vault backward" and
 "closed in exactly two ways" scope to a **live state root**; whole-hearth
 restore (PENATUS-SPEC §4.5) replaces vault, MAC, key, surrogates,
@@ -36,7 +30,7 @@ verified coherent generation set — an installation event, not a
 supersession. Append-only: nothing deleted, nothing reworded, the two
 enumerated ways stand untouched. Custos daemon: zero code (docs edit
 only).
-**Amendment v11 (CA-7, PO sign-off 2026-10-12): the `web` audit actor.**
+**Amendment v11 (CA-7, approved 2026-10-12): the `web` audit actor.**
 Records `web` as a fourth actor label (cell id | `cli` | `surface` |
 `web`) for policy writes arriving on the SURFACE-SPEC §4
 `/v1/policy/rules` routes (CA-7). These are engine verbs run with the
@@ -45,7 +39,7 @@ carried as a distinct actor so the audit tail distinguishes page
 mutations from ctl and approval-card writes. Audit kind, chain rules,
 and every v7–v10 behavior: unchanged. Zero daemon code (docs edit only;
 the surface-side code lands under SURFACE-SPEC v5.4).
-**Amendment v12 (2026-10-15, PO sign-off with MCP-SPEC G1): MCP
+**Amendment v12 (2026-10-15, approved together with MCP-SPEC v1.2): MCP
 connector rail.** Adds: `op: "list"` + `ToolLister` + rail credential
 doctrine to §5.1; the `upstream`/`protocol violation` detail template,
 credential-gone template reuse, per-call scrub-needle retention, and
@@ -73,11 +67,11 @@ to §4.5; and aligns the pre-hold policy-deny audit reason to the
 already-declared `verdict` (the unbounded `policy:<pattern>` value was
 undeclared — code fixes, no new vocabulary). Everything else:
 unchanged.
-Proposes `custosd`, the credential daemon that sits between the agent
+Specifies `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
-machinery, and a hash-chained audit log. Nothing here is built yet;
-every behavior statement is a requirement, not an observation.
+machinery, and a hash-chained audit log. Every behavior statement is a
+normative requirement, not a description of any particular build.
 Companion specs: KEYS-SPEC (the interim credential path; amendments
 CA-1; this spec delivers the takeover KEYS-SPEC §0 promised — no
 command or endpoint changes for users), CELL-SPEC §4 (the dumb egress
@@ -291,12 +285,12 @@ command; KEYS-SPEC takeover per CA-1 (same CLI, same endpoints, one new
 status string).
 
 OUT (roadmap, listed so nobody "forgets to forget"): TLS-intercepting
-MITM lane (user-CA enrollment; renegotiated from the old BUILD-PLAN
-Phase-4 sketch — PO Q3); per-process egress taint (phase-2); eBPF
+MITM lane (user-CA enrollment; deferred from the original Phase-4
+sketch — §12 Q3); per-process egress taint (phase-2); eBPF
 attribution; KMS-backed master keys; multi-tenant custody;
 WhatsApp/Drive/Calendar built-ins (v1 ships exactly one — Gmail — so
 the worker contract is proven by a real OAuth giant, not a toy); wallet
-hooks (ARCHITECTURE §2.7 note stands).
+hooks (ARCHITECTURE §2.8 note stands).
 
 ## 2. Principles (load-bearing)
 
@@ -815,7 +809,7 @@ unbounded continuations is not computable as a write-time check, and
 refusing overlaps deadlocks the Always mechanism. Defaults:
 credential-bearing actions
 **ask** (no rule required);
-credential-less egress **auto** (today's dumb-proxy behavior, PO Q4);
+credential-less egress **auto** (today's dumb-proxy behavior, §12 Q4);
 `custos egress strict on|off` (persisted, audited `policy_written`)
 flips that default to **ask** for credential-less destinations with
 no matching rule — floor and rule behavior are untouched (strict
@@ -934,8 +928,8 @@ Prefix-only — the frozen review-field construction (declared schema
 fields, argument digest) is otherwise untouched.
 
 **6.4a — The standalone door (amendment v8).** A card is only useful
-if its owner can answer it. With the `hearthd` integration (web +
-Telegram fan-out) unbuilt, standalone `custosd` would otherwise hold
+if its owner can answer it. Without the `hearthd` integration (the web
++ Telegram fan-out of §6.4b), standalone `custosd` would otherwise hold
 every `ask` to `ask_hold_timeout` with no human door at all —
 park-then-deny forever, with the audit trail unable to distinguish
 "no one could answer" from "the owner said no." The control socket is
@@ -1251,7 +1245,7 @@ upstream response content.
 **8.3 — Verify, rotation, prune anchors.** `custos audit verify` walks
 the chain from the newest anchor; prints `chain ok (<n> records)` or
 first-break `file:line` (frozen shapes). Daily rotation;
-`audit_retention_days` (default 365 — PO Q5 resolved). **Prune writes an
+`audit_retention_days` (default 365 — §12 Q5). **Prune writes an
 authenticated anchor checkpoint** `audit/anchors.json`:
 `[{file, line, hash}]`, each entry `anchor_mac`-ed under
 HKDF(vault.key, "custos-anchor") — a root-elsewhere attacker who edits
@@ -1561,7 +1555,7 @@ conventions KEYS-SPEC established (stdout data / stderr errors / exit
 codes). `mcp refresh` is the one verb whose client timeout exceeds 5 s
 — both deadlines (server and client) are §6.4c's.
 
-## 12. Open questions — RESOLVED (PO sign-off, 2026-10-05)
+## 12. Design decisions (resolved 2026-10-05)
 
 Q1. **Unlock friction — DECIDED.** Passphrase mode is the zero-trust
 default (unlock after every restart, P4/C4); `custos.unlock_keyfile`
@@ -1588,13 +1582,14 @@ Q6. **Surface-mint confirmation cards — DECIDED.** Cards stay
 mandatory for web/surface minting (§5.3) — remote requests cannot
 silently mint surrogates even from a prompt-injected tool flow;
 authenticated-TTY CLI issuance skips the card (you are at the
-keyboard). No TTY-only fallback needed unless dogfood says otherwise.
+keyboard). No TTY-only fallback needed unless field experience says
+otherwise.
 
 ## Changelog
 
-- v12 (amendment A1–A8, PO sign-off 2026-10-15 via MCP-SPEC G1): MCP
-  connector rail absorbed from docs/MCP-SPEC.md v1.2 (itself the output
-  of nine dual-lane hostile rounds). Integrations, each tagged
+- v12 (amendment A1–A8, approved 2026-10-15 with MCP-SPEC v1.2): MCP
+  connector rail absorbed from docs/MCP-SPEC.md v1.2 (itself reviewed
+  over nine independent passes). Integrations, each tagged
   (v12; MCP-SPEC A#) at its section: §5.1 `op:"list"` + `ToolLister` +
   rail credential doctrine; §5.1a `upstream`/`protocol violation`
   template, `detailDeniedCredGone` reuse, per-call scrub-needle
@@ -1608,13 +1603,13 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   (`cred` = config connector name for control-plane audits) +
   reason-set additions; §11 `custos mcp` family + timeout note; §10 V29
   pointer (MCP-SPEC §12 sibling suite; V1–V28 must pass unchanged with
-  no rail configured). No daemon code (docs edit only; rail code lands
-  under MCP-SPEC G2+).
-- v11 (amendment CA-7, PO sign-off, 2026-10-12): the `web` audit actor
+  no rail configured). No daemon code (docs edit only; the rail
+  implementation follows MCP-SPEC).
+- v11 (amendment CA-7, approved 2026-10-12): the `web` audit actor
   for `/v1/policy/rules` writes (SURFACE-SPEC v5.4). Records `web` in
   the §8 actor enumeration; append-only, zero daemon code.
 
-- v10 (amendment A4 §V10.1, PO sign-off, 2026-10-09): whole-hearth
+- v10 (PENATUS-SPEC amendment A4 §V10.1, approved 2026-10-09): whole-hearth
   backup & restore (PENATUS-SPEC amendment v10 §4.5; SURFACE-SPEC v5.3
   §3A) required one clarification here, zero code. Appends the
   installation-event scoping sentence to §4.2: the "only way to move the
@@ -1624,7 +1619,7 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   one verified coherent generation set, resolved by ordinary first-unlock
   recovery (§8.1a). Append-only; no v7/v8/v9 behavior changes.
 
-- v9 (amendment, PO sign-off, 2026-10-08): the fan-out — external
+- v9 (amendment, approved 2026-10-08): the fan-out — external
   doors for vault cards. v8's door proved the integration shape;
   hearthd becomes a door client on `doors.sock` (`door.token`,
   auto-generated on startup, 64 lowercase hex) with the web and
@@ -1641,15 +1636,14 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   ApprovalHub / surface-only audit), `via` on `approval_answered`
   (§8.1, actor stays frozen), §C2/§C3 inventory
   entries, CA-6 (SURFACE-SPEC v5.2: endpoints, global stream, render
-  rule, V16), and V28. Four hostile-review rounds: rev 2 folded 27
-  deduped findings, rev 3 eleven, rev 4 two; round 4 CONVERGED
-  (0 findings). Additive — zero behavior change with no door
+  rule, V16), and V28. Reviewed to convergence (final pass: zero
+  findings). Additive — zero behavior change with no door
   attached.
-- v8 (amendment, PO sign-off + shipped, 2026-10-07): standalone
-  approval door. Motivation from the first live dogfooding cycle:
-  with the hearthd integration unbuilt, `ask` in standalone custosd
+- v8 (amendment, approved and shipped 2026-10-07): standalone
+  approval door. Motivation from early live use:
+  with the hearthd integration absent, `ask` in standalone custosd
   parks 330 s and denies — the owner has no way to answer (verified
-  by experiment during the v0.4.1 fixwave). Adds CA-5 (`source` enum
+  experimentally on v0.4.1). Adds CA-5 (`source` enum
   `ctl`), §6.4a (ctl verbs CARDS/APPROVE/DENY, Allow-once + Deny only
   — Always stays §6.5's UI-privileged construction; `custos approvals
   [watch]`; `approval_answered` chain line for verdict attribution
@@ -1657,7 +1651,7 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   reason set closing the v0.4.1 declaration gap (erratum), V27.
   Nil-hub `no_approval_door` semantics clarified: no door, never
   "standalone."
-- v7.1 (frozen, signed off): PO sign-off received 2026-10-05. §12
+- v7.1 (frozen, approved 2026-10-05). §12
   converted from open questions to **decisions**: passphrase-default
   + documented keyfile opt-in (file-permission boundary, never
   silent); Gmail as the v1 built-in connector; blind passthrough
@@ -1665,9 +1659,8 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   + `custos egress strict` onboarding toggle; **audit retention
   default 90 → 365 days** (§8.3 body updated); surface-mint
   confirmation cards retained. No other text changed.
-- v7 (frozen): round 6 — both confirmation passes CONVERGED (pass A
-  0B/0M — first review with no findings at any severity; pass B
-  0B/5M). Pass B minors folded verbatim per its fix sketches: **WAL
+- v7 (frozen): final confirmation review converged (no blocking
+  findings). Minor fixes folded: **WAL
   commit fsynced only after the rename-pair and dir fsyncs return**
   (forbids a durable commit ahead of lost renames under commit
   caching); fingerprint mirror recomputed **inside recovery's own
@@ -1679,8 +1672,7 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   **`--port` grammar frozen** (`1–65535`, normalized as §5.2, no
   unsatisfiable bindings); IP-binding ask-only enforcement declared
   writer-path-only (no conflict checker exists since v5).
-- v6 (draft): round-5 review folded (pass A 0 blocking / 5 minor —
-  first CONVERGED line; pass B 1 / 12). Headlines: **tier-1
+- v6 (draft): review fixes. Headlines: **tier-1
   qualification order completes the comparator** (exact `host:port` >
   exact `host`; exact `<name>/<tool>` > bare `<name>` — the
   credential lane's `gmail ask` + `gmail/send deny` tie closed; V24
@@ -1700,9 +1692,8 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   gains `0::/8`; S5 phrasing aligned to §8.3; target-side/authority-
   side seam distinguished; `path_prefix` declared bearer-lane-only;
   frozen note shape quoted in V24.
-- v5 (draft): round-4 review folded (pass A 3 blocking / 6 minor;
-  pass B 3 / 11 — pass B's apex-Always counterexample was computed on
-  the pre-two-tier bundle text and died with the tier law).
+- v5 (draft): review fixes (an apex-Always counterexample computed on
+  the pre-two-tier text was resolved by the tier law).
   Headlines: **two-tier comparator law** (exact forms strictly
   outrank `/*` suffixes; longest string among suffixes; §6.1/§6.2/
   §6.3/V24 state one law — apex Always finally beats apex wildcard);
@@ -1727,8 +1718,7 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   best-effort wording; V21 prune-ref → V22; V4 homograph, V6
   construction path, V17 mode-split assertions; note shape frozen
   (`more-specific match wins`, pattern only).
-- v4 (draft): round-3 review folded (pass A 7 blocking / 4 minor;
-  pass B 3 / 9+ — both passes independently caught the v3
+- v4 (draft): review fixes (including the v3
   conflict-strict-parse deadlock). Headlines: **conflict rejection is
   gone** — one comparator (longest normalized pattern wins), overlaps
   store with a domination `note:` warning, `custos policy add` added
@@ -1755,9 +1745,8 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   `listeners_failed`; V2 renamed to `custos migrate/export`; V21 split
   (V26 for park knobs); V22 self-ref fixed; S7 Allow re-validates
   policy verdict too.
-- v3 (draft): round-2 review folded (pass A 16 blocking / 4 minor;
-  pass B 9 / 9 — independent fresh-context reviewer). Headlines
-  from pass B: **fsync chain** in §4.2 (temp fsync before rename, dir
+- v3 (draft): review fixes from two independent reviews (A and B).
+  Headlines from review B: **fsync chain** in §4.2 (temp fsync before rename, dir
   fsync, flushed WAL) + flock acquisition timeout `lock_wait_timeout`;
   refresh runs under a **per-credential refresh lock with the forward
   outside the mutation flock** (coalesced); verdict vocabulary closed
@@ -1774,7 +1763,7 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   + custody-routed `keys set`; WAL intents **resolve** to clean verify
   (V25 quiescence); Allow re-validates policy verdict, not just
   vault/registry.
-  Pass-A headlines: recovery moved from
+  Review-A headlines: recovery moved from
   boot to **first unlock** (locked daemon can't read age state — the
   old boot-reconcile text was impossible); WAL intents paired by
   **nonce + generation, never mtimes**, with `aborted`/`superseded`
@@ -1801,10 +1790,10 @@ keyboard). No TTY-only fallback needed unless dogfood says otherwise.
   moved to the `custos` namespace (KEYS-SPEC's frozen list gains
   nothing — CA-1's own words); deny-path status unified to `403
   surrogate` + CA-3 body; K2 shadow-warning misuse replaced with a
-  frozen custos-owned line; suite now V1–V25 (V26 was split out at
-  the same round's fold — see v5 entry); citation sweep
+  frozen custos-owned line; suite now V1–V25 (V26 was split out
+  later — see the v4 entry); citation sweep
   (KEYS-SPEC §4 not §9, V9 mis-ref gone, §C4-adjacent gone).
-- v2 (draft): round-1 review folded (two independent hostile reviews,
+- v2 (draft): first review fixes (two independent reviews,
   15 blocking + 16 minor, ~20 distinct defects). Headlines: vault
   inherits K4 name gate/cap and occupies K2 layer 2 (CA-1 rewritten);
   GET name set amended (no ghosts); single-door listener ownership

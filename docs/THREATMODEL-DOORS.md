@@ -1,6 +1,6 @@
 # Threat model: the doors protocol with MCP frames
 
-Status: beta criterion C (docs/BETA-CRITERIA.md § C) — threat-model pass.
+Status: Validated for beta (v1.0.0-beta1).
 Date: 2026-10-19. Method: line-level read of the request path, the doors.sock
 client, the MCP rail, and the SSE plumbing; every claim cites the code that
 holds it. Findings are numbered F1–F4 with disposition.
@@ -87,8 +87,8 @@ the rail mutates them (connect, die, restart, refresh).
 - **Rail state is lock-guarded with a codified order.** All rail views go
   through the `*Locked` accessors (`statusesLocked`, `listToolsLocked`)
   under `c.mu`; the refresh path takes `refreshMu → c.mu` in that order
-  everywhere (the one inversion found in the G2 review was fixed and locked
-  down in PR #101), and the D3 audit (docs/AUDIT-LOCKS.md) shows no network
+  everywhere (lock ordering verified), and the lock discipline audit
+  ([AUDIT-LOCKS.md](AUDIT-LOCKS.md)) shows no network
   I/O under any held mutex.
 - **Connector snapshot endpoint is a pure read.** `mcpConnectorsHandler`
   (custos_cards.go:283) grabs the registry pointer under `custosMu` and
@@ -98,7 +98,7 @@ the rail mutates them (connect, die, restart, refresh).
 - **Tool dispatch snapshots the canonical→raw map** per call (rail CallTool),
   so a mid-call tool-list refresh cannot route to a stale raw name.
 
-No finding: this axis was already the subject of PR #101 and stays clean
+No finding: this axis is verified and stays clean
 under line review.
 
 ## 4. Axis 3 — slow-client DoS
@@ -150,7 +150,7 @@ operator; nothing in the transport widens what a connector can request.**
 
 **Finding F4 (Info, accepted):** `govulncheck` covers our modules weekly in
 CI; `mcp-go`/`go-sdk` framing CVEs flow through it. Accepted: standard Go
-supply-chain posture, re-checked at the tag (criterion C, box 3).
+supply-chain posture, re-checked at release tagging.
 
 ## 6. Disposition
 

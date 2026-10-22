@@ -1,10 +1,9 @@
 # KEYS-SPEC — provider credentials, entered once, never fumbled
 
-Status: **DRAFT v4 — G1 review PASSED (round 5: zero blocking, zero
-minor).**
-Proposes the credential entry path for `hearthd` (config layer +
-surface). Nothing here is built yet; every behavior statement is a
-requirement, not an observation. Companion spec: SURFACE-SPEC (frozen; this spec carries one amendment,
+Status: **FROZEN (v1.0.0-beta1).**
+Defines the credential entry path for `hearthd` (config layer +
+surface). Every behavior statement is a normative requirement,
+not an observation. Companion spec: SURFACE-SPEC (frozen; this spec carries one amendment,
 K-A1: its §4 route table gains the three `/v1/keys` routes and its §2
 reverse-proxy note gains request-body logging for them). The real vault
 (`custos`, [ARCHITECTURE.md](ARCHITECTURE.md) P2)
@@ -32,7 +31,7 @@ into bug reports, no secret in shell history, and a reviewable
 `keys list` instead of `env | grep -i key`. Custos is what buys actual
 security at rest.
 
-## 1. Decisions (frozen on G1 pass)
+## 1. Decisions (frozen)
 
 **K1 — One file, boring format, per-instance.** Keys live in
 `<hearth>/keys.json` — anchored to the same instance root SURFACE-SPEC
@@ -302,64 +301,57 @@ Setup becomes: install → `token create` → open URL → paste key → talk.
 
 ## 5. Changelog
 
-- **v4 + G1 pass.** Round 5 returned ZERO BLOCKING, ZERO MINOR —
-  review closed; spec approved for the build queue (unimplemented as
-  of this changelog).
-- **v4.** G1 round 4 applied (3 blocking, 3 minor): flock
-  re-entrancy self-deadlock removed — HTTP mutation is *one* critical
-  section (write + swap before release; 204 never precedes a visible
-  key), socket reload is a separate acquirer that only runs after the
-  CLI released its hold; V10 traversal inputs (`..`, `%2f`) assert
-  "any 4xx/3xx, body not asserted" (mux path-cleaning runs before
-  routing — SURFACE-SPEC V4 doctrine) instead of an untestable
-  byte-equal 404; CLI empty-input failure frozen (`empty key`, exit
-  non-zero, no write — V10 covers the CLI door); whitespace-only env
-  var is a resolution miss (K2 layer 1 strips; V14 asserts no
-  `set (env)` lie, no phantom shadow warning); transport warning gets
-  V13 (playwright, incl. HTTPS-quiet clause); `keys rm` of an absent
+- **v4.** Implementation-ready specification: flock re-entrancy
+  self-deadlock removed — HTTP mutation is *one* critical section (write +
+  swap before release; 204 never precedes a visible key), socket reload is
+  a separate acquirer that only runs after the CLI released its hold; V10
+  traversal inputs (`..`, `%2f`) assert "any 4xx/3xx, body not asserted"
+  (mux path-cleaning runs before routing — SURFACE-SPEC V4 doctrine)
+  instead of an untestable byte-equal 404; CLI empty-input failure frozen
+  (`empty key`, exit non-zero, no write — V10 covers the CLI door);
+  whitespace-only env var is a resolution miss (K2 layer 1 strips; V14
+  asserts no `set (env)` lie, no phantom shadow warning); transport warning
+  gets V13 (playwright, incl. HTTPS-quiet clause); `keys rm` of an absent
   name short-circuits before socket discovery (no bogus "will apply"
   line; V12 asserts).
-- **v3.** G1 round 3 applied (3 blocking, 3 minor): CLI cap/gate
-  messages frozen as strings (`key store full`, `invalid provider
-  name`) so V10's byte-equal both-doors assertion is testable (exit
-  *codes* never carry HTTP semantics); reload-timeout exit defined
-  (0 — the write is the contract); K2 layers (2)/(3) require non-empty
-  after strip (no `set (config)` lie for `api_key: ""`); `keys rm`
+- **v3.** CLI cap/gate messages frozen as strings (`key store full`,
+  `invalid provider name`) so V10's byte-equal both-doors assertion is
+  testable (exit *codes* never carry HTTP semantics); reload-timeout exit
+  defined (0 — the write is the contract); K2 layers (2)/(3) require
+  non-empty after strip (no `set (config)` lie for `api_key: ""`); `keys rm`
   idempotent like DELETE; V2/V11 route paths corrected to
   `PUT /v1/keys/{name}`; K6 revocation wording fixed — a new turn with
   no resolvable key fails locally with a clear message, never sends a
   keyless request to fish for a 401.
-- **v2.** G1 round 2 applied (4 blocking, 5 minor): HTTP
-  `PUT`/`DELETE` now reload in-process — web saves no longer serve
-  stale keys until restart (K6 "both doors"); CLI treats any socket
+- **v2.** HTTP `PUT`/`DELETE` now reload in-process — web saves no longer
+  serve stale keys until restart (K6 "both doors"); CLI treats any socket
   failure incl. `ECONNREFUSED` on a stale socket as "no daemon" (V12
   asserts exit 0); K2 shadow warning scoped to the only true shadow
-  (env over keys.json — layer 3 can never shadow layer 2); `GET
-  /v1/keys` computed request-time from config ∪ keys.json — deleted
-  `force=true` keys leave the list, no ghosts (V5 covers both delete
-  cases); "unknown provider" for PUT defined (config ∪ keys.json —
-  drawer re-saves CLI-added keys without force); name gate aligned to
-  S4 (404, not 400) and applied identically to the CLI; CLI enforces
-  the 64-entry cap; reload ack (`OK\n`, 5 s) closes the
-  set-then-turn race; transport warning stays quiet on HTTPS.
-- **v1.** G1 round 1 applied (12 blocking, 8 minor): dropped the
-  concurrency-gate "rate limit" claim (it is a per-session mutex, not
-  a rate limiter) and the phantom "audit rules" claim (no route audit
-  exists; names-only logging stated instead); first-run flow made
-  token-honest (K7 routes through `token create`; drawer only when
-  authenticated); keys.json mutations serialized under flock (no lost
-  updates); SIGHUP replaced by a `RELOAD-KEYS` socket command with
-  new-turns-only swap (no signal-kills-daemon hazard, no mid-turn
-  mutation, no daemon-discovery gap); shadowed-keys.json warning added
-  so web/CLI edits can't silently no-op behind `api_key_env`;
-  `force=true` bounded by a 64-entry cap; `{name}` gets the SURFACE-SPEC
-  regex gate; K4's drawer contradiction resolved (config ∪ keys.json);
-  temp file pinned inside `<hearth>/` (EXDEV); cleartext warning
-  rewritten to what the client can actually know, plus the
-  reverse-proxy body-logging rule; `set`/`sha256_8` semantics defined
-  as K2 resolution status (V5 corrected); PUT trims and validates;
-  V2 byte-compares the file not the fingerprint; V4 reworded to the
-  exact-string assertion; V7 gets its mock-provider fixture; key
-  lengths dropped from list output; store moved from `$LARARIUM_HOME`
-  to `<hearth>/` (per-instance).
-- v0 (this draft): initial spec for G1.
+  (env over keys.json — layer 3 can never shadow layer 2); `GET /v1/keys`
+  computed request-time from config ∪ keys.json — deleted `force=true`
+  keys leave the list, no ghosts (V5 covers both delete cases); "unknown
+  provider" for PUT defined (config ∪ keys.json — drawer re-saves CLI-added
+  keys without force); name gate aligned to S4 (404, not 400) and applied
+  identically to the CLI; CLI enforces the 64-entry cap; reload ack
+  (`OK\n`, 5 s) closes the set-then-turn race; transport warning stays
+  quiet on HTTPS.
+- **v1.** Concurrency model refined: dropped the concurrency-gate "rate
+  limit" claim (it is a per-session mutex, not a rate limiter) and the
+  phantom "audit rules" claim (no route audit exists; names-only logging
+  stated instead); first-run flow made token-honest (K7 routes through
+  `token create`; drawer only when authenticated); keys.json mutations
+  serialized under flock (no lost updates); SIGHUP replaced by a
+  `RELOAD-KEYS` socket command with new-turns-only swap (no
+  signal-kills-daemon hazard, no mid-turn mutation, no daemon-discovery
+  gap); shadowed-keys.json warning added so web/CLI edits can't silently
+  no-op behind `api_key_env`; `force=true` bounded by a 64-entry cap;
+  `{name}` gets the SURFACE-SPEC regex gate; K4's drawer contradiction
+  resolved (config ∪ keys.json); temp file pinned inside `<hearth>/`
+  (EXDEV); cleartext warning rewritten to what the client can actually
+  know, plus the reverse-proxy body-logging rule; `set`/`sha256_8`
+  semantics defined as K2 resolution status (V5 corrected); PUT trims
+  and validates; V2 byte-compares the file not the fingerprint; V4
+  reworded to the exact-string assertion; V7 gets its mock-provider
+  fixture; key lengths dropped from list output; store moved from
+  `$LARARIUM_HOME` to `<hearth>/` (per-instance).
+- **v0.** Initial specification draft.
