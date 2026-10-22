@@ -1157,7 +1157,7 @@ func main() {
 	case "approvals":
 		exitCode = runApprovals(stateDir, cfg, subArgs)
 	case "mcp":
-		exitCode = runMCP(stateDir, cfg, subArgs)
+		exitCode = runMCP(v, stateDir, cfg, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb %q\n", verb)
 		exitCode = 2
@@ -1168,9 +1168,9 @@ func main() {
 	}
 }
 
-func runMCP(stateDir string, cfg *custos.Config, subArgs []string) int {
+func runMCP(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []string) int {
 	if len(subArgs) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: custos mcp status|tools|refresh|call [args]\n")
+		fmt.Fprintf(os.Stderr, "usage: custos mcp status|tools|refresh|call|trust|distrust [args]\n")
 		return 2
 	}
 	switch subArgs[0] {
@@ -1198,10 +1198,89 @@ func runMCP(stateDir string, cfg *custos.Config, subArgs []string) int {
 			args = strings.Join(subArgs[3:], " ")
 		}
 		return runMCPCall(stateDir, cfg, subArgs[1], subArgs[2], args)
+	case "trust":
+		if len(subArgs) != 2 {
+			fmt.Fprintf(os.Stderr, "usage: custos mcp trust <name>\n")
+			return 2
+		}
+		return runMCPTrust(v, stateDir, cfg, subArgs[1])
+	case "distrust":
+		if len(subArgs) != 2 {
+			fmt.Fprintf(os.Stderr, "usage: custos mcp distrust <name>\n")
+			return 2
+		}
+		return runMCPDistrust(v, stateDir, cfg, subArgs[1])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mcp subcommand %q\n", subArgs[0])
 		return 2
 	}
+}
+
+// runMCPTrust writes the connector-wide `<name>/*` auto rule. The pattern
+// grammar rejects always=true on a `/*` suffix, so the rule is an explicit
+// (non-always) credential-lane rule, identical to `policy add <name>/* auto`.
+func runMCPTrust(v *custos.Vault, stateDir string, cfg *custos.Config, name string) int {
+	pat := name + "/*"
+	if _, err := custos.ValidateCredentialPattern(pat, "auto", false); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid connector name %q\n", name)
+		return 2
+	}
+	if code := runPolicyAdd(v, stateDir, cfg, []string{"add", "credential", pat, "auto"}); code != 0 {
+		return code
+	}
+	fmt.Printf("trusted %s: rule %s = auto\n", name, pat)
+	fmt.Printf("WARNING: ALL current AND FUTURE tools of %s now run without approval; undo with: custos mcp distrust %s\n", name, name)
+	return 0
+}
+
+// runMCPDistrust removes the `<name>/*` auto rule, leaving any other
+// verdict on that pattern untouched.
+func runMCPDistrust(v *custos.Vault, stateDir string, cfg *custos.Config, name string) int {
+	pat := name + "/*"
+	if _, err := custos.ValidateCredentialPattern(pat, "auto", false); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid connector name %q\n", name)
+		return 2
+	}
+	rows, err := loadPolicyRows(v, stateDir, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	found := false
+	for _, r := range rows {
+		if r.Lane == "credential" && r.Pattern == pat && r.Verdict == "auto" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		fmt.Printf("%s was not trusted: no %s auto rule present; nothing changed\n", name, pat)
+		return 0
+	}
+	if code := runPolicyRm(v, stateDir, cfg, []string{"rm", "credential", pat}); code != 0 {
+		return code
+	}
+	fmt.Printf("distrusted %s: removed rule %s; tools fall back to their default verdicts\n", name, pat)
+	return 0
+}
+
+func loadPolicyRows(v *custos.Vault, stateDir string, cfg *custos.Config) ([]custos.PolicyRuleRow, error) {
+	client, err := custos.NewCtlClient(stateDir, cfg.LockWaitTimeout)
+	if err == nil {
+		resp, dialErr := client.RoundTrip("POLICY-LIST")
+		if dialErr == nil {
+			var rows []custos.PolicyRuleRow
+			if err := json.Unmarshal([]byte(resp), &rows); err != nil {
+				return nil, err
+			}
+			return rows, nil
+		}
+		if !errors.Is(dialErr, custos.ErrCtlNotListening) {
+			return nil, dialErr
+		}
+	}
+	_ = v.Policy().LoadStrict()
+	return v.Policy().ListRules(), nil
 }
 
 func runMCPStatus(stateDir string, cfg *custos.Config) int {
