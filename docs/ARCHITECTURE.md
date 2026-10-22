@@ -3,7 +3,7 @@
 > Open-source, self-hosted, model-agnostic personal AI agent.
 > **Lararium** is the house; **penates** are what it keeps. Your agent lives at your hearth, not ours.
 
-Working name lock: `lararium.io` (owned 2026-09-28, Cloudflare Registrar). "Penatus" reserved for the memory/persona subsystem.
+Project domain: `lararium.io`. "Penatus" designates the memory and persona subsystem.
 
 ---
 
@@ -98,20 +98,20 @@ Virtual cards = regulated money movement (issuer + BIN partner + KYC). Phase 5; 
 
 ## 4. Licensing
 
-- **Core (hearthd, penatus, custos, fasti, nuntius): AGPL-3.0** — fork-protection for a solo project; unambiguous "open source" signal to the audience.
+- **Core (hearthd, penatus, custos, fasti, nuntius): AGPL-3.0** — fork-protection; unambiguous open-source guarantee for users.
 - **App/clients + connector SDK: MIT** — maximize adoption.
-- No CLA unless we ever need dual-license leverage.
+- **Dual licensing:** commercial dual-licensing is offered directly by the project for proprietary embedding; no CLA required for community contributions.
 
 ## 5. Build-vs-borrow (the 100%-ours ledger)
 
-**Build (this is the company):** hearthd loop + session log; penatus formats + compaction policy; custos vault/surrogation/approvals/egress; fasti; PWA; connector-builder agent; packaging/updater.
+**Build (core product):** hearthd loop + session log; penatus formats + compaction policy; custos vault/surrogation/approvals/egress; fasti; PWA; connector-builder agent; packaging/updater.
 **Borrow & pin (libraries, vendored):** systemd-nspawn, Playwright/CDP, MCP SDKs, sqlite + FTS5 + sqlite-vec, React/Capacitor, web-push, age encryption, tailscale libs.
 **Consume (user's choice, not ours):** models (llama.cpp, Ollama, OpenRouter, Anthropic, Google…), OAuth providers, WhatsApp Cloud API.
 
-## 6. Roadmap (solo dev + AI coding agents; honest sizing)
+## 6. Roadmap
 
 - **P0 — Shrine & sign (1–2 wk):** monorepo, CI, `lararium.io` landing page, ADR log, license headers. *(org: `lararium-app`, repo `lararium`)*
-- **P1 — Hearth core (4–8 wk):** session engine + router + sandbox + penatus (files + compaction) + web chat with main/side chats. Milestone: we run our lives on it internally.
+- **P1 — Hearth core (4–8 wk):** session engine + router + sandbox + penatus (files + compaction) + web chat with main/side chats. Milestone: dogfooding and daily-driver validation.
 - **P2 — Custos (3–6 wk):** vault, surrogation proxy, approval cards, audit log. First public alpha. Milestone: an agent with Gmail access physically cannot leak the token.
 - **P3 — Connectors (4–8 wk):** 6–10 built-ins + MCP builder + custom-connector flow.
 - **P4 — Surfaces (4–6 wk):** PWA polish, Telegram, native shells, Android SMS/contacts/calls parity.
@@ -124,7 +124,7 @@ Virtual cards = regulated money movement (issuer + BIN partner + KYC). Phase 5; 
 
 1. **Scope gravity** — the funded competitors in this space have orgs; we have discipline. The cut line above is a load-bearing document.
 2. **OAuth review timelines** — start Google verification paperwork in P1, not P3.
-3. **Solo-bus factor** — AGPL + radical docs + dogfooding are the mitigation; it's also why every subsystem gets its spec in `/docs` before code lands.
+3. **Bus factor** — AGPL + radical docs + dogfooding are the mitigation; it's also why every subsystem gets its spec in `/docs` before code lands.
 4. **Model drift** — some models behave worse under our harness; the router's eval suite (golden agentic tasks per model) runs in CI against every provider bump.
 
 ---
