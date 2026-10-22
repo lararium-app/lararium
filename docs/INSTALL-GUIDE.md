@@ -444,6 +444,25 @@ custos -config ./lararium.yaml mcp refresh <name>
 
 Delete the server's block from `lararium.yaml` and restart `custosd`.
 
+### Trust an entire connector (optional)
+
+To stop approval cards for one connector — all of its current *and future*
+tools run without asking — mint a connector-wide rule:
+
+```bash
+custos -config ./lararium.yaml mcp trust <name>
+```
+
+This writes a credential-lane rule `<name>/* = auto`. Undo it with:
+
+```bash
+custos -config ./lararium.yaml mcp distrust <name>
+```
+
+Individual per-tool Always approvals still work when you want tighter
+scopes; `distrust` removes only the connector-wide rule, leaving those in
+place. Denylist rules always win over a connector-wide auto.
+
 ### When it does not start
 
 Match the `reason` column of `custos mcp status`:

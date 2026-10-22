@@ -15,7 +15,12 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 	}
 
 	pm := ws.parkMgr
+	key := pendingKey{cellID: cw.cellID, cred: conn.Credential(), tool: tool}
 	pm.mu.Lock()
+	if pc, ok := pm.pending[key]; ok {
+		pm.mu.Unlock()
+		return ws.awaitSharedCard(cw, conn, tool, pc)
+	}
 	if len(pm.byCell[cw.cellID]) >= pm.maxPerCell {
 		pm.mu.Unlock()
 		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "too_many_asks")
@@ -47,7 +52,9 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 		outcomeCh:  make(chan string, 1),
 		createdAt:  time.Now(),
 	}
+	pc := &pendingCard{key: key, cardID: id, done: make(chan struct{})}
 	pm.addParkLocked(flow)
+	pm.pending[key] = pc
 	pm.mu.Unlock()
 
 	if shedFlow != nil {
@@ -66,6 +73,17 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 		pm.mu.Unlock()
 	}
 
+	// finish publishes the single outcome to every flow parked on this
+	// card (the leader included) and audits the leader's own denial.
+	finish := func(allowed bool, reason string, resp WorkerResponse) (bool, WorkerResponse) {
+		pc.allowed, pc.reason, pc.resp = allowed, reason, resp
+		close(pc.done)
+		if !allowed {
+			ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, reason)
+		}
+		return allowed, resp
+	}
+
 	select {
 	case <-flow.outcomeCh:
 		// Evicted by global shed.
@@ -73,24 +91,21 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 			ws.hub.CancelCard(flow.id, "too_many_asks", "custos")
 		}
 		settle()
-		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "too_many_asks")
-		return false, errResponse(ErrCodeDenied, detailDeniedApproval)
+		return finish(false, "too_many_asks", errResponse(ErrCodeDenied, detailDeniedApproval))
 
 	case <-timer.C:
 		if flow.cancelled.CompareAndSwap(false, true) {
 			settle()
 			ws.hub.CancelCard(flow.id, "timeout", "timer")
 		}
-		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "ask_timeout")
-		return false, errResponse(ErrCodeDenied, detailDeniedApproval)
+		return finish(false, "ask_timeout", errResponse(ErrCodeDenied, detailDeniedApproval))
 
 	case <-ws.done:
 		if flow.cancelled.CompareAndSwap(false, true) {
 			settle()
 			ws.hub.CancelCard(flow.id, "timeout", "server_closed")
 		}
-		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "server_closed")
-		return false, errResponse(ErrCodeLocked, detailLocked)
+		return finish(false, "server_closed", errResponse(ErrCodeLocked, detailLocked))
 
 	case approved := <-decisionCh:
 		settle()
@@ -98,18 +113,31 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 			reason := ws.hub.Reason(cw.cellID, id)
 			switch reason {
 			case "custos_locked":
-				ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "custos_locked")
-				return false, errResponse(ErrCodeLocked, detailLocked)
+				return finish(false, "custos_locked", errResponse(ErrCodeLocked, detailLocked))
 			case "credential_revoked":
-				ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "credential_revoked")
-				return false, errResponse(ErrCodeDenied, detailDeniedRevoked)
+				return finish(false, "credential_revoked", errResponse(ErrCodeDenied, detailDeniedRevoked))
 			default:
-				ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "denied_by_user")
-				return false, errResponse(ErrCodeDenied, detailDeniedApproval)
+				return finish(false, "denied_by_user", errResponse(ErrCodeDenied, detailDeniedApproval))
 			}
 		}
-		return true, WorkerResponse{}
+		return finish(true, "", WorkerResponse{})
 	}
+}
+
+// awaitSharedCard parks a duplicate call on the already-pending card for the
+// same connector+tool and resumes with that card's outcome. The leader owns
+// the card's hold timer and shutdown handling, so no waiter is orphaned.
+func (ws *WorkerServer) awaitSharedCard(cw *cellWorker, conn Connector, tool string, pc *pendingCard) (bool, WorkerResponse) {
+	select {
+	case <-pc.done:
+	case <-ws.done:
+		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, "server_closed")
+		return false, errResponse(ErrCodeLocked, detailLocked)
+	}
+	if !pc.allowed {
+		ws.auditDenied(cw, conn.Credential(), conn.Host(), tool, pc.reason)
+	}
+	return pc.allowed, pc.resp
 }
 
 // RegisterParkForTest registers a parked flow in the worker park manager for testing.
