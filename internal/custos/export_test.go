@@ -23,6 +23,11 @@ func SetCopyPayloadForTest(fn func(io.Writer, io.Reader) (int64, error)) {
 	}
 }
 
+// NewPolicyFingerprintRevokerForTest builds a policyFingerprintRevoker for testing.
+func NewPolicyFingerprintRevokerForTest(p *PolicyEngine) FingerprintRevoker {
+	return &policyFingerprintRevoker{policy: p}
+}
+
 // MCPConnector test seams (MCP rail). Production mcp_rail.go stays free of
 // test-only surface; these compile into the test binary only.
 
