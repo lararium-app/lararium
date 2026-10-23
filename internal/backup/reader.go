@@ -117,7 +117,11 @@ func ExtractConfig(bundlePath string, destPath string, ids ...age.Identity) erro
 		return fmt.Errorf("destination path %s already exists: extract-config refuses to overwrite", destPath)
 	}
 
-	zr, err := OpenBundle(bundlePath, ids...)
+	// M2: §4.5.4's verify-first law covers every read verb. A tampered
+	// bundle could swap config/lararium.yaml to redirect providers or
+	// MCP endpoints the moment an operator recovered from it, so the
+	// full manifest verification runs before anything is written.
+	_, zr, err := verifyAndOpenBundle(bundlePath, ids...)
 	if err != nil {
 		return fmt.Errorf("open backup bundle: %w", err)
 	}
