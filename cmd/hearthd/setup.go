@@ -1043,7 +1043,7 @@ func updateYAML(path, providerName, baseURL, apiKeyEnv, defaultModel, compactMod
 			if err != nil {
 				return fmt.Errorf("reading config for backup: %w", err)
 			}
-			if err := atomicWriteFile(bakPath, oldBytes, 0o644); err != nil {
+			if err := atomicWriteFile(bakPath, oldBytes, 0o600); err != nil {
 				return fmt.Errorf("writing backup %q: %w", bakPath, err)
 			}
 		}
@@ -1123,7 +1123,7 @@ func updateYAML(path, providerName, baseURL, apiKeyEnv, defaultModel, compactMod
 		return fmt.Errorf("encoding YAML nodes: %w", err)
 	}
 
-	fileMode := os.FileMode(0o644)
+	fileMode := os.FileMode(0o600) // M7: config may hold inlined keys
 	if info, err := os.Stat(path); err == nil {
 		fileMode = info.Mode().Perm()
 	}
@@ -1264,7 +1264,7 @@ func RunDefaults(out io.Writer, cfgPath string) error {
 			return fmt.Errorf("creating directory for config: %w", err)
 		}
 		content := fmt.Sprintf(bareHostConfigTemplate, hearthHome)
-		if err := atomicWriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		if err := atomicWriteFile(cfgPath, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("writing config %s: %w", cfgPath, err)
 		}
 		fmt.Fprintf(out, "created: %s\n", cfgPath)
