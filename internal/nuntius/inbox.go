@@ -42,6 +42,16 @@ type Record struct {
 	Payload   string  `json:"payload"`
 	Done      bool    `json:"done"`
 	SessionID *string `json:"session_id"`
+
+	// Sender identity as received. Replay must decide on the REAL
+	// sender and chat, never a reconstructed owner envelope: a
+	// not-done record from a stranger would otherwise replay as an
+	// admitted owner turn after a crash between accept and
+	// mark-done. Records written before this field existed carry
+	// empty values; replay fails closed on them.
+	SenderID string `json:"sender_id,omitempty"`
+	ChatID   string `json:"chat_id,omitempty"`
+	ChatType string `json:"chat_type,omitempty"`
 }
 
 // Inbox is the durable write-ahead inbox (spec §2, N10). Every update
@@ -135,6 +145,27 @@ func (in *Inbox) Append(rec Record) (int64, error) {
 	rec.Done = false
 	rec.SessionID = nil
 
+	if !in.seen[rec.UpdateID] {
+		if err := in.appendLine(rec); err != nil {
+			return in.offset, err
+		}
+		in.seen[rec.UpdateID] = true
+	}
+	if rec.UpdateID > in.offset {
+		in.offset = rec.UpdateID
+	}
+	return in.offset, nil
+}
+
+// AppendDone appends a record that is terminal on arrival: the line is
+// durable (so the watermark advances and dedupe holds) but replay will
+// never see it. Used for updates the gate refuses before execution,
+// where re-deciding later could disagree with the decision made with
+// the live envelope in hand.
+func (in *Inbox) AppendDone(rec Record) (int64, error) {
+	rec.Payload = SanitizePayload(rec.Payload)
+	rec.Done = true
+	rec.SessionID = nil
 	if !in.seen[rec.UpdateID] {
 		if err := in.appendLine(rec); err != nil {
 			return in.offset, err
