@@ -478,6 +478,8 @@ Extension stays `<name>.lararium-backup`.
    mutation holds `custos.lock` across its whole protocol (CUSTOS-SPEC §4.2) and the
    walk holds it across the **whole tree**, vault+MAC+surrogates — and
    their relation to `keys.json` — are one coherent instant.
+   Lock files are opened `O_NOFOLLOW` so a symlinked lock path is refused
+   outright (M6).
 4. **Output law.** `--out <p>`; default `./hearth-<UTC ts>.lararium-backup`
    (cwd). An `--out` inside the hearth root → refuse (self-inclusion); both
    hearth root and output path evaluate symlinks via filepath.EvalSymlinks before
