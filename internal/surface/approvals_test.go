@@ -181,3 +181,45 @@ func TestSessionOf(t *testing.T) {
 		t.Fatal("SessionOf for unknown approval id should return false")
 	}
 }
+
+// M19: approvals hub unbounded growth — 1000 settle cycles -> map sizes stay bounded;
+// pending survive pruning.
+func TestApprovalHub_TerminalPruning(t *testing.T) {
+	h := NewApprovalHub(5 * time.Minute)
+	const sessionID = "s_session_pruning_test"
+
+	// 1. Create a pending approval that will NEVER be settled.
+	pendingID, _ := h.Register(sessionID, "pending_tool", `{}`, func(string) {})
+
+	// 2. Run 1000 settle cycles: insert an approval and settle it.
+	for i := range 1000 {
+		id, ch := h.Register(sessionID, "tool", `{}`, func(string) {})
+		code := h.Resolve(sessionID, id, true)
+		if code != 200 {
+			t.Fatalf("cycle %d: resolve failed with %d", i, code)
+		}
+		<-ch
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	sessionMap := h.bySession[sessionID]
+	if sessionMap == nil {
+		t.Fatal("session map is nil")
+	}
+
+	// Map size stays bounded (at most 50 terminal entries plus pending).
+	if len(sessionMap) > maxTerminalEntriesPerSession+2 {
+		t.Fatalf("session map size = %d, want <= %d", len(sessionMap), maxTerminalEntriesPerSession+2)
+	}
+
+	// Pending entry must survive pruning!
+	pendingAp, ok := sessionMap[pendingID]
+	if !ok {
+		t.Fatalf("pending approval %s was pruned", pendingID)
+	}
+	if pendingAp.state != "pending" {
+		t.Fatalf("pending approval state = %q, want pending", pendingAp.state)
+	}
+}

@@ -7,6 +7,7 @@ package surface
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -255,16 +256,17 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 	if h.bridgeLive != nil && h.bridgeLive() {
 		ap.channels |= ChannelTelegram
 	}
+	ap.createdAt = time.Now()
+	if timeout <= 0 {
+		timeout = h.timeout
+	}
+	ap.expiresAt = ap.createdAt.Add(timeout)
 	if h.bySession[cell] == nil {
 		h.bySession[cell] = make(map[string]*approval)
 	}
 	h.bySession[cell][id] = ap
+	h.pruneTerminalLocked(cell)
 
-	if timeout <= 0 {
-		timeout = h.timeout
-	}
-	ap.createdAt = time.Now()
-	ap.expiresAt = ap.createdAt.Add(timeout)
 	ap.timer = time.AfterFunc(timeout, func() { h.resolveTimeout(id) })
 	h.mu.Unlock()
 
@@ -336,10 +338,12 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 		argsSummary: argsSummary,
 		webLive:     channels&ChannelWeb != 0,
 	}
+	ap.createdAt = time.Now()
 	if h.bySession[sessionID] == nil {
 		h.bySession[sessionID] = make(map[string]*approval)
 	}
 	h.bySession[sessionID][id] = ap
+	h.pruneTerminalLocked(sessionID)
 
 	if channels == 0 {
 		ap.state, ap.reason, ap.source = "denied", "disconnected", "hub"
@@ -354,7 +358,6 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 	if channels&ChannelWeb != 0 {
 		timeout = h.timeout
 	}
-	ap.createdAt = time.Now()
 	ap.expiresAt = ap.createdAt.Add(timeout)
 	ap.timer = time.AfterFunc(timeout, func() { h.resolveTimeout(id) })
 	h.mu.Unlock()
@@ -464,6 +467,35 @@ func (h *ApprovalHub) findLocked(id string) (*approval, bool) {
 		}
 	}
 	return nil, false
+}
+
+// maxTerminalEntriesPerSession caps retained terminal entries per session (M19).
+const maxTerminalEntriesPerSession = 50
+
+// pruneTerminalLocked drops older terminal entries when the terminal count
+// for sessionID exceeds maxTerminalEntriesPerSession (M19). Pending entries are
+// never pruned. Callers hold h.mu.
+func (h *ApprovalHub) pruneTerminalLocked(sessionID string) {
+	session := h.bySession[sessionID]
+	if len(session) <= maxTerminalEntriesPerSession {
+		return
+	}
+	var terminals []*approval
+	for _, ap := range session {
+		if ap.state != "pending" {
+			terminals = append(terminals, ap)
+		}
+	}
+	if len(terminals) <= maxTerminalEntriesPerSession {
+		return
+	}
+	sort.Slice(terminals, func(i, j int) bool {
+		return terminals[i].createdAt.Before(terminals[j].createdAt)
+	})
+	excess := len(terminals) - maxTerminalEntriesPerSession
+	for i := range excess {
+		delete(session, terminals[i].id)
+	}
 }
 
 // Resolve settles a pending approval from the web channel. Returns the

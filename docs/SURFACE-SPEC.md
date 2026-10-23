@@ -221,6 +221,9 @@ event is `event: <type>` + `data: <json>`. Types (frozen):
   that approval's card was marked undeliverable (`card_dead`,
   NUNTIUS-SPEC §7.1); web-only behavior is unchanged when nuntius is
   disabled.) Timeout → `timed_out` (logged `denied:timeout`).
+  Terminal entries (settled/denied/expired/cancelled) are pruned on insert,
+  keeping at most 50 most-recent terminal entries per session (M19); pending
+  entries are never pruned.
 - **Cancel resolves pending approvals (A5):** when a turn is cancelled
   (`POST …/cancel` or nuntius `/cancel`), every approval still pending on
   that turn resolves to `denied` immediately, same mutex, same
