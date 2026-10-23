@@ -1,0 +1,120 @@
+name: Security Gate
+
+# PR-time security audit for the Lararium daemon:
+#   - secrets (gitleaks, full history) — blocking
+#   - known vulnerabilities (govulncheck + osv-scanner) — blocking
+#   - SAST (CodeQL, Go) — reporting; findings land in the Security tab
+# Runs on every pull request, weekly, and manually (the weekly sweep
+# catches advisories published against unchanged code).
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays ~04:17 UTC, pinned so gate checks exist
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: secrets
+    permissions:
+      contents: read
+      security-events: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history
+      - name: gitleaks
+        # v8.21.2 pinned: verified to detect planted secrets with the full
+        # default ruleset (newer 8.30.x silently misses them); the
+        # safe.directory config makes history scanning deterministic inside
+        # the container. Known false positives are allowlisted with reasons
+        # in .gitleaks.toml.
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" -w /repo \
+            --entrypoint sh ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            -c "git config --global --add safe.directory /repo && \
+                gitleaks git --redact --no-banner --exit-code 1 \
+                  -c /repo/.gitleaks.toml \
+                  -f sarif -r /repo/gitleaks.sarif ."
+      - name: Upload SARIF
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.28.11
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+  vulncheck:
+    name: vulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go run ./... 2>/dev/null || true # warm module cache for analysis
+          govulncheck ./...
+
+  osv:
+    name: osv
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install osv-scanner
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
+            -o /usr/local/bin/osv-scanner \
+            https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          chmod +x /usr/local/bin/osv-scanner
+          osv-scanner --version
+      - name: Scan lockfiles (go.mod, package-lock.json)
+        run: |
+          osv-scanner scan --config osv-scanner.toml --lockfile=go.mod go.mod
+          osv-scanner scan --config osv-scanner.toml \
+            --lockfile=web/package-lock.json web/package-lock.json
+      - name: Scan SBOM (if present)
+        run: |
+          if [ -f deploy/lararium-host.sbom.json ]; then
+            osv-scanner scan --config osv-scanner.toml \
+              --sbom=deploy/lararium-host.sbom.json deploy/lararium-host.sbom.json
+          fi
+
+  codeql:
+    name: codeql (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Stub embedded web assets
+        # The daemon go:embeds web/dist; CI does not build the UI here.
+        # One stub file satisfies the embed pattern for extraction.
+        run: mkdir -p web/dist && touch web/dist/index.html
+      - uses: github/codeql-action/init@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.28.11
+        with:
+          languages: go
+          queries: security-and-quality
+      - name: Build for extraction
+        run: go build ./...
+      - uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.28.11
+        with:
+          category: /language:go
