@@ -3,6 +3,8 @@ package surface
 import (
 	"errors"
 	"net"
+	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -42,8 +44,38 @@ func (c *ServeConfig) Normalize() error {
 	return nil
 }
 
+// IsLoopbackLiteral reports whether raw represents a loopback IP literal (L-16 law).
+// It parses the IP via netip, verifies IsLoopback (covering 127.0.0.0/8 and ::1),
+// and strictly rejects zone IDs (such as %eth0), hostnames, and invalid
+// notations (such as octal leading zeros). Bracketed IPv6 forms like [::1]
+// are unwrapped and checked.
+func IsLoopbackLiteral(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.Contains(raw, "%") {
+		return false
+	}
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		raw = raw[1 : len(raw)-1]
+	}
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		return false
+	}
+	if addr.Zone() != "" {
+		return false
+	}
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	return addr.IsLoopback()
+}
+
 // isLoopbackHost is the loopback test used by both the start gate and
-// the server's bind-time check (spec §2).
+// the server's bind-time check (spec §2, L-16).
 func isLoopbackHost(host string) bool {
-	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	return IsLoopbackLiteral(h)
 }

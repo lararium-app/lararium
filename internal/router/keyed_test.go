@@ -144,6 +144,12 @@ func TestIsLoopbackURL(t *testing.T) {
 		{"https://api.openrouter.example/v1", false},
 		{"http://10.0.0.5:8080", false},
 		{"http://198.51.100.2:13308/v1", false},
+		// L-16 unified classifier table
+		{"http://127.0.0.53:8080", true},
+		{"http://0177.0.0.1:8080", false},
+		{"http://[::1]:8080", true},
+		{"http://[::1%eth0]:8080", false},
+		{"http://8.8.8.8:8080", false},
 	}
 	for _, c := range cases {
 		if got := isLoopbackURL(c.url); got != c.want {

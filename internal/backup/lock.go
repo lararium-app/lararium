@@ -55,7 +55,8 @@ func openAndFlock(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir lock dir %s: %w", filepath.Dir(path), err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	// O_NOFOLLOW: refuse symlinked lock target (PENATUS-SPEC §4.5.3.3 / M6).
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock %s: %w", filepath.Base(path), err)
 	}

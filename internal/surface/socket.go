@@ -99,12 +99,19 @@ func (c *socketCloser) acceptLoop(reload func() error) {
 	}
 }
 
+const maxSocketCommandLine = 4096
+
 func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(backupAckTimeout))
-	reader := bufio.NewReader(conn)
+	lr := io.LimitReader(conn, maxSocketCommandLine)
+	reader := bufio.NewReader(lr)
 	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
+		return
+	}
+	if !strings.HasSuffix(line, "\n") {
+		_, _ = fmt.Fprint(conn, "ERR line too long\n")
 		return
 	}
 	cmd := trimCR(line)
@@ -207,21 +214,55 @@ func (s *Server) handleBackupSocket(conn net.Conn, line string) {
 	_, _ = fmt.Fprint(conn, "DONE\n")
 }
 
+// evalSymlinksPath fully resolves symlinks on path, resolving closest existing
+// ancestor if the path (or tail components) do not exist yet (PENATUS §4.5.3.4, L-1).
+func evalSymlinksPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	var tail []string
+	curr := abs
+	for {
+		parent := filepath.Dir(curr)
+		base := filepath.Base(curr)
+		tail = append([]string{base}, tail...)
+		curr = parent
+		resolvedParent, pErr := filepath.EvalSymlinks(curr)
+		if pErr == nil {
+			return filepath.Join(append([]string{resolvedParent}, tail...)...), nil
+		}
+		if curr == "/" || curr == "." || curr == parent {
+			break
+		}
+	}
+	return abs, nil
+}
+
+// checkSelfInclusionSocket verifies outAbs is not inside hearth root per PENATUS-SPEC §4.5.3.4, L-1.
+// Resolves symlinks on both root and outAbs so symlinks cannot alias into or out of state.
 func checkSelfInclusionSocket(root, outAbs string) error {
-	absRoot, err := filepath.Abs(root)
+	realRoot, err := evalSymlinksPath(root)
 	if err != nil {
 		return fmt.Errorf("resolve root: %w", err)
 	}
-	absOut, err := filepath.Abs(outAbs)
+	realOut, err := evalSymlinksPath(outAbs)
 	if err != nil {
 		return fmt.Errorf("resolve out: %w", err)
 	}
-	rel, err := filepath.Rel(absRoot, absOut)
+	rel, err := filepath.Rel(realRoot, realOut)
 	if err != nil {
 		return fmt.Errorf("check self-inclusion: %w", err)
 	}
-	if !strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("--out inside hearth root (self-inclusion refused): %s is inside %s", outAbs, absRoot)
+	if rel == "." || !strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("--out inside hearth root (self-inclusion refused): %s is inside %s", outAbs, realRoot)
 	}
 	return nil
 }

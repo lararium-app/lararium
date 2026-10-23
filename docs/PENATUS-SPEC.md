@@ -203,6 +203,12 @@ sweep, which is itself an event. Rewriting `events.jsonl` in place is never vali
 hearthd quarantines the session (opens it read-only, flags it in the UI) rather
 than guessing.
 
+**Blob containment law (M3):** any `result_ref` resolved for session assembly
+MUST be relative to the session directory and MUST NOT escape the session
+directory after lexical cleaning (no absolute paths, no `..` segments crossing
+above the session root). Escaping or absolute references resolve to empty and
+the read is skipped entirely.
+
 ---
 
 ## 3. Compaction events
@@ -472,8 +478,13 @@ Extension stays `<name>.lararium-backup`.
    mutation holds `custos.lock` across its whole protocol (CUSTOS-SPEC §4.2) and the
    walk holds it across the **whole tree**, vault+MAC+surrogates — and
    their relation to `keys.json` — are one coherent instant.
+   Lock files are opened `O_NOFOLLOW` so a symlinked lock path is refused
+   outright (M6).
 4. **Output law.** `--out <p>`; default `./hearth-<UTC ts>.lararium-backup`
    (cwd). An `--out` inside the hearth root → refuse (self-inclusion).
+   Symlinks in both the state root and the requested `--out` path are fully
+   resolved before prefix comparison, so a symlink inside or outside state
+   cannot alias into or out of the protected root (L-1).
 
 
 ### 4.5.4 Restore (A4.2, S10.1, V10.1)
@@ -538,7 +549,16 @@ Restore law:
    **inert forever** (sibling heuristics would clobber fresh `--to`
    restores and lock out DR). A markerless staging dir is garbage by
    construction (contents complete ⇒ marker would exist) — CLI may
-   report it, never resumes it. Recovery table (evaluated by every
+   report it, never resumes it.
+
+   **Marker staging trust law (M5):** a recovered marker's `staging`
+   path is trusted only if it is (a) absolute, (b) a direct child of the
+   same parent directory as the restore target dir recorded in the marker,
+   and (c) its base name matches the `<dir>.staging-` prefix written at
+   creation. If untrusted: never delete anything, quarantine the marker
+   file (rename `.rejected`), and log once.
+
+   Recovery table (evaluated by every
    `hearthd` / `hearthd restore` invocation against its own root path
    before doing anything — one glob over `.restore-*.json`):
 

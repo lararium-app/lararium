@@ -375,12 +375,8 @@ func WriteSurrogatesFile(stateDir string, doc *SurrogateDoc, passphrase string) 
 		return err
 	}
 
-	// fsync dir
-	if df, err := os.Open(stateDir); err == nil {
-		_ = df.Sync()
-		_ = df.Close()
-	}
-	return nil
+	// fsync dir per CUSTOS-SPEC §4.2, M22
+	return fsyncDir(stateDir)
 }
 
 // Lookup finds a record by exact token.

@@ -40,7 +40,9 @@ contend for one file. A JSON object mapping provider name → secret.
 Written atomically: temp file **created inside `<hearth>/`** (never
 `$TMPDIR` — a cross-mount `rename` fails `EXDEV`), mode `0600` set on
 the temp file before rename, parent dir `0700`, `rename(2)` over the
-target. No encryption at rest in v1 (see §0's honest delta).
+target. No encryption at rest in v1 (see §0's honest delta). An empty
+or zero-length `keys.json` file is treated as an empty keystore (recoverable),
+while corrupt non-empty content remains a read error (L-3).
 
 **K2 — Resolution order, with shadowing made visible.** At startup and
 on reload, a provider's key resolves: (1) `api_key_env` environment
@@ -181,7 +183,7 @@ write failed when it did not).
 failure — missing file, `ECONNREFUSED` on a stale file left by a
 crashed daemon, permission error — as "no daemon": the write already
 succeeded, the CLI prints `no daemon running — will apply at next
-start` and exits 0. On reload the daemon re-reads `keys.json` and
+start` and exits 0. Socket command lines are capped at 4096 bytes via io.LimitReader; lines exceeding the budget or missing a newline answer `ERR line too long` and close (L-2). On reload the daemon re-reads `keys.json` and
 swaps its in-memory map **for new turns only**: a turn in flight keeps
 the provider client it started with (SURFACE-SPEC P3 turn atomicity —
 revoking a key never mutates a running turn mid-stream). A new turn

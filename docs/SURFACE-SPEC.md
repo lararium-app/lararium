@@ -50,8 +50,11 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
 - **Host gate:** every request's `Host` header, after stripping the port,
   must name `localhost`, `127.0.0.1`, `::1`, or an entry of
   `serve.allowed_hosts` (config list; required to be non-empty when
-  binding non-loopback — the daemon refuses to start otherwise). Any port
-  is accepted on those hosts (browsers send `Host: localhost:7717`).
+  binding non-loopback — the daemon refuses to start otherwise). Both allowed_hosts
+  entries and incoming Host headers are stripped of ports before comparison (M18).
+  Loopback host names (`localhost`, `*.localhost`, `127.0.0.1`, `::1`) are accepted
+  only if the connection's local address is proven loopback; otherwise rejected with 403 (M18).
+  Any port is accepted on those hosts (browsers send `Host: localhost:7717`).
   Anything else → 403. This closes DNS-rebinding: a rebinding attack
   arrives with the attacker's domain in `Host`, which is never listed.
   Reverse-proxy/tailnet use = put your hostname/tailnet IP in
@@ -70,6 +73,7 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
   `serve.turn_timeout` (default 10 min) aborts the turn (engine `error`,
   gate released), and `POST …/cancel` (§4) ends it on demand.
 - All bodies ≤ 1 MiB (413 otherwise); JSON `application/json` UTF-8.
+- **Timeouts:** `http.Server` `ReadTimeout` is 60 s and `ReadHeaderTimeout` is 10 s to bound slow-body and slow-header requests; `WriteTimeout` is left zero because Go's `http.Server` lacks `WriteIdleTimeout` and global `WriteTimeout` terminates long-lived SSE streams (M17).
 - **Shutdown:** SIGTERM stops accepting, lets in-flight turns reach their
   terminal event for up to 60 s, then force-exits. A force-exit (or crash)
   discards uncommitted partial turns — the append-only log never holds a
@@ -170,10 +174,10 @@ must amend, not creep.
   `parent:"main"`, `branch` event per PENATUS §2) — the API never invents
   a format the file spec doesn't already define.
 - `main` cannot be created or deleted over the API; it exists or the
-  daemon misconfigured. No delete endpoint in v1 (archive is a file-layer
+  daemon misconfigured. Deleting `main` answers 403 Forbidden regardless of whether it exists on disk, preventing probe oracles (L-4). No delete endpoint in v1 (archive is a file-layer
   rename, PENATUS §2, out of scope here).
 - Errors: `{"error": string}` + correct status (400/401/404/409/413/500).
-  500 never echoes internals.
+  500 never echoes internals: 500-class responses carry a short generic reason (`internal error`, `delete failed`, `key store write failed`); the full failure detail goes to the daemon-side log only and never echoes internal strings (L-15).
 
 ## 5. Streaming protocol (SSE)
 
