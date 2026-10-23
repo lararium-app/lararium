@@ -1117,7 +1117,7 @@ per-cell listeners) and gains: (a) the §5.2 surrogate pipeline; (b) a
 policy consult per **dialed destination**, forward-time: the proxy
 resolves, checks the floor (CA-2 amended list), then matches §6.3
 against the *actual dial target* — approve-time metadata is advisory,
-forward-time match is the law (rebinding doctrine, V16). `ask` flows:
+forward-time match is the law (rebinding doctrine, V16). Loopback destinations in proxy floor checks and surface helpers share a unified loopback classifier law: parse IP via netip, check IsLoopback covering 127.0.0.0/8 and ::1, and strictly reject zone IDs (L-16). `ask` flows:
 the proxy reads headers, parks the flow in ask state (socket held open,
 **no read deadline consumed** — parked flows are tracked in daemon
 memory, bounded by `custos.ask_hold_timeout` default 330s = hub's

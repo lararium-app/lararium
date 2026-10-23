@@ -41,8 +41,7 @@ func isLoopbackHostName(h string) bool {
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return true
 	}
-	ip := net.ParseIP(h)
-	return ip != nil && ip.IsLoopback()
+	return IsLoopbackLiteral(h)
 }
 
 func isRequestLocalAddrLoopback(r *http.Request) bool {
