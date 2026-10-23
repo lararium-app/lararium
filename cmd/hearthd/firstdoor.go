@@ -202,7 +202,7 @@ func appendAllowedHosts(path string, newHosts []string) error {
 		if err != nil {
 			return fmt.Errorf("reading config for backup: %w", err)
 		}
-		if err := atomicWriteFile(bakPath, oldBytes, 0o644); err != nil {
+		if err := atomicWriteFile(bakPath, oldBytes, 0o600); err != nil {
 			return fmt.Errorf("writing backup %q: %w", bakPath, err)
 		}
 	}

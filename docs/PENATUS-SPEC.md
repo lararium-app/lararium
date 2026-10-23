@@ -152,6 +152,11 @@ source of truth (rule 5).
 
 `agent/sessions/<session-id>/` with:
 
+**Mode law (amendment, audit M7).** Session dirs are created `0700`;
+`session.json` and `events.jsonl` are created `0600` — transcripts are
+the same confidentiality class as the authored tree they export with.
+Opening a session tightens any looser mode left by an older build.
+
 **session.json** (written once at creation, updated on rename/archive):
 
 ```json

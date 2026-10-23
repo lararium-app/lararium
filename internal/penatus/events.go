@@ -97,6 +97,13 @@ func (l *Log) Dir() string { return l.dir }
 func OpenLog(dir string) (*Log, error) {
 	path := filepath.Join(dir, "events.jsonl")
 
+	// M7: sessions are secret-class; tighten pre-existing loose modes
+	// from older builds on open (best-effort — never fail an open).
+	_ = os.Chmod(dir, 0o700)
+	if _, err := os.Stat(path); err == nil {
+		_ = os.Chmod(path, 0o600)
+	}
+
 	log := &Log{
 		dir:  dir,
 		path: path,
@@ -165,7 +172,7 @@ func (l *Log) Append(e Event) error {
 		return err
 	}
 
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
