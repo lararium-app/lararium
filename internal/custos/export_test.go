@@ -2,6 +2,7 @@ package custos
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -11,6 +12,20 @@ import (
 // Available only in test binaries.
 func SetKillPointHook(hook func(string)) {
 	killPointHook = hook
+}
+
+// SetCopyPayloadForTest sets the copyPayload seam for M10 testing.
+func SetCopyPayloadForTest(fn func(io.Writer, io.Reader) (int64, error)) {
+	if fn == nil {
+		copyPayload = io.Copy
+	} else {
+		copyPayload = fn
+	}
+}
+
+// NewPolicyFingerprintRevokerForTest builds a policyFingerprintRevoker for testing.
+func NewPolicyFingerprintRevokerForTest(p *PolicyEngine) FingerprintRevoker {
+	return &policyFingerprintRevoker{policy: p}
 }
 
 // MCPConnector test seams (MCP rail). Production mcp_rail.go stays free of
@@ -194,4 +209,9 @@ func (c *MCPConnector) HasRetryTimerForTest() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.retryTimer != nil
+}
+
+// SetPayloadWriterHookForTest sets payloadWriterHook for testing (M22).
+func SetPayloadWriterHookForTest(fn func(w io.Writer, p []byte) (int, error)) {
+	payloadWriterHook = fn
 }

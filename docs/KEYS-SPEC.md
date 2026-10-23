@@ -40,7 +40,9 @@ contend for one file. A JSON object mapping provider name → secret.
 Written atomically: temp file **created inside `<hearth>/`** (never
 `$TMPDIR` — a cross-mount `rename` fails `EXDEV`), mode `0600` set on
 the temp file before rename, parent dir `0700`, `rename(2)` over the
-target. No encryption at rest in v1 (see §0's honest delta).
+target. No encryption at rest in v1 (see §0's honest delta). An empty
+or zero-length `keys.json` file is treated as an empty keystore (recoverable),
+while corrupt non-empty content remains a read error (L-3).
 
 **K2 — Resolution order, with shadowing made visible.** At startup and
 on reload, a provider's key resolves: (1) `api_key_env` environment

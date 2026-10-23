@@ -131,7 +131,7 @@ func SanitizeText(s string, needles []string, maxRunes int) string {
 	scrubbed := ScrubString(cleaned, needles)
 
 	runes := []rune(scrubbed)
-	if len(runes) > maxRunes {
+	if maxRunes > 0 && len(runes) > maxRunes {
 		cut := maxRunes - 1
 		if cut < 0 {
 			cut = 0
@@ -337,10 +337,12 @@ func writeCanonicalFloat(b *strings.Builder, f float64) error {
 }
 
 // ToolFingerprint computes SHA-256 over RFC 8785 canonical JSON of
-// {name, title, description, inputSchema, annotations} per CUSTOS §6.5.
-func ToolFingerprint(name, title, description string, inputSchema any, annotations any) (string, error) {
+// {annotations, connector, description, inputSchema, name, title} per MCP-SPEC §4.3 (F5).
+// Comparison input is collision-free across connectors and tools; display truncation stays display-only.
+func ToolFingerprint(connector, name, title, description string, inputSchema any, annotations any) (string, error) {
 	payload := map[string]any{
 		"annotations": annotations,
+		"connector":   connector,
 		"description": description,
 		"inputSchema": inputSchema,
 		"name":        name,
@@ -464,10 +466,12 @@ func BuildCatalogSnapshot(
 		}
 		usedNames[canon] = true
 
+		fullTitle := SanitizeText(rt.Title, needles, 0)
+		fullDesc := SanitizeText(rt.Description, needles, 0)
 		sanTitle := SanitizeText(rt.Title, needles, 120)
 		sanDesc := SanitizeText(rt.Description, needles, 120)
 
-		fp, err := ToolFingerprint(canon, sanTitle, sanDesc, rt.InputSchema, rt.Annotations)
+		fp, err := ToolFingerprint(connector, rawName, fullTitle, fullDesc, rt.InputSchema, rt.Annotations)
 		if err != nil {
 			return nil, fmt.Errorf("fingerprint tool %q: %w", canon, err)
 		}

@@ -506,7 +506,13 @@ passphrase cannot open — the crash sat between the two writes — and
 first unlock quarantines the remnant (`surrogates.age.crashed-<gen>`,
 audit `vault_mutation_recovered` reason `surrogates_quarantined`), so
 unlock proceeds with an empty registry (doors re-pair) instead of a
-brick: credentials survive every crash window.
+brick: credentials survive every crash window. Every write and sync in the
+passphrase change protocol (new vault envelope, surrogates re-encryption,
+MAC, renames, and directory fsyncs) is strictly checked; any mid-window
+write or sync failure before renames complete aborts the mutation with
+temporary files unlinked. Crash-recovery quarantine covers truncated or
+zero-length surrogate files resulting from disk-full errors during the
+change window.
 
 Both statements — "the only way to move the vault backward" and "an
 intent is closed `vault_mutation_superseded` in exactly two ways" —
@@ -619,6 +625,10 @@ name — the mirror is authoritative for locked reads, CA-1(b)/(d)). It doubles 
 mirror** for CA-1(c): name set and `sha256_8` while locked come from
 here. Plaintext-safe (8-hex hash of the secret; same exposure class as
 KEYS-SPEC already ships on the wire).
+**Fingerprints MAC verification law (M12):** on read, `fingerprints.json`
+MUST verify its `mac` entry under `HKDF(vault.key, "custos-fingerprints")`.
+If the file exists and MAC verification fails, it is tampering: callers fail
+closed with distinct `ErrFingerprintsMAC`. An absent file returns empty map and nil.
 
 **4.7 — Rail identity slots (amendment v12; MCP-SPEC A7).** Custosd
 **MUST ensure** a vault slot named by each rail connector's config
@@ -1300,6 +1310,10 @@ against nothing")**, the
 next unlock's first-unlock pass reconciles registry and mirror
 afterwards. Restoring the pair means vault and registry land on the
 same generation: no surrogate ever outlives its credential via restore.
+**Atomic restore law (M10):** live vault files must never be truncated in
+place during restore. Each file is rewritten as temp-in-same-dir, fsynced,
+and renamed into place (atomic replace), followed by an fsync of the
+directory, ensuring power loss or write failure leaves original files intact.
 
 ## 9. Security invariants (each maps to a test)
 
