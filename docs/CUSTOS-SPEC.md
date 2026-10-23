@@ -619,6 +619,10 @@ name — the mirror is authoritative for locked reads, CA-1(b)/(d)). It doubles 
 mirror** for CA-1(c): name set and `sha256_8` while locked come from
 here. Plaintext-safe (8-hex hash of the secret; same exposure class as
 KEYS-SPEC already ships on the wire).
+**Fingerprints MAC verification law (M12):** on read, `fingerprints.json`
+MUST verify its `mac` entry under `HKDF(vault.key, "custos-fingerprints")`.
+If the file exists and MAC verification fails, it is tampering: callers fail
+closed with distinct `ErrFingerprintsMAC`. An absent file returns empty map and nil.
 
 **4.7 — Rail identity slots (amendment v12; MCP-SPEC A7).** Custosd
 **MUST ensure** a vault slot named by each rail connector's config
