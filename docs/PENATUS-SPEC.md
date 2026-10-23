@@ -410,7 +410,9 @@ Extension stays `<name>.lararium-backup`.
   back to pre-A4b law (its own disk); a malformed config is a hard
   error. Verification suite: BK23.
 - **Key law.** Passphrase strength is the operator's; use recipients for
-  automation. Identity files must be mode 0600 (group/other-readable →
+  automation. Operators mint identities with `hearthd backup keygen`
+  (writes mode 0600, refuses overwrite, prints only the recipient).
+  Identity files must be mode 0600 (group/other-readable →
   refuse; unverifiable OS → warn). Passphrases never appear in argv,
   logs, or manifests.
 

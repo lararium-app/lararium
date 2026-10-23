@@ -239,3 +239,20 @@ func OpenBundle(path string, identities ...age.Identity) (*BundleReader, error) 
 
 	return &BundleReader{Reader: zr}, nil
 }
+
+// Keygen generates a fresh X25519 identity, writes it to identityPath with
+// mode 0600 (refusing to overwrite), and returns the recipient string —
+// the operator-side key story of §4.5.2a (amendment A4b).
+func Keygen(identityPath string) (string, error) {
+	if _, err := os.Stat(identityPath); err == nil {
+		return "", fmt.Errorf("identity file exists: %s (refusing to overwrite)", identityPath)
+	}
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(identityPath, []byte(id.String()+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return id.Recipient().String(), nil
+}

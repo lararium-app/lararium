@@ -47,6 +47,8 @@ func backupCmd(cfgPath string, args []string) {
 		backupVerifyCmd(cfgPath, args[1:])
 	case "extract-config":
 		backupExtractConfigCmd(cfgPath, args[1:])
+	case "keygen":
+		backupKeygenCmd(args[1:])
 	default:
 		printBackupUsage()
 		exitFunc(2)
@@ -59,6 +61,7 @@ func printBackupUsage() {
        hearthd backup list <file> [--identity <file>]
        hearthd backup verify <file> [--identity <file>]
        hearthd backup extract-config <file> <path> [--identity <file>]
+       hearthd backup keygen [--out <identity-file>]
 
 %s
 `, backup.SecretsHonestyLine)
@@ -278,4 +281,27 @@ func backupExtractConfigCmd(cfgPath string, args []string) {
 		exitFunc(1)
 		return
 	}
+}
+
+// backupKeygenCmd implements `hearthd backup keygen [--out <identity-file>]`
+// (§4.5.2a, amendment A4b): writes a fresh X25519 identity (mode 0600) and
+// prints ONLY the recipient to stdout; guidance goes to stderr.
+func backupKeygenCmd(args []string) {
+	fs := flag.NewFlagSet("backup keygen", flag.ContinueOnError)
+	outFlag := fs.String("out", "lararium-backup-identity.key", "identity file to create (mode 0600)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: hearthd backup keygen [--out <identity-file>]\n\n%s\n", backup.SecretsHonestyLine)
+	}
+	if err := fs.Parse(args); err != nil {
+		exitFunc(2)
+		return
+	}
+	recipient, err := backup.Keygen(*outFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keygen failed: %v\n", err)
+		exitFunc(1)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "identity written to %s (mode 0600) — keep it offline; losing it means losing the bundle\n", *outFlag)
+	fmt.Println(recipient)
 }

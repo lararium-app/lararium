@@ -551,3 +551,58 @@ func TestBK23_SafetyBundleSeal(t *testing.T) {
 		}
 	})
 }
+
+// TestBK24_Keygen verifies §4.5.2a key law (amendment A4b): keygen writes a
+// 0600 identity that loads and decrypts, prints a valid age1 recipient, and
+// refuses to overwrite an existing identity file.
+func TestBK24_Keygen(t *testing.T) {
+	dir := t.TempDir()
+	idPath := filepath.Join(dir, "identity.key")
+
+	stdout, stderr, code := captureOutput(t, func() {
+		backupKeygenCmd([]string{"--out", idPath})
+	})
+	if code != 0 {
+		t.Fatalf("keygen exit %d (stderr: %s)", code, stderr)
+	}
+	recipient := strings.TrimSpace(stdout)
+	if !strings.HasPrefix(recipient, "age1") {
+		t.Fatalf("stdout must be the recipient only, got %q", stdout)
+	}
+	fi, err := os.Stat(idPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("identity must be mode 0600, got %v", fi.Mode().Perm())
+	}
+
+	// The generated identity must load and seal/decrypt a bundle end-to-end.
+	ids, err := backup.LoadIdentityFile(idPath)
+	if err != nil {
+		t.Fatalf("LoadIdentityFile: %v", err)
+	}
+	recs, err := backup.ParseRecipients([]string{recipient})
+	if err != nil {
+		t.Fatalf("ParseRecipients: %v", err)
+	}
+	home := createTestHearthRoot(t)
+	cfgPath := createTestConfig(t, home)
+	bundle := filepath.Join(dir, "bk24.lararium-backup")
+	if err := backup.CreateOffline(home, cfgPath, bundle, false, nil, recs...); err != nil {
+		t.Fatal(err)
+	}
+	br, err := backup.OpenBundle(bundle, ids...)
+	if err != nil {
+		t.Fatalf("OpenBundle with generated identity: %v", err)
+	}
+	_ = br.Close()
+
+	// Re-run must refuse to overwrite.
+	_, stderr, code = captureOutput(t, func() {
+		backupKeygenCmd([]string{"--out", idPath})
+	})
+	if code == 0 || !strings.Contains(stderr, "refusing to overwrite") {
+		t.Fatalf("expected overwrite refusal, got code %d stderr %q", code, stderr)
+	}
+}
