@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,6 +279,7 @@ func (v *Vault) Init(passphrase string) error {
 	if passphrase == "" {
 		return ErrEmpty
 	}
+	defer zeroString(passphrase)
 
 	// 1. Check if vault already exists (CUSTOS §10 V1)
 	if v.Exists() {
@@ -419,16 +421,6 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	}
 	v.mu.Unlock()
 
-	// CUSTOS-SPEC §C3: derive age identity / scrypt output once and retain derived secret
-	v.mu.Lock()
-	if v.derivedKey != nil {
-		zeroBytes(v.derivedKey)
-	}
-	dk := make([]byte, len(passphrase))
-	copy(dk, passphrase)
-	v.derivedKey = dk
-	v.mu.Unlock()
-
 	// Load instance key
 	key, err := v.LoadInstanceKey()
 	if err != nil {
@@ -447,11 +439,12 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		d, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
 		if err != nil {
 			v.clearDerivedKey()
-			// CUSTOS §8.1: audit lock_failed on failure
+			log.Printf("custos: first unlock failed: %v", err)
+			// CUSTOS §8.1, L-9: audit lock_failed carries mapped closed reason
 			_ = v.audit.Append(AuditRecord{
 				Kind:   AuditKindLockFailed,
 				Actor:  "cli",
-				Reason: err.Error(),
+				Reason: MapLockFailureReason(err),
 			})
 			return err
 		}
@@ -462,10 +455,11 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		d, err := v.readOnDiskDoc(key, passphrase)
 		if err != nil {
 			v.clearDerivedKey()
+			log.Printf("custos: subsequent unlock failed: %v", err)
 			_ = v.audit.Append(AuditRecord{
 				Kind:   AuditKindLockFailed,
 				Actor:  "cli",
-				Reason: err.Error(),
+				Reason: MapLockFailureReason(err),
 			})
 			return err
 		}
@@ -480,10 +474,11 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	reg, dropped, err := LoadAndReconcileSurrogates(v.stateDir, passphrase, doc.Credentials, v.audit, wasFirstUnlock)
 	if err != nil {
 		v.clearDerivedKey()
+		log.Printf("custos: unlock reconcile surrogates failed: %v", err)
 		_ = v.audit.Append(AuditRecord{
 			Kind:   AuditKindLockFailed,
 			Actor:  "cli",
-			Reason: err.Error(),
+			Reason: MapLockFailureReason(err),
 		})
 		return err
 	}
@@ -492,7 +487,13 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	v.loadedDoc = doc
 	v.loadedRegistry = reg
 	v.surrogatesDropped = dropped
-	// CUSTOS-SPEC §C3: never retain passphrase cleartext string; retained derived secret lives in v.derivedKey
+	// CUSTOS-SPEC §C3, L-8: never retain passphrase cleartext string; retained derived secret lives in v.derivedKey
+	if v.derivedKey != nil {
+		zeroBytes(v.derivedKey)
+	}
+	dk := make([]byte, len(passphrase))
+	copy(dk, passphrase)
+	v.derivedKey = dk
 	v.isUnlocked = true
 	v.isKeyfile = isKeyfile
 	v.mu.Unlock()
@@ -559,7 +560,9 @@ func (v *Vault) readOnDiskDocWithKey(key []byte, derivedKey []byte) (*VaultDoc, 
 
 // readOnDiskDoc reads and authenticates vault.age under flock with strict envelope MAC verification per CUSTOS-SPEC §4.1, §4.2.
 func (v *Vault) readOnDiskDoc(key []byte, passphrase string) (*VaultDoc, error) {
-	return v.readOnDiskDocWithKey(key, []byte(passphrase))
+	kb := []byte(passphrase)
+	defer zeroBytes(kb)
+	return v.readOnDiskDocWithKey(key, kb)
 }
 
 // Lock clears loaded state and marks the vault locked per CUSTOS-SPEC §3, §C3.
@@ -697,7 +700,9 @@ func (v *Vault) resolveMutationKey(passphrase string) ([]byte, error) {
 
 func (v *Vault) loadOrRecoverDoc(key, keyBytes []byte) (*VaultDoc, error) {
 	if !v.firstUnlockDone {
-		d, err := FirstUnlockRecovery(v.stateDir, key, string(keyBytes), v.audit)
+		pass := string(keyBytes)
+		defer zeroString(pass)
+		d, err := FirstUnlockRecovery(v.stateDir, key, pass, v.audit)
 		if err != nil {
 			return nil, err
 		}
