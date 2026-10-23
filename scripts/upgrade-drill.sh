@@ -133,13 +133,18 @@ echo "--- Step a: Preparing named volumes and running v0.8 container ---"
 docker volume create "${CFG_VOL}" >/dev/null
 docker volume create "${DATA_VOL}" >/dev/null
 
-docker run --rm -v "${CFG_VOL}":/etc/lararium -v "${DATA_VOL}":/hearth -v "${SEED_DIR}":/repo:ro \
+# --user root pins the drill's ownership model: volumes created by an
+# older image may hold files that a newer image's default user cannot
+# write (M8 moved the runtime default to an unprivileged uid). The drill
+# validates state continuity, not privileges; compose covers those.
+docker run --rm --user root -v "${CFG_VOL}":/etc/lararium -v "${DATA_VOL}":/hearth -v "${SEED_DIR}":/repo:ro \
   --entrypoint sh "${FROM_IMAGE}" -c "
     cp /repo/docker/config/lararium.yaml /etc/lararium/lararium.yaml
     cp /repo/docker/hearth/*.md /hearth/
 "
 
 docker run -d --name "${CONTAINER_V08}" \
+  --user root \
   -v "${CFG_VOL}":/etc/lararium \
   -v "${DATA_VOL}":/hearth \
   -e LARARIUM_CONFIG=/etc/lararium/lararium.yaml \
@@ -181,6 +186,7 @@ echo "--- Step d: Target binary verified ready ---"
 echo "--- Step e: Starting target binary against the same volumes ---"
 if [ -n "${TO_TAG}" ]; then
   docker run -d --name "${CONTAINER_NEW}" \
+    --user root \
     -v "${CFG_VOL}":/etc/lararium \
     -v "${DATA_VOL}":/hearth \
     -e LARARIUM_CONFIG=/etc/lararium/lararium.yaml \
@@ -188,6 +194,7 @@ if [ -n "${TO_TAG}" ]; then
     "${TO_TAG}" serve
 else
   docker run -d --name "${CONTAINER_NEW}" \
+    --user root \
     -v "${CFG_VOL}":/etc/lararium \
     -v "${DATA_VOL}":/hearth \
     -v "${TO_BINARY}":/usr/local/bin/hearthd:ro \
