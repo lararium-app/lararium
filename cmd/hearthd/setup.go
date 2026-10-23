@@ -397,7 +397,10 @@ func fetchModels(ctx context.Context, baseURL, key string) ([]string, error) {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// Key-bearing request: redirects are refused (H8/F1).
+	resp, err := (&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}).Do(req)
 	if err != nil {
 		return nil, err
 	}

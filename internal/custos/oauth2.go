@@ -143,6 +143,12 @@ func (e *tokenStatusError) Error() string {
 // Unwrap keeps ErrTokenExchange membership for callers that match on it.
 func (e *tokenStatusError) Unwrap() error { return ErrTokenExchange }
 
+// refuseRedirect refuses every HTTP redirect (H8/F1): credentials posted
+// or headed on a request (client_secret, refresh_token, bearer) must never
+// be replayed to a redirect target, on any status. A 3xx response is
+// terminal and surfaces to the caller as the final response.
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 // DefaultTokenForward performs the token-endpoint POST. Non-loopback http://
 // endpoints are refused (production wiring); loopback http:// is allowed so
 // V13 runs against a local fake OAuth server.
@@ -159,7 +165,7 @@ func DefaultTokenForward(ctx context.Context, tokenURI string, form url.Values) 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: refuseRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, classifyTokenTransport(err)
