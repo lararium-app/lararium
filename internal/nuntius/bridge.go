@@ -557,7 +557,14 @@ func (b *Bridge) accept(updates []Update) (int64, error) {
 		if !ok {
 			// An update shape the spec has not decided: acknowledge
 			// and ignore (P4), durably done with session null.
-			rec = Record{UpdateID: u.UpdateID, Kind: KindTurn, Done: true}
+			rec = Record{UpdateID: u.UpdateID, Kind: KindTurn}
+			if _, err := b.inbox.AppendDone(rec); err != nil {
+				return highest, err
+			}
+			if u.UpdateID > highest {
+				highest = u.UpdateID
+			}
+			continue
 		}
 		if _, err := b.inbox.Append(rec); err != nil {
 			return highest, err
@@ -574,18 +581,28 @@ func (b *Bridge) accept(updates []Update) (int64, error) {
 // disk); an unknown callback shape gets no record — it drops.
 func recordFor(u Update) (Record, bool) {
 	env := u.Envelope()
+	base := Record{
+		UpdateID: u.UpdateID,
+		SenderID: env.FromID,
+		ChatID:   env.ChatID,
+		ChatType: env.ChatType,
+	}
 	switch {
 	case u.CallbackQuery != nil:
 		if !strings.HasPrefix(env.Text, "ap:") && !strings.HasPrefix(env.Text, "cu:") {
 			return Record{}, false
 		}
-		return Record{UpdateID: u.UpdateID, Kind: KindCallback, Payload: env.Text}, true
+		rec := base
+		rec.Kind, rec.Payload = KindCallback, env.Text
+		return rec, true
 	case u.Message != nil:
-		kind := KindTurn
+		rec := base
+		rec.Kind = KindTurn
 		if CommandName(u.Message.Text) != "" {
-			kind = KindCommand
+			rec.Kind = KindCommand
 		}
-		return Record{UpdateID: u.UpdateID, Kind: kind, Payload: env.Text}, true
+		rec.Payload = env.Text
+		return rec, true
 	}
 	return Record{}, false
 }
@@ -607,10 +624,11 @@ func (b *Bridge) handleBatch(ctx context.Context, updates []Update, owners Owner
 }
 
 // replay re-processes not-done records in inbox order (§2 step 4).
-// A record was admitted the first time it arrived, so replay rebuilds
-// the owner envelope from owners.json + the persisted owner chat and
-// re-runs the gate (fail-closed: unpaired or ownerless state stops
-// the replay rather than guessing).
+// The gate re-runs on the sender identity persisted in the record —
+// never a reconstructed owner envelope, or a stranger's pending
+// update would replay as an admitted owner turn. Records with no
+// persisted sender (written before this field existed) fail closed:
+// refused and tombstoned, not guessed.
 func (b *Bridge) replay(ctx context.Context) error {
 	recs, err := b.inbox.Replay()
 	if err != nil {
@@ -623,23 +641,19 @@ func (b *Bridge) replay(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	st, err := b.state.Load()
-	if err != nil {
-		return err
-	}
 	for _, rec := range recs {
 		if b.stopping() {
 			return nil
 		}
-		if len(owners.OwnerIDs) == 0 || st.OwnerChat == "" {
-			// Cannot reconstruct who/where: leave the record not-done
-			// and stop; pairing or repair re-enables replay.
-			return fmt.Errorf("cannot replay update %d: unpaired or owner chat unknown", rec.UpdateID)
+		if rec.SenderID == "" || rec.ChatID == "" {
+			b.markDone(rec, nil)
+			b.log.Printf("nuntius: replay refused unattributed update %d (fail closed)", rec.UpdateID)
+			continue
 		}
-		env := envelopeFromRecord(rec, owners.OwnerIDs[0], st.OwnerChat)
+		env := envelopeFromRecord(rec)
 		switch Decide(env, owners) {
 		case Admit:
-			b.process(ctx, rebuildUpdate(rec, owners.OwnerIDs[0], st.OwnerChat), rec, owners)
+			b.process(ctx, rebuildUpdate(rec), rec, owners)
 		case PairAttempt:
 			b.processPairReplay(ctx, rec)
 		case Drop, ReplyPairingRequired, ReplyPrivate:

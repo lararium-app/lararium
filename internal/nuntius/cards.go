@@ -185,23 +185,31 @@ func truncateArgs(s string, limit int) string {
 }
 
 // envelopeFromRecord reconstructs the routing envelope of a persisted
-// update for replay, from the record and the owner identity (§2 step 4).
-func envelopeFromRecord(rec Record, ownerID, ownerChat string) Envelope {
-	return rebuildUpdate(rec, ownerID, ownerChat).Envelope()
+// update for replay, from the sender identity persisted on the record
+// (§2 step 4). Replay decides and routes exactly as the live delivery
+// did — the record carries who sent it and where.
+func envelopeFromRecord(rec Record) Envelope {
+	return rebuildUpdate(rec).Envelope()
 }
 
 // rebuildUpdate reconstructs a minimal Update from an inbox record so
 // replay runs the same code path as a live delivery (§2 step 4). The
 // callback id is gone (long answered), which is exactly why the toast
-// on replay is a no-op.
-func rebuildUpdate(rec Record, ownerID, ownerChat string) Update {
+// on replay is a no-op. A record with no persisted chat type gets an
+// unknown type, which fails the gate's private-chat check — fail
+// closed, never a guessed "private".
+func rebuildUpdate(rec Record) Update {
+	ct := rec.ChatType
+	if ct == "" {
+		ct = "unknown"
+	}
 	if rec.Kind == KindCallback {
 		return Update{
 			UpdateID: rec.UpdateID,
 			CallbackQuery: &CallbackQuery{
-				From: User{ID: ownerID},
+				From: User{ID: rec.SenderID},
 				Message: Message{
-					Chat: Chat{ID: ownerChat, Type: "private"},
+					Chat: Chat{ID: rec.ChatID, Type: ct},
 				},
 				Data: rec.Payload,
 			},
@@ -210,8 +218,8 @@ func rebuildUpdate(rec Record, ownerID, ownerChat string) Update {
 	return Update{
 		UpdateID: rec.UpdateID,
 		Message: &Message{
-			From: &User{ID: ownerID},
-			Chat: Chat{ID: ownerChat, Type: "private"},
+			From: &User{ID: rec.SenderID},
+			Chat: Chat{ID: rec.ChatID, Type: ct},
 			Text: rec.Payload,
 		},
 	}
