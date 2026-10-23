@@ -3,9 +3,11 @@ package nuntius
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -442,5 +444,138 @@ func TestStateDirMode(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o700 {
 		t.Fatalf("state dir mode %v, want 0700", st.Mode().Perm())
+	}
+}
+
+// M4: clearing the pairing MUST also clear OwnerChat so approval
+// and custody cards stop being sent to the former owner's chat after unpair.
+func TestUnpairClearsOwnerChat(t *testing.T) {
+	home := t.TempDir()
+	ndir := filepath.Join(home, "nuntius")
+	store, err := NewPairStore(ndir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	code := mustMint(t, store, now, time.Minute)
+	if _, err := store.Redeem("42", code, now); err != nil {
+		t.Fatal(err)
+	}
+
+	sf, err := NewStateFile(ndir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sf.Save(State{ActiveSession: "main", OwnerChat: "chat_42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &Fake{}
+	var logBuf strings.Builder
+	b, err := New(Deps{
+		Cfg:  Config{Enabled: true},
+		Home: home,
+		TG:   fake,
+		Log:  log.New(&logBuf, "", 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Stop()
+
+	// Before unpair: card dispatch delivers to owner chat.
+	b.approvalPending("appr_1", "main", "deploy", "args")
+	if len(fake.Sent) != 1 || fake.Sent[0].ChatID != "chat_42" {
+		t.Fatalf("before unpair: expected card sent to chat_42, got %+v", fake.Sent)
+	}
+
+	// Unpair the owner.
+	if err := store.Unpair("42"); err != nil {
+		t.Fatal(err)
+	}
+
+	// State should have empty OwnerChat.
+	st, err := sf.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.OwnerChat != "" {
+		t.Fatalf("expected OwnerChat to be cleared, got %q", st.OwnerChat)
+	}
+
+	// Subsequent card dispatch is a no-op (no messages sent to Telegram, card dropped).
+	b.approvalPending("appr_2", "main", "deploy", "args")
+	if len(fake.Sent) != 1 {
+		t.Fatalf("after unpair: card dispatch should be no-op, but sent %d messages", len(fake.Sent))
+	}
+	if !strings.Contains(logBuf.String(), "no owner chat") {
+		t.Fatalf("log line noting cards will be dropped missing from: %s", logBuf.String())
+	}
+}
+
+// L-5: every read-modify-write takes flock LOCK_EX to avoid lost updates.
+// Two goroutines mint concurrently — both owners survive and both codes survive.
+func TestPairStoreConcurrentMint(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPairStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed two owners in owners.json.
+	if err := store.save(Owners{
+		OwnerIDs: []string{"owner_alpha", "owner_beta"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	const workers = 2
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	minted := make([]string, workers)
+
+	for i := range workers {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			code, err := store.Mint(now.Add(time.Duration(idx)*time.Second), time.Hour)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			minted[idx] = code
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent mint failed: %v", err)
+	}
+
+	o, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both owners survive.
+	if len(o.OwnerIDs) != 2 || o.OwnerIDs[0] != "owner_alpha" || o.OwnerIDs[1] != "owner_beta" {
+		t.Fatalf("owners lost: %+v", o.OwnerIDs)
+	}
+	// Both minted codes survive.
+	if len(o.Codes) != 2 {
+		t.Fatalf("minted codes lost: got %d, want 2", len(o.Codes))
+	}
+	for i, c := range minted {
+		wantHash := hashPairCode(c)
+		found := false
+		for _, stored := range o.Codes {
+			if stored.Hash == wantHash {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("code %d (%s) not found in store", i, c)
+		}
 	}
 }

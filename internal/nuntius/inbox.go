@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // inboxFileName is <hearth>/nuntius/inbox.jsonl (spec §2): append-only,
@@ -61,6 +62,7 @@ type Inbox struct {
 	path string
 	dir  string
 
+	mu     sync.Mutex
 	f      *os.File
 	offset int64 // last update durably in the inbox
 	seen   map[int64]bool
@@ -130,10 +132,18 @@ func (in *Inbox) loadSeen() error {
 // getUpdates: compaction prunes done records, so this value can regress
 // below what Telegram has already served. The authoritative offset for
 // getUpdates is state.json (§2); never pass this to getUpdates.
-func (in *Inbox) LastSeenUpdateID() int64 { return in.offset }
+func (in *Inbox) LastSeenUpdateID() int64 {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.offset
+}
 
 // Seen reports whether an update id is already durably in the inbox.
-func (in *Inbox) Seen(updateID int64) bool { return in.seen[updateID] }
+func (in *Inbox) Seen(updateID int64) bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.seen[updateID]
+}
 
 // Append sanitizes and durably appends one update, returning the new
 // offset. Per §2 the offset advances when the update is durably in the
@@ -141,6 +151,9 @@ func (in *Inbox) Seen(updateID int64) bool { return in.seen[updateID] }
 // only on a fresh append, or a skipped duplicate would strand the
 // watermark in a redelivery loop.
 func (in *Inbox) Append(rec Record) (int64, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
 	rec.Payload = SanitizePayload(rec.Payload)
 	rec.Done = false
 	rec.SessionID = nil
@@ -163,6 +176,9 @@ func (in *Inbox) Append(rec Record) (int64, error) {
 // where re-deciding later could disagree with the decision made with
 // the live envelope in hand.
 func (in *Inbox) AppendDone(rec Record) (int64, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
 	rec.Payload = SanitizePayload(rec.Payload)
 	rec.Done = true
 	rec.SessionID = nil
@@ -183,6 +199,9 @@ func (in *Inbox) AppendDone(rec Record) (int64, error) {
 // was never appended is a caller bug — it is an error, not a silent
 // orphan line.
 func (in *Inbox) MarkDone(updateID int64, sessionID *string) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
 	if !in.seen[updateID] {
 		return fmt.Errorf("nuntius: MarkDone(%d): update never appended to the inbox", updateID)
 	}
@@ -213,6 +232,12 @@ func (in *Inbox) appendLine(rec Record) error {
 // active_session pointer, so a replayed /sessions switch re-applies
 // before the messages that followed it.
 func (in *Inbox) Replay() ([]Record, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.replayLocked()
+}
+
+func (in *Inbox) replayLocked() ([]Record, error) {
 	rf, err := os.Open(in.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -268,7 +293,7 @@ func (in *Inbox) compactIfNeeded() error {
 		return nil
 	}
 
-	live, err := in.Replay()
+	live, err := in.replayLocked()
 	if err != nil {
 		return err
 	}
@@ -319,6 +344,9 @@ func (in *Inbox) compactIfNeeded() error {
 
 // Close releases the append handle.
 func (in *Inbox) Close() error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
 	if in.f == nil {
 		return nil
 	}

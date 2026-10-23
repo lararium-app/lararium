@@ -35,6 +35,14 @@ type openAI struct {
 	// host => error before the request. Set only by NewOpenAIKeyed;
 	// static-key constructors keep the legacy keyless behavior.
 	enforceKey bool
+	client     *http.Client
+}
+
+func (o *openAI) httpClient() *http.Client {
+	if o.client != nil {
+		return o.client
+	}
+	return providerClient
 }
 
 // NewOpenAI creates an OpenAI-compatible provider.
@@ -72,6 +80,19 @@ func NewOpenAIKeyed(name, baseURL string, keyFn func(context.Context) string, de
 		defaultModel: defaultModel,
 		disableThink: disableThink,
 		enforceKey:   true,
+	}
+}
+
+// NewOpenAIWithClient creates a provider with an injected HTTP client.
+// The client is wrapped with WrapClient to ensure H8 redirect refusal and M11 timeouts.
+func NewOpenAIWithClient(name, baseURL, apiKey, defaultModel string, disableThink bool, client *http.Client) Provider {
+	return &openAI{
+		name:         name,
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		keyFn:        func(context.Context) string { return apiKey },
+		defaultModel: defaultModel,
+		disableThink: disableThink,
+		client:       WrapClient(client),
 	}
 }
 
@@ -316,7 +337,7 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	resp, err := providerClient.Do(req)
+	resp, err := o.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

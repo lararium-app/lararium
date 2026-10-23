@@ -92,7 +92,9 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
      to `state.json` (0600, atomic replace, fsync); the next
      `getUpdates` call passes it, which is what acks at Telegram —
      a crash before the ack simply means redelivery, which the inbox
-     dedupe absorbs.
+     dedupe absorbs. Inbox concurrency law (M21): all inbox state
+     (in-memory dedupe map, watermark, file writes) is guarded by
+     mutex synchronization across poll enqueues and worker acks.
   2. Handling proceeds (turn starts, command runs, callback resolves).
   3. When the update reaches a **terminal outcome** — turn committed,
      turn aborted, definitively rejected, or command/reply completed —
@@ -148,7 +150,10 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
   from disk at the start of every poll iteration (the file is tiny; same
   per-request re-read doctrine as surface tokens). `pair unpair` and
   `pair create` take effect on the next poll cycle — no restart, no
-  signal handler, no cached allowlist.
+  signal handler, no cached allowlist. Every read-modify-write (`Mint`,
+  `Redeem`, `Unpair`, `RevokeAll`) takes `syscall.Flock(LOCK_EX)` over
+  sibling `owners.lock` (0600) and re-reads under the lock before writing
+  atomically (temp+rename), preventing lost updates.
 - Mint: `hearthd pair create` prints `pair1_<20 base62>` once and appends
   a code with `expires = created + pair_code_ttl` (default 15 min; §4).
   No listing of live codes. CLI `pair status` reports owners and
@@ -157,7 +162,9 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
   while paired: §3 makes every code unreachable after pairing, so
   minting one could only mislead.
   `hearthd pair revoke --all` clears pending codes;
-  `hearthd pair unpair <user_id>` removes an owner.
+  `hearthd pair unpair <user_id>` removes an owner. Clearing the pairing
+  MUST also clear `owner_chat` in `state.json` so approval and custody
+  cards are dropped rather than delivered to the former owner's chat.
 - Redeem: the bot's first-ever state is **unpaired**. While unpaired, the
   ONLY accepted input is `/pair <code>`; every other message gets the
   static line `pairing required` — rate-limited to one reply per user ID
@@ -307,6 +314,10 @@ with `turn running — /cancel to stop it` (one chat, one stream; §6).
   final-render rule). The partial text stays visible as a rendering
   artifact; the penatus log holds no assistant event, and the edit text
   says so in effect. No message is ever deleted.
+  Turn execution derives from the shutdown context capped by a 30-minute
+  turn timeout (M11), so hung provider calls abort and release the queue
+  worker; router HTTP clients enforce 120s ResponseHeaderTimeout and 10s
+  DialContext timeout.
 - **Final-render rule:** the bridge keeps the turn's full text in
   memory as the render source (the persisted penatus event, when there
   is one, must equal it — V4 asserts the match). If editing fails 3

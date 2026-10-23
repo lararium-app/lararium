@@ -504,6 +504,45 @@ func setupHubWithTools(t *testing.T, sp router.Provider, tools []loop.Tool, appr
 	return hub, ap, dir
 }
 
+// waitSessionsQuiet blocks until the sessions tree stops changing: four
+// consecutive samples (~200 ms) with identical file count and newest
+// mtime, or a 5 s timeout. Guards t.TempDir cleanup against a turn's
+// trailing session-log writes on slow CI runners.
+func waitSessionsQuiet(dir string) {
+	type snap struct {
+		n  int
+		mt string
+	}
+	prev := snap{-1, ""}
+	stable := 0
+	deadline := time.Now().Add(5 * time.Second)
+	for stable < 4 && time.Now().Before(deadline) {
+		n := 0
+		var latest time.Time
+		_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil //nolint:nilerr // best-effort scan; a stat failure only delays quiescence
+			}
+			if d.IsDir() {
+				return nil
+			}
+			n++
+			if info, e := d.Info(); e == nil && info.ModTime().After(latest) {
+				latest = info.ModTime()
+			}
+			return nil
+		})
+		cur := snap{n, latest.String()}
+		if cur == prev {
+			stable++
+		} else {
+			stable = 0
+		}
+		prev = cur
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func setupVSuite(t *testing.T, opts vsuiteOpts) *vsuiteEnv {
 	t.Helper()
 	if opts.provider == nil {
@@ -556,6 +595,11 @@ func setupVSuite(t *testing.T, opts vsuiteOpts) *vsuiteEnv {
 	t.Cleanup(func() {
 		b.Stop()
 		cancel()
+		// Stop() does not join an in-flight turn goroutine, so its
+		// session-log writes can outlive cleanup on slow runners
+		// (TempDir "directory not empty" flakes on amd64 CI). Let the
+		// sessions tree settle before t.TempDir removal walks it.
+		waitSessionsQuiet(filepath.Join(home, "sessions"))
 	})
 
 	return &vsuiteEnv{
@@ -1186,8 +1230,37 @@ func TestV6ApprovalCardRace(t *testing.T) {
 		t.Fatalf("toasts = (%q, %q), want one %q and one %q", t1, t2, nuntius.ToastAllowed, nuntius.ToastAlready)
 	}
 
-	// Wait for turn completion
-	time.Sleep(200 * time.Millisecond)
+	// Turn completion is the assistant message landing in the session
+	// log. Wait for it deterministically: a fixed sleep raced TempDir
+	// cleanup against the still-writing loop on slow runners (CI flake
+	// on TestV6ApprovalCardRace, amd64).
+	deadline := time.Now().Add(5 * time.Second)
+	var turnDone bool
+	for !turnDone && time.Now().Before(deadline) {
+		lf, lerr := penatus.OpenLog(filepath.Join(env.home, "sessions", "main"))
+		if lerr == nil {
+			for _, ev := range lf.Live() {
+				if ev.T != "msg" {
+					continue
+				}
+				var role, text string
+				if json.Unmarshal(ev.Fields["role"], &role) != nil ||
+					json.Unmarshal(ev.Fields["text"], &text) != nil {
+					continue
+				}
+				if role == "assistant" && text == "cluster deployed." {
+					turnDone = true
+					break
+				}
+			}
+		}
+		if !turnDone {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !turnDone {
+		t.Fatal("assistant completion message never persisted to session log")
+	}
 
 	// Exactly one hub transition (one tool run)
 	toolMu.Lock()
