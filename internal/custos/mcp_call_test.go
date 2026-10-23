@@ -1,6 +1,7 @@
 // MCP-CALL verb tests — issue #89 (MCP-SPEC §9, amendment A3):
 // MCP-TOOLS carries inputSchema (JCS canonical JSON) and MCP-CALL
 // executes a connector tool, replying `OK <json>` / `ERR <reason>`.
+
 package custos_test
 
 import (
@@ -146,7 +147,7 @@ func TestMCPCall_Success(t *testing.T) {
 	reg := newCallTestRegistry(t)
 
 	var got string
-	if !custos.DispatchMCPCall(nil, reg, "alpha", "echo", `{"message":"hi"}`, captureWrite(t, &got)) {
+	if !custos.DispatchMCPCall(nil, reg, "alpha", "echo", `{"message":"hi"}`, captureWrite(t, &got), custos.MCPCallGuard{}) {
 		t.Fatal("DispatchMCPCall returned false")
 	}
 	if !strings.HasPrefix(got, "OK ") {
@@ -162,7 +163,7 @@ func TestMCPCall_EmptyArgsDefault(t *testing.T) {
 	reg := newCallTestRegistry(t)
 
 	var got string
-	custos.DispatchMCPCall(nil, reg, "alpha", "ping", "", captureWrite(t, &got))
+	custos.DispatchMCPCall(nil, reg, "alpha", "ping", "", captureWrite(t, &got), custos.MCPCallGuard{})
 	if !strings.HasPrefix(got, "OK ") || !strings.Contains(got, "pong") {
 		t.Fatalf("empty args should default to {}: %q", got)
 	}
@@ -175,7 +176,7 @@ func TestMCPCall_ServerErrorStaysSingleLine(t *testing.T) {
 	reg := newCallTestRegistry(t)
 
 	var got string
-	custos.DispatchMCPCall(nil, reg, "alpha", "boom", "{}", captureWrite(t, &got))
+	custos.DispatchMCPCall(nil, reg, "alpha", "boom", "{}", captureWrite(t, &got), custos.MCPCallGuard{})
 	// The SDK surfaces tool failures as an isError result frame (json-
 	// marshaled, so newlines are escaped) or as a Go error (sanitized
 	// by oneLineReason). Both shapes must keep the one-line contract.
@@ -202,7 +203,7 @@ func TestMCPCall_Errors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var got string
-			if !custos.DispatchMCPCall(nil, reg, tc.conn, tc.tool, tc.args, captureWrite(t, &got)) {
+			if !custos.DispatchMCPCall(nil, reg, tc.conn, tc.tool, tc.args, captureWrite(t, &got), custos.MCPCallGuard{}) {
 				t.Fatal("DispatchMCPCall returned false")
 			}
 			if !strings.HasPrefix(got, "ERR ") {

@@ -91,6 +91,26 @@ type WorkerServer struct {
 	connectors map[string]Connector
 	rail       *RailRegistry
 	done       chan struct{}
+	// cardRefresh re-pushes an enriched CARD frame after a worker
+	// park registers (H3.2). Set once at wiring time by the door
+	// server; nil until then.
+	cardRefresh func(id string)
+}
+
+// SetCardRefresh installs the door-side card enricher (H3.2).
+func (ws *WorkerServer) SetCardRefresh(fn func(id string)) {
+	ws.mu.Lock()
+	ws.cardRefresh = fn
+	ws.mu.Unlock()
+}
+
+func (ws *WorkerServer) refreshCard(id string) {
+	ws.mu.Lock()
+	fn := ws.cardRefresh
+	ws.mu.Unlock()
+	if fn != nil && id != "" {
+		go fn(id)
+	}
 }
 
 // WorkerServerOption configures NewWorkerServer.

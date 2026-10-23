@@ -50,6 +50,7 @@ type approval struct {
 	sessionID   string
 	name        string
 	argsSummary string
+	dest        string // custody destination (host[:port]); separate from review text
 	timer       *time.Timer
 	reason      string
 	source      string
@@ -235,12 +236,16 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 	id = generateApprovalID()
 	ch := make(chan bool, 1)
 	ap := &approval{
-		id:          id,
-		ch:          ch,
-		state:       "pending",
-		sessionID:   cell,
-		name:        cred,
-		argsSummary: dest,
+		id:        id,
+		ch:        ch,
+		state:     "pending",
+		sessionID: cell,
+		name:      cred,
+		// H3.1: the review text the park path built (recipient,
+		// subject, params) must reach every surface; dest stays
+		// separately addressable (IP-literal checks).
+		dest:        dest,
+		argsSummary: reviewText(dest, argsSummary),
 		cred:        cred,
 		cell:        cell,
 		source:      "custos",
@@ -266,8 +271,21 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 	if onEvent != nil {
 		onEvent(id)
 	}
-	h.fanPending(id, cell, cred, dest)
+	h.fanPending(id, cell, cred, reviewText(dest, argsSummary))
 	return id, ch
+}
+
+// reviewText composes the destination line and the caller-built review
+// text into the single review string surfaces display (H3.1).
+func reviewText(dest, argsSummary string) string {
+	switch {
+	case argsSummary == "":
+		return dest
+	case dest == "":
+		return argsSummary
+	default:
+		return dest + " | " + argsSummary
+	}
 }
 
 func generateApprovalID() string {
@@ -709,6 +727,7 @@ type ApprovalCard struct {
 	ID        string
 	SessionID string
 	Cred      string
+	Dest      string // custody destination host[:port] ("" for turn cards)
 	Cell      string
 	State     string
 }
@@ -720,7 +739,7 @@ func (h *ApprovalHub) pendingLocked() []ApprovalCard {
 			if ap.state == "pending" {
 				out = append(out, ApprovalCard{
 					ID: ap.id, SessionID: ap.sessionID,
-					Cred: ap.cred, Cell: ap.cell, State: ap.state,
+					Cred: ap.cred, Dest: ap.dest, Cell: ap.cell, State: ap.state,
 				})
 			}
 		}

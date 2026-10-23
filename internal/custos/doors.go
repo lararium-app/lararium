@@ -118,6 +118,9 @@ func WithVault(v *Vault) DoorServerOption {
 func WithWorkers(w *WorkerServer) DoorServerOption {
 	return func(s *DoorServer) {
 		s.workers = w
+		if w != nil {
+			w.SetCardRefresh(s.RebroadcastCard)
+		}
 	}
 }
 
@@ -125,6 +128,9 @@ func WithWorkers(w *WorkerServer) DoorServerOption {
 func WithProxy(p *Proxy) DoorServerOption {
 	return func(s *DoorServer) {
 		s.proxy = p
+		if p != nil {
+			p.SetCardRefresh(s.RebroadcastCard)
+		}
 	}
 }
 
@@ -765,11 +771,14 @@ func (s *DoorServer) isIPLiteralTarget(cardID string) bool {
 		proxy.parkMgr.mu.Unlock()
 	}
 
-	// Check hub card Dest if present
+	// Check hub card Dest if present (H4.3: the destination is the
+	// authority — the credential name never is)
 	if s.hub != nil {
 		for _, card := range s.hub.Pending() {
 			if card.ID == cardID {
-				return isIPString(card.Cred)
+				// A custody card with no recorded destination is
+				// unknowable scope: fail closed (§6.4b posture).
+				return card.Dest == "" || isIPString(card.Dest)
 			}
 		}
 	}
@@ -836,7 +845,22 @@ func (s *DoorServer) storeAlwaysRule(cardID, actor string) {
 				port := flow.port
 				proxy.parkMgr.mu.Unlock()
 				if cname != "" {
-					_, _ = v.Policy().AddCredentialRule(cname, "auto", true, "always", actor)
+					// H4: "always" on a custody card approves THIS
+					// destination for this credential — never every
+					// host and every tool the credential can reach.
+					// Host-scoped <cred>@host[:port] rules match the
+					// bearer lane only (policy §6.2, erratum
+					// 2026-10-23); worker calls still ask.
+					pat := cname + "@" + host
+					if port != 0 && port != 80 {
+						pat = fmt.Sprintf("%s@%s:%d", cname, host, port)
+					}
+					if _, err := v.Policy().AddCredentialRule(pat, "auto", true, "always", actor); err != nil {
+						// Invalid authority (e.g. IP literal — ask-only
+						// per §6.4b): mint nothing rather than a
+						// blanket rule.
+						return
+					}
 					return
 				}
 				pat := host
@@ -861,6 +885,15 @@ func (s *DoorServer) storeAlwaysRule(cardID, actor string) {
 // yet in any park map — the argsSummary fallback IS the correct wire.
 // Blocking here once deadlocked the whole park manager (dogfood 2026-10-08).
 func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) ApprovalCardWire {
+	return s.buildCardWireLocking(id, sessionID, name, argsSummary, false)
+}
+
+// buildCardWireLocking renders the CARD frame. The hub-fanout path MUST
+// keep TryLock (blocking:false — it runs on the goroutine that may
+// itself hold parkMgr.mu); the rebroadcast path runs on a dedicated
+// goroutine and takes the real lock so a just-registered flow is always
+// visible (H3.2).
+func (s *DoorServer) buildCardWireLocking(id, sessionID, name, argsSummary string, blocking bool) ApprovalCardWire {
 	wire := ApprovalCardWire{
 		ID:     id,
 		Cell:   sessionID,
@@ -871,7 +904,16 @@ func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) Appr
 	}
 
 	workers := s.workersInstance()
-	if workers != nil && workers.parkMgr != nil && workers.parkMgr.mu.TryLock() {
+	workerLocked := false
+	if workers != nil && workers.parkMgr != nil {
+		if blocking {
+			workers.parkMgr.mu.Lock()
+			workerLocked = true
+		} else {
+			workerLocked = workers.parkMgr.mu.TryLock()
+		}
+	}
+	if workerLocked {
 		for _, cellParks := range workers.parkMgr.byCell {
 			if flow, ok := cellParks[id]; ok {
 				wire.Tool = flow.path
@@ -899,7 +941,7 @@ func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) Appr
 	}
 
 	proxy := s.proxyInstance()
-	if proxy != nil && proxy.parkMgr != nil && proxy.parkMgr.mu.TryLock() {
+	if proxy != nil && proxy.parkMgr != nil && (blocking || proxy.parkMgr.mu.TryLock()) {
 		for _, cellParks := range proxy.parkMgr.byCell {
 			if flow, ok := cellParks[id]; ok {
 				if flow.cred != "" {
@@ -935,6 +977,67 @@ func (s *DoorServer) buildCardWire(id, sessionID, name, argsSummary string) Appr
 }
 
 // ApprovalPending is called on hub pending transition outside the hub mutex.
+// findParked reports whether a live parkedFlow with this card id exists
+// in either park registry. Resolve paths remove the flow before firing
+// the terminal frame, so "parked" implies "still pending" — the guard
+// keeps a rebroadcast from resurrecting a just-resolved card.
+func (s *DoorServer) findParked(id string) bool {
+	workers := s.workersInstance()
+	if workers != nil && workers.parkMgr != nil {
+		workers.parkMgr.mu.Lock()
+		for _, cellParks := range workers.parkMgr.byCell {
+			if _, ok := cellParks[id]; ok {
+				workers.parkMgr.mu.Unlock()
+				return true
+			}
+		}
+		workers.parkMgr.mu.Unlock()
+	}
+	proxy := s.proxyInstance()
+	if proxy != nil && proxy.parkMgr != nil {
+		proxy.parkMgr.mu.Lock()
+		for _, cellParks := range proxy.parkMgr.byCell {
+			if _, ok := cellParks[id]; ok {
+				proxy.parkMgr.mu.Unlock()
+				return true
+			}
+		}
+		proxy.parkMgr.mu.Unlock()
+	}
+	return false
+}
+
+// RebroadcastCard re-pushes the CARD frame for a card whose parked flow
+// is now visible (H3.2). The initial fan-out frame is built while the
+// parking goroutine holds parkMgr.mu, so flow-sourced fields (tool,
+// review, destination, age) can be missing; once the flow registers,
+// this rebuilds the frame from the authoritative table and delivers it
+// to every connected door. Clients key CARD frames by id, so the richer
+// frame replaces the degraded one in place.
+func (s *DoorServer) RebroadcastCard(id string) {
+	if s == nil || id == "" {
+		return
+	}
+	if !s.findParked(id) {
+		return // resolved before enrichment — terminal frame wins
+	}
+	wire := s.buildCardWireLocking(id, "", "", "", true)
+	b, err := json.Marshal(wire) //nolint:gosec // card wire carries names, never secret values
+	if err != nil {
+		return
+	}
+	ev := doorEvent{isPending: true, id: id, frame: "CARD " + string(b) + "\n"}
+	s.mu.RLock()
+	clients := s.clientList()
+	s.mu.RUnlock()
+	for _, c := range clients {
+		c.enqueueEvent(ev)
+	}
+}
+
+// ApprovalPending implements the hub fan-out interface: it renders and
+// broadcasts the CARD frame for a freshly registered approval to every
+// connected door client.
 func (s *DoorServer) ApprovalPending(id, sessionID, name, argsSummary string) {
 	wire := s.buildCardWire(id, sessionID, name, argsSummary)
 	b, err := json.Marshal(wire) //nolint:gosec // ApprovalCardWire.Cred carries provider/credential name, never secret value
@@ -1208,6 +1311,7 @@ func (c *DoorConn) Close() error {
 }
 
 func (s *DoorServer) handleMcpCall(client *doorClient, connector, tool, args string) bool {
-	DispatchMCPCall(nil, s.railRegistry(), connector, tool, args, client.writeRaw)
+	DispatchMCPCall(nil, s.railRegistry(), connector, tool, args, client.writeRaw,
+		MCPCallGuard{Vault: s.vaultInstance(), Hub: s.hub, Actor: client.name})
 	return true
 }

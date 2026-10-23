@@ -78,6 +78,8 @@ func RemoveStaleTemps(stateDir string) {
 	}
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
+			// #nosec G703 -- e.Name() comes from os.ReadDir of stateDir:
+			// a bare entry name, never path separators, cannot traverse.
 			_ = os.Remove(filepath.Join(stateDir, e.Name()))
 		}
 	}

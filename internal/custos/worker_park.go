@@ -56,6 +56,7 @@ func (ws *WorkerServer) askCard(cw *cellWorker, conn Connector, tool string, arg
 	pm.addParkLocked(flow)
 	pm.pending[key] = pc
 	pm.mu.Unlock()
+	ws.refreshCard(id) // H3.2 enriched CARD re-push once the flow is visible
 
 	if shedFlow != nil {
 		select {
