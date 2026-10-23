@@ -522,6 +522,30 @@ func TestPairCreateUnpairedStdoutAndStderr(t *testing.T) {
 	}
 }
 
+// TestPairCreateStdoutFlag verifies L-14 (b): `pair create --stdout` emits raw code
+// on stdout + shell history and pair redeem --token-stdin hint on stderr.
+func TestPairCreateStdoutFlag(t *testing.T) {
+	bin := buildCLI(t)
+	cfgPath, _ := hearthHome(t)
+
+	stdout, stderr, code := runPairCLI(t, bin, cfgPath, "create", "--stdout")
+	if code != 0 {
+		t.Fatalf("pair create --stdout failed: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	re := regexp.MustCompile(`^pair1_[0-9A-Za-z]{20}\n$`)
+	if !re.MatchString(stdout) {
+		t.Fatalf("stdout %q does not match %s", stdout, re.String())
+	}
+
+	if !strings.Contains(stderr, "shell history") {
+		t.Fatalf("stderr %q missing shell history warning", stderr)
+	}
+	if !strings.Contains(stderr, "pair redeem --token-stdin") {
+		t.Fatalf("stderr %q missing pair redeem --token-stdin hint", stderr)
+	}
+}
+
 // TestPairOwnerMigrationDance verifies the full unpair -> create -> re-pair
 // owner migration workflow (NUNTIUS-SPEC §3).
 func TestPairOwnerMigrationDance(t *testing.T) {

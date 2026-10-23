@@ -207,15 +207,16 @@ type Bridge struct {
 	deps Deps
 	cfg  Config
 
-	tg     Transport // flood-gated wrapper around deps.TG
-	flood  *FloodControl
-	inbox  *Inbox
-	state  *StateFile
-	pair   *PairStore
-	muter  *Muter
-	pairRL *Limiter
-	privRL *Limiter
-	log    *log.Logger
+	tg      Transport // flood-gated wrapper around deps.TG
+	flood   *FloodControl
+	inboxMu sync.Mutex
+	inbox   *Inbox
+	state   *StateFile
+	pair    *PairStore
+	muter   *Muter
+	pairRL  *Limiter
+	privRL  *Limiter
+	log     *log.Logger
 
 	cardsMu sync.Mutex
 	cards   map[string]*card // approval id → live card
@@ -229,6 +230,8 @@ type Bridge struct {
 
 	startedMu sync.Mutex
 	started   bool // hub presence probe reads this (A1)
+
+	turnTimeout time.Duration
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -417,7 +420,9 @@ func (b *Bridge) Start(ctx context.Context, token string) {
 // §7.3) — the bridge adds nothing; in-flight turns finalize per the
 // terminal-event rule as their engine calls return.
 func (b *Bridge) Stop() {
-	b.stopOnce.Do(func() { close(b.stop) })
+	b.stopOnce.Do(func() {
+		close(b.stop)
+	})
 	b.stopCustody()
 	b.startedMu.Lock()
 	b.started = false
@@ -551,6 +556,8 @@ func (b *Bridge) supervise(ctx context.Context) {
 // present — freshly appended OR already seen (the dedupe case; a
 // skipped duplicate must not strand the watermark).
 func (b *Bridge) accept(updates []Update) (int64, error) {
+	b.inboxMu.Lock()
+	defer b.inboxMu.Unlock()
 	highest := int64(0)
 	for _, u := range updates {
 		rec, ok := recordFor(u)
@@ -791,6 +798,20 @@ func (b *Bridge) queueFor(chatID string) *turnQueue {
 	return q
 }
 
+// shutdownContext derives a context that cancels when b.stop is closed (M11).
+func (b *Bridge) shutdownContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stopCh := b.stop
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 // runTurnedJob executes one queued turn (queue goroutine).
 func (b *Bridge) runTurnedJob(j job) {
 	sessID := b.resolveSession(b.activeSession())
@@ -808,11 +829,20 @@ func (b *Bridge) runTurnedJob(j job) {
 	_ = b.tg.SendChatAction(cctx, j.chatID, "typing")
 	cancel()
 
-	res := b.deps.Engine.RunTurn(context.Background(), TurnReq{
+	timeout := 30 * time.Minute
+	if b.turnTimeout > 0 {
+		timeout = b.turnTimeout
+	}
+	baseCtx, baseCancel := b.shutdownContext()
+	defer baseCancel()
+	turnCtx, turnCancel := context.WithTimeout(baseCtx, timeout)
+	defer turnCancel()
+
+	res := b.deps.Engine.RunTurn(turnCtx, TurnReq{
 		SessionID: sessID,
 		Text:      j.text,
 		UpdateID:  j.rec.UpdateID,
-		OnDelta:   func(text string) { stream.Delta(context.Background(), text) },
+		OnDelta:   func(text string) { stream.Delta(turnCtx, text) },
 	})
 
 	if res.Err != nil {
@@ -861,7 +891,10 @@ func (b *Bridge) updateCommitted(sessionID string, updateID int64) bool {
 // markDone appends the tombstone recording the session actually used
 // (nil for updates that terminate outside any session, §2).
 func (b *Bridge) markDone(rec Record, sessionID *string) {
-	if err := b.inbox.MarkDone(rec.UpdateID, sessionID); err != nil {
+	b.inboxMu.Lock()
+	err := b.inbox.MarkDone(rec.UpdateID, sessionID)
+	b.inboxMu.Unlock()
+	if err != nil {
 		b.log.Printf(LogDoneFailed, rec.UpdateID, err)
 	}
 }

@@ -163,3 +163,110 @@ func TestDisableThinkOnStreamingPath(t *testing.T) {
 		t.Fatal("streaming request missing enable_thinking=false")
 	}
 }
+
+func TestM20_StreamContract_NoReplayAfterFirstDelta(t *testing.T) {
+	t.Run("post-delta error aborts without retry or fallback", func(t *testing.T) {
+		var srv1Calls int
+		srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv1Calls++
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			fmt.Fprint(w, "data: {\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			// Mid-stream in-band failure post-delta
+			fmt.Fprint(w, "data: {\"error\":{\"message\":\"mid-stream crash\",\"type\":\"server_error\"}}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}))
+		defer srv1.Close()
+
+		var srv2Calls int
+		srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv2Calls++
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "data: {\"model\":\"m2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\ndata: [DONE]\n\n")
+		}))
+		defer srv2.Close()
+
+		r := NewRouter(Profile{
+			Chain: []Target{
+				{Provider: NewOpenAI(srv1.URL+"/v1", "", "m1")},
+				{Provider: NewOpenAI(srv2.URL+"/v1", "", "m2")},
+			},
+		})
+
+		var deltas []string
+		c, err := r.CompleteStream(context.Background(), "chat", nil, Options{}, func(delta string) error {
+			deltas = append(deltas, delta)
+			return nil
+		})
+
+		if err == nil {
+			t.Fatal("expected error after mid-stream failure, got nil")
+		}
+		if c != nil {
+			t.Fatalf("expected nil completion on mid-stream failure, got %+v", c)
+		}
+		if got := strings.Join(deltas, ""); got != "Hel" {
+			t.Fatalf("consumer deltas = %q, want %q", got, "Hel")
+		}
+		if srv1Calls != 1 {
+			t.Fatalf("srv1 calls = %d, want exactly 1 (no retry after delta)", srv1Calls)
+		}
+		if srv2Calls != 0 {
+			t.Fatalf("srv2 calls = %d, want 0 (no fallback after delta)", srv2Calls)
+		}
+	})
+
+	t.Run("pre-delta error still retries and falls back", func(t *testing.T) {
+		var srv1Calls int
+		srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv1Calls++
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "server error before any sse")
+		}))
+		defer srv1.Close()
+
+		var srv2Calls int
+		srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv2Calls++
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "data: {\"model\":\"m2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n")
+		}))
+		defer srv2.Close()
+
+		r := NewRouter(Profile{
+			Chain: []Target{
+				{Provider: NewOpenAI(srv1.URL+"/v1", "", "m1")},
+				{Provider: NewOpenAI(srv2.URL+"/v1", "", "m2")},
+			},
+		})
+
+		var deltas []string
+		c, err := r.CompleteStream(context.Background(), "chat", nil, Options{}, func(delta string) error {
+			deltas = append(deltas, delta)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("expected fallback success, got err: %v", err)
+		}
+		if c == nil || c.Text != "Hello" {
+			t.Fatalf("completion text = %v, want Hello", c)
+		}
+		if got := strings.Join(deltas, ""); got != "Hello" {
+			t.Fatalf("consumer deltas = %q, want %q", got, "Hello")
+		}
+		if srv1Calls == 0 {
+			t.Fatalf("srv1 should have been attempted before delta")
+		}
+		if srv2Calls != 1 {
+			t.Fatalf("srv2 calls = %d, want 1", srv2Calls)
+		}
+	})
+}
