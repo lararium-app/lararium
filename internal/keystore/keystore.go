@@ -142,9 +142,10 @@ func (s *Store) lock(mode int) (func(), error) {
 	}, nil
 }
 
-// readLocked loads keys.json; caller holds the flock. Missing file →
-// empty map. A corrupt file is returned as an error so callers decide
-// whether it is fatal (mutations) or degraded (resolution).
+// readLocked loads keys.json; caller holds the flock. Missing file or
+// zero-length file → empty map (recoverable per KEYS-SPEC §K1, L-3). A corrupt
+// non-empty file is returned as an error so callers decide whether it is fatal
+// (mutations) or degraded (resolution).
 func (s *Store) readLocked() (map[string]string, error) {
 	b, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
@@ -152,6 +153,9 @@ func (s *Store) readLocked() (map[string]string, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(b) == 0 {
+		return map[string]string{}, nil
 	}
 	m := map[string]string{}
 	if err := json.Unmarshal(b, &m); err != nil {

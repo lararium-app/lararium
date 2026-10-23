@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// ErrFingerprintsMAC indicates that fingerprints.json exists with an invalid or tampered MAC (M12).
+var ErrFingerprintsMAC = errors.New("fingerprints mac verification failed: tamper detected")
+
 // Fingerprints represents the sidecar mirror in fingerprints.json per CUSTOS-SPEC §4.6.
 // Maps credential names to 8-hex SHA-256 prefixes, plus a "mac" entry.
 type Fingerprints map[string]string
@@ -40,9 +43,10 @@ func FingerprintsPath(stateDir string) string {
 	return filepath.Join(stateDir, "fingerprints.json")
 }
 
-// ReadFingerprints reads the fingerprints sidecar from stateDir.
+// ReadFingerprints reads and verifies the fingerprints sidecar from stateDir.
 // If the file does not exist, an empty Fingerprints map is returned without error.
-func ReadFingerprints(stateDir string) (Fingerprints, error) {
+// If the file exists but has an invalid MAC, ErrFingerprintsMAC is returned (M12).
+func ReadFingerprints(stateDir string, instanceKey ...[]byte) (Fingerprints, error) {
 	path := FingerprintsPath(stateDir)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -52,11 +56,58 @@ func ReadFingerprints(stateDir string) (Fingerprints, error) {
 		return nil, fmt.Errorf("read fingerprints: %w", err)
 	}
 
+	var key []byte
+	if len(instanceKey) > 0 && len(instanceKey[0]) > 0 {
+		key = instanceKey[0]
+	} else {
+		keyPath := filepath.Join(stateDir, "vault.key")
+		k, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("read vault.key for fingerprints: %w", err)
+		}
+		if len(k) != 32 {
+			return nil, fmt.Errorf("invalid vault.key size: %d", len(k))
+		}
+		key = k
+	}
+
 	var m Fingerprints
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("parse fingerprints: %w", err)
 	}
+
+	if !VerifyFingerprintsMAC(key, m) {
+		return nil, ErrFingerprintsMAC
+	}
+
 	return m, nil
+}
+
+// VerifyFingerprintsMAC checks if the "mac" entry in m matches HMAC under HKDF(instanceKey, "custos-fingerprints").
+func VerifyFingerprintsMAC(instanceKey []byte, m map[string]string) bool {
+	expectedMAC, ok := m["mac"]
+	if !ok || expectedMAC == "" {
+		return false
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		if k == "mac" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var sb strings.Builder
+	for _, k := range keys {
+		sb.WriteString(k)
+		sb.WriteString(":")
+		sb.WriteString(m[k])
+		sb.WriteString("\n")
+	}
+
+	macKey := DeriveHKDF(instanceKey, "custos-fingerprints")
+	return VerifyMAC(macKey, []byte(sb.String()), expectedMAC)
 }
 
 // ComputeFingerprintsMAC calculates the MAC over sorted name:hash pairs using instanceKey.

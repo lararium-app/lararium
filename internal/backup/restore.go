@@ -487,6 +487,34 @@ func createSafetyBundle(bundle, dir, parentDir, baseName, ts string, recipients 
 	return safetyPath, nil
 }
 
+// isTrustedStaging validates a recovered marker's Staging path per PENATUS-SPEC §4.5.4 (M5).
+// It is trusted only if it is:
+// (a) absolute,
+// (b) a direct child of the SAME parent directory as the restore target dir recorded in the marker, and
+// (c) its base name matches the "<dir>.staging-" prefix written at creation.
+func isTrustedStaging(staging, target string) bool {
+	if !filepath.IsAbs(staging) {
+		return false
+	}
+	cleanStaging := filepath.Clean(staging)
+	cleanTarget := filepath.Clean(target)
+	if !filepath.IsAbs(cleanTarget) {
+		return false
+	}
+	targetParent := filepath.Dir(cleanTarget)
+	stagingParent := filepath.Dir(cleanStaging)
+	if targetParent != stagingParent {
+		return false
+	}
+	targetBase := filepath.Base(cleanTarget)
+	if targetBase == "" || targetBase == "." || targetBase == "/" {
+		return false
+	}
+	stagingBase := filepath.Base(cleanStaging)
+	expectedPrefix := targetBase + ".staging-"
+	return strings.HasPrefix(stagingBase, expectedPrefix)
+}
+
 // RecoverSwap evaluates the §4.5.4 rule 4 recovery table against root's parent directory.
 // Implement the six table rows EXACTLY as written.
 func RecoverSwap(root string) error {
@@ -528,6 +556,16 @@ func RecoverSwap(root string) error {
 			absTarget = marker.Target
 		}
 		if filepath.Clean(absTarget) != filepath.Clean(root) && filepath.Clean(marker.Target) != filepath.Clean(root) {
+			continue
+		}
+
+		// Marker staging trust law (PENATUS-SPEC §4.5.4, M5):
+		// Unvalidated staging from recovered marker could cause recursive
+		// deletion outside the restore parent. Quarantine if untrusted.
+		if !isTrustedStaging(marker.Staging, absTarget) {
+			fmt.Fprintf(os.Stderr, "restore marker %s quarantined: untrusted staging path %q (M5)\n", markerFile, marker.Staging)
+			_ = os.Rename(markerFile, markerFile+".rejected")
+			fsyncDir(parentDir)
 			continue
 		}
 

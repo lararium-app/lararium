@@ -137,10 +137,13 @@ each owns its override explicitly):
   writes an exact `auto` rule on `<connector>/<tool>` as frozen — and the
   rail **MUST** revoke that auto rule (audited, never silently) when the
   tool's fingerprint changes (§8.2). Fingerprint: SHA-256 over RFC 8785
-  (JCS) canonicalization of `{name, title, description, inputSchema,
-  annotations}` — title and description text are covered, so a vendor
-  editing prompt-visible prose or the card-visible title invalidates
-  standing approval. Implementation
+  (JCS) canonicalization of `{annotations, connector, description, inputSchema,
+  name, title}` — title, description, and connector namespace are covered.
+  **Fingerprint collision law (F5):** the comparison input MUST be collision-free
+  across connectors and tools (canonical JSON of ordered fields including connector
+  and full raw tool name), while any display truncation stays display-only. Stored
+  fingerprints from previous formats that no longer match fail closed (never auto-approve).
+  Implementation
   shape: frozen `PolicyEngine.RemoveRule` hardcodes `policy_written` and
   cannot carry A8's payload, so revocation goes through an unexported
   variant `removeRuleWithAudit(lane, pattern, actor, kind, tool, cred)`;

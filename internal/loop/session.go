@@ -140,8 +140,12 @@ func (s *Session) messages() []router.Message {
 				text = tf.Text
 			} else if f.Ref != "" {
 				// Blob-spilled result: read it back for the model.
-				if b, err := os.ReadFile(s.resolveRef(f.Ref)); err == nil {
-					text = string(b)
+				if path := s.resolveRef(f.Ref); path != "" {
+					if b, err := os.ReadFile(path); err == nil {
+						text = string(b)
+					} else {
+						text = "[result blob missing: " + f.Ref + "]"
+					}
 				} else {
 					text = "[result blob missing: " + f.Ref + "]"
 				}
@@ -156,11 +160,23 @@ func (s *Session) messages() []router.Message {
 }
 
 // resolveRef maps a result_ref (relative to the session dir) to a path.
+// Absolute paths and paths that escape the session directory after lexical
+// cleaning resolve to "" (PENATUS-SPEC §2 blob containment law M3).
+// Callers skip the read entirely when resolveRef returns "".
 func (s *Session) resolveRef(ref string) string {
-	if filepath.IsAbs(ref) {
-		return ref
+	if ref == "" || filepath.IsAbs(ref) {
+		return ""
 	}
-	return filepath.Join(s.Log.Dir(), ref)
+	if s.Log == nil {
+		return ""
+	}
+	dir := filepath.Clean(s.Log.Dir())
+	target := filepath.Clean(filepath.Join(dir, ref))
+	rel, err := filepath.Rel(dir, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return target
 }
 
 // decodeInto unmarshals an event's flattened fields into dst.

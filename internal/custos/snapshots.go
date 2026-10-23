@@ -60,7 +60,8 @@ func (sm *SnapshotManager) SnapshotDir(gen int64) string {
 	return filepath.Join(sm.snapshotsDir, fmt.Sprintf("gen-%d", gen))
 }
 
-// CopyFile copies src to dst enforcing mode 0600.
+// copyFile copies src to dst enforcing mode 0600 using
+// temp-in-same-dir + fsync + rename (atomic replace) per CUSTOS-SPEC §8.4 (M10).
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -68,17 +69,54 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	tmpName := tmp.Name()
+	cleanedUp := false
+	defer func() {
+		if !cleanedUp {
+			_ = os.Remove(tmpName)
+		}
+	}()
 
-	if _, err := io.Copy(out, in); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return out.Sync()
+
+	if _, err := copyPayload(tmp, in); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpName, dst); err != nil {
+		return err
+	}
+	cleanedUp = true
+
+	// Fsync destination directory after atomic rename per M10
+	dirF, err := os.Open(dir)
+	if err == nil {
+		_ = dirF.Sync()
+		_ = dirF.Close()
+	}
+
+	return nil
 }
+
+// copyPayload is the payload copy seam (tests can inject write errors).
+var copyPayload = io.Copy
 
 // EnsureSurrogatesPlaceholder ensures surrogates.age exists (empty placeholder if absent).
 // CUSTOS §8.4: surrogates.age (create empty-if-absent placeholder so the set is always complete).

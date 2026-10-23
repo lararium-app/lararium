@@ -3,6 +3,8 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -165,4 +167,126 @@ func appendTombstone(s *Session, seq int64) error {
 		TS:     "2026-09-28T00:00:00Z",
 		Fields: map[string]json.RawMessage{"seqs": mustJSON([]int64{seq}), "reason": raw("test")},
 	})
+}
+
+// TestM3_ResolveRefContainment verifies that result_ref values escaping the session
+// directory or given as absolute paths are rejected, and callers skip reading them
+// per PENATUS-SPEC §2 (M3).
+func TestM3_ResolveRefContainment(t *testing.T) {
+	sp := &stubProvider{name: "stub", replies: func(int, []router.Message) string { return "ok" }}
+	s := setup(t, sp)
+	sessionDir := s.Log.Dir()
+
+	// 1. Direct lexical resolveRef checks
+	cases := []struct {
+		name    string
+		ref     string
+		wantDir bool
+	}{
+		{"empty", "", false},
+		{"abs /etc/passwd", "/etc/passwd", false},
+		{"escape ../../etc/passwd", "../../etc/passwd", false},
+		{"escape ./../../secret", "./../../secret", false},
+		{"escape sub/../../../secret", "sub/../../../secret", false},
+		{"valid blob", "blobs/call1.txt", true},
+		{"valid nested", "blobs/sub/out.dat", true},
+		{"valid clean relative", "blobs/../blobs/call2.txt", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := s.resolveRef(tc.ref)
+			if !tc.wantDir {
+				if got != "" {
+					t.Fatalf("resolveRef(%q) = %q; want empty", tc.ref, got)
+				}
+			} else {
+				if !strings.HasPrefix(got, sessionDir) {
+					t.Fatalf("resolveRef(%q) = %q; not inside sessionDir %q", tc.ref, got, sessionDir)
+				}
+			}
+		})
+	}
+
+	// 2. Integration with s.messages() caller: ensure escaping or absolute ref is never read
+	outsideDir := t.TempDir()
+	outsideSecret := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsideSecret, []byte("TOP-SECRET-OUTSIDE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Calculate a relative escaping path from sessionDir to outsideSecret
+	relEscape, err := filepath.Rel(sessionDir, outsideSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Append tool_result with escaping ref
+	err = s.Log.Append(penatus.Event{
+		T:  "tool_result",
+		TS: "2026-09-28T00:00:00Z",
+		Fields: map[string]json.RawMessage{
+			"call_id":    raw("call_esc"),
+			"ok":         mustJSON(true),
+			"result_ref": raw(relEscape),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Append tool_result with absolute ref
+	err = s.Log.Append(penatus.Event{
+		T:  "tool_result",
+		TS: "2026-09-28T00:00:01Z",
+		Fields: map[string]json.RawMessage{
+			"call_id":    raw("call_abs"),
+			"ok":         mustJSON(true),
+			"result_ref": raw(outsideSecret),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Append tool_result with valid inside ref
+	blobsDir := filepath.Join(sessionDir, "blobs")
+	if err := os.MkdirAll(blobsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	insideFile := filepath.Join(blobsDir, "inside.txt")
+	if err := os.WriteFile(insideFile, []byte("LEGITIMATE-TOOL-OUTPUT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = s.Log.Append(penatus.Event{
+		T:  "tool_result",
+		TS: "2026-09-28T00:00:02Z",
+		Fields: map[string]json.RawMessage{
+			"call_id":    raw("call_ok"),
+			"ok":         mustJSON(true),
+			"result_ref": raw("blobs/inside.txt"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := s.messages()
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "TOP-SECRET-OUTSIDE") {
+			t.Fatalf("escaped secret leaked into session messages: %q", m.Content)
+		}
+	}
+
+	// Check that legitimate inside file was read
+	foundInside := false
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "LEGITIMATE-TOOL-OUTPUT") {
+			foundInside = true
+			break
+		}
+	}
+	if !foundInside {
+		t.Fatalf("legitimate blob was not read into messages: %+v", msgs)
+	}
 }
