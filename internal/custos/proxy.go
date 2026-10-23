@@ -607,6 +607,16 @@ func (cl *cellListener) handle(conn net.Conn) {
 			_ = conn.Close()
 			return
 		}
+		if u.Scheme == "https" {
+			// M1: absolute-form https:// must never enter the forward
+			// lanes — NormalizeAuthority would default the dial to
+			// port 80 and the swap would hand its Bearer over in
+			// cleartext. TLS through this proxy rides CONNECT only.
+			cl.logEntry(conn.RemoteAddr(), method, target, "refused-https-abs")
+			proxy.RstHangup(conn)
+			_ = conn.Close()
+			return
+		}
 	}
 
 	// Look for surrogate token in headers
