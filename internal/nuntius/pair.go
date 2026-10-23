@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,10 +261,14 @@ func (s *PairStore) Unpair(userID string) error {
 		return err
 	}
 	// M4: clear owner_chat in state.json so cards stop routing to the former owner.
-	sf, err := NewStateFile(s.dir)
-	if err == nil {
-		st, err := sf.Load()
-		if err == nil && st.OwnerChat != "" {
+	sf, serr := NewStateFile(s.dir)
+	if serr != nil {
+		log.Printf("nuntius: unpair: owner_chat may be stale, state file unreadable: %v", serr)
+	} else {
+		st, lerr := sf.Load()
+		if lerr != nil {
+			log.Printf("nuntius: unpair: owner_chat may be stale, state load failed: %v", lerr)
+		} else if st.OwnerChat != "" {
 			st.OwnerChat = ""
 			if err := sf.Save(st); err != nil {
 				return fmt.Errorf("nuntius: clear owner chat: %w", err)
