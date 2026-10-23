@@ -24,7 +24,7 @@ import (
 //	systemd-nspawn --machine=<id> --register=yes --keep-unit
 //	--private-users=pick --private-users-ownership=auto
 //	--network-veth -D <root>/cells/<id>/merged
-//	--bind=<workspace>:/workspace --bind=<hearth>:/hearth
+//	--bind=<workspace>:/workspace --bind-ro=<bin>:/opt/lararium
 //	--bind=<bin>:/opt/lararium (via --bind-ro)
 //
 // Network order (spec §4, brief rev2): legacy-record subnet fix-up
@@ -260,16 +260,12 @@ func (s *Store) Start(id string) error {
 		if err := os.Chown(s.WorkspaceDir(id), keeper, keeper); err != nil {
 			return fmt.Errorf("chown workspace to in-cell keeper: %w", err)
 		}
-		// <hearth> is SHARED across cells: chowning it to one cell's
-		// keeper revokes the previous cell's access (agy round-2 F1).
-		// Grant per-keeper read-write via ACLs instead — host keeps
-		// ownership, every started cell's keeper is a grantee, and new
-		// files inherit the grant via the default ACL. Binds are
-		// noidmap, so the raw keeper uid in the ACL matches the
-		// keeper's cred in-cell.
-		if err := s.grantHearthAccess(keeper); err != nil {
-			return fmt.Errorf("grant hearth access to in-cell keeper: %w", err)
-		}
+		// One-time sweep of the recursive per-keeper ACLs that older
+		// builds granted across <hearth>: the guest no longer mounts
+		// the hearth at all, so those grants are pure inherited attack
+		// surface (a destroyed cell's uid can collide with a future
+		// cell's base and hand it someone else's write access).
+		s.sweepLegacyHearthACLs()
 	}
 
 	// --- T5 network bring-up (spec §4): AFTER healthy, and ANY
@@ -453,26 +449,24 @@ func writeFixupCopy(out *os.File, src string, fi os.FileInfo, base int, setuid b
 	return out.Sync()
 }
 
-// grantHearthAccess gives host uid `keeper` rwX on <hearth> (existing
-// files + inherited defaults). Idempotent; repeated starts of the same
-// cell re-apply the same entry.
-func (s *Store) grantHearthAccess(keeper int) error {
-	spec := fmt.Sprintf("u:%d:rwX", keeper)
-	if _, _, err := s.runner.Run("setfacl", "-R", "-m", spec, s.Hearth); err != nil {
-		return err
+// sweepLegacyHearthACLs removes all POSIX ACLs from <hearth> once,
+// marked by a dotfile so the recursive sweep runs at most one time per
+// hearth. Pre-C2 boots granted every started cell's keeper recursive
+// rwx across the shared hearth (files + default ACL); those entries
+// outlive their cells and survive uid re-allocation. After C2 nothing
+// in a guest can reach the hearth, and hearth-internal permissions
+// are plain owner/mode — a single full clear is the correct repair.
+// Best-effort: absent setfacl simply means no legacy grant can exist
+// on this filesystem.
+func (s *Store) sweepLegacyHearthACLs() {
+	marker := filepath.Join(s.Hearth, ".legacy-acls-swept")
+	if _, err := os.Stat(marker); err == nil {
+		return
 	}
-	_, _, err := s.runner.Run("setfacl", "-R", "-d", "-m", spec, s.Hearth)
-	return err
-}
-
-// revokeHearthAccess drops a destroyed cell's keeper grant. Best
-// effort: a missing entry is fine.
-func (s *Store) revokeHearthAccess(keeper int) {
-	spec := fmt.Sprintf("u:%d", keeper)
-	//nolint:errcheck // revoke is idempotent cleanup; entry may not exist
-	s.runner.Run("setfacl", "-R", "-x", spec, s.Hearth)
-	//nolint:errcheck // revoke is idempotent cleanup; entry may not exist
-	s.runner.Run("setfacl", "-R", "-d", "-x", spec, s.Hearth)
+	//nolint:errcheck // best-effort legacy cleanup; success is not required to boot
+	s.runner.Run("setfacl", "-R", "-b", s.Hearth)
+	//nolint:errcheck // marker is an optimization; a failed write re-runs the sweep
+	os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
 }
 
 // nspawnArgs returns the systemd-nspawn arguments for a cell.
@@ -520,9 +514,12 @@ func (s *Store) nspawnArgs(id string) []string {
 	// probed on systemd 257: the --bind= option grammar accepts only
 	// rbind/norbind/noidmap/idmap/rootidmap/owneridmap — ":ro" and
 	// ":nodev" are rejected with "Invalid bind mount option").
+	// The host hearth is deliberately NOT mounted: a guest-side RW
+	// view of it exposes keys.json, tokens, doors, and sibling cells'
+	// state to untrusted in-cell code. Shared state is brokered over
+	// the doors socket (spec §3, C2).
 	args = append(args,
 		"--bind="+s.WorkspaceDir(id)+":/workspace",
-		"--bind="+s.Hearth+":/hearth",
 		"--bind-ro="+s.BinDir(id)+":/opt/lararium",
 	)
 
@@ -978,13 +975,6 @@ func (s *Store) Destroy(id string) error {
 		if err := os.RemoveAll(d); err != nil {
 			return fmt.Errorf("remove %s: %w", d, err)
 		}
-	}
-
-	// Drop this cell's keeper grant on <hearth> before its identity
-	// (cell.json) disappears; the uid goes back to the pool and a
-	// future cell must not inherit someone else's ACL (round-2 F1).
-	if c, err := s.Load(id); err == nil && c.SubUIDBase > 0 {
-		s.revokeHearthAccess(c.SubUIDBase + 1000)
 	}
 
 	// Remove the whole cell dir: merged, cell.json, snapshots/, bin/,

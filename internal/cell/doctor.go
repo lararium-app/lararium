@@ -51,11 +51,11 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 		results = append(results, CheckResult{"machinectl", "OK", "found in PATH"})
 	}
 
-	// Check: setfacl present (shared <hearth> grants per keeper;
-	// package "acl" — start fails without it once a cell boots).
+	// Check: setfacl present (optional: used once to clear recursive
+	// per-keeper ACLs that pre-C2 boots left on the shared hearth;
+	// nothing grants hearth ACLs anymore).
 	if _, err := exec.LookPath("setfacl"); err != nil {
-		results = append(results, CheckResult{"setfacl", "FAIL", "setfacl not found (install package 'acl')"})
-		failed = true
+		results = append(results, CheckResult{"setfacl", "WARN", "not found (optional; clears legacy hearth ACLs only)"})
 	} else {
 		results = append(results, CheckResult{"setfacl", "OK", "found in PATH"})
 	}
