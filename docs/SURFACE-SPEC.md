@@ -177,7 +177,7 @@ must amend, not creep.
   daemon misconfigured. Deleting `main` answers 403 Forbidden regardless of whether it exists on disk, preventing probe oracles (L-4). No delete endpoint in v1 (archive is a file-layer
   rename, PENATUS §2, out of scope here).
 - Errors: `{"error": string}` + correct status (400/401/404/409/413/500).
-  500 never echoes internals.
+  500 never echoes internals: 500-class responses carry a short generic reason (`internal error`, `delete failed`, `key store write failed`); the full failure detail goes to the daemon-side log only and never echoes internal strings (L-15).
 
 ## 5. Streaming protocol (SSE)
 

@@ -3,6 +3,7 @@ package surface
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -102,7 +103,8 @@ func (s *Server) policyGetHandler(w http.ResponseWriter, _ *http.Request) {
 		case errors.Is(err, ErrPolicyCorrupt) || err.Error() == "policy_corrupt":
 			s.error(w, "policy_corrupt", http.StatusServiceUnavailable)
 		default:
-			s.error(w, err.Error(), http.StatusBadRequest)
+			log.Printf("surface: list policy rules failed: %v", err)
+			s.error(w, "internal error", http.StatusInternalServerError)
 		}
 		return
 	}
