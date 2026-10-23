@@ -3,6 +3,7 @@ package surface
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -84,6 +85,7 @@ func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {
 	sessions, err := s.Sessions.List()
 	if err != nil {
+		log.Printf("surface: list sessions failed: %v", err)
 		s.error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -104,6 +106,7 @@ func (s *Server) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 
 	session, err := s.Sessions.Create(req.Title, req.ModelPin)
 	if err != nil {
+		log.Printf("surface: create session failed: %v", err)
 		s.error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -130,6 +133,7 @@ func (s *Server) deleteSessionHandler(w http.ResponseWriter, id string) {
 	case errors.Is(err, ErrProtectedSession):
 		s.error(w, "session is protected", http.StatusForbidden)
 	case err != nil:
+		log.Printf("surface: delete session failed: %v", err)
 		s.error(w, "delete failed", http.StatusInternalServerError)
 	default:
 		w.WriteHeader(http.StatusNoContent)
@@ -175,6 +179,7 @@ func (s *Server) eventsHandler(w http.ResponseWriter, r *http.Request) {
 			s.error(w, "not found", http.StatusNotFound)
 			return
 		}
+		log.Printf("surface: get session events failed: %v", err)
 		s.error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -212,7 +217,8 @@ func (s *Server) error(w http.ResponseWriter, msg string, code int) {
 func writeJSONAny(w http.ResponseWriter, code int, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		log.Printf("surface: json marshal failed: %v", err)
+		writeJSONBody(w, http.StatusInternalServerError, `{"error":"internal error"}`)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

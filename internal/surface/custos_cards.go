@@ -236,7 +236,9 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 			case errors.Is(err, ErrBadSource) || err.Error() == "bad_source":
 				s.error(w, "bad_source", http.StatusBadRequest)
 			default:
-				s.error(w, err.Error(), http.StatusInternalServerError)
+				// #nosec G706 -- id is shape-validated by the card ID gate, logSanitize strips control chars
+				stdlog.Printf("surface: custos card resolve %s failed: %v", logSanitize(id), err)
+				s.error(w, "internal error", http.StatusInternalServerError)
 			}
 			return
 		}

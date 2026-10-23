@@ -1882,6 +1882,10 @@ func (p *Proxy) resolveFloor(ctx context.Context, host string) (string, error) {
 		return IsFloorDestination(ip) || isLocal(ip)
 	}
 
+	if IsFloorHost(host) {
+		return "", fmt.Errorf("%w: destination %s", proxy.ErrFloor, host)
+	}
+
 	if ip := net.ParseIP(host); ip != nil {
 		if reject(ip) {
 			return "", fmt.Errorf("%w: destination %s", proxy.ErrFloor, host)

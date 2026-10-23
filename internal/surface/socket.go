@@ -99,12 +99,19 @@ func (c *socketCloser) acceptLoop(reload func() error) {
 	}
 }
 
+const maxSocketCommandLine = 4096
+
 func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(backupAckTimeout))
-	reader := bufio.NewReader(conn)
+	lr := io.LimitReader(conn, maxSocketCommandLine)
+	reader := bufio.NewReader(lr)
 	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
+		return
+	}
+	if !strings.HasSuffix(line, "\n") {
+		_, _ = fmt.Fprint(conn, "ERR line too long\n")
 		return
 	}
 	cmd := trimCR(line)
@@ -212,9 +219,17 @@ func checkSelfInclusionSocket(root, outAbs string) error {
 	if err != nil {
 		return fmt.Errorf("resolve root: %w", err)
 	}
+	if realRoot, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = realRoot
+	}
 	absOut, err := filepath.Abs(outAbs)
 	if err != nil {
 		return fmt.Errorf("resolve out: %w", err)
+	}
+	if realOut, err := filepath.EvalSymlinks(absOut); err == nil {
+		absOut = realOut
+	} else if parent, err := filepath.EvalSymlinks(filepath.Dir(absOut)); err == nil {
+		absOut = filepath.Join(parent, filepath.Base(absOut))
 	}
 	rel, err := filepath.Rel(absRoot, absOut)
 	if err != nil {

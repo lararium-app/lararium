@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -149,18 +150,65 @@ func (e *tokenStatusError) Unwrap() error { return ErrTokenExchange }
 // terminal and surfaces to the caller as the final response.
 func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
+// redactURLError wraps an error with a redacted error string, preserving Unwrap (§4.5, M15).
+type redactURLError struct {
+	orig error
+	msg  string
+}
+
+func (e *redactURLError) Error() string { return e.msg }
+func (e *redactURLError) Unwrap() error { return e.orig }
+
+var urlInErrRe = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+// redactURL scrubs query strings from any URLs in err's message via url.Parse
+// and dropping RawQuery (CUSTOS-SPEC §4.5, M15). Status codes, hosts, and other
+// message elements are preserved.
+func redactURL(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if u, parseErr := url.Parse(ue.URL); parseErr == nil && u.Host != "" {
+			u.RawQuery = ""
+			u.ForceQuery = false
+			ue.URL = u.String()
+		}
+	}
+	orig := err.Error()
+	redacted := urlInErrRe.ReplaceAllStringFunc(orig, func(raw string) string {
+		trailing := ""
+		for len(raw) > 0 && (raw[len(raw)-1] == '.' || raw[len(raw)-1] == ',' || raw[len(raw)-1] == ':' || raw[len(raw)-1] == ';') {
+			trailing = string(raw[len(raw)-1]) + trailing
+			raw = raw[:len(raw)-1]
+		}
+		u, parseErr := url.Parse(raw)
+		if parseErr != nil || u.Host == "" {
+			return raw + trailing
+		}
+		u.RawQuery = ""
+		u.ForceQuery = false
+		return u.String() + trailing
+	})
+	if redacted == orig {
+		return err
+	}
+	return &redactURLError{orig: err, msg: redacted}
+}
+
 // DefaultTokenForward performs the token-endpoint POST. Non-loopback http://
 // endpoints are refused (production wiring); loopback http:// is allowed so
 // V13 runs against a local fake OAuth server.
 func DefaultTokenForward(ctx context.Context, tokenURI string, form url.Values) (*TokenExchangeResult, error) {
 	if err := assertSafeTokenURI(tokenURI); err != nil {
-		return nil, err
+		return nil, redactURL(err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURI,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, classifyTokenTransport(err)
+		return nil, redactURL(classifyTokenTransport(err))
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
@@ -168,7 +216,7 @@ func DefaultTokenForward(ctx context.Context, tokenURI string, form url.Values) 
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: refuseRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, classifyTokenTransport(err)
+		return nil, redactURL(classifyTokenTransport(err))
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
@@ -183,10 +231,10 @@ func DefaultTokenForward(ctx context.Context, tokenURI string, form url.Values) 
 	var tr tokenResponse
 	dec := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
 	if err := dec.Decode(&tr); err != nil {
-		return nil, fmt.Errorf("%w: bad response", ErrTokenExchange)
+		return nil, redactURL(fmt.Errorf("%w: bad response", ErrTokenExchange))
 	}
 	if tr.AccessToken == "" {
-		return nil, fmt.Errorf("%w: no access token", ErrTokenExchange)
+		return nil, redactURL(fmt.Errorf("%w: no access token", ErrTokenExchange))
 	}
 	refresh := tr.RefreshToken
 	if refresh == "" {
@@ -632,7 +680,7 @@ func (v *Vault) AcquireTokenCtx(ctx context.Context, credName string) (string, e
 	if call, inflight := v.refreshInflight[credName]; inflight {
 		v.mu.Unlock()
 		<-call.done
-		return call.token, call.err
+		return call.token, redactURL(call.err)
 	}
 	call := &refreshCall{done: make(chan struct{})}
 	v.refreshInflight[credName] = call
@@ -644,7 +692,7 @@ func (v *Vault) AcquireTokenCtx(ctx context.Context, credName string) (string, e
 		// from the first caller's context (the 30s cap inside
 		// performRefresh bounds it; §4.5 coalescing doctrine).
 		token, err := v.performRefresh(context.WithoutCancel(ctx), credName, cred)
-		call.token, call.err = token, err
+		call.token, call.err = token, redactURL(err)
 		v.mu.Lock()
 		delete(v.refreshInflight, credName)
 		v.mu.Unlock()
@@ -652,7 +700,7 @@ func (v *Vault) AcquireTokenCtx(ctx context.Context, credName string) (string, e
 	}()
 
 	<-call.done
-	return call.token, call.err
+	return call.token, redactURL(call.err)
 }
 
 // performRefresh forwards the refresh grant outside the flock, then takes a
@@ -679,7 +727,7 @@ func (v *Vault) performRefresh(ctx context.Context, credName string, cred Creden
 		"client_secret": {cred.ClientSecret},
 	})
 	if err != nil {
-		return "", err
+		return "", redactURL(err)
 	}
 
 	now := time.Now().UTC()
@@ -729,7 +777,7 @@ func (v *Vault) performRefresh(ctx context.Context, credName string, cred Creden
 			})
 			return "", ErrCredentialGone
 		}
-		return "", mErr
+		return "", redactURL(mErr)
 	}
 	return res.AccessToken, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -194,6 +195,7 @@ func (s *Server) putKeyHandler(w http.ResponseWriter, r *http.Request, name stri
 			writeJSONBody(w, http.StatusConflict, `{"error":"key store full"}`)
 		default:
 			// Store errors are ours; they never carry key material.
+			log.Printf("surface: key store write failed: %v", err)
 			s.error(w, "key store write failed", http.StatusInternalServerError)
 		}
 		return
@@ -203,6 +205,7 @@ func (s *Server) putKeyHandler(w http.ResponseWriter, r *http.Request, name stri
 	// definition, so the registry swap completes before the response —
 	// no socket hop, and the next request already sees the new key.
 	if err := s.keys.Reload(); err != nil {
+		log.Printf("surface: key reload failed: %v", err)
 		s.error(w, "key saved but reload failed", http.StatusInternalServerError)
 		return
 	}
@@ -230,10 +233,12 @@ func (s *Server) deleteKeyHandler(w http.ResponseWriter, name string) {
 	}
 	// Idempotent: removing an absent name is a success (spec K4).
 	if _, err := s.keys.Store.Remove(name); err != nil {
+		log.Printf("surface: key store remove failed: %v", err)
 		s.error(w, "key store write failed", http.StatusInternalServerError)
 		return
 	}
 	if err := s.keys.Reload(); err != nil {
+		log.Printf("surface: key reload failed: %v", err)
 		s.error(w, "key removed but reload failed", http.StatusInternalServerError)
 		return
 	}

@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -102,29 +102,45 @@ func (o *openAI) baseURLHost() string {
 // fixed name for the Docker host itself — same machine, same trust as
 // loopback, and the container-form reference config points the local
 // provider at it. (hearthd setup's keyless-local check agrees.)
+//
+// Uses the unified loopback classifier law (L-16): parses IP via netip,
+// checks IsLoopback (covering 127.0.0.0/8 and ::1), rejects zone IDs.
+// Duplicated here citing internal/surface.IsLoopbackLiteral to avoid an
+// import cycle between surface and router.
 func isLoopbackURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return true // unparseable: treat as local, never worse than today
+		return false
 	}
 	host := u.Hostname()
 	if host == "" || host == "localhost" || host == "host.docker.internal" {
 		return true
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false // remote hostname
-	}
-	return ip.IsLoopback() || ip.Equal(net.IPv4zero) || ip4In127(ip)
+	return isLoopbackIPLiteral(host)
 }
 
-// ip4In127 covers 127.0.0.0/8 explicitly (IsLoopback already does on
-// Linux; belt-and-braces for IPv4-in-IPv6 mapped forms).
-func ip4In127(ip net.IP) bool {
-	if v4 := ip.To4(); v4 != nil {
-		return v4[0] == 127
+// isLoopbackIPLiteral implements the shared loopback classifier law (L-16):
+// parses IP via netip, checks IsLoopback (covering 127/8 and ::1), rejects zone IDs.
+// Matches internal/surface.IsLoopbackLiteral.
+func isLoopbackIPLiteral(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.Contains(raw, "%") {
+		return false
 	}
-	return false
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		raw = raw[1 : len(raw)-1]
+	}
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		return false
+	}
+	if addr.Zone() != "" {
+		return false
+	}
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	return addr.IsLoopback()
 }
 
 // Name returns the config-declared provider id (audit 5.7), or

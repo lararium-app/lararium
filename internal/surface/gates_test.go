@@ -1,26 +1,44 @@
 package surface
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
 func TestHostGate(t *testing.T) {
+	loopbackAddr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7717}
+	lanAddr := &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 7717}
+
 	tests := []struct {
 		name       string
 		allowed    []string
 		host       string
+		localAddr  net.Addr
 		wantStatus int
 	}{
-		{"localhost", nil, "localhost:7717", http.StatusOK},
-		{"ipv6 bracketed", nil, "[::1]:7717", http.StatusOK},
-		{"127.0.0.1", nil, "127.0.0.1:7717", http.StatusOK},
-		{"evil host", nil, "evil.example", http.StatusForbidden},
-		{"allowed host", []string{"hearth.example.com"}, "hearth.example.com", http.StatusOK},
-		{"not in allowed", []string{"hearth.example.com"}, "evil.example", http.StatusForbidden},
-		{"case insensitive", []string{"HEARTH.EXAMPLE.COM"}, "hearth.example.com", http.StatusOK},
-		{"with port", []string{"example.com"}, "example.com:8080", http.StatusOK},
+		{"localhost loopback", nil, "localhost:7717", loopbackAddr, http.StatusOK},
+		{"ipv6 bracketed", nil, "[::1]:7717", loopbackAddr, http.StatusOK},
+		{"127.0.0.1", nil, "127.0.0.1:7717", loopbackAddr, http.StatusOK},
+		{"evil host", nil, "evil.example", loopbackAddr, http.StatusForbidden},
+		{"allowed host", []string{"hearth.example.com"}, "hearth.example.com", loopbackAddr, http.StatusOK},
+		{"not in allowed", []string{"hearth.example.com"}, "evil.example", loopbackAddr, http.StatusForbidden},
+		{"case insensitive", []string{"HEARTH.EXAMPLE.COM"}, "hearth.example.com", loopbackAddr, http.StatusOK},
+		{"with port", []string{"example.com"}, "example.com:8080", loopbackAddr, http.StatusOK},
+
+		// M18 finding tests:
+		// (a) allowed_hosts with host:port matches Host header with port and bare host
+		{"M18: host.example:8443 entry matches Host with port", []string{"host.example:8443"}, "host.example:8443", lanAddr, http.StatusOK},
+		{"M18: host.example:8443 entry matches bare Host", []string{"host.example:8443"}, "host.example", lanAddr, http.StatusOK},
+		{"M18: unknown host still 403", []string{"host.example:8443"}, "other.example", lanAddr, http.StatusForbidden},
+
+		// (b) localhost verification against connection local address
+		{"M18: Host localhost accepted on loopback local addr", nil, "localhost", loopbackAddr, http.StatusOK},
+		{"M18: Host localhost rejected with spoofed-localhost on LAN local addr", nil, "localhost", lanAddr, http.StatusForbidden},
+		{"M18: Host localhost rejected when local addr unavailable", nil, "localhost", nil, http.StatusForbidden},
+		{"M18: 127.0.0.1 rejected on LAN local addr", nil, "127.0.0.1", lanAddr, http.StatusForbidden},
+		{"M18: sub.localhost rejected on LAN local addr", nil, "sub.localhost", lanAddr, http.StatusForbidden},
 	}
 
 	for _, tc := range tests {
@@ -31,6 +49,9 @@ func TestHostGate(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = tc.host
+			if tc.localAddr != nil {
+				req = req.WithContext(WithLocalAddr(req.Context(), tc.localAddr))
+			}
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 

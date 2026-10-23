@@ -16,6 +16,8 @@ import (
 	"sync"
 
 	"golang.org/x/net/idna"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // Frozen failure strings and errors per CUSTOS-SPEC §6.1, §6.3, §6.5, §6.6.
@@ -422,6 +424,23 @@ func IsFloorAddress(addr netip.Addr) bool {
 		addr = addr.Unmap()
 	}
 	return IsFloorDestination(net.IP(addr.AsSlice()))
+}
+
+// IsFloorHost reports whether raw represents a floor destination (CA-2(iii), L-16).
+// Uses the shared surface.IsLoopbackLiteral classifier to unify loopback handling.
+func IsFloorHost(raw string) bool {
+	if surface.IsLoopbackLiteral(raw) {
+		return true
+	}
+	h := strings.Trim(strings.TrimSpace(raw), "[]")
+	if strings.Contains(h, "%") {
+		return false
+	}
+	ip := net.ParseIP(h)
+	if ip != nil {
+		return IsFloorDestination(ip)
+	}
+	return false
 }
 
 // PatternType represents the comparator specificity tier per CUSTOS-SPEC §6.1.

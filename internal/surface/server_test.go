@@ -1,9 +1,11 @@
 package surface
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestNewServer(t *testing.T) {
@@ -13,12 +15,31 @@ func TestNewServer(t *testing.T) {
 	mux := NewServer(srv)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req = req.WithContext(WithLocalAddr(req.Context(), &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7717}))
 	req.Host = "localhost:7717"
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("health status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServerTimeouts(t *testing.T) {
+	srv := &Server{}
+	httpSrv := srv.newHTTPServer(nil)
+
+	if httpSrv.ReadTimeout != 60*time.Second {
+		t.Errorf("ReadTimeout = %v, want 60s (M17)", httpSrv.ReadTimeout)
+	}
+	if httpSrv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s (M17)", httpSrv.ReadHeaderTimeout)
+	}
+	if httpSrv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 to avoid breaking SSE streams (M17)", httpSrv.WriteTimeout)
+	}
+	if httpSrv.IdleTimeout != 120*time.Second {
+		t.Errorf("IdleTimeout = %v, want 120s", httpSrv.IdleTimeout)
 	}
 }
 
@@ -45,6 +66,7 @@ func TestUnknownRouteJSON404(t *testing.T) {
 	h := NewServer(srv)
 	for _, path := range []string{"/nope", "/v2/things", "/app.txt"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req = req.WithContext(WithLocalAddr(req.Context(), &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7717}))
 		req.Host = "127.0.0.1:7717"
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
@@ -72,6 +94,7 @@ func TestEventsUnknownSession404(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/s_AAAAAAAAAAAAAAAAAAAAAAAAAA/events", nil)
+	req = req.WithContext(WithLocalAddr(req.Context(), &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7717}))
 	req.Host = "127.0.0.1:7717"
 	req.Header.Set("Authorization", "Bearer "+tok)
 	w := httptest.NewRecorder()
