@@ -21,9 +21,9 @@ func TestH10_RefusedLogCarriesNoBody(t *testing.T) {
 	b.pairRL = NewLimiter(time.Hour, time.Now)
 	b.pairRL.Allow("stranger-9") // consume the one reply so process() stays offline
 
-	secret := "pair1_NOTAREALSECRET_butplanted\nnuntius: FORGED LINE admitted update 999"
+	planted := "pair1_notArealKey_butPlanted\nnuntius: FORGED LINE admitted update 999"
 	if _, err := b.inbox.Append(Record{
-		UpdateID: 42, Kind: KindTurn, Payload: secret,
+		UpdateID: 42, Kind: KindTurn, Payload: planted,
 		SenderID: "stranger-9", ChatID: "c-9", ChatType: "private",
 	}); err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestH10_RefusedLogCarriesNoBody(t *testing.T) {
 		Message: &Message{
 			From: &User{ID: "stranger-9", FirstName: "Eve"},
 			Chat: Chat{ID: "c-9", Type: "private"},
-			Text: secret,
+			Text: planted,
 		},
 	}
 	b.process(context.Background(), u, Record{UpdateID: 42, SenderID: "stranger-9", ChatID: "c-9"}, unpairedOwners())
