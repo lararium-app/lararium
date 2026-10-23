@@ -520,7 +520,10 @@ func waitSessionsQuiet(dir string) {
 		n := 0
 		var latest time.Time
 		_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				return nil //nolint:nilerr // best-effort scan; a stat failure only delays quiescence
+			}
+			if d.IsDir() {
 				return nil
 			}
 			n++
