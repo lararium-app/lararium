@@ -19,6 +19,9 @@ permissions:
 jobs:
   secrets:
     name: secrets
+    permissions:
+      contents: read
+      security-events: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -45,8 +48,6 @@ jobs:
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
-        permissions:
-          security-events: write
 
   vulncheck:
     name: vulncheck
@@ -72,7 +73,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install osv-scanner
         env:
-          GITHUB_TOKEN: ***
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
             -o /usr/local/bin/osv-scanner \
