@@ -2,6 +2,7 @@ package surface
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,5 +139,49 @@ func TestPenatusSourceInvalidID(t *testing.T) {
 	_, _, err := source.Events("invalid", 0, 10)
 	if err == nil {
 		t.Errorf("Events with invalid ID should error")
+	}
+}
+
+// TestPenatusSourceDeleteProtection verifies that deleting "main" answers
+// ErrProtectedSession (403) regardless of whether session.json exists on disk,
+// preventing probe oracles (L-4).
+func TestPenatusSourceDeleteProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	source := NewPenatusSource(tmpDir, &fakeHub{})
+
+	// Order 1: Delete "main" when sessions/main/session.json does NOT exist on disk
+	errNoDisk := source.Delete("main")
+	if !errors.Is(errNoDisk, ErrProtectedSession) {
+		t.Fatalf("Delete('main') without session.json = %v, want ErrProtectedSession (L-4)", errNoDisk)
+	}
+
+	// Order 2: Delete "main" when sessions/main/session.json DOES exist on disk
+	mainDir := filepath.Join(tmpDir, "sessions", "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainHeader := penatus.SessionHeader{
+		Penatus: 1,
+		ID:      "main",
+		Created: "2024-01-01T00:00:00Z",
+		Kind:    "main",
+	}
+	data, err := json.Marshal(mainHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mainDir, "session.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	errWithDisk := source.Delete("main")
+	if !errors.Is(errWithDisk, ErrProtectedSession) {
+		t.Fatalf("Delete('main') with session.json = %v, want ErrProtectedSession (L-4)", errWithDisk)
+	}
+
+	// Unknown side session must still return ErrNoSession (404)
+	errUnknown := source.Delete("s_UNKNOWN123456789012345678")
+	if !errors.Is(errUnknown, ErrNoSession) {
+		t.Fatalf("Delete unknown side session = %v, want ErrNoSession", errUnknown)
 	}
 }

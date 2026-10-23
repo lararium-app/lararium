@@ -115,6 +115,11 @@ func (p *PenatusSource) Delete(id string) error {
 	if !ValidSessionID(id) {
 		return ErrNoSession
 	}
+	// Check the 403 protected session case FIRST before disk lookup
+	// to prevent probe oracles on main session existence (L-4).
+	if id == "main" {
+		return ErrProtectedSession
+	}
 	// ValidSessionID whitelists ids (^s_ + 26 safe chars), so the joins
 	// below cannot escape the sessions root.
 	dir := filepath.Join(p.root, "sessions", id)                 // #nosec G703
