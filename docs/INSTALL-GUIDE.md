@@ -97,16 +97,19 @@ its own network namespace, and host exposure stays loopback-only via the
 
 ## 3. Install — Docker Compose from source
 
-1. Clone and start:
+1. Clone, hand the mounted directories to the daemon's user, and start:
 
    ```bash
    git clone https://github.com/lararium-app/lararium.git
    cd lararium/docker
+   sudo chown -R "$(id -u):$(id -g)" config hearth   # the daemon writes only here
    docker compose up --build
    ```
 
-   Attached to a TTY, an unconfigured container runs the setup wizard first;
-   detached starts (`-d`) deliberately skip it and use defaults.
+   The container runs unprivileged with a read-only rootfs (set
+   `LARARIUM_UID` to override the uid). Attached to a TTY, an unconfigured
+   container runs the setup wizard first; detached starts (`-d`) use the
+   bundled defaults.
 
 2. For hosted keys, run the wizard explicitly:
 
