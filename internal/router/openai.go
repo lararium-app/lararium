@@ -300,7 +300,7 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providerClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

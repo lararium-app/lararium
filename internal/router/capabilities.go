@@ -27,7 +27,7 @@ func ProbeOpenAI(ctx context.Context, baseURL, apiKey, wanted string) (Caps, err
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providerClient.Do(req)
 	if err != nil {
 		return Caps{}, fmt.Errorf("request failed: %w", err)
 	}
@@ -201,7 +201,7 @@ func probeLlamaProps(ctx context.Context, baseURL string) int {
 	if err != nil {
 		return 0
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providerClient.Do(req)
 	if err != nil {
 		return 0
 	}

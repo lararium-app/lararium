@@ -161,6 +161,9 @@ func (c *MCPConnector) startHTTPLocked(ctx context.Context) error {
 	}
 	httpClient := &http.Client{
 		Transport: httpTransport,
+		// Bearer credentials stop at this host (H8/F1): a redirect
+		// would replay Authorization to the redirect target.
+		CheckRedirect: refuseRedirect,
 	}
 
 	transport := &mcp.StreamableClientTransport{
