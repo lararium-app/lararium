@@ -1149,6 +1149,37 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 		return err
 	}
 
+	// Surrogates travel with the envelope (CUSTOS §11 Change law):
+	// re-encrypt under the new passphrase BEFORE any rename. A decrypt
+	// failure aborts the change with zero mutation of vault state —
+	// silently keeping an old-key surrogates.age next to a new-key
+	// vault.age bricks the vault (no passphrase opens both files).
+	surPath := filepath.Join(v.stateDir, "surrogates.age")
+	if surData, err := os.ReadFile(surPath); err == nil && len(surData) > 0 {
+		surDoc, dErr := DecryptSurrogates(surData, oldPassphrase)
+		if dErr != nil {
+			_ = v.audit.Append(AuditRecord{
+				Kind:   AuditKindVaultMutationAborted,
+				Nonce:  nonce,
+				Gen:    newGen,
+				Reason: "surrogates_decrypt_failed",
+				Actor:  "cli",
+			})
+			return fmt.Errorf("change passphrase: re-encrypt surrogates: %w", dErr)
+		}
+		if wErr := WriteSurrogatesFile(v.stateDir, surDoc, newPassphrase); wErr != nil {
+			_ = v.audit.Append(AuditRecord{
+				Kind:   AuditKindVaultMutationAborted,
+				Nonce:  nonce,
+				Gen:    newGen,
+				Reason: "surrogates_write_failed",
+				Actor:  "cli",
+			})
+			return fmt.Errorf("change passphrase: write surrogates: %w", wErr)
+		}
+	}
+	triggerKillPoint("after_surrogates_reencrypt")
+
 	// Encrypt under new passphrase
 	newDocBytes, err := json.Marshal(doc)
 	if err != nil {
@@ -1199,15 +1230,6 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 	}
 
 	_ = WriteFingerprints(v.stateDir, key, doc.Credentials)
-
-	// Re-encrypt surrogates.age if present and non-empty per CUSTOS §8.4, §11
-	surPath := filepath.Join(v.stateDir, "surrogates.age")
-	if surData, err := os.ReadFile(surPath); err == nil && len(surData) > 0 {
-		surDoc, err := DecryptSurrogates(surData, oldPassphrase)
-		if err == nil {
-			_ = WriteSurrogatesFile(v.stateDir, surDoc, newPassphrase)
-		}
-	}
 
 	// Commit line
 	if err := v.audit.Append(AuditRecord{
