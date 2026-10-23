@@ -504,6 +504,42 @@ func setupHubWithTools(t *testing.T, sp router.Provider, tools []loop.Tool, appr
 	return hub, ap, dir
 }
 
+// waitSessionsQuiet blocks until the sessions tree stops changing: four
+// consecutive samples (~200 ms) with identical file count and newest
+// mtime, or a 5 s timeout. Guards t.TempDir cleanup against a turn's
+// trailing session-log writes on slow CI runners.
+func waitSessionsQuiet(dir string) {
+	type snap struct {
+		n  int
+		mt string
+	}
+	prev := snap{-1, ""}
+	stable := 0
+	deadline := time.Now().Add(5 * time.Second)
+	for stable < 4 && time.Now().Before(deadline) {
+		n := 0
+		var latest time.Time
+		_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			n++
+			if info, e := d.Info(); e == nil && info.ModTime().After(latest) {
+				latest = info.ModTime()
+			}
+			return nil
+		})
+		cur := snap{n, latest.String()}
+		if cur == prev {
+			stable++
+		} else {
+			stable = 0
+		}
+		prev = cur
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func setupVSuite(t *testing.T, opts vsuiteOpts) *vsuiteEnv {
 	t.Helper()
 	if opts.provider == nil {
@@ -556,6 +592,11 @@ func setupVSuite(t *testing.T, opts vsuiteOpts) *vsuiteEnv {
 	t.Cleanup(func() {
 		b.Stop()
 		cancel()
+		// Stop() does not join an in-flight turn goroutine, so its
+		// session-log writes can outlive cleanup on slow runners
+		// (TempDir "directory not empty" flakes on amd64 CI). Let the
+		// sessions tree settle before t.TempDir removal walks it.
+		waitSessionsQuiet(filepath.Join(home, "sessions"))
 	})
 
 	return &vsuiteEnv{
