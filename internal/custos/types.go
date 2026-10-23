@@ -7,6 +7,7 @@ import (
 
 // Audit reason constants for lock_failed records per CUSTOS-SPEC §8.1, L-9.
 const (
+	//nolint:gosec // G101: audit reason tokens, not secrets (L-9)
 	AuditReasonBadCredential = "bad-credential"
 	AuditReasonVaultLocked   = "vault-locked"
 	AuditReasonStoreError    = "store-error"

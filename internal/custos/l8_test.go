@@ -2,25 +2,20 @@ package custos
 
 import (
 	"bytes"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func setupTestVaultInternal(t *testing.T) (*Vault, string, string) {
+func setupTestVaultInternal(t *testing.T) (*Vault, string) {
 	t.Helper()
 	SetTestAgeWorkFactor(10)
-	base, err := os.MkdirTemp("/tmp", "lrv-l8")
-	if err != nil {
-		t.Fatalf("short tempdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	base := t.TempDir()
 	dir := filepath.Join(base, "h")
 	stateDir := filepath.Join(dir, "custos")
 	passphrase := "test-secret-passphrase-1234"
 	v := NewVault(stateDir, 5*time.Second)
-	return v, stateDir, passphrase
+	return v, passphrase
 }
 
 // TestL8_ZeroBytes verifies that zeroBytes clears all bytes of a slice (L-8).
@@ -36,7 +31,7 @@ func TestL8_ZeroBytes(t *testing.T) {
 
 // TestL8_LockZeroesDerivedKey verifies that Lock zeroes and clears v.derivedKey (L-8).
 func TestL8_LockZeroesDerivedKey(t *testing.T) {
-	v, _, pass := setupTestVaultInternal(t)
+	v, pass := setupTestVaultInternal(t)
 	if err := v.Init(pass); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +63,7 @@ func TestL8_LockZeroesDerivedKey(t *testing.T) {
 
 // TestL8_UnlockFailureNoDerivedKey verifies that a failed unlock does not retain derivedKey (L-8).
 func TestL8_UnlockFailureNoDerivedKey(t *testing.T) {
-	v, _, pass := setupTestVaultInternal(t)
+	v, pass := setupTestVaultInternal(t)
 	if err := v.Init(pass); err != nil {
 		t.Fatal(err)
 	}

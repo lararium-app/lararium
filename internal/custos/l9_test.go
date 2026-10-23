@@ -13,11 +13,7 @@ import (
 func setupTestVaultL9(t *testing.T) (*Vault, string, string) {
 	t.Helper()
 	SetTestAgeWorkFactor(10)
-	base, err := os.MkdirTemp("/tmp", "lrv-l9")
-	if err != nil {
-		t.Fatalf("short tempdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	base := t.TempDir()
 	dir := filepath.Join(base, "h")
 	stateDir := filepath.Join(dir, "custos")
 	passphrase := "test-secret-passphrase-l9"
@@ -52,7 +48,7 @@ func TestL9_UnlockFailureReasonClosedSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	b[len(b)/2] ^= 0xff
-	if err := os.WriteFile(vaultAgePath, b, 0o600); err != nil {
+	if err := os.WriteFile(vaultAgePath, b, 0o600); err != nil { //nolint:gosec // G703: path is derived from t.TempDir, no taint
 		t.Fatal(err)
 	}
 
