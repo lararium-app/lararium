@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -100,6 +101,25 @@ func (s *PairStore) save(o Owners) error {
 	return atomicWrite(s.dir, ownersFileName, data, ownersMode)
 }
 
+// lock takes syscall.Flock LOCK_EX over sibling owners.lock (0600) to protect
+// read-modify-write operations against lost updates (L-5).
+func (s *PairStore) lock() (func(), error) {
+	lockPath := filepath.Join(s.dir, "owners.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("nuntius: open lock: %w", err)
+	}
+	_ = os.Chmod(lockPath, 0o600)
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("nuntius: flock: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
 // Mint creates a one-time pairing code valid for ttl and returns the
 // plaintext exactly once (spec §3: printed once, hashed at rest).
 func (s *PairStore) Mint(now time.Time, ttl time.Duration) (string, error) {
@@ -107,6 +127,12 @@ func (s *PairStore) Mint(now time.Time, ttl time.Duration) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
 	o, err := s.Load()
 	if err != nil {
 		return "", err
@@ -148,6 +174,12 @@ func (s *PairStore) Redeem(userID, code string, now time.Time) (RedeemResult, er
 	if strings.TrimSpace(userID) == "" {
 		return RedeemInvalid, errors.New("nuntius: cannot pair an empty user id")
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return RedeemInvalid, err
+	}
+	defer unlock()
+
 	o, err := s.Load()
 	if err != nil {
 		return RedeemInvalid, err
@@ -189,6 +221,12 @@ func (s *PairStore) Redeem(userID, code string, now time.Time) (RedeemResult, er
 
 // RevokeAll clears pending codes (hearthd pair revoke --all, §3).
 func (s *PairStore) RevokeAll() error {
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	o, err := s.Load()
 	if err != nil {
 		return err
@@ -201,6 +239,12 @@ func (s *PairStore) RevokeAll() error {
 // M4: clearing the pairing MUST also clear OwnerChat in state.json so approval
 // and custody cards stop being sent to the former owner's chat after unpair.
 func (s *PairStore) Unpair(userID string) error {
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	o, err := s.Load()
 	if err != nil {
 		return err

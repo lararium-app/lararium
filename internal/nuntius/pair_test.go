@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -509,5 +510,72 @@ func TestUnpairClearsOwnerChat(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "no owner chat") {
 		t.Fatalf("log line noting cards will be dropped missing from: %s", logBuf.String())
+	}
+}
+
+// L-5: every read-modify-write takes flock LOCK_EX to avoid lost updates.
+// Two goroutines mint concurrently — both owners survive and both codes survive.
+func TestPairStoreConcurrentMint(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPairStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed two owners in owners.json.
+	if err := store.save(Owners{
+		OwnerIDs: []string{"owner_alpha", "owner_beta"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	const workers = 2
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	minted := make([]string, workers)
+
+	for i := range workers {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			code, err := store.Mint(now.Add(time.Duration(idx)*time.Second), time.Hour)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			minted[idx] = code
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent mint failed: %v", err)
+	}
+
+	o, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both owners survive.
+	if len(o.OwnerIDs) != 2 || o.OwnerIDs[0] != "owner_alpha" || o.OwnerIDs[1] != "owner_beta" {
+		t.Fatalf("owners lost: %+v", o.OwnerIDs)
+	}
+	// Both minted codes survive.
+	if len(o.Codes) != 2 {
+		t.Fatalf("minted codes lost: got %d, want 2", len(o.Codes))
+	}
+	for i, c := range minted {
+		wantHash := hashPairCode(c)
+		found := false
+		for _, stored := range o.Codes {
+			if stored.Hash == wantHash {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("code %d (%s) not found in store", i, c)
+		}
 	}
 }

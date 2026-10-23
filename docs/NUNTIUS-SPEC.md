@@ -148,7 +148,10 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
   from disk at the start of every poll iteration (the file is tiny; same
   per-request re-read doctrine as surface tokens). `pair unpair` and
   `pair create` take effect on the next poll cycle — no restart, no
-  signal handler, no cached allowlist.
+  signal handler, no cached allowlist. Every read-modify-write (`Mint`,
+  `Redeem`, `Unpair`, `RevokeAll`) takes `syscall.Flock(LOCK_EX)` over
+  sibling `owners.lock` (0600) and re-reads under the lock before writing
+  atomically (temp+rename), preventing lost updates.
 - Mint: `hearthd pair create` prints `pair1_<20 base62>` once and appends
   a code with `expires = created + pair_code_ttl` (default 15 min; §4).
   No listing of live codes. CLI `pair status` reports owners and
