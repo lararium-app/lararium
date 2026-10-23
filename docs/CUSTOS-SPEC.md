@@ -379,7 +379,7 @@ fingerprints-adjacent key material exists in process memory — the
 surrogate registry is *encrypted* and parsed only at unlock, zeroized
 at lock. A locked daemon cannot swap because it holds nothing to swap
 with. `custos lock` (or SIGTERM) zeroes loaded state and settles every
-pending credential-bearing card with reason `custos_locked` (CA-3). In **passphrase mode** there is no
+pending credential-bearing card with reason `custos_locked` (CA-3). Passphrase-derived bytes are zeroed immediately when no longer needed; library boundaries requiring string passphrases maintain exactly one copy cleared after use, and locking zeroes retained derived secrets (L-8). In **passphrase mode** there is no
 auto-unlock-at-boot ever (keyfile mode's spawn-time read is the unlock
 by definition, above). **Recovery runs at first unlock, not boot:**
 the daemon cannot read age-encrypted state while locked; startup appends
