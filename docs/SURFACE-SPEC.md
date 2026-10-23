@@ -223,7 +223,9 @@ event is `event: <type>` + `data: <json>`. Types (frozen):
   disabled.) Timeout → `timed_out` (logged `denied:timeout`).
   Terminal entries (settled/denied/expired/cancelled) are pruned on insert,
   keeping at most 50 most-recent terminal entries per session (M19); pending
-  entries are never pruned.
+  entries are never pruned. First settle wins (L-6): once an approval is
+  terminal, later resolution attempts are logged as ignored-attempts and mutate
+  nothing, preserving audit trail attribution (ap.via).
 - **Cancel resolves pending approvals (A5):** when a turn is cancelled
   (`POST …/cancel` or nuntius `/cancel`), every approval still pending on
   that turn resolves to `denied` immediately, same mutex, same

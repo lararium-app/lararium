@@ -1,6 +1,7 @@
 package surface
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -221,5 +222,70 @@ func TestApprovalHub_TerminalPruning(t *testing.T) {
 	}
 	if pendingAp.state != "pending" {
 		t.Fatalf("pending approval state = %q, want pending", pendingAp.state)
+	}
+}
+
+// L-6: approvals settle attribution — double-click race: recorded via is the first click's.
+func TestApprovalHub_SettleAttributionFirstWins(t *testing.T) {
+	h := NewApprovalHub(5 * time.Minute)
+	const sessionID = "s_session_attribution_test"
+
+	id, ch := h.Register(sessionID, "deploy", `{"target":"prod"}`, func(string) {})
+
+	// First click arrives via "web:button-1"
+	code1 := h.ResolveFromVia(sessionID, id, true, "web", "web:button-1")
+	if code1 != 200 {
+		t.Fatalf("first click code = %d, want 200", code1)
+	}
+
+	// Second (losing/stale) click arrives via "telegram:card-button-2"
+	code2 := h.ResolveFromVia(sessionID, id, true, "telegram", "telegram:card-button-2")
+	if code2 != 410 {
+		t.Fatalf("second click code = %d, want 410", code2)
+	}
+
+	<-ch
+
+	// Audit trail check: recorded via MUST be the first click's!
+	gotVia := h.Via(sessionID, id)
+	if gotVia != "web:button-1" {
+		t.Fatalf("recorded via = %q, want %q (corrupted by second click)", gotVia, "web:button-1")
+	}
+}
+
+// L-6: concurrent double-click race — recorded via is whichever click settled first.
+func TestApprovalHub_SettleAttributionConcurrentRace(t *testing.T) {
+	h := NewApprovalHub(5 * time.Minute)
+	const sessionID = "s_session_race_test"
+
+	id, ch := h.Register(sessionID, "deploy", `{"target":"prod"}`, func(string) {})
+
+	var wg sync.WaitGroup
+	var code1, code2 int
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		code1 = h.ResolveFromVia(sessionID, id, true, "web", "first-click")
+	}()
+	go func() {
+		defer wg.Done()
+		code2 = h.ResolveFromVia(sessionID, id, true, "web", "second-click")
+	}()
+	wg.Wait()
+	<-ch
+
+	var winnerVia string
+	switch {
+	case code1 == 200 && code2 == 410:
+		winnerVia = "first-click"
+	case code2 == 200 && code1 == 410:
+		winnerVia = "second-click"
+	default:
+		t.Fatalf("unexpected codes: code1=%d, code2=%d", code1, code2)
+	}
+
+	gotVia := h.Via(sessionID, id)
+	if gotVia != winnerVia {
+		t.Fatalf("recorded via = %q, want winner %q", gotVia, winnerVia)
 	}
 }

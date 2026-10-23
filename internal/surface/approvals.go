@@ -7,6 +7,7 @@ package surface
 import (
 	"crypto/rand"
 	"encoding/base64"
+	stdlog "log"
 	"sort"
 	"strings"
 	"sync"
@@ -538,18 +539,33 @@ func (h *ApprovalHub) ResolveFromVia(sessionID, id string, allow bool, source, v
 	if allow {
 		state, reason = "approved", "ok"
 	}
-	ap.via = via
-	if !ap.settle(state, reason, source) {
+	if ap.state != "pending" {
 		hook := h.staleVerdictHook
 		cred := ap.cred
 		cell := ap.cell
 		origReason := ap.reason
+		currState := ap.state
 		h.mu.Unlock()
+		stdlog.Printf("approvals: ignored late resolution attempt for %s (already terminal %s, via %q)", logSanitize(id), logSanitize(currState), logSanitize(via)) //nolint:gosec // logSanitize neutralizes control chars
 		if allow && hook != nil {
 			hook(id, sessionID, cred, cell, origReason)
 		}
 		return 410
 	}
+	if !ap.settle(state, reason, source) {
+		hook := h.staleVerdictHook
+		cred := ap.cred
+		cell := ap.cell
+		origReason := ap.reason
+		currState := ap.state
+		h.mu.Unlock()
+		stdlog.Printf("approvals: ignored late resolution attempt for %s (already terminal %s, via %q)", logSanitize(id), logSanitize(currState), logSanitize(via)) //nolint:gosec // logSanitize neutralizes control chars
+		if allow && hook != nil {
+			hook(id, sessionID, cred, cell, origReason)
+		}
+		return 410
+	}
+	ap.via = via
 	h.mu.Unlock()
 	h.fanTerminalVia(id, sessionID, state, reason, source, via)
 	return 200
