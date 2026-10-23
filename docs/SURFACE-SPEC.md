@@ -50,8 +50,11 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
 - **Host gate:** every request's `Host` header, after stripping the port,
   must name `localhost`, `127.0.0.1`, `::1`, or an entry of
   `serve.allowed_hosts` (config list; required to be non-empty when
-  binding non-loopback — the daemon refuses to start otherwise). Any port
-  is accepted on those hosts (browsers send `Host: localhost:7717`).
+  binding non-loopback — the daemon refuses to start otherwise). Both allowed_hosts
+  entries and incoming Host headers are stripped of ports before comparison (M18).
+  Loopback host names (`localhost`, `*.localhost`, `127.0.0.1`, `::1`) are accepted
+  only if the connection's local address is proven loopback; otherwise rejected with 403 (M18).
+  Any port is accepted on those hosts (browsers send `Host: localhost:7717`).
   Anything else → 403. This closes DNS-rebinding: a rebinding attack
   arrives with the attacker's domain in `Host`, which is never listed.
   Reverse-proxy/tailnet use = put your hostname/tailnet IP in

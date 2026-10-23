@@ -1,6 +1,7 @@
 package surface
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"regexp"
@@ -23,32 +24,90 @@ func ValidApprovalID(id string) bool {
 	return approvalIDRe.MatchString(id)
 }
 
+// WithLocalAddr returns a child context carrying the local network address (M18).
+func WithLocalAddr(ctx context.Context, addr net.Addr) context.Context {
+	return context.WithValue(ctx, http.LocalAddrContextKey, addr)
+}
+
+func stripHostPort(hostPort string) string {
+	h, _, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		h = hostPort
+	}
+	return normalizeHost(h)
+}
+
+func isLoopbackHostName(h string) bool {
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isRequestLocalAddrLoopback(r *http.Request) bool {
+	val := r.Context().Value(http.LocalAddrContextKey)
+	if val == nil {
+		return false
+	}
+	addr, ok := val.(net.Addr)
+	if !ok || addr == nil {
+		return false
+	}
+	var ip net.IP
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip = a.IP
+	case *net.UDPAddr:
+		ip = a.IP
+	case *net.IPAddr:
+		ip = a.IP
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			host = addr.String()
+		}
+		host = strings.Trim(host, "[]")
+		ip = net.ParseIP(host)
+	}
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
+}
+
 // HostGate rejects requests whose Host header is not loopback or an
 // entry of the serve.allowed_hosts allowlist (DNS-rebinding defense,
-// spec §5). Port is stripped before matching.
+// spec §5, M18). Ports are stripped from both allowed_hosts entries and
+// the incoming Host header before matching. Loopback host names are only
+// accepted when the underlying connection's local address is proven loopback.
 func HostGate(allowed []string) func(http.Handler) http.Handler {
 	allowedMap := make(map[string]bool)
 	for _, h := range allowed {
-		allowedMap[normalizeHost(h)] = true
+		allowedMap[stripHostPort(h)] = true
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host := r.Host
 			if host == "" {
-				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+				writeJSONBody(w, http.StatusForbidden, `{"error":"forbidden"}`)
 				return
 			}
 
-			h, _, err := net.SplitHostPort(host)
-			if err != nil {
-				h = host
+			h := stripHostPort(host)
+
+			if allowedMap[h] {
+				next.ServeHTTP(w, r)
+				return
 			}
 
-			h = normalizeHost(h)
-
-			if h == "localhost" || h == "127.0.0.1" || h == "::1" || allowedMap[h] {
-				next.ServeHTTP(w, r)
+			if isLoopbackHostName(h) {
+				if isRequestLocalAddrLoopback(r) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				writeJSONBody(w, http.StatusForbidden, `{"error":"forbidden"}`)
 				return
 			}
 

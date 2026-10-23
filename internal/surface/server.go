@@ -139,13 +139,17 @@ func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// newHTTPServer creates the http.Server with configured timeouts (M17).
+// newHTTPServer creates the http.Server with configured timeouts (M17)
+// and connection local address plumbing (M18).
 func (s *Server) newHTTPServer(h http.Handler) *http.Server {
 	return &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second, // bounds slow-body requests (M17)
 		IdleTimeout:       120 * time.Second,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, http.LocalAddrContextKey, c.LocalAddr())
+		},
 		// WriteTimeout is deliberately zero: Go's http.Server does not support WriteIdleTimeout;
 		// WriteTimeout bounds the entire response write duration, which would terminate long-lived
 		// SSE turn streams (/v1/sessions/{id}/messages) and custody card feeds (/v1/custos/cards/events).

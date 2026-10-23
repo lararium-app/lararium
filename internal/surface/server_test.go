@@ -1,6 +1,7 @@
 package surface
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,7 @@ func TestNewServer(t *testing.T) {
 	mux := NewServer(srv)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req = req.WithContext(WithLocalAddr(req.Context(), &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7717}))
 	req.Host = "localhost:7717"
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -64,6 +66,7 @@ func TestUnknownRouteJSON404(t *testing.T) {
 	h := NewServer(srv)
 	for _, path := range []string{"/nope", "/v2/things", "/app.txt"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req = req.WithContext(WithLocalAddr(req.Context(), &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7717}))
 		req.Host = "127.0.0.1:7717"
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
@@ -91,6 +94,7 @@ func TestEventsUnknownSession404(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/s_AAAAAAAAAAAAAAAAAAAAAAAAAA/events", nil)
+	req = req.WithContext(WithLocalAddr(req.Context(), &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7717}))
 	req.Host = "127.0.0.1:7717"
 	req.Header.Set("Authorization", "Bearer "+tok)
 	w := httptest.NewRecorder()
