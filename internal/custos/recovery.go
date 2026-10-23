@@ -12,11 +12,12 @@ import (
 
 // DanglingIntent represents an unresolved vault_mutation_intent.
 type DanglingIntent struct {
-	File  string
-	Line  int
-	Nonce string
-	Gen   int64
-	Names []string
+	File   string
+	Line   int
+	Nonce  string
+	Gen    int64
+	Names  []string
+	Reason string
 }
 
 // FindDanglingIntents scans audit logs and returns all uncommitted mutation intents.
@@ -47,11 +48,12 @@ func (a *AuditLogger) FindDanglingIntents() ([]DanglingIntent, error) {
 						orderedNonces = append(orderedNonces, rec.Nonce)
 					}
 					intents[rec.Nonce] = DanglingIntent{
-						File:  base,
-						Line:  li.num,
-						Nonce: rec.Nonce,
-						Gen:   rec.Gen,
-						Names: rec.Names,
+						File:   base,
+						Line:   li.num,
+						Nonce:  rec.Nonce,
+						Gen:    rec.Gen,
+						Names:  rec.Names,
+						Reason: rec.Reason,
 					}
 				case AuditKindVaultMutation, AuditKindVaultMutationRecovered,
 					AuditKindVaultMutationAborted, AuditKindVaultMutationSuperseded:
@@ -68,6 +70,34 @@ func (a *AuditLogger) FindDanglingIntents() ([]DanglingIntent, error) {
 		}
 	}
 	return result, nil
+}
+
+// quarantineInterruptedSurrogates handles the interrupted-change_passphrase
+// crash window (CUSTOS-SPEC §11 Change law): surrogates.age was rewritten
+// under the new passphrase but vault.age never swapped, so the passphrase
+// that opens the vault cannot open it. The remnant is moved aside — the
+// surrogate registry restarts empty (doors re-pair) instead of bricking
+// every unlock under §6.6. Anything else keeps the corruption posture.
+func quarantineInterruptedSurrogates(stateDir, passphrase string, intent DanglingIntent, audit *AuditLogger) {
+	surPath := filepath.Join(stateDir, "surrogates.age")
+	surData, err := os.ReadFile(surPath)
+	if err != nil || len(surData) == 0 {
+		return
+	}
+	if _, err := DecryptSurrogates(surData, passphrase); err == nil {
+		return // opens cleanly: nothing interrupted
+	}
+	quarantined := filepath.Join(stateDir, fmt.Sprintf("surrogates.age.crashed-%d", intent.Gen))
+	if err := os.Rename(surPath, quarantined); err != nil {
+		return
+	}
+	_ = audit.Append(AuditRecord{
+		Kind:   AuditKindVaultMutationRecovered,
+		Nonce:  intent.Nonce,
+		Gen:    intent.Gen,
+		Actor:  "cli",
+		Reason: "surrogates_quarantined",
+	})
 }
 
 // RemoveStaleTemps unlinks any *.tmp files in stateDir per CUSTOS §4.2.
@@ -177,6 +207,18 @@ func FirstUnlockRecovery(stateDir string, instanceKey []byte, passphrase string,
 	var doc VaultDoc
 	if err := json.Unmarshal(docBytes, &doc); err != nil {
 		return nil, fmt.Errorf("unmarshal vault doc: %w", err)
+	}
+
+	// CUSTOS-SPEC §11 (Change law): an uncommitted change_passphrase
+	// intent explains a surrogates.age that the current passphrase
+	// cannot open — the crash sat between the surrogates rewrite and
+	// the envelope swap. Quarantine the remnant so unlock proceeds with
+	// an empty registry (doors re-pair, secrets survive); genuine
+	// corruption keeps the §6.6 abort posture instead.
+	for _, intent := range dangling {
+		if intent.Reason == "change_passphrase" {
+			quarantineInterruptedSurrogates(stateDir, passphrase, intent, audit)
+		}
 	}
 
 	resolvedAny := false

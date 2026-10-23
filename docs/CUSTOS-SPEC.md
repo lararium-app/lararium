@@ -496,6 +496,17 @@ post-restore boot can ever apply the superseded mutation, and the
 restore audit line is the proof).
 Recovery's own vault rewrite runs its *own* intent/commit pair marked
 `recovery`, so a crash during recovery survives a further boot.
+**Change law:** a passphrase change travels with its envelope.
+`surrogates.age` is re-encrypted under the new passphrase *before* the
+MAC/envelope renames; a surrogates decrypt failure under the old
+passphrase aborts the change with zero mutation (never a silently
+stale registry beside a fresh envelope). An uncommitted
+`change_passphrase` intent explains a `surrogates.age` the current
+passphrase cannot open — the crash sat between the two writes — and
+first unlock quarantines the remnant (`surrogates.age.crashed-<gen>`,
+audit `vault_mutation_recovered` reason `surrogates_quarantined`), so
+unlock proceeds with an empty registry (doors re-pair) instead of a
+brick: credentials survive every crash window.
 
 Both statements — "the only way to move the vault backward" and "an
 intent is closed `vault_mutation_superseded` in exactly two ways" —
