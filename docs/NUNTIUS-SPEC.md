@@ -92,7 +92,9 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
      to `state.json` (0600, atomic replace, fsync); the next
      `getUpdates` call passes it, which is what acks at Telegram —
      a crash before the ack simply means redelivery, which the inbox
-     dedupe absorbs.
+     dedupe absorbs. Inbox concurrency law (M21): all inbox state
+     (in-memory dedupe map, watermark, file writes) is guarded by
+     mutex synchronization across poll enqueues and worker acks.
   2. Handling proceeds (turn starts, command runs, callback resolves).
   3. When the update reaches a **terminal outcome** — turn committed,
      turn aborted, definitively rejected, or command/reply completed —

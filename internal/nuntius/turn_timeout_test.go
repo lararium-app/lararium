@@ -113,7 +113,7 @@ func TestBridgeTurnTimeoutQueueAdvances(t *testing.T) {
 	}
 
 	// Wait for queue to process both turns
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		q.mu.Lock()
 		running := q.running

@@ -207,15 +207,16 @@ type Bridge struct {
 	deps Deps
 	cfg  Config
 
-	tg     Transport // flood-gated wrapper around deps.TG
-	flood  *FloodControl
-	inbox  *Inbox
-	state  *StateFile
-	pair   *PairStore
-	muter  *Muter
-	pairRL *Limiter
-	privRL *Limiter
-	log    *log.Logger
+	tg      Transport // flood-gated wrapper around deps.TG
+	flood   *FloodControl
+	inboxMu sync.Mutex
+	inbox   *Inbox
+	state   *StateFile
+	pair    *PairStore
+	muter   *Muter
+	pairRL  *Limiter
+	privRL  *Limiter
+	log     *log.Logger
 
 	cardsMu sync.Mutex
 	cards   map[string]*card // approval id → live card
@@ -555,6 +556,8 @@ func (b *Bridge) supervise(ctx context.Context) {
 // present — freshly appended OR already seen (the dedupe case; a
 // skipped duplicate must not strand the watermark).
 func (b *Bridge) accept(updates []Update) (int64, error) {
+	b.inboxMu.Lock()
+	defer b.inboxMu.Unlock()
 	highest := int64(0)
 	for _, u := range updates {
 		rec, ok := recordFor(u)
@@ -888,7 +891,10 @@ func (b *Bridge) updateCommitted(sessionID string, updateID int64) bool {
 // markDone appends the tombstone recording the session actually used
 // (nil for updates that terminate outside any session, §2).
 func (b *Bridge) markDone(rec Record, sessionID *string) {
-	if err := b.inbox.MarkDone(rec.UpdateID, sessionID); err != nil {
+	b.inboxMu.Lock()
+	err := b.inbox.MarkDone(rec.UpdateID, sessionID)
+	b.inboxMu.Unlock()
+	if err != nil {
 		b.log.Printf(LogDoneFailed, rec.UpdateID, err)
 	}
 }
