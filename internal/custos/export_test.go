@@ -210,3 +210,8 @@ func (c *MCPConnector) HasRetryTimerForTest() bool {
 	defer c.mu.Unlock()
 	return c.retryTimer != nil
 }
+
+// SetPayloadWriterHookForTest sets payloadWriterHook for testing (M22).
+func SetPayloadWriterHookForTest(fn func(w io.Writer, p []byte) (int, error)) {
+	payloadWriterHook = fn
+}

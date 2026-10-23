@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,8 +16,61 @@ import (
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
+// fsyncDir synchronously flushes directory metadata to disk per CUSTOS-SPEC §4.2.
+func fsyncDir(dir string) error {
+	df, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open dir for fsync: %w", err)
+	}
+	if err := df.Sync(); err != nil {
+		_ = df.Close()
+		return fmt.Errorf("sync dir: %w", err)
+	}
+	if err := df.Close(); err != nil {
+		return fmt.Errorf("close dir after fsync: %w", err)
+	}
+	return nil
+}
+
+func writeSyncTempNamed(stateDir, pattern string, data []byte, isEnvelope bool) (string, error) {
+	tmp, err := os.CreateTemp(stateDir, pattern)
+	if err != nil {
+		return "", err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = tmp.Close()
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+	if isEnvelope && payloadWriterHook != nil {
+		if _, err := payloadWriterHook(tmp, data); err != nil {
+			return "", fmt.Errorf("write envelope temp: %w", err)
+		}
+	} else {
+		if _, err := tmp.Write(data); err != nil {
+			return "", fmt.Errorf("write temp: %w", err)
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		return "", fmt.Errorf("sync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return "", fmt.Errorf("chmod temp: %w", err)
+	}
+	cleanup = false
+	return tmp.Name(), nil
+}
+
 // killPointHook is the test kill-point injection seam for crash-matrix verification (V25).
 var killPointHook func(point string)
+
+// payloadWriterHook is the test writer injection seam for failure testing (M22).
+var payloadWriterHook func(w io.Writer, p []byte) (int, error)
 
 func triggerKillPoint(point string) {
 	if killPointHook != nil {
@@ -1192,44 +1246,36 @@ func (v *Vault) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 
 	mac := ComputeEnvelopeMAC(key, envelopeBytes)
 
-	// Temp pair protocol (CUSTOS §4.2)
-	tmpEnv, err := os.CreateTemp(v.stateDir, "vault-cp-*.tmp")
+	// Temp pair protocol (CUSTOS §4.2, M22 discipline: check write and sync at every step)
+	tmpEnvName, err := writeSyncTempNamed(v.stateDir, "vault-cp-*.tmp", envelopeBytes, true)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpEnv.Name())
-	_, _ = tmpEnv.Write(envelopeBytes)
-	_ = tmpEnv.Sync()
-	_ = tmpEnv.Close()
-	_ = os.Chmod(tmpEnv.Name(), 0o600)
+	defer os.Remove(tmpEnvName)
 
-	tmpMac, err := os.CreateTemp(v.stateDir, "vaultmac-cp-*.tmp")
+	tmpMacName, err := writeSyncTempNamed(v.stateDir, "vaultmac-cp-*.tmp", []byte(mac+"\n"), false)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpMac.Name())
-	_, _ = tmpMac.WriteString(mac + "\n")
-	_ = tmpMac.Sync()
-	_ = tmpMac.Close()
-	_ = os.Chmod(tmpMac.Name(), 0o600)
+	defer os.Remove(tmpMacName)
 
-	// Mac first
-	if err := os.Rename(tmpMac.Name(), filepath.Join(v.stateDir, "vault.age.mac")); err != nil {
+	// Mac first (CUSTOS-SPEC §4.2)
+	if err := os.Rename(tmpMacName, filepath.Join(v.stateDir, "vault.age.mac")); err != nil {
+		return fmt.Errorf("rename mac: %w", err)
+	}
+	// Envelope second (CUSTOS-SPEC §4.2)
+	if err := os.Rename(tmpEnvName, filepath.Join(v.stateDir, "vault.age")); err != nil {
+		return fmt.Errorf("rename envelope: %w", err)
+	}
+
+	// Fsync dir (CUSTOS-SPEC §4.2)
+	if err := fsyncDir(v.stateDir); err != nil {
 		return err
 	}
-	// Envelope second
-	if err := os.Rename(tmpEnv.Name(), filepath.Join(v.stateDir, "vault.age")); err != nil {
-		return err
-	}
 
-	// Fsync dir
-	df, err := os.Open(v.stateDir)
-	if err == nil {
-		_ = df.Sync()
-		_ = df.Close()
+	if err := WriteFingerprints(v.stateDir, key, doc.Credentials); err != nil {
+		return fmt.Errorf("write fingerprints: %w", err)
 	}
-
-	_ = WriteFingerprints(v.stateDir, key, doc.Credentials)
 
 	// Commit line
 	if err := v.audit.Append(AuditRecord{

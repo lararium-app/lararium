@@ -506,7 +506,13 @@ passphrase cannot open — the crash sat between the two writes — and
 first unlock quarantines the remnant (`surrogates.age.crashed-<gen>`,
 audit `vault_mutation_recovered` reason `surrogates_quarantined`), so
 unlock proceeds with an empty registry (doors re-pair) instead of a
-brick: credentials survive every crash window.
+brick: credentials survive every crash window. Every write and sync in the
+passphrase change protocol (new vault envelope, surrogates re-encryption,
+MAC, renames, and directory fsyncs) is strictly checked; any mid-window
+write or sync failure before renames complete aborts the mutation with
+temporary files unlinked. Crash-recovery quarantine covers truncated or
+zero-length surrogate files resulting from disk-full errors during the
+change window.
 
 Both statements — "the only way to move the vault backward" and "an
 intent is closed `vault_mutation_superseded` in exactly two ways" —

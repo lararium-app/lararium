@@ -73,19 +73,23 @@ func (a *AuditLogger) FindDanglingIntents() ([]DanglingIntent, error) {
 }
 
 // quarantineInterruptedSurrogates handles the interrupted-change_passphrase
-// crash window (CUSTOS-SPEC §11 Change law): surrogates.age was rewritten
+// crash window (CUSTOS-SPEC §11, §4.2 Change law, M9/M22): surrogates.age was rewritten
 // under the new passphrase but vault.age never swapped, so the passphrase
 // that opens the vault cannot open it. The remnant is moved aside — the
 // surrogate registry restarts empty (doors re-pair) instead of bricking
-// every unlock under §6.6. Anything else keeps the corruption posture.
+// every unlock under §6.6. Covers truncated or 0-byte remnants from disk-full (M22).
 func quarantineInterruptedSurrogates(stateDir, passphrase string, intent DanglingIntent, audit *AuditLogger) {
 	surPath := filepath.Join(stateDir, "surrogates.age")
 	surData, err := os.ReadFile(surPath)
-	if err != nil || len(surData) == 0 {
+	if err != nil {
 		return
 	}
-	if _, err := DecryptSurrogates(surData, passphrase); err == nil {
-		return // opens cleanly: nothing interrupted
+	// If surrogates.age opens cleanly under passphrase and is non-empty, nothing was interrupted.
+	// A 0-byte or truncated file resulting from mid-window disk-full or crash must be quarantined.
+	if len(surData) > 0 {
+		if _, err := DecryptSurrogates(surData, passphrase); err == nil {
+			return // opens cleanly: nothing interrupted
+		}
 	}
 	quarantined := filepath.Join(stateDir, fmt.Sprintf("surrogates.age.crashed-%d", intent.Gen))
 	if err := os.Rename(surPath, quarantined); err != nil {
