@@ -174,7 +174,7 @@ must amend, not creep.
   `parent:"main"`, `branch` event per PENATUS §2) — the API never invents
   a format the file spec doesn't already define.
 - `main` cannot be created or deleted over the API; it exists or the
-  daemon misconfigured. No delete endpoint in v1 (archive is a file-layer
+  daemon misconfigured. Deleting `main` answers 403 Forbidden regardless of whether it exists on disk, preventing probe oracles (L-4). No delete endpoint in v1 (archive is a file-layer
   rename, PENATUS §2, out of scope here).
 - Errors: `{"error": string}` + correct status (400/401/404/409/413/500).
   500 never echoes internals.
