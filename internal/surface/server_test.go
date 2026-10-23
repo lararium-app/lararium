@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestNewServer(t *testing.T) {
@@ -19,6 +20,24 @@ func TestNewServer(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("health status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServerTimeouts(t *testing.T) {
+	srv := &Server{}
+	httpSrv := srv.newHTTPServer(nil)
+
+	if httpSrv.ReadTimeout != 60*time.Second {
+		t.Errorf("ReadTimeout = %v, want 60s (M17)", httpSrv.ReadTimeout)
+	}
+	if httpSrv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s (M17)", httpSrv.ReadHeaderTimeout)
+	}
+	if httpSrv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 to avoid breaking SSE streams (M17)", httpSrv.WriteTimeout)
+	}
+	if httpSrv.IdleTimeout != 120*time.Second {
+		t.Errorf("IdleTimeout = %v, want 120s", httpSrv.IdleTimeout)
 	}
 }
 

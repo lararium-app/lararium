@@ -139,6 +139,19 @@ func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// newHTTPServer creates the http.Server with configured timeouts (M17).
+func (s *Server) newHTTPServer(h http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second, // bounds slow-body requests (M17)
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout is deliberately zero: Go's http.Server does not support WriteIdleTimeout;
+		// WriteTimeout bounds the entire response write duration, which would terminate long-lived
+		// SSE turn streams (/v1/sessions/{id}/messages) and custody card feeds (/v1/custos/cards/events).
+	}
+}
+
 // ListenAndServe normalizes config, binds, and serves until failure.
 // Timeouts are set on the http.Server (gosec G114) EXCEPT WriteTimeout,
 // which is deliberately zero: SSE turn streams are long-lived by design
@@ -163,12 +176,7 @@ func (s *Server) ListenAndServe() error {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	srv := &http.Server{
-		Handler:           NewServer(s),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       0, // request bodies stream; capped by body limit
-		IdleTimeout:       120 * time.Second,
-	}
+	srv := s.newHTTPServer(NewServer(s))
 
 	// V12 (SURFACE-SPEC): SIGTERM/SIGINT resolves every pending
 	// approval denied:shutdown, cancels running turns (append-only

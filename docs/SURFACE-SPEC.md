@@ -70,6 +70,7 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
   `serve.turn_timeout` (default 10 min) aborts the turn (engine `error`,
   gate released), and `POST …/cancel` (§4) ends it on demand.
 - All bodies ≤ 1 MiB (413 otherwise); JSON `application/json` UTF-8.
+- **Timeouts:** `http.Server` `ReadTimeout` is 60 s and `ReadHeaderTimeout` is 10 s to bound slow-body and slow-header requests; `WriteTimeout` is left zero because Go's `http.Server` lacks `WriteIdleTimeout` and global `WriteTimeout` terminates long-lived SSE streams (M17).
 - **Shutdown:** SIGTERM stops accepting, lets in-flight turns reach their
   terminal event for up to 60 s, then force-exits. A force-exit (or crash)
   discards uncommitted partial turns — the append-only log never holds a
