@@ -546,7 +546,16 @@ Restore law:
    **inert forever** (sibling heuristics would clobber fresh `--to`
    restores and lock out DR). A markerless staging dir is garbage by
    construction (contents complete ⇒ marker would exist) — CLI may
-   report it, never resumes it. Recovery table (evaluated by every
+   report it, never resumes it.
+
+   **Marker staging trust law (M5):** a recovered marker's `staging`
+   path is trusted only if it is (a) absolute, (b) a direct child of the
+   same parent directory as the restore target dir recorded in the marker,
+   and (c) its base name matches the `<dir>.staging-` prefix written at
+   creation. If untrusted: never delete anything, quarantine the marker
+   file (rename `.rejected`), and log once.
+
+   Recovery table (evaluated by every
    `hearthd` / `hearthd restore` invocation against its own root path
    before doing anything — one glob over `.restore-*.json`):
 
