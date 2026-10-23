@@ -150,7 +150,7 @@ func TestBK6_Refusals(t *testing.T) {
 		}()
 
 		// ping succeeds -> refusal
-		err = backup.RestoreReplace(bundle, targetRoot, true, false)
+		err = backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 		if err == nil || !strings.Contains(err.Error(), "running") {
 			t.Fatalf("expected refusal for live daemon, got %v", err)
 		}
@@ -158,7 +158,7 @@ func TestBK6_Refusals(t *testing.T) {
 		// Close listener -> dead socket remains -> stale socket refusal
 		ln.Close()
 		_ = os.WriteFile(sockPath, []byte("stale-socket"), 0o600)
-		err = backup.RestoreReplace(bundle, targetRoot, true, false)
+		err = backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 		if err == nil || !strings.Contains(err.Error(), OperatorStepStaleSocket) {
 			t.Fatalf("expected stale socket refusal with %q, got %v", OperatorStepStaleSocket, err)
 		}
@@ -167,7 +167,7 @@ func TestBK6_Refusals(t *testing.T) {
 	// 3. --replace w/o --yes
 	t.Run("replace_without_yes_refusal", func(t *testing.T) {
 		targetRoot := createTestHearthRoot(t)
-		err := backup.RestoreReplace(bundle, targetRoot, false, false)
+		err := backup.RestoreReplace(bundle, targetRoot, false, false, nil)
 		if err == nil || !strings.Contains(err.Error(), "requires --yes") {
 			t.Fatalf("expected refusal without --yes, got %v", err)
 		}
@@ -188,7 +188,7 @@ func TestBK6_Refusals(t *testing.T) {
 		r, w, _ := os.Pipe()
 		os.Stderr = w
 
-		err := backup.RestoreReplace(bundle, targetRoot, true, false)
+		err := backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 		w.Close()
 		os.Stderr = oldStderr
 
@@ -209,7 +209,7 @@ func TestBK6_Refusals(t *testing.T) {
 		}
 
 		// Now run with noSafety = true: must succeed!
-		if err := backup.RestoreReplace(bundle, targetRoot, true, true); err != nil {
+		if err := backup.RestoreReplace(bundle, targetRoot, true, true, nil); err != nil {
 			t.Fatalf("RestoreReplace with noSafety failed: %v", err)
 		}
 
@@ -243,7 +243,7 @@ func TestBK8_SwapKillMatrix(t *testing.T) {
 
 		func() {
 			defer func() { _ = recover() }()
-			_ = backup.RestoreReplace(bundle, targetRoot, true, false)
+			_ = backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 		}()
 
 		if err := backup.RecoverSwap(targetRoot); err != nil {
@@ -281,7 +281,7 @@ func TestBK8_SwapKillMatrix(t *testing.T) {
 
 		func() {
 			defer func() { _ = recover() }()
-			_ = backup.RestoreReplace(bundle, targetRoot, true, false)
+			_ = backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 		}()
 
 		if err := backup.RecoverSwap(targetRoot); err != nil {
@@ -315,7 +315,7 @@ func TestBK8_SwapKillMatrix(t *testing.T) {
 
 		func() {
 			defer func() { _ = recover() }()
-			_ = backup.RestoreReplace(bundle, targetRoot, true, false)
+			_ = backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 		}()
 
 		// Target dir was renamed away, so it does not exist currently
@@ -354,7 +354,7 @@ func TestBK8_SwapKillMatrix(t *testing.T) {
 
 		func() {
 			defer func() { _ = recover() }()
-			_ = backup.RestoreReplace(bundle, targetRoot, true, false)
+			_ = backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 		}()
 
 		if err := backup.RecoverSwap(targetRoot); err != nil {
@@ -562,7 +562,7 @@ func TestBK16_FreshRootStdoutExtractConfig(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	restoreCmd([]string{bundle, "--to", targetDir})
+	restoreCmd(cfgPath, []string{bundle, "--to", targetDir})
 
 	w.Close()
 	os.Stdout = oldStdout

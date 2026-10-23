@@ -105,12 +105,19 @@ this section freezes only the surface shapes. Command set (frozen):
 
 ```
 hearthd backup create [--out <path>] [--no-config]
+                      [--to <age1…>] [--passphrase] [--plaintext]
 hearthd backup list <file>
-hearthd backup verify <file>
-hearthd backup extract-config <file> <path>
+hearthd backup verify <file> [--identity <file>]
+hearthd backup extract-config <file> <path> [--identity <file>]
 hearthd restore <file> --to <dir>             # fresh root; <dir> must not exist
 hearthd restore <file> --replace <dir> --yes [--no-safety]
+                                [--identity <file>]
 ```
+
+Amendment S10.2 (A4b): readers take `--identity`; `--to` repeats;
+`--passphrase`/`--plaintext` are create-only; config `backup.encrypt_to`
+and `backup.identity` feed the same law (PENATUS §4.5.2a). Passphrases
+are prompt/stdin only — never argv.
 
 Stdout data / stderr errors / exit codes per frozen conventions (§0 area
 rules). `list` emits `#columns: path size sha256 mode` then one row per

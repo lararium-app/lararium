@@ -368,9 +368,53 @@ a sick hearth exactly as it was sick.
 
 **Secrets honesty.** The bundle contains every secret in on-disk form
 (`vault.key` plaintext = live-disk exposure; `keys.json` plaintext is
-frozen KEYS-SPEC design). create/verify/`--help` print: *a bundle is
-your disk — store it where your disk would be unsafe.*
+frozen KEYS-SPEC design) — which is precisely why §4.5.2a seals it.
+create/verify/`--help` print: *a sealed bundle is only as strong as its
+weakest recipient; an unsealed bundle is your disk — store it where your
+disk would be unsafe.*
 
+
+### 4.5.2a Sealed bundles (amendment A4b, draft 2026-10-23 — audit H7)
+
+An **unsealed** bundle hands every `keys.json`/`tokens.json` secret to
+whoever holds the file. Sealing wraps the whole §4.5.2 zip in a binary
+age stream (magic `age-encryption.org/v1`), recipients X25519 and/or
+scrypt-passphrase. Sealing is transport law, not manifest law: the inner
+zip and `manifest.json` are byte-identical to §4.5.2 (the manifest never
+self-reports encryption — sniffing is law, self-claims are not).
+Extension stays `<name>.lararium-backup`.
+
+- **Create law.** `hearthd backup create` **seals by default**. Recipient
+  set = `--to <age1…>` (repeatable) ∪ config `backup.encrypt_to`;
+  `--passphrase` adds the scrypt recipient (prompted on a TTY; from stdin
+  with a stderr warning when piped). Empty recipient set and no
+  `--passphrase` → refuse with the exact remedy. `--plaintext` is the
+  loud escape hatch: writes unsealed with a fixed stderr banner — a
+  create is never silently unsealed.
+- **Read law.** `list`/`verify`/`restore`/`extract-config` sniff the
+  magic. Sealed input decrypts via `--identity <age-key-file>` ∪ config
+  `backup.identity` ∪ passphrase prompt; nothing available → refuse
+  naming the flags. Decrypted bytes live in pipes and staging only:
+  verify streams; restore's staging (§4.5.3.4) receives the inner zip
+  stream, never the user-visible output dir.
+- **Compat law.** Unsealed bundles read forever, each read printing one
+  stderr line: `UNENCRYPTED bundle — re-seal with backup create --to …`.
+  Sealed bundles are opaque to pre-A4b readers (additive feature; same
+  accept posture as minors).
+- **Socket law.** The §3A control-socket verb seals with config
+  `backup.encrypt_to`; unset → `ERR` (a socket cannot prompt). No new
+  socket grammar.
+- **Safety-bundle law.** The §4.5.4 rule 3 safety bundle inherits the
+  config `backup.encrypt_to` recipients — a sealed-policy hearth never
+  writes a live root's secrets out unsealed. No config file at all falls
+  back to pre-A4b law (its own disk); a malformed config is a hard
+  error. Verification suite: BK23.
+- **Key law.** Passphrase strength is the operator's; use recipients for
+  automation. Operators mint identities with `hearthd backup keygen`
+  (writes mode 0600, refuses overwrite, prints only the recipient).
+  Identity files must be mode 0600 (group/other-readable →
+  refuse; unverifiable OS → warn). Passphrases never appear in argv,
+  logs, or manifests.
 
 ### 4.5.3 Consistency: taking a bundle while things run
 
@@ -590,6 +634,19 @@ Restore law:
 - **BK18** Zip-slip: crafted bundles (`../x`, `/x`, `a/../../x`, drive
   style, unlisted entry) → verify AND restore refuse; target root
   subtree unchanged after refusal.
+- **BK19** Seal round-trip: create `--to`/`--passphrase` → sealed bytes
+  carry the age magic, never `PK`; list/verify/restore/extract-config
+  succeed via identity/passphrase; wrong secret → refusal, not garbage;
+  inner zip bytes match an unsealed create of the same root.
+- **BK20** Create posture: no recipients + no `--passphrase` → refuse;
+  `--plaintext` writes unsealed + banner; config `encrypt_to` honored
+  with zero flags; socket verb refuses when config unset.
+- **BK21** Compat: unsealed bundles verify/list/restore with the exact
+  UNENCRYPTED stderr line; sealed bundles fail cleanly on pre-A4b magic
+  check paths (reader honesty, no silent partial reads).
+- **BK22** Streaming law: verify of a sealed bundle completes with the
+  inner zip never present in the output dir or any user-visible path;
+  passphrase never in argv (test asserts on argv inspection).
 - **BK16** extract-config: writes 0600 yaml, refuses existing path,
   clear error on `--no-config` bundle; fresh-root restore stdout
   contains the exact extract-config command.

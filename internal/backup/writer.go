@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"filippo.io/age"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -55,8 +56,9 @@ func ParseOctalMode(modeStr string) (os.FileMode, error) {
 }
 
 // WriteBundle takes the staged tree (and optional config) and compresses it into outAbs.
+// When recipients are provided, it seals the output using age (§4.5.2a); otherwise it writes an unsealed zip.
 // It writes manifest.json as strictly the FIRST entry, paths NFC, with mode 0600.
-func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot string, outAbs string) error {
+func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot string, outAbs string, recipients ...age.Recipient) error {
 	outDir := filepath.Dir(outAbs)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create out directory: %w", err)
@@ -165,8 +167,20 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 		return fmt.Errorf("chmod temp backup: %w", err)
 	}
 
-	// 5. Stream ZIP with deflate
-	zw := zip.NewWriter(tmpFile)
+	// 5. Stream ZIP with deflate (sealed if recipients provided, unsealed otherwise)
+	var w io.Writer = tmpFile
+	var sealCloser io.Closer
+	if len(recipients) > 0 {
+		sw, err := Seal(tmpFile, recipients)
+		if err != nil {
+			tmpFile.Close()
+			return fmt.Errorf("seal backup: %w", err)
+		}
+		w = sw
+		sealCloser = sw
+	}
+
+	zw := zip.NewWriter(w)
 
 	// First entry: manifest.json (strictly FIRST entry per §4.5.2)
 	mh := &zip.FileHeader{
@@ -176,11 +190,17 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 	mh.SetMode(0o600)
 	mw, err := zw.CreateHeader(mh)
 	if err != nil {
+		if sealCloser != nil {
+			_ = sealCloser.Close()
+		}
 		zw.Close()
 		tmpFile.Close()
 		return fmt.Errorf("create manifest zip entry: %w", err)
 	}
 	if _, err := mw.Write(manifestData); err != nil {
+		if sealCloser != nil {
+			_ = sealCloser.Close()
+		}
 		zw.Close()
 		tmpFile.Close()
 		return fmt.Errorf("write manifest zip entry: %w", err)
@@ -189,14 +209,26 @@ func WriteBundle(stagingDir string, configPath string, noConfig bool, sourceRoot
 	// Stream all entries (funlen: helper writes every member; zw/tmpFile
 	// are closed by the caller on any error path below).
 	if err := writeZipEntries(zw, entries, stagingDir, configBytes); err != nil {
+		if sealCloser != nil {
+			_ = sealCloser.Close()
+		}
 		zw.Close()
 		tmpFile.Close()
 		return err
 	}
 
 	if err := zw.Close(); err != nil {
+		if sealCloser != nil {
+			_ = sealCloser.Close()
+		}
 		tmpFile.Close()
 		return fmt.Errorf("close zip writer: %w", err)
+	}
+	if sealCloser != nil {
+		if err := sealCloser.Close(); err != nil {
+			tmpFile.Close()
+			return fmt.Errorf("close seal writer: %w", err)
+		}
 	}
 	if err := tmpFile.Sync(); err != nil {
 		tmpFile.Close()
@@ -314,7 +346,8 @@ func CheckSelfInclusion(root, outAbs string) error {
 }
 
 // CreateOffline performs a full backup with the daemon stopped under flocks (§4.5.3.2).
-func CreateOffline(root string, cfgPath string, outAbs string, noConfig bool, progress func(string)) error {
+// When recipients are provided, it seals the bundle; otherwise it writes unsealed (§4.5.2a).
+func CreateOffline(root string, cfgPath string, outAbs string, noConfig bool, progress func(string), recipients ...age.Recipient) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -360,11 +393,12 @@ func CreateOffline(root string, cfgPath string, outAbs string, noConfig bool, pr
 
 	// 6. Compress staging → temp next to outAbs → rename
 	progress("compressing archive")
-	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs)
+	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs, recipients...)
 }
 
 // CreateFromDaemon performs a full backup from a running daemon (§4.5.3.1, B1).
-func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool, singleWriterLock func() (func(), bool), progress func(string)) error {
+// When recipients are provided, it seals the bundle; otherwise it writes unsealed (§4.5.2a).
+func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool, singleWriterLock func() (func(), bool), progress func(string), recipients ...age.Recipient) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -429,7 +463,7 @@ func CreateFromDaemon(root string, cfgPath string, outAbs string, noConfig bool,
 
 	// 6. Compress staging → temp next to outAbs → rename
 	progress("compressing archive")
-	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs)
+	return WriteBundle(stagingDir, cfgPath, noConfig, root, outAbs, recipients...)
 }
 
 func cleanStaging(dir string) {

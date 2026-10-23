@@ -30,7 +30,7 @@ func TestRestoreReplace_MountRoot_EBUSY_CopyFallback(t *testing.T) {
 	}
 	defer func() { backup.RenameFunc = prevRename }()
 
-	if err := backup.RestoreReplace(bundle, targetRoot, true, false); err != nil {
+	if err := backup.RestoreReplace(bundle, targetRoot, true, false, nil); err != nil {
 		t.Fatalf("EBUSY fallback restore failed: %v", err)
 	}
 
@@ -92,7 +92,7 @@ func TestRecoverSwap_CopyMode_ResumesInterruptedCopy(t *testing.T) {
 	}
 	func() {
 		defer func() { _ = recover() }()
-		_ = backup.RestoreReplace(bundle, targetRoot, true, false)
+		_ = backup.RestoreReplace(bundle, targetRoot, true, false, nil)
 	}()
 	backup.SwapHook = nil
 
