@@ -203,6 +203,12 @@ sweep, which is itself an event. Rewriting `events.jsonl` in place is never vali
 hearthd quarantines the session (opens it read-only, flags it in the UI) rather
 than guessing.
 
+**Blob containment law (M3):** any `result_ref` resolved for session assembly
+MUST be relative to the session directory and MUST NOT escape the session
+directory after lexical cleaning (no absolute paths, no `..` segments crossing
+above the session root). Escaping or absolute references resolve to empty and
+the read is skipped entirely.
+
 ---
 
 ## 3. Compaction events
