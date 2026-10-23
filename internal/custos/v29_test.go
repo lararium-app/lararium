@@ -65,7 +65,9 @@ func TestV29ParkFanoutNoDeadlock(t *testing.T) {
 
 	// The CARD frame must still reach the attached door client, with the
 	// argsSummary fallback (the flow is by ordering not yet in the park
-	// map on this path, so dest comes from the register call).
+	// map on this path, so dest comes from the register call — composed
+	// as "dest | review" per H3.1; the enriched flow-sourced re-push
+	// follows once the parking path registers it).
 	frame, err := doorConn.NextFrame(3 * time.Second)
 	if err != nil {
 		t.Fatalf("next frame: %v", err)
@@ -73,7 +75,7 @@ func TestV29ParkFanoutNoDeadlock(t *testing.T) {
 	if !strings.HasPrefix(frame, "CARD ") {
 		t.Fatalf("want CARD frame, got %q", frame)
 	}
-	if !strings.Contains(frame, `"dest":"example.com:80/"`) {
+	if !strings.Contains(frame, `"dest":"example.com:80/`) {
 		t.Fatalf("CARD dest fallback missing: %q", frame)
 	}
 	if !strings.Contains(frame, cardID) {

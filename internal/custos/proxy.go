@@ -70,6 +70,27 @@ type Proxy struct {
 	dialCounter     int64
 	closed          bool
 	extraHeaders    []string
+	// cardRefresh re-pushes an enriched CARD frame once a parked
+	// flow is registered (H3.2). Set once at wiring time by the door
+	// server; nil until then.
+	cardRefresh func(id string)
+}
+
+// SetCardRefresh installs the door-side card enricher (H3.2).
+func (p *Proxy) SetCardRefresh(fn func(id string)) {
+	p.mu.Lock()
+	p.cardRefresh = fn
+	p.mu.Unlock()
+}
+
+// refreshCard fires the door enricher with the park lock released.
+func (p *Proxy) refreshCard(id string) {
+	p.mu.RLock()
+	fn := p.cardRefresh
+	p.mu.RUnlock()
+	if fn != nil && id != "" {
+		go fn(id)
+	}
 }
 
 // cellListener represents one dynamic per-cell gateway proxy listener (10.91.<n>.1:<port>).
@@ -654,6 +675,39 @@ func (cl *cellListener) forwardCONNECT(ctx context.Context, conn net.Conn, br *b
 	ip, err := cl.proxy.resolveFloor(ctx, host)
 	if err != nil {
 		cl.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "refused-floor")
+		cl.auditEgressDenied(host, "floor")
+		cl.drainAndRefuse(conn, br, "policy denied")
+		return
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		cl.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "refused-invalid-port")
+		cl.auditEgressDenied(host, "invalid_port")
+		proxy.RstHangup(conn)
+		return
+	}
+
+	// Policy Decide per CUSTOS-SPEC §6.1, §6.3 — the tunnel lane is the
+	// credential-less egress lane; CONNECT is not exempt (H1). A tunnel
+	// cannot park (parking requires a re-playable absolute-form HTTP/1.1
+	// request, §7), so `ask` cannot be honored as a card wait: it
+	// refuses, audited, rather than silently granting what a plain
+	// request would have had to wait for approval on.
+	verdict, _ := cl.proxy.vault.Policy().Decide(DecideInput{
+		Host: host,
+		Port: port,
+	})
+	switch verdict {
+	case VerdictAuto:
+		cl.auditEgressAllowed(host)
+	default:
+		reason := "policy"
+		if verdict == VerdictAsk {
+			reason = "ask_unparkable"
+		}
+		cl.logEntry(conn.RemoteAddr(), http.MethodConnect, target, "refused-policy")
+		cl.auditEgressDenied(host, reason)
 		cl.drainAndRefuse(conn, br, "policy denied")
 		return
 	}
@@ -836,6 +890,11 @@ func (cl *cellListener) registerParkFlow(rec *SurrogateRecord, method, target, c
 		createdAt:  time.Now(),
 	}
 	pm.addParkLocked(flow)
+	// H3.2: the hub fanout fired while we held pm.mu (register-inside-
+	// lock invariant), so the live CARD frame was built from hub
+	// strings only. Re-push once the flow is visible: runs after the
+	// deferred unlock.
+	defer cl.proxy.refreshCard(cardID)
 	return flow, ""
 }
 
@@ -1194,9 +1253,15 @@ func (cl *cellListener) forwardSwapped(
 
 	// Stream request body from client to upstream
 	if err := proxy.CopyRequestBody(conn, br, upstream, headers); err != nil {
-		earlyCtx, cancel := context.WithTimeout(ctx, RequestPhaseTimeout)
-		proxy.RelayOneWay(earlyCtx, conn, upstream)
-		cancel()
+		// H5: a broken body stream (malformed chunked framing,
+		// Content-Length mismatch, early FIN) means the request we
+		// sent is not what the client framed. Relaying the raw
+		// upstream response from here bypasses the scrub, and the
+		// upstream may echo the swapped secret (4xx auth diagnostics
+		// do exactly that). The scrub lane never delivers an
+		// unscanned response: close.
+		cl.auditSwapDenied(rec.Token, rec.Credential, canonHost, "body_copy_failed", "auto")
+		proxy.RstHangup(conn)
 		return
 	}
 
@@ -1278,7 +1343,9 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 			if colon >= 0 && proxy.SkipHopByHop(strings.ToLower(strings.TrimSpace(h[:colon]))) {
 				continue
 			}
-			_, _ = fmt.Fprintf(conn, "%s\r\n", h)
+			// H6: allow_binary skips body scanning, not needle
+			// redaction of the (plain-text) response headers.
+			_, _ = fmt.Fprintf(conn, "%s\r\n", scrubHeaderLine(h, secret))
 		}
 		_, _ = conn.Write([]byte("Connection: close\r\n\r\n"))
 		_, _ = io.Copy(conn, upReader)
@@ -1336,14 +1403,20 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 		if proxy.SkipHopByHop(name) {
 			continue
 		}
+		// H6: headers are classic secret reflectors (challenges,
+		// cookies, credential-bearing redirects). The secret-carrying
+		// ones never echo; everything else passes the same needle
+		// redaction the body got.
 		switch name {
+		case "set-cookie", "www-authenticate", "proxy-authenticate", "authorization":
+			continue
 		case "content-length":
 			_, _ = fmt.Fprintf(conn, "Content-Length: %d\r\n", len(outBytes))
 			hasCL = true
 		case "transfer-encoding":
 			// Chunk framing removed by buffered scan
 		default:
-			_, _ = fmt.Fprintf(conn, "%s\r\n", h)
+			_, _ = fmt.Fprintf(conn, "%s\r\n", scrubHeaderLine(h, secret))
 		}
 	}
 	if !hasCL {
@@ -1353,6 +1426,17 @@ func (cl *cellListener) scrubAndRelayResponse(conn net.Conn, upstream net.Conn, 
 
 	// Deliver redacted body
 	_, _ = conn.Write(outBytes)
+}
+
+// scrubHeaderLine applies the §5.2 needle redaction to one echoed
+// response header line (H6). Unlike bodies, headers carry no 8-char
+// floor: an upstream header echo of the swapped secret is exact by
+// construction, and every occurrence must die before the cell sees it.
+func scrubHeaderLine(line, secret string) string {
+	if secret == "" {
+		return line
+	}
+	return strings.ReplaceAll(line, secret, "[redacted]")
 }
 
 // isBinaryType reports whether contentType represents non-scannable binary content.
@@ -1496,6 +1580,7 @@ func (cl *cellListener) parkAndServeCredentialLess(
 
 	pm.addParkLocked(flow)
 	pm.mu.Unlock()
+	cl.proxy.refreshCard(cardID) // H3.2 enriched re-push (lock released)
 
 	monitorDone := make(chan struct{})
 	defer close(monitorDone)
@@ -1648,9 +1733,10 @@ func (cl *cellListener) forwardDirect(
 	cl.logEntry(conn.RemoteAddr(), method, u.Host, "proxied")
 
 	if err := proxy.CopyRequestBody(conn, br, upstream, headers); err != nil {
-		earlyCtx, cancel := context.WithTimeout(ctx, RequestPhaseTimeout)
-		proxy.RelayOneWay(earlyCtx, conn, upstream)
-		cancel()
+		// Same posture as the swapped lane (H5): a half-copied
+		// request never continues into response relay.
+		cl.logEntry(conn.RemoteAddr(), method, u.Host, "refused-body-copy")
+		proxy.RstHangup(conn)
 		return
 	}
 
