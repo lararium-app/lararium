@@ -157,7 +157,9 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
   while paired: §3 makes every code unreachable after pairing, so
   minting one could only mislead.
   `hearthd pair revoke --all` clears pending codes;
-  `hearthd pair unpair <user_id>` removes an owner.
+  `hearthd pair unpair <user_id>` removes an owner. Clearing the pairing
+  MUST also clear `owner_chat` in `state.json` so approval and custody
+  cards are dropped rather than delivered to the former owner's chat.
 - Redeem: the bot's first-ever state is **unpaired**. While unpaired, the
   ONLY accepted input is `/pair <code>`; every other message gets the
   static line `pairing required` — rate-limited to one reply per user ID

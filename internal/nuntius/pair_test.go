@@ -3,6 +3,7 @@ package nuntius
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -442,5 +443,71 @@ func TestStateDirMode(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o700 {
 		t.Fatalf("state dir mode %v, want 0700", st.Mode().Perm())
+	}
+}
+
+// M4: clearing the pairing MUST also clear OwnerChat so approval
+// and custody cards stop being sent to the former owner's chat after unpair.
+func TestUnpairClearsOwnerChat(t *testing.T) {
+	home := t.TempDir()
+	ndir := filepath.Join(home, "nuntius")
+	store, err := NewPairStore(ndir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	code := mustMint(t, store, now, time.Minute)
+	if _, err := store.Redeem("42", code, now); err != nil {
+		t.Fatal(err)
+	}
+
+	sf, err := NewStateFile(ndir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sf.Save(State{ActiveSession: "main", OwnerChat: "chat_42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &Fake{}
+	var logBuf strings.Builder
+	b, err := New(Deps{
+		Cfg:  Config{Enabled: true},
+		Home: home,
+		TG:   fake,
+		Log:  log.New(&logBuf, "", 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Stop()
+
+	// Before unpair: card dispatch delivers to owner chat.
+	b.approvalPending("appr_1", "main", "deploy", "args")
+	if len(fake.Sent) != 1 || fake.Sent[0].ChatID != "chat_42" {
+		t.Fatalf("before unpair: expected card sent to chat_42, got %+v", fake.Sent)
+	}
+
+	// Unpair the owner.
+	if err := store.Unpair("42"); err != nil {
+		t.Fatal(err)
+	}
+
+	// State should have empty OwnerChat.
+	st, err := sf.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.OwnerChat != "" {
+		t.Fatalf("expected OwnerChat to be cleared, got %q", st.OwnerChat)
+	}
+
+	// Subsequent card dispatch is a no-op (no messages sent to Telegram, card dropped).
+	b.approvalPending("appr_2", "main", "deploy", "args")
+	if len(fake.Sent) != 1 {
+		t.Fatalf("after unpair: card dispatch should be no-op, but sent %d messages", len(fake.Sent))
+	}
+	if !strings.Contains(logBuf.String(), "no owner chat") {
+		t.Fatalf("log line noting cards will be dropped missing from: %s", logBuf.String())
 	}
 }

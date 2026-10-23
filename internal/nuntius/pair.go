@@ -198,6 +198,8 @@ func (s *PairStore) RevokeAll() error {
 }
 
 // Unpair removes an owner (hearthd pair unpair <user_id>, §3).
+// M4: clearing the pairing MUST also clear OwnerChat in state.json so approval
+// and custody cards stop being sent to the former owner's chat after unpair.
 func (s *PairStore) Unpair(userID string) error {
 	o, err := s.Load()
 	if err != nil {
@@ -210,7 +212,21 @@ func (s *PairStore) Unpair(userID string) error {
 		}
 	}
 	o.OwnerIDs = kept
-	return s.save(o)
+	if err := s.save(o); err != nil {
+		return err
+	}
+	// M4: clear owner_chat in state.json so cards stop routing to the former owner.
+	sf, err := NewStateFile(s.dir)
+	if err == nil {
+		st, err := sf.Load()
+		if err == nil && st.OwnerChat != "" {
+			st.OwnerChat = ""
+			if err := sf.Save(st); err != nil {
+				return fmt.Errorf("nuntius: clear owner chat: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // randomPairCode draws 20 base62 characters from crypto/rand with
