@@ -486,7 +486,12 @@ Stdout data / stderr errors / exit per frozen conventions. `list` emits
 `#columns: path size sha256 mode` then one row per manifest entry
 (schema frozen here). `extract-config` writes the bundled
 yaml **mode 0600**, refuses an existing `<path>`, and errors clearly on
-`--no-config` bundles. **No REST endpoint, no web verb, ever
+`--no-config` bundles. **Extract law:** `extract-config` runs the full
+§4.5.2 verify FIRST — restore-law rule 1 classification (tamper →
+refuse, quarantine → warn and proceed). A refused bundle writes
+nothing. The config member is the trust path for provider and MCP
+endpoints on a rebuilt daemon; a swapped yaml must die at verify, not
+boot as the new default. **No REST endpoint, no web verb, ever
 in v1** — stated so future PRs must amend, not creep.
 
 Restore law:
