@@ -116,7 +116,6 @@ Mounts into the running cell:
 | Host path | Cell path | Mode | Contents |
 |---|---|---|---|
 | `cells/<id>/workspace/` | `/workspace` | RW | the agent's working tree |
-| `<hearth>` | `/hearth` | RW (v1; RO deferred to custos) | persona + memory tree |
 | `cells/<id>/bin/` | `/opt/lararium` | RO, nodev | tool helpers staged by hearthd |
 
 **Bind ownership under userns:** handled by §1's
@@ -127,8 +126,11 @@ cell's mapped uid. A cell that boots but cannot write `/workspace` is a
 failed cell (C10c gates it).
 
 Everything else is the overlay. `/home/keeper` lives in `upper/` — nothing
-there is durable; durability lives only in `/workspace` and `<hearth>`
-(crash doctrine, §6).
+there is durable; durability lives only in `/workspace` (crash doctrine,
+§6). The host `<hearth>` is never mounted into the guest: an in-cell view
+of it would expose keys, tokens, doors, and sibling cells' state to
+untrusted tool code. Cells reach shared persona/memory state exclusively
+through the brokered doors socket (§7).
 
 ## 4. Network doctrine (the M2 cage)
 

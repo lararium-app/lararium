@@ -756,7 +756,10 @@ func TestNspawnArgs(t *testing.T) {
 
 		// Check bind mounts (bin is via --bind-ro; option tokens like
 		// :ro/:nodev are not valid nspawn bind options — live-probed).
-		binds := []string{":/workspace", ":/hearth", ":/opt/lararium"}
+		// The host hearth must NEVER be mounted: an in-cell RW view of
+		// it exposes keys, tokens, doors, and sibling cells' state to
+		// untrusted tool code (C2).
+		binds := []string{":/workspace", ":/opt/lararium"}
 		for _, bind := range binds {
 			foundBind := false
 			for _, arg := range call.Args {
@@ -767,6 +770,11 @@ func TestNspawnArgs(t *testing.T) {
 			}
 			if !foundBind {
 				t.Errorf("nspawn missing bind %q in args: %v", bind, call.Args)
+			}
+		}
+		for _, arg := range call.Args {
+			if strings.HasSuffix(arg, ":/hearth") {
+				t.Errorf("nspawn mounts the host hearth at /hearth (C2 regression): %v", call.Args)
 			}
 		}
 	}
