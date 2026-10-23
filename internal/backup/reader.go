@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"filippo.io/age"
 )
 
 // IsZipSlip reports whether a relative path in a bundle violates the zip-slip law (§4.5.2, BK18):
@@ -67,8 +69,8 @@ func ExtractionMode(mode os.FileMode) os.FileMode {
 }
 
 // List implements `hearthd backup list <file>`: TSV `#columns: path size sha256 mode` (dirs: size/sha256 = "-").
-func List(bundlePath string, w io.Writer) error {
-	zr, err := zip.OpenReader(bundlePath)
+func List(bundlePath string, w io.Writer, ids ...age.Identity) error {
+	zr, err := OpenBundle(bundlePath, ids...)
 	if err != nil {
 		return fmt.Errorf("open backup bundle %s: %w", bundlePath, err)
 	}
@@ -110,12 +112,12 @@ func List(bundlePath string, w io.Writer) error {
 
 // ExtractConfig implements `hearthd backup extract-config <file> <path>` (§4.5.4, BK16):
 // writes bundled yaml mode 0600, refuses existing <path>, clear error on --no-config bundles.
-func ExtractConfig(bundlePath string, destPath string) error {
+func ExtractConfig(bundlePath string, destPath string, ids ...age.Identity) error {
 	if _, err := os.Stat(destPath); err == nil {
 		return fmt.Errorf("destination path %s already exists: extract-config refuses to overwrite", destPath)
 	}
 
-	zr, err := zip.OpenReader(bundlePath)
+	zr, err := OpenBundle(bundlePath, ids...)
 	if err != nil {
 		return fmt.Errorf("open backup bundle: %w", err)
 	}

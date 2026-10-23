@@ -404,6 +404,11 @@ Extension stays `<name>.lararium-backup`.
 - **Socket law.** The §3A control-socket verb seals with config
   `backup.encrypt_to`; unset → `ERR` (a socket cannot prompt). No new
   socket grammar.
+- **Safety-bundle law.** The §4.5.4 rule 3 safety bundle inherits the
+  config `backup.encrypt_to` recipients — a sealed-policy hearth never
+  writes a live root's secrets out unsealed. No config file at all falls
+  back to pre-A4b law (its own disk); a malformed config is a hard
+  error. Verification suite: BK23.
 - **Key law.** Passphrase strength is the operator's; use recipients for
   automation. Identity files must be mode 0600 (group/other-readable →
   refuse; unverifiable OS → warn). Passphrases never appear in argv,

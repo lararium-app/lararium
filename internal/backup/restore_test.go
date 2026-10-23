@@ -173,7 +173,7 @@ func TestRestore_FreeSpaceShortRefusal(t *testing.T) {
 
 	target := setupTestRoot(t)
 	_ = os.Remove(filepath.Join(target, "hearthd.sock"))
-	err := RestoreReplace(bundle, target, true, false)
+	err := RestoreReplace(bundle, target, true, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "insufficient free space") {
 		t.Fatalf("expected insufficient free space refusal, got: %v", err)
 	}

@@ -10,11 +10,12 @@ import (
 	"io"
 	"strings"
 
+	"filippo.io/age"
 	"golang.org/x/text/unicode/norm"
 )
 
-// SecretsHonestyLine is the fixed honesty banner printed by verify per §4.5.4.
-const SecretsHonestyLine = "a bundle is your disk — store it where your disk would be unsafe."
+// SecretsHonestyLine is the fixed honesty banner printed by verify per §4.5.4 and §4.5.2a.
+const SecretsHonestyLine = "a sealed bundle is only as strong as its weakest recipient; an unsealed bundle is your disk — store it where your disk would be unsafe."
 
 // Finding represents one verification row: tamper or quarantine.
 type Finding struct {
@@ -27,8 +28,8 @@ type Finding struct {
 // Findings are written to stdout in TSV format (#columns: class path detail).
 // Derived secrets list and disk-safety warning are written to stderr.
 // Returns findings, and any fatal reader error.
-func Verify(bundlePath string, stdout io.Writer, stderr io.Writer) ([]Finding, error) {
-	zr, err := zip.OpenReader(bundlePath)
+func Verify(bundlePath string, stdout io.Writer, stderr io.Writer, ids ...age.Identity) ([]Finding, error) {
+	zr, err := OpenBundle(bundlePath, ids...)
 	if err != nil {
 		return nil, fmt.Errorf("open backup bundle: %w", err)
 	}
