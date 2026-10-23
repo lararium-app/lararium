@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // TestH8_ProviderClientRefusesRedirect: the shared credential-bearing
@@ -35,5 +36,46 @@ func TestH8_ProviderClientRefusesRedirect(t *testing.T) {
 	}
 	if targetAuth != "" {
 		t.Fatalf("provider key replayed to redirect target: %q", targetAuth)
+	}
+}
+
+// M11: router clients enforce ResponseHeaderTimeout 120s + DialContext timeout 10s
+// while keeping H8 CheckRedirect intact; injected clients are wrapped copies.
+func TestM11_RouterClientTimeouts(t *testing.T) {
+	// Default client:
+	if providerClient.CheckRedirect == nil {
+		t.Fatal("providerClient missing CheckRedirect")
+	}
+	tr, ok := providerClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("providerClient Transport is %T, want *http.Transport", providerClient.Transport)
+	}
+	if tr.ResponseHeaderTimeout != 120*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 120s", tr.ResponseHeaderTimeout)
+	}
+	if tr.DialContext == nil {
+		t.Fatal("tr.DialContext is nil")
+	}
+
+	// Injected custom client wrapped:
+	injected := &http.Client{
+		Transport: &http.Transport{},
+	}
+	wrapped := WrapClient(injected)
+	if wrapped == injected {
+		t.Fatal("WrapClient must return a copy of injected client")
+	}
+	if wrapped.CheckRedirect == nil {
+		t.Fatal("wrapped client missing CheckRedirect")
+	}
+	wtr, ok := wrapped.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("wrapped Transport is %T, want *http.Transport", wrapped.Transport)
+	}
+	if wtr.ResponseHeaderTimeout != 120*time.Second {
+		t.Fatalf("wrapped ResponseHeaderTimeout = %v, want 120s", wtr.ResponseHeaderTimeout)
+	}
+	if wtr.DialContext == nil {
+		t.Fatal("wrapped tr.DialContext is nil")
 	}
 }

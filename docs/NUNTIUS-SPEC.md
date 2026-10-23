@@ -312,6 +312,10 @@ with `turn running — /cancel to stop it` (one chat, one stream; §6).
   final-render rule). The partial text stays visible as a rendering
   artifact; the penatus log holds no assistant event, and the edit text
   says so in effect. No message is ever deleted.
+  Turn execution derives from the shutdown context capped by a 30-minute
+  turn timeout (M11), so hung provider calls abort and release the queue
+  worker; router HTTP clients enforce 120s ResponseHeaderTimeout and 10s
+  DialContext timeout.
 - **Final-render rule:** the bridge keeps the turn's full text in
   memory as the render source (the persisted penatus event, when there
   is one, must equal it — V4 asserts the match). If editing fails 3

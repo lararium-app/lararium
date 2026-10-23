@@ -230,6 +230,8 @@ type Bridge struct {
 	startedMu sync.Mutex
 	started   bool // hub presence probe reads this (A1)
 
+	turnTimeout time.Duration
+
 	stopOnce sync.Once
 	stop     chan struct{}
 }
@@ -417,7 +419,9 @@ func (b *Bridge) Start(ctx context.Context, token string) {
 // §7.3) — the bridge adds nothing; in-flight turns finalize per the
 // terminal-event rule as their engine calls return.
 func (b *Bridge) Stop() {
-	b.stopOnce.Do(func() { close(b.stop) })
+	b.stopOnce.Do(func() {
+		close(b.stop)
+	})
 	b.stopCustody()
 	b.startedMu.Lock()
 	b.started = false
@@ -791,6 +795,20 @@ func (b *Bridge) queueFor(chatID string) *turnQueue {
 	return q
 }
 
+// shutdownContext derives a context that cancels when b.stop is closed (M11).
+func (b *Bridge) shutdownContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stopCh := b.stop
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 // runTurnedJob executes one queued turn (queue goroutine).
 func (b *Bridge) runTurnedJob(j job) {
 	sessID := b.resolveSession(b.activeSession())
@@ -808,11 +826,20 @@ func (b *Bridge) runTurnedJob(j job) {
 	_ = b.tg.SendChatAction(cctx, j.chatID, "typing")
 	cancel()
 
-	res := b.deps.Engine.RunTurn(context.Background(), TurnReq{
+	timeout := 30 * time.Minute
+	if b.turnTimeout > 0 {
+		timeout = b.turnTimeout
+	}
+	baseCtx, baseCancel := b.shutdownContext()
+	defer baseCancel()
+	turnCtx, turnCancel := context.WithTimeout(baseCtx, timeout)
+	defer turnCancel()
+
+	res := b.deps.Engine.RunTurn(turnCtx, TurnReq{
 		SessionID: sessID,
 		Text:      j.text,
 		UpdateID:  j.rec.UpdateID,
-		OnDelta:   func(text string) { stream.Delta(context.Background(), text) },
+		OnDelta:   func(text string) { stream.Delta(turnCtx, text) },
 	})
 
 	if res.Err != nil {

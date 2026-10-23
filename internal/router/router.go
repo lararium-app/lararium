@@ -293,7 +293,7 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	resp, err := providerClient.Do(req)
+	resp, err := o.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
