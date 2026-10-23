@@ -209,13 +209,21 @@ func EncryptSurrogates(doc *SurrogateDoc, passphrase string) ([]byte, error) {
 }
 
 // DecryptSurrogatesWithKey decrypts surrogates.age using the retained derived key per CUSTOS-SPEC §4.3, §C3.
+// The age.NewScryptIdentity API requires a string passphrase at the boundary;
+// best-effort zeroString is applied after use (L-8).
 func DecryptSurrogatesWithKey(ciphertext []byte, key []byte) (*SurrogateDoc, error) {
-	return DecryptSurrogates(ciphertext, string(key))
+	pass := string(key)
+	defer zeroString(pass)
+	return DecryptSurrogates(ciphertext, pass)
 }
 
 // EncryptSurrogatesWithKey serializes and encrypts SurrogateDoc using the retained derived key per CUSTOS-SPEC §4.3, §C3.
+// The age.NewScryptRecipient API requires a string passphrase at the boundary;
+// best-effort zeroString is applied after use (L-8).
 func EncryptSurrogatesWithKey(doc *SurrogateDoc, key []byte) ([]byte, error) {
-	return EncryptSurrogates(doc, string(key))
+	pass := string(key)
+	defer zeroString(pass)
+	return EncryptSurrogates(doc, pass)
 }
 
 // LoadAndReconcileSurrogates reads surrogates.age, reconciles with vault credentials, and filters corrupt entries.

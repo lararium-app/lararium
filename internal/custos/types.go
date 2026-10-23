@@ -2,7 +2,37 @@ package custos
 
 import (
 	"errors"
+	"os"
 )
+
+// Audit reason constants for lock_failed records per CUSTOS-SPEC §8.1, L-9.
+const (
+	//nolint:gosec // G101: audit reason tokens, not secrets (L-9)
+	AuditReasonBadCredential = "bad-credential"
+	AuditReasonVaultLocked   = "vault-locked"
+	AuditReasonStoreError    = "store-error"
+)
+
+// MapLockFailureReason maps an unlock or lock failure error to a closed reason token (L-9).
+func MapLockFailureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, ErrIncorrectPassphrase), errors.Is(err, ErrEmpty):
+		return AuditReasonBadCredential
+	case errors.Is(err, ErrCustosLocked), errors.Is(err, ErrLockTimeout):
+		return AuditReasonVaultLocked
+	case errors.Is(err, ErrVaultEnvelopeCorrupt),
+		errors.Is(err, ErrSnapshotCorrupt),
+		errors.Is(err, ErrUnexpectedFile),
+		errors.Is(err, os.ErrNotExist),
+		errors.Is(err, os.ErrPermission):
+		return AuditReasonStoreError
+	default:
+		return AuditReasonStoreError
+	}
+}
 
 // Frozen failure strings and errors per CUSTOS-SPEC §4.1, §4.2, §10, §11, KEYS-SPEC §K3.
 var (

@@ -142,13 +142,23 @@ func DecryptAge(ciphertext []byte, passphrase string) ([]byte, error) {
 }
 
 // EncryptAgeWithKey encrypts plaintext using the retained derived secret key per CUSTOS-SPEC §4.1, §C3.
+// The age.NewScryptRecipient API requires a string passphrase at the boundary;
+// Go strings are immutable and cannot be safely zeroed in all runtimes, but
+// best-effort zeroString is applied after use (L-8).
 func EncryptAgeWithKey(plaintext []byte, key []byte) ([]byte, error) {
-	return EncryptAge(plaintext, string(key))
+	pass := string(key)
+	defer zeroString(pass)
+	return EncryptAge(plaintext, pass)
 }
 
 // DecryptAgeWithKey decrypts age ciphertext using the retained derived secret key per CUSTOS-SPEC §4.1, §C3.
+// The age.NewScryptIdentity API requires a string passphrase at the boundary;
+// Go strings are immutable and cannot be safely zeroed in all runtimes, but
+// best-effort zeroString is applied after use (L-8).
 func DecryptAgeWithKey(ciphertext []byte, key []byte) ([]byte, error) {
-	return DecryptAge(ciphertext, string(key))
+	pass := string(key)
+	defer zeroString(pass)
+	return DecryptAge(ciphertext, pass)
 }
 
 var devZero *os.File
@@ -181,11 +191,9 @@ func zeroString(s string) {
 	}
 }
 
-// zeroBytes overwrites a byte slice with zeros per CUSTOS-SPEC §C3.
+// zeroBytes overwrites a byte slice with zeros per CUSTOS-SPEC §C3, L-8.
 func zeroBytes(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
+	clear(b)
 }
 
 // SHA256Hex8 returns the first 8 hex characters of the SHA-256 hash of value.
