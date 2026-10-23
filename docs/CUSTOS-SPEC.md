@@ -605,7 +605,7 @@ audits `credential_rotated` with `ephemeral: true`; rotation of
 `refresh_token` or `client_secret` is material (snapshots). Refresh
 tokens are thus snapshotted and audited like everything else.
 `access_token` is persisted (encrypted at rest) but never serialized
-into any worker response or cell-visible byte.
+into any worker response or cell-visible byte. Refresh errors (HTTP, transport, or wrapped) must be scrubbed before being logged or returned: URLs in error messages have their query strings stripped via url.Parse while preserving host and HTTP status codes (M15).
 
 **4.6 — Fingerprints sidecar.** `fingerprints.json`: `{name: sha256_8, mac: "<anchor/instance MACs §8.3>"}`
 — names + 8-hex hashes only; updated atomically inside every vault
