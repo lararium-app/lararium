@@ -114,7 +114,7 @@ jobs:
           languages: go
           queries: security-and-quality
       - name: Build for extraction
-        run: go build ./cmd/lararium
+        run: go build ./...
       - uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.28.11
         with:
           category: /language:go
