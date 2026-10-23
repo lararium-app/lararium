@@ -1186,8 +1186,37 @@ func TestV6ApprovalCardRace(t *testing.T) {
 		t.Fatalf("toasts = (%q, %q), want one %q and one %q", t1, t2, nuntius.ToastAllowed, nuntius.ToastAlready)
 	}
 
-	// Wait for turn completion
-	time.Sleep(200 * time.Millisecond)
+	// Turn completion is the assistant message landing in the session
+	// log. Wait for it deterministically: a fixed sleep raced TempDir
+	// cleanup against the still-writing loop on slow runners (CI flake
+	// on TestV6ApprovalCardRace, amd64).
+	deadline := time.Now().Add(5 * time.Second)
+	var turnDone bool
+	for !turnDone && time.Now().Before(deadline) {
+		lf, lerr := penatus.OpenLog(filepath.Join(env.home, "sessions", "main"))
+		if lerr == nil {
+			for _, ev := range lf.Live() {
+				if ev.T != "msg" {
+					continue
+				}
+				var role, text string
+				if json.Unmarshal(ev.Fields["role"], &role) != nil ||
+					json.Unmarshal(ev.Fields["text"], &text) != nil {
+					continue
+				}
+				if role == "assistant" && text == "cluster deployed." {
+					turnDone = true
+					break
+				}
+			}
+		}
+		if !turnDone {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !turnDone {
+		t.Fatal("assistant completion message never persisted to session log")
+	}
 
 	// Exactly one hub transition (one tool run)
 	toolMu.Lock()
