@@ -435,7 +435,7 @@ func TestBK15_OfflineAndDaemonCountsAgree(t *testing.T) {
 
 // TestSecretsHonestyLineVerbatim verifies the secrets-honesty line verbatim (§4.5.2).
 func TestSecretsHonestyLineVerbatim(t *testing.T) {
-	want := "a bundle is your disk — store it where your disk would be unsafe."
+	want := "a sealed bundle is only as strong as its weakest recipient; an unsealed bundle is your disk — store it where your disk would be unsafe."
 	if backup.SecretsHonestyLine != want {
 		t.Fatalf("SecretsHonestyLine = %q, want %q", backup.SecretsHonestyLine, want)
 	}

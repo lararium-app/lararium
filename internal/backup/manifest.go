@@ -82,6 +82,17 @@ func ComputeCounts(root string) (CountsInfo, error) {
 	return counts, nil
 }
 
+var nowFunc = func() time.Time { return time.Now().UTC() }
+
+// SetNowFunc sets the clock function for manifest creation (testing seam).
+func SetNowFunc(fn func() time.Time) {
+	if fn != nil {
+		nowFunc = fn
+	} else {
+		nowFunc = func() time.Time { return time.Now().UTC() }
+	}
+}
+
 // NewManifest constructs a Manifest with current metadata and computed counts.
 func NewManifest(absPath string, hostname string, entries []ManifestEntry, counts CountsInfo) *Manifest {
 	if hostname == "" {
@@ -94,7 +105,7 @@ func NewManifest(absPath string, hostname string, entries []ManifestEntry, count
 	}
 	return &Manifest{
 		Format:  FormatVersion,
-		Created: time.Now().UTC().Format(time.RFC3339),
+		Created: nowFunc().Format(time.RFC3339),
 		Product: Product,
 		Source: SourceInfo{
 			AbsPath:  absPath,

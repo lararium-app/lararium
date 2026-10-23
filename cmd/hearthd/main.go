@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -31,6 +32,13 @@ type Config struct {
 	Nuntius nuntius.Config `yaml:"nuntius"`
 	// Custos configures the custody door client (CUSTOS-SPEC §6.4b).
 	Custos CustosConfig `yaml:"custos"`
+	// Backup configures backup sealing and identity (PENATUS §4.5.2a).
+	Backup BackupConfig `yaml:"backup"`
+}
+
+type BackupConfig struct {
+	EncryptTo []string `yaml:"encrypt_to"`
+	Identity  string   `yaml:"identity"`
 }
 
 type HearthConfig struct {
@@ -98,6 +106,11 @@ func LoadConfig(path string) (*Config, error) {
 			if !byName[providerOf(ref)] {
 				return nil, fmt.Errorf("config: model ref %q names unknown provider", ref)
 			}
+		}
+	}
+	for _, recipientStr := range c.Backup.EncryptTo {
+		if _, err := backup.ParseRecipient(recipientStr); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: config: invalid backup.encrypt_to recipient %q: %v\n", recipientStr, err)
 		}
 	}
 	return &c, nil
@@ -214,7 +227,7 @@ func main() {
 			backupCmd(*cfgPath, args[1:])
 			return
 		case "restore":
-			restoreCmd(args[1:])
+			restoreCmd(*cfgPath, args[1:])
 			return
 		default:
 			if !strings.HasPrefix(args[0], "-") {
@@ -411,8 +424,21 @@ func serve(cfgPath string) {
 		Reload:    reloadKeys,
 	})
 
+	srv.BackupCheck = func() error {
+		if len(cfg.Backup.EncryptTo) == 0 {
+			return errors.New("no recipients configured")
+		}
+		return nil
+	}
 	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
-		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.SingleWriterLock, progress)
+		if len(cfg.Backup.EncryptTo) == 0 {
+			return errors.New("no recipients configured")
+		}
+		recipients, err := backup.ParseRecipients(cfg.Backup.EncryptTo)
+		if err != nil {
+			return fmt.Errorf("invalid recipient in backup.encrypt_to: %w", err)
+		}
+		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.SingleWriterLock, progress, recipients...)
 	}
 
 	// Control socket (KEYS-SPEC K6): CLI writes, then pings here.

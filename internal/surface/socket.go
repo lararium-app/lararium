@@ -174,6 +174,13 @@ func (s *Server) handleBackupSocket(conn net.Conn, line string) {
 		}
 	}
 
+	if s.BackupCheck != nil {
+		if err := s.BackupCheck(); err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err.Error())
+			return
+		}
+	}
+
 	// 1. Ack request line immediately (§4.5.3.1)
 	if _, err := fmt.Fprint(conn, "OK\n"); err != nil {
 		return

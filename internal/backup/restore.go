@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"filippo.io/age"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/lararium-app/lararium/internal/surface"
@@ -55,7 +56,7 @@ type RestoreMarker struct {
 // RestoreTo implements `hearthd restore <file> --to <dir>` (fresh root) per §4.5.4 rule 2.
 // Refuse if dir exists. Mutual exclusion is structural: stage into unique sibling <dir>.staging-<ts>,
 // fill from zip, fsync every file + dir, then single rename(staging, dir).
-func RestoreTo(bundle, dir string) error {
+func RestoreTo(bundle, dir string, ids ...age.Identity) error {
 	dir = filepath.Clean(dir)
 	absDir, err := filepath.Abs(dir)
 	if err == nil {
@@ -68,14 +69,14 @@ func RestoreTo(bundle, dir string) error {
 	}
 
 	// 2. Version law & Verify FIRST (§4.5.4 rule 1)
-	manifest, zr, err := verifyAndOpenBundle(bundle)
+	manifest, zr, err := verifyAndOpenBundle(bundle, ids...)
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
 
 	// 3. Pre-validate every member in bundle before ANY write
-	if err := validateBundleMembers(&zr.Reader, manifest); err != nil {
+	if err := validateBundleMembers(zr.Reader, manifest); err != nil {
 		return err
 	}
 
@@ -105,7 +106,7 @@ func RestoreTo(bundle, dir string) error {
 	_ = os.Chmod(stagingDir, 0o700)
 
 	// 5. Fill from zip and fsync every file + dir
-	if err := extractTree(&zr.Reader, manifest, stagingDir); err != nil {
+	if err := extractTree(zr.Reader, manifest, stagingDir); err != nil {
 		cleanStaging(stagingDir)
 		return err
 	}
@@ -121,7 +122,8 @@ func RestoreTo(bundle, dir string) error {
 }
 
 // RestoreReplace implements `hearthd restore <file> --replace <dir> --yes [--no-safety]` per §4.5.4 rules 3–4.
-func RestoreReplace(bundle, dir string, yes bool, noSafety bool) error {
+// recipients (when non-empty) seal the §4.5.4 rule 3 safety bundle (§4.5.2a, amendment A4b).
+func RestoreReplace(bundle, dir string, yes bool, noSafety bool, recipients []age.Recipient, ids ...age.Identity) error {
 	dir = filepath.Clean(dir)
 	absDir, err := filepath.Abs(dir)
 	if err == nil {
@@ -155,14 +157,14 @@ func RestoreReplace(bundle, dir string, yes bool, noSafety bool) error {
 	}
 
 	// Verify FIRST, always (§4.5.4 rule 1)
-	manifest, zr, err := verifyAndOpenBundle(bundle)
+	manifest, zr, err := verifyAndOpenBundle(bundle, ids...)
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
 
 	// Pre-validate every member in bundle before ANY write
-	if err := validateBundleMembers(&zr.Reader, manifest); err != nil {
+	if err := validateBundleMembers(zr.Reader, manifest); err != nil {
 		return err
 	}
 
@@ -200,7 +202,7 @@ func RestoreReplace(bundle, dir string, yes bool, noSafety bool) error {
 	var safetyPath string
 	if !noSafety {
 		var err error
-		safetyPath, err = createSafetyBundle(bundle, dir, parentDir, baseName, ts)
+		safetyPath, err = createSafetyBundle(bundle, dir, parentDir, baseName, ts, recipients)
 		if err != nil {
 			return err
 		}
@@ -225,7 +227,7 @@ func RestoreReplace(bundle, dir string, yes bool, noSafety bool) error {
 	}
 	_ = os.Chmod(stagingDir, 0o700)
 
-	if err := extractTree(&zr.Reader, manifest, stagingDir); err != nil {
+	if err := extractTree(zr.Reader, manifest, stagingDir); err != nil {
 		cleanStaging(stagingDir)
 		return err
 	}
@@ -459,7 +461,7 @@ func recoverCopySwap(root, markerFile string, marker RestoreMarker) error {
 // via slice-1 CreateOffline (§4.5.4 rule 3). On failure it prints the reason and
 // the exact retry command ending --no-safety, so a damaged source cannot lock out
 // recovery, then returns the wrapped error.
-func createSafetyBundle(bundle, dir, parentDir, baseName, ts string) (string, error) {
+func createSafetyBundle(bundle, dir, parentDir, baseName, ts string, recipients []age.Recipient) (string, error) {
 	safetyPath := filepath.Join(parentDir, fmt.Sprintf("%s.pre-restore-%s.lararium-backup", baseName, ts))
 
 	cfgPath := ""
@@ -476,7 +478,7 @@ func createSafetyBundle(bundle, dir, parentDir, baseName, ts string) (string, er
 		}
 	}
 
-	if err := CreateOffline(dir, cfgPath, safetyPath, noConfig, nil); err != nil {
+	if err := CreateOffline(dir, cfgPath, safetyPath, noConfig, nil, recipients...); err != nil {
 		_ = os.Remove(safetyPath)
 		fmt.Fprintf(os.Stderr, "safety bundle failed: %v\n", err)
 		fmt.Fprintf(os.Stderr, "hearthd restore %s --replace %s --yes --no-safety\n", bundle, dir)
@@ -613,10 +615,10 @@ func RecoverSwap(root string) error {
 }
 
 // verifyAndOpenBundle runs full Verify FIRST, enforces version law (§4.5.4 rule 1),
-// and returns the manifest and opened zip.Reader.
-func verifyAndOpenBundle(bundlePath string) (*Manifest, *zip.ReadCloser, error) {
+// and returns the manifest and opened bundle reader.
+func verifyAndOpenBundle(bundlePath string, ids ...age.Identity) (*Manifest, *BundleReader, error) {
 	// Full slice-1 Verify; warnings and dropped fields go to os.Stderr
-	findings, err := Verify(bundlePath, io.Discard, os.Stderr)
+	findings, err := Verify(bundlePath, io.Discard, os.Stderr, ids...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -634,7 +636,7 @@ func verifyAndOpenBundle(bundlePath string) (*Manifest, *zip.ReadCloser, error) 
 		return nil, nil, errors.New("backup bundle verification failed: tamper detected")
 	}
 
-	zr, err := zip.OpenReader(bundlePath)
+	zr, err := OpenBundle(bundlePath, ids...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open backup bundle: %w", err)
 	}

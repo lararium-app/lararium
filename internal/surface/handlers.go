@@ -70,7 +70,8 @@ type Server struct {
 	alwaysMu   sync.RWMutex
 	alwaysHook func(toolName string) error
 
-	Backup BackupFunc
+	Backup      BackupFunc
+	BackupCheck func() error
 }
 
 // BackupFunc handles control-socket backup verbs (PENATUS §4.5.3.1).

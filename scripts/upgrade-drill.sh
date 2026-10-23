@@ -242,11 +242,28 @@ if [ "${BAD_HTTP_CODE}" != "401" ]; then
 fi
 echo "[ASSERT OK] Invalid door token correctly rejected with HTTP 401"
 
-# Assertion 4: Audit chain & backup verification passes
-echo "Creating backup bundle from live upgraded daemon..."
+# Assertion 4: Audit chain & backup verification passes (A4b: socket
+# backups seal with config backup.encrypt_to — no plaintext bundles).
+echo "Generating drill identity and configuring backup sealing policy..."
+RECIPIENT=$(docker exec "${CONTAINER_NEW}" /usr/local/bin/hearthd backup keygen --out /etc/lararium/drill-age.key 2>/dev/null)
+if ! echo "${RECIPIENT}" | grep -q '^age1'; then
+  echo "ERROR: backup keygen did not emit an age1 recipient: ${RECIPIENT}" >&2
+  exit 1
+fi
+docker exec "${CONTAINER_NEW}" sh -c "printf '\nbackup:\n  encrypt_to:\n    - \"%s\"\n' \"${RECIPIENT}\" >> /etc/lararium/lararium.yaml"
+echo "Restarting upgraded daemon to pick up the sealing policy..."
+docker restart "${CONTAINER_NEW}" >/dev/null
+wait_for_health "${CONTAINER_NEW}" "${DRILL_PORT}"
+echo "Creating backup bundle from live upgraded daemon (expect sealed output)..."
 docker exec "${CONTAINER_NEW}" /usr/local/bin/hearthd backup create --out /tmp/upgrade-drill-backup.zip
-echo "Verifying backup bundle..."
-docker exec "${CONTAINER_NEW}" /usr/local/bin/hearthd backup verify /tmp/upgrade-drill-backup.zip
+SEAL_MAGIC=$(docker exec "${CONTAINER_NEW}" head -c 21 /tmp/upgrade-drill-backup.zip)
+if [ "${SEAL_MAGIC}" != "age-encryption.org/v1" ]; then
+  echo "ERROR: backup bundle from sealing-policy daemon is NOT age-sealed (magic: ${SEAL_MAGIC})" >&2
+  exit 1
+fi
+echo "[ASSERT OK] Bundle from sealing-policy daemon carries the age magic"
+echo "Verifying sealed backup bundle with the drill identity..."
+docker exec "${CONTAINER_NEW}" /usr/local/bin/hearthd backup verify /tmp/upgrade-drill-backup.zip --identity /etc/lararium/drill-age.key
 echo "[ASSERT OK] Backup verification passed with zero tamper/quarantine findings"
 
 # Assertion 4b: Check session event log continuity
