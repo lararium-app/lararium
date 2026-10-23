@@ -17,14 +17,25 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    # Serves the web chat + API; setup is explicit so detached starts
-    # never block on a menu:
-    #   interactive setup:  docker compose exec -it hearthd hearthd setup
-    #   REPL:               docker compose exec -it hearthd hearthd
-    entrypoint: ["sh", "-c"]
-    command:
-      - "if [ ! -f /etc/lararium/.setup-done ] && [ -t 0 ]; then hearthd setup || true; touch /etc/lararium/.setup-done; fi; exec hearthd serve"
-    stdin_open: true # REPL via `exec -it` needs a terminal; detached starts (up -d) deliberately skip interactive setup and get defaults; docker compose exec -it hearthd hearthd setup remains the documented route
+    # M8 hardening: the daemon runs unprivileged, with every capability
+    # dropped, no setuid escalation, and a read-only rootfs. The two bind
+    # mounts are its only writable ground; they must be owned by the run
+    # user — one-time `sudo chown -R "$(id -u):$(id -g)" config hearth`,
+    # or pin the uid: LARARIUM_UID=1001 docker compose up.
+    user: "${LARARIUM_UID:-1000}:${LARARIUM_UID:-1000}"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    # The image entrypoint owns startup: it seeds first-run state, runs the
+    # wizard when a TTY is attached and no provider is configured, and on a
+    # detached start prints guidance instead of hanging. Setup and REPL are
+    # explicit subcommands (the entrypoint passes arguments through):
+    #   docker compose run --rm -it hearthd setup
+    #   docker compose exec -it hearthd hearthd
+    stdin_open: true
     # Web chat + API (`hearthd serve`). Published on the host's loopback
     # only — reach it from the machine running Docker, or put your own
     # TLS proxy in front and add its hostname to serve.allowed_hosts.

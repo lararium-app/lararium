@@ -32,5 +32,16 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 RUN mkdir -p /defaults/hearth
 COPY docker/hearth/SOUL.md docker/hearth/IDENTITY.md docker/hearth/USER.md docker/hearth/MEMORY.md /defaults/hearth/
 COPY docker/config/lararium.yaml /defaults/lararium.yaml
+# M8: unprivileged by default. Empty /hearth and /etc/lararium are owned by
+# the daemon user so first-use named volumes inherit writable ownership;
+# bind mounts must be owned by the same uid (compose sets it via
+# LARARIUM_UID, default 1000). Nothing in the runtime path needs privileges:
+# the daemon binds a high port, writes only under its two mounts, and drops
+# every capability via compose (cap_drop ALL + no-new-privileges).
+RUN groupadd -g 10001 lararium \
+ && useradd -r -u 10001 -g lararium -M -d /hearth lararium \
+ && mkdir -p /hearth /etc/lararium \
+ && chown -R 10001:10001 /hearth /etc/lararium
 WORKDIR /hearth
+USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
