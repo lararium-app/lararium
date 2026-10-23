@@ -481,9 +481,10 @@ Extension stays `<name>.lararium-backup`.
    Lock files are opened `O_NOFOLLOW` so a symlinked lock path is refused
    outright (M6).
 4. **Output law.** `--out <p>`; default `./hearth-<UTC ts>.lararium-backup`
-   (cwd). An `--out` inside the hearth root → refuse (self-inclusion); both
-   hearth root and output path evaluate symlinks via filepath.EvalSymlinks before
-   comparison (L-1).
+   (cwd). An `--out` inside the hearth root → refuse (self-inclusion).
+   Symlinks in both the state root and the requested `--out` path are fully
+   resolved before prefix comparison, so a symlink inside or outside state
+   cannot alias into or out of the protected root (L-1).
 
 
 ### 4.5.4 Restore (A4.2, S10.1, V10.1)
