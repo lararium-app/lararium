@@ -1,6 +1,7 @@
 package surface
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"os"
@@ -195,5 +196,45 @@ func TestSocketSelfInclusionSymlinkedSubdir(t *testing.T) {
 	legitOut := filepath.Join(outsideDir, "legit.lararium-backup")
 	if err := checkSelfInclusionSocket(root, legitOut); err != nil {
 		t.Fatalf("expected legit outside path to succeed, got: %v", err)
+	}
+}
+
+func TestSocketCommandReadBounded(t *testing.T) {
+	path := tempSocket(t)
+	srv := &Server{}
+	closer, err := srv.ServeSocket(path, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	// Send 1MiB payload with no newline (L-2)
+	payload := bytes.Repeat([]byte("A"), 1024*1024)
+	go func() {
+		_, _ = conn.Write(payload)
+	}()
+
+	replyBuf := make([]byte, 128)
+	n, readErr := conn.Read(replyBuf)
+	if n == 0 && readErr != nil {
+		t.Fatalf("read failed: %v", readErr)
+	}
+	reply := string(replyBuf[:n])
+	if !strings.HasPrefix(reply, "ERR") || !strings.Contains(reply, "too long") {
+		t.Errorf("reply = %q, want ERR line too long", reply)
+	}
+
+	// Assert connection is closed by server
+	buf := make([]byte, 16)
+	_, err = conn.Read(buf)
+	if err == nil {
+		t.Error("expected connection to be closed by server, but read succeeded")
 	}
 }

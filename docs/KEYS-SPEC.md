@@ -181,7 +181,7 @@ write failed when it did not).
 failure — missing file, `ECONNREFUSED` on a stale file left by a
 crashed daemon, permission error — as "no daemon": the write already
 succeeded, the CLI prints `no daemon running — will apply at next
-start` and exits 0. On reload the daemon re-reads `keys.json` and
+start` and exits 0. Socket command lines are capped at 4096 bytes via io.LimitReader; lines exceeding the budget or missing a newline answer `ERR line too long` and close (L-2). On reload the daemon re-reads `keys.json` and
 swaps its in-memory map **for new turns only**: a turn in flight keeps
 the provider client it started with (SURFACE-SPEC P3 turn atomicity —
 revoking a key never mutates a running turn mid-stream). A new turn
