@@ -1,0 +1,22 @@
+# gitleaks configuration for the Security gate (.github/workflows/security.yml).
+# Extends the default ruleset; adds a global allowlist for verified false
+# positives. Every entry states why it is not a secret. Real secrets never
+# belong in this repository — if a future hit is not a false positive, the
+# gate must fail, not the allowlist grow.
+title = "Lararium gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "verified false positives: test fixtures and token-format code"
+paths = [
+  # Unit tests mint fake key-shaped strings on purpose.
+  '''_test\.go$''',
+  # XSS regression fixture: contains synthetic key-shaped payloads.
+  '''xss-check\.js$''',
+  # Token-format implementation: matches its own generic-key heuristic
+  # (tokenPrefix = "lar1_"); real tokens are minted from crypto/rand.
+  '''internal/surface/tokens\.go$''',
+  '''internal/custos/ctl\.go$''',
+]
