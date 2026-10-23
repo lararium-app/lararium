@@ -94,7 +94,7 @@ func rezipSwapConfig(t *testing.T, src, dst string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = io.Copy(fw, rc)
+		_, err = io.Copy(fw, rc) //nolint:gosec // G110: fixture copy of our own zip entries, no untrusted input
 		rc.Close()
 		if err != nil {
 			t.Fatal(err)
