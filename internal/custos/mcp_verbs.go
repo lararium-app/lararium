@@ -8,7 +8,133 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
+
+// MCPCallGuard carries the enforcement context the MCP-CALL verb must
+// apply on every socket (H2): a vault-lock check, worker-lane policy,
+// an approval hold for `ask`, and the audit line. Mirrors the worker
+// lane gate (CUSTOS-SPEC §6.1/§8.1) so a door.token holder or ctl
+// caller can never reach c.Execute with a locked vault or an
+// ask/deny verdict set. The zero guard enforces nothing — test
+// harness only.
+type MCPCallGuard struct {
+	Vault *Vault
+	Hub   *surface.ApprovalHub
+	// Actor attributes the audit line and the approval card (the door
+	// client name, or "ctl").
+	Actor string
+	// Hold is how long an `ask` waits on the approval card. Bounded
+	// well under the door client's 90 s reply wait so a human who does
+	// not answer surfaces as a refusal, never a zombie execution after
+	// the caller gave up. Zero → 60 s.
+	Hold time.Duration
+}
+
+// mcpAskHoldDefault bounds the dispatch-layer approval wait (§7 hold
+// doctrine, shortened to fit inside the door client reply budget).
+const mcpAskHoldDefault = 60 * time.Second
+
+// verdictError is the closed refusal reason surfaced as ERR <reason>.
+type verdictError struct{ reason string }
+
+func (v verdictError) Error() string { return v.reason }
+
+// gate evaluates the H2 checks before any tool byte moves. allow=false
+// carries the frozen reason for the ERR frame; every refusal is
+// audited with the worker-lane audit kinds (§8.1).
+func (g MCPCallGuard) gate(connector, tool string) error {
+	if g.Vault == nil {
+		// Harness path: no vault, nothing to enforce (mirrors the
+		// `v != nil &&` convention across the door verbs).
+		return nil
+	}
+	if !g.Vault.IsUnlocked() {
+		g.auditDenied(connector, tool, "locked")
+		return verdictError{"locked"}
+	}
+	verdict := VerdictAsk
+	if pe := g.Vault.Policy(); pe != nil {
+		if v, _ := pe.Decide(DecideInput{
+			Lane:       "worker",
+			Credential: connector,
+			Tool:       tool,
+			Host:       connector,
+		}); v != "" {
+			verdict = v
+		}
+	}
+	switch verdict {
+	case VerdictAuto:
+		return nil
+	case VerdictDeny:
+		g.auditDenied(connector, tool, "verdict")
+		return verdictError{"denied"}
+	default: // ask (also the fail-closed default for missing policy)
+		if g.Hub == nil {
+			g.auditDenied(connector, tool, "approval_required")
+			return verdictError{"approval_required"}
+		}
+		hold := g.Hold
+		if hold <= 0 {
+			hold = mcpAskHoldDefault
+		}
+		_, decision := g.Hub.RegisterCustos(g.Actor, connector,
+			connector+"/"+tool, "mcp-call", hold, nil)
+		approved, ok := <-decision
+		if !ok {
+			approved = false
+		}
+		if !approved {
+			g.auditDenied(connector, tool, "approval")
+			return verdictError{"denied"}
+		}
+		// §7 doctrine: policy flipped to deny while the card was held
+		// kills the flow before any upstream byte.
+		if pe := g.Vault.Policy(); pe != nil {
+			if v2, _ := pe.Decide(DecideInput{
+				Lane:       "worker",
+				Credential: connector,
+				Tool:       tool,
+				Host:       connector,
+			}); v2 == VerdictDeny {
+				g.auditDenied(connector, tool, "policy_changed_during_hold")
+				return verdictError{"denied"}
+			}
+		}
+		return nil
+	}
+}
+
+func (g MCPCallGuard) auditDenied(connector, tool, reason string) {
+	if g.Vault == nil || g.Vault.Audit() == nil {
+		return
+	}
+	_ = g.Vault.Audit().Append(AuditRecord{
+		Kind:    AuditKindWorkerCallDenied,
+		Cred:    connector,
+		Actor:   g.Actor,
+		Host:    connector,
+		Tool:    tool,
+		Verdict: "deny",
+		Reason:  reason,
+	})
+}
+
+func (g MCPCallGuard) auditAllowed(connector, tool string) {
+	if g.Vault == nil || g.Vault.Audit() == nil {
+		return
+	}
+	_ = g.Vault.Audit().Append(AuditRecord{
+		Kind:    AuditKindWorkerCallAllowed,
+		Cred:    connector,
+		Actor:   g.Actor,
+		Host:    connector,
+		Tool:    tool,
+		Verdict: "allow",
+	})
+}
 
 // DispatchMCPVerb executes the shared MCP verb logic (STATUS, TOOLS, REFRESH)
 // per MCP-SPEC §9 and CUSTOS-SPEC §6.4c for both ctl.sock and doors.sock.
@@ -118,7 +244,7 @@ func DispatchMCPVerb(conn net.Conn, reg *RailRegistry, cmd string, name string, 
 // current snapshot (Execute does this), and write the single-line
 // `OK <json>` / `ERR <reason>` frame. Shared by ctl.sock and doors.sock.
 // argsJSON is the raw tool arguments object (may be empty → "{}").
-func DispatchMCPCall(conn net.Conn, reg *RailRegistry, name, tool, argsJSON string, writeFn func([]byte) error) bool {
+func DispatchMCPCall(conn net.Conn, reg *RailRegistry, name, tool, argsJSON string, writeFn func([]byte) error, guard MCPCallGuard) bool {
 	write := func(s string) {
 		data := []byte(s)
 		if writeFn != nil {
@@ -150,6 +276,14 @@ func DispatchMCPCall(conn net.Conn, reg *RailRegistry, name, tool, argsJSON stri
 		write("ERR bad_args\n")
 		return true
 	}
+	// H2 gate: lock check + worker-lane policy + audit, before any
+	// execution (mirrors the worker lane; every socket caller
+	// inherits it through this dispatch).
+	if err := guard.gate(strings.TrimSpace(name), strings.TrimSpace(tool)); err != nil {
+		write("ERR " + oneLineReason(err.Error()) + "\n")
+		return true
+	}
+	guard.auditAllowed(strings.TrimSpace(name), strings.TrimSpace(tool))
 	// Execution deadline: worker exec timeout + 30 s slack (§7 budget anchor).
 	timeout := DefaultWorkerExecTimeout + 30*time.Second
 	if c.execTimeout > 0 {

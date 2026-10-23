@@ -430,8 +430,10 @@ type PatternType int
 // PatternType constants define the comparator specificity tiers.
 const (
 	PatternTypeQualifiedExact PatternType = 1 // host:port or <name>/<tool>
-	PatternTypeBareExact      PatternType = 2 // host or <name>
-	PatternTypeSuffix         PatternType = 3 // domain/* or <name>/*
+	PatternTypeCredHostPort   PatternType = 2 // <name>@host:port (bearer-lane only)
+	PatternTypeCredHost       PatternType = 3 // <name>@host       (bearer-lane only)
+	PatternTypeBareExact      PatternType = 4 // host or <name>
+	PatternTypeSuffix         PatternType = 5 // domain/* or <name>/*
 )
 
 // ParsedEgressPattern holds normalized pattern properties for comparison and matching.
@@ -615,10 +617,96 @@ type ParsedCredentialPattern struct {
 	Type   PatternType
 	Name   string
 	Tool   string // empty for bare name, "*" for wildcard, tool name for qualified
+	Host   string // @-scoped authority host (CredHost/CredHostPort only)
+	Port   int    // @-scoped authority port (0 = portless CredHost)
 	Length int
 }
 
 var keyNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// ValidateCredentialPattern enforces credential grammar per CUSTOS §6.2.
+// parseScopedCredentialPattern parses the <name>@host[:port] form
+// (erratum 2026-10-23, H4): an "always" on a custody/egress card mints
+// these, never a blanket bare-name auto. These rules match the bearer
+// lane ONLY — worker-lane verdicts can never come from them. IP-literal
+// authorities are ask-only (§6.4b), the same rule as manual bindings.
+func parseScopedCredentialPattern(pattern string, at int, verdict string) (*ParsedCredentialPattern, error) {
+	name, authority := pattern[:at], pattern[at+1:]
+	if !keyNameRe.MatchString(name) || authority == "" || strings.ContainsAny(authority, "/*") {
+		return nil, ErrInvalidPattern
+	}
+	host := authority
+	port := 0
+	if !strings.HasPrefix(authority, "[") {
+		if c := strings.LastIndexByte(authority, ':'); c >= 0 {
+			host = authority[:c]
+			p64, perr := strconv.ParseUint(authority[c+1:], 10, 16)
+			if perr != nil || p64 == 0 || p64 > 65535 || authority[c+1] == '0' {
+				return nil, ErrInvalidPattern
+			}
+			port = int(p64)
+		}
+	} else {
+		c := strings.IndexByte(authority, ']')
+		if c < 0 {
+			return nil, ErrInvalidPattern
+		}
+		host = authority[:c+1]
+		if rest := authority[c+1:]; rest != "" {
+			if !strings.HasPrefix(rest, ":") {
+				return nil, ErrInvalidPattern
+			}
+			p64, perr := strconv.ParseUint(rest[1:], 10, 16)
+			if perr != nil || p64 == 0 || p64 > 65535 || rest[1] == '0' {
+				return nil, ErrInvalidPattern
+			}
+			port = int(p64)
+		}
+	}
+	host = strings.TrimSuffix(host, ".")
+	bracketed := strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]")
+	if bracketed {
+		host = host[1 : len(host)-1]
+	}
+	if host == "" {
+		return nil, ErrInvalidPattern
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		// §6.4b: IP-literal bindings never leave ask
+		if verdict != VerdictAsk {
+			return nil, ErrInvalidPattern
+		}
+		if !bracketed && ip.To4() == nil {
+			return nil, ErrInvalidPattern // bare IPv6 must be bracketed
+		}
+	} else {
+		if strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") ||
+			strings.Contains(host, "..") {
+			return nil, ErrInvalidPattern
+		}
+		for _, label := range strings.Split(host, ".") {
+			if !labelRe.MatchString(label) {
+				return nil, ErrInvalidPattern
+			}
+		}
+	}
+	typ := PatternTypeCredHost
+	if port != 0 {
+		typ = PatternTypeCredHostPort
+	}
+	norm := name + "@" + host
+	if port != 0 {
+		norm = fmt.Sprintf("%s@%s:%d", name, host, port)
+	}
+	return &ParsedCredentialPattern{
+		Raw:    norm,
+		Type:   typ,
+		Name:   name,
+		Host:   host,
+		Port:   port,
+		Length: len(norm),
+	}, nil
+}
 
 // ValidateCredentialPattern enforces credential grammar per CUSTOS §6.2.
 func ValidateCredentialPattern(pattern string, verdict string, isAlways bool) (*ParsedCredentialPattern, error) {
@@ -667,6 +755,10 @@ func ValidateCredentialPattern(pattern string, verdict string, isAlways bool) (*
 		}, nil
 	}
 
+	if i := strings.IndexByte(pattern, '@'); i >= 0 {
+		return parseScopedCredentialPattern(pattern, i, verdict)
+	}
+
 	// Bare name
 	if !keyNameRe.MatchString(pattern) {
 		return nil, ErrInvalidPattern
@@ -678,6 +770,8 @@ func ValidateCredentialPattern(pattern string, verdict string, isAlways bool) (*
 		Length: len(pattern),
 	}, nil
 }
+
+var labelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // MatchesTarget checks if an egress rule matches target host, port, isIP.
 // CUSTOS §6.3: host rules never match IP targets, and IP rules match IP targets ONLY.
@@ -743,8 +837,32 @@ func CompareEgressRules(p1, p2 *ParsedEgressPattern) int {
 	return strings.Compare(p1.Raw, p2.Raw)
 }
 
+// MatchesBearerAt matches a bearer-lane swap against host-aware rules
+// (erratum 2026-10-23). Bare-name rules match any host, exactly as
+// before; <name>@host[:port] rules match only their authority.
+// Qualified (tool) and wildcard patterns never match the bearer lane.
+func (p *ParsedCredentialPattern) MatchesBearerAt(credName, host string, port int) bool {
+	switch p.Type {
+	case PatternTypeBareExact:
+		return p.Name == credName
+	case PatternTypeCredHost:
+		return p.Name == credName && strings.EqualFold(p.Host, host)
+	case PatternTypeCredHostPort:
+		return p.Name == credName && strings.EqualFold(p.Host, host) && p.Port == port
+	case PatternTypeQualifiedExact, PatternTypeSuffix:
+		// tool-qualified and wildcard patterns are worker-lane only.
+		return false
+	}
+	return false
+}
+
 // MatchesWorkerCall checks if a credential pattern matches a worker-lane tool call.
+// Host-scoped (@-form) rules never match the worker lane: it has no
+// destination host to check the scope against.
 func (p *ParsedCredentialPattern) MatchesWorkerCall(credName, toolName string) bool {
+	if p.Type == PatternTypeCredHost || p.Type == PatternTypeCredHostPort {
+		return false
+	}
 	if p.Name != credName {
 		return false
 	}
@@ -1496,16 +1614,35 @@ func (p *PolicyEngine) decideBearer(credName, host string, port int) (string, st
 	credVerdict := VerdictAsk
 	credPattern := ""
 	if credName != "" {
+		// Canonicalize the target once so @-scoped rules compare
+		// against the same authority form the rules store.
+		canonHost, canonPort, _, nerr := NormalizeAuthority(host)
+		if nerr != nil {
+			canonHost, canonPort = host, 0
+		}
+		if port > 0 {
+			canonPort = port
+		}
+		type credMatch struct {
+			parsed  *ParsedCredentialPattern
+			verdict string
+		}
+		var matches []credMatch
 		for pat, entry := range p.credentialActions {
 			parsed, err := ValidateCredentialPattern(pat, entry.Verdict, false)
 			if err != nil {
 				continue
 			}
-			if parsed.MatchesBearerSwap(credName) {
-				credVerdict = entry.Verdict
-				credPattern = parsed.Raw
-				break
+			if parsed.MatchesBearerAt(credName, canonHost, canonPort) {
+				matches = append(matches, credMatch{parsed: parsed, verdict: entry.Verdict})
 			}
+		}
+		if len(matches) > 0 {
+			sort.Slice(matches, func(i, j int) bool {
+				return CompareCredentialRules(matches[i].parsed, matches[j].parsed) > 0
+			})
+			credVerdict = matches[0].verdict
+			credPattern = matches[0].parsed.Raw
 		}
 	}
 

@@ -24,7 +24,8 @@ func (s *CtlServer) handleMcpCmd(conn net.Conn, cmd string, parts []string) bool
 		if len(argParts) == 3 {
 			args = argParts[2]
 		}
-		return DispatchMCPCall(conn, s.railRegistry(), argParts[0], tool, args, nil)
+		return DispatchMCPCall(conn, s.railRegistry(), argParts[0], tool, args, nil,
+			MCPCallGuard{Vault: s.vault, Hub: s.hub, Actor: "ctl"})
 	default:
 		return false
 	}

@@ -1194,7 +1194,14 @@ values frozen code already emits — gmail.go's `upstreamStatusError` →
 `auditDenied(…, we.code)`;
 `classifyWorkerError(…).code` feeds `denied` into `auditDenied` on
 credential-gone Execute errors; MCP-SPEC A2(i), erratum-style
-codification, not a new emit path). A new emit-site reason
+codification, not a new emit path).
+(`swap_denied` carries its own set, **declared** by erratum 2026-10-23:
+`floor`, `policy`, `invalid_host`, `missing_credential`,
+`credential_revoked`, `surrogate_revoked`, `custos_locked`,
+`too_many_asks`, `timeout`, `denied`, `response_type`,
+`response_size`, `body_copy_failed` — the last when the request-body
+stream breaks after the swap: the response is closed, never relayed
+past the scrub.) A new emit-site reason
 requires a spec edit here first (same discipline as the closed worker
 error enum, §5.1a: an undeclared value is a defect at review, not a
 passthrough). `credential_added` is
