@@ -1300,6 +1300,10 @@ against nothing")**, the
 next unlock's first-unlock pass reconciles registry and mirror
 afterwards. Restoring the pair means vault and registry land on the
 same generation: no surrogate ever outlives its credential via restore.
+**Atomic restore law (M10):** live vault files must never be truncated in
+place during restore. Each file is rewritten as temp-in-same-dir, fsynced,
+and renamed into place (atomic replace), followed by an fsync of the
+directory, ensuring power loss or write failure leaves original files intact.
 
 ## 9. Security invariants (each maps to a test)
 

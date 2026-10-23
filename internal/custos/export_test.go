@@ -2,6 +2,7 @@ package custos
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -11,6 +12,15 @@ import (
 // Available only in test binaries.
 func SetKillPointHook(hook func(string)) {
 	killPointHook = hook
+}
+
+// SetCopyPayloadForTest sets the copyPayload seam for M10 testing.
+func SetCopyPayloadForTest(fn func(io.Writer, io.Reader) (int64, error)) {
+	if fn == nil {
+		copyPayload = io.Copy
+	} else {
+		copyPayload = fn
+	}
 }
 
 // MCPConnector test seams (MCP rail). Production mcp_rail.go stays free of
