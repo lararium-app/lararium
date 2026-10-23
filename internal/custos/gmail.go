@@ -323,8 +323,14 @@ func (g *GmailConnector) do(req *http.Request) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	client := g.client
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+	if client != nil {
+		// The redirect law holds even for injected clients (H8/F1):
+		// clone, never let a caller-supplied policy replay credentials.
+		c := *client
+		c.CheckRedirect = refuseRedirect
+		client = &c
+	} else {
+		client = &http.Client{Timeout: 30 * time.Second, CheckRedirect: refuseRedirect}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
