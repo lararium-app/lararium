@@ -121,6 +121,24 @@ func (r *Router) CompleteStream(ctx context.Context, profile string, msgs []Mess
 
 func (r *Router) executeChain(ctx context.Context, chain []Target, msgs []Message, opts Options, stream bool, handlers ...StreamHandler) (*Completion, error) {
 	var legs []ChainLeg
+	var firstDeltaDelivered bool
+
+	var handler StreamHandler
+	if stream {
+		var rawHandler StreamHandler
+		if len(handlers) > 0 {
+			rawHandler = handlers[0]
+		}
+		handler = func(delta string) error {
+			firstDeltaDelivered = true
+			if rawHandler != nil {
+				return rawHandler(delta)
+			}
+			return nil
+		}
+	} else if len(handlers) > 0 {
+		handler = handlers[0]
+	}
 
 	for ti, target := range chain {
 		providerName := target.Provider.Name()
@@ -159,13 +177,20 @@ func (r *Router) executeChain(ctx context.Context, chain []Target, msgs []Messag
 			)
 
 			if stream {
-				c, err = r.streamTarget(ctx, target, msgs, opts, handlers[0])
+				c, err = r.streamTarget(ctx, target, msgs, opts, handler)
 			} else {
 				c, err = target.Provider.Complete(ctx, msgs, opts)
 			}
 
 			if err == nil {
 				return c, nil
+			}
+
+			if stream && firstDeltaDelivered {
+				// M20: after the first delta has been streamed to the consumer,
+				// retry/fallback must NOT re-stream from scratch. Stop and surface
+				// a clean stream-error termination instead of replaying.
+				return nil, fmt.Errorf("stream error: %w", err)
 			}
 
 			leg := ChainLeg{Provider: providerName, Model: model, Err: err}
