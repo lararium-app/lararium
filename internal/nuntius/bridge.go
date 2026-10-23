@@ -670,16 +670,19 @@ func (b *Bridge) process(ctx context.Context, u Update, rec Record, owners Owner
 	switch Decide(env, owners) {
 	case Drop:
 		b.markDone(rec, nil)
-		b.log.Printf("nuntius: dropped update %d (%s) from %s", env.UpdateID, env.ChatType, env.FromID)
+		b.log.Printf("nuntius: dropped update %d (%s) from %q", env.UpdateID, env.ChatType, env.FromID)
 	case ReplyPairingRequired:
 		b.markDone(rec, nil)
-		b.log.Printf("nuntius: refused unpaired update %d from %s (%s)", env.UpdateID, env.FromID, env.Text)
+		// H10: the message body never enters the log — an unpaired
+		// sender could plant a fresh pairing code or forge audit
+		// lines with newlines. Size only.
+		b.log.Printf("nuntius: refused unpaired update %d from %q (%d bytes)", env.UpdateID, env.FromID, len(env.Text))
 		if !env.IsCallback && b.pairRL.Allow(env.FromID) {
 			b.replyText(ctx, env.ChatID, MsgPairingRequired)
 		}
 	case ReplyPrivate:
 		b.markDone(rec, nil)
-		b.log.Printf("nuntius: refused non-owner update %d from %s", env.UpdateID, env.FromID)
+		b.log.Printf("nuntius: refused non-owner update %d from %q", env.UpdateID, env.FromID)
 		if env.IsCallback {
 			b.toast(ctx, callbackIDOf(u), ToastPrivate) // toast only, §3
 		} else if b.privRL.Allow(env.FromID) {
