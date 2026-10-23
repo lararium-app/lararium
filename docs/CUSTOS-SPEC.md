@@ -1163,7 +1163,7 @@ cell's parks (S6).
 **8.1 — Records.** One line, one event, hash-chained (previous-line
 SHA-256; genesis line names vault generation) — surface audit's scheme
 and crash-tail rule, separate file family. Kinds (frozen):
-`custos_started`, `custos_stopped`, `unlocked`, `lock_failed`,
+`custos_started`, `custos_stopped`, `unlocked`, `lock_failed` (reasons map to the closed set `bad-credential`, `vault-locked`, `store-error`; detailed internal errors log to daemon logs only, never plaintext audit, L-9),
 `vault_migrated_keys`, `credential_added`, `login_denied`,
 `credential_rotated`,
 `credential_removed`, `surrogate_created`, `surrogate_revoked`,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -384,11 +385,12 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		d, err := FirstUnlockRecovery(v.stateDir, key, passphrase, v.audit)
 		if err != nil {
 			v.clearDerivedKey()
-			// CUSTOS §8.1: audit lock_failed on failure
+			log.Printf("custos: first unlock failed: %v", err)
+			// CUSTOS §8.1, L-9: audit lock_failed carries mapped closed reason
 			_ = v.audit.Append(AuditRecord{
 				Kind:   AuditKindLockFailed,
 				Actor:  "cli",
-				Reason: err.Error(),
+				Reason: MapLockFailureReason(err),
 			})
 			return err
 		}
@@ -399,10 +401,11 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 		d, err := v.readOnDiskDoc(key, passphrase)
 		if err != nil {
 			v.clearDerivedKey()
+			log.Printf("custos: subsequent unlock failed: %v", err)
 			_ = v.audit.Append(AuditRecord{
 				Kind:   AuditKindLockFailed,
 				Actor:  "cli",
-				Reason: err.Error(),
+				Reason: MapLockFailureReason(err),
 			})
 			return err
 		}
@@ -417,10 +420,11 @@ func (v *Vault) Unlock(passphrase string, isKeyfile bool) error {
 	reg, dropped, err := LoadAndReconcileSurrogates(v.stateDir, passphrase, doc.Credentials, v.audit, wasFirstUnlock)
 	if err != nil {
 		v.clearDerivedKey()
+		log.Printf("custos: unlock reconcile surrogates failed: %v", err)
 		_ = v.audit.Append(AuditRecord{
 			Kind:   AuditKindLockFailed,
 			Actor:  "cli",
-			Reason: err.Error(),
+			Reason: MapLockFailureReason(err),
 		})
 		return err
 	}
