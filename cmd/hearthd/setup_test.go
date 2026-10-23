@@ -949,3 +949,39 @@ func TestSetup_Defaults_NeverClobbers(t *testing.T) {
 		t.Errorf("expected output to contain 'left in place', got:\n%s", out2Str)
 	}
 }
+
+func TestSetupMaskLogic(t *testing.T) {
+	// Normal token: preserves first 6 and last 4, masks the middle (L-14)
+	tok := "123456789:ABCDEF_secret_token_1234"
+	masked := MaskTelegramToken(tok)
+	if !strings.HasPrefix(masked, "123456") {
+		t.Fatalf("masked token %q does not start with first 6 chars", masked)
+	}
+	if !strings.HasSuffix(masked, "1234") {
+		t.Fatalf("masked token %q does not end with last 4 chars", masked)
+	}
+	if strings.Contains(masked, "ABCDEF_secret_token") {
+		t.Fatalf("masked token %q leaks secret content", masked)
+	}
+	if !strings.Contains(masked, "…") && !strings.Contains(masked, "...") {
+		t.Fatalf("masked token %q missing ellipsis", masked)
+	}
+
+	// Short token (<= 10 chars)
+	short := "12345"
+	maskedShort := MaskTelegramToken(short)
+	if strings.Contains(maskedShort, short) {
+		t.Fatalf("short token leaked: %q", maskedShort)
+	}
+
+	// PrintTelegramSetup output states full value lives in config
+	var buf strings.Builder
+	PrintTelegramSetup(&buf, tok)
+	out := buf.String()
+	if !strings.Contains(out, "full value lives in config") {
+		t.Fatalf("output %q missing 'full value lives in config'", out)
+	}
+	if strings.Contains(out, "ABCDEF_secret_token") {
+		t.Fatalf("output %q leaks raw token", out)
+	}
+}

@@ -23,10 +23,13 @@ func pairCmd(cfgPath string, args []string) {
 		os.Exit(2)
 	}
 
+	var stdoutFlag bool
 	switch args[0] {
 	case "create":
-		if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: hearthd pair create")
+		if len(args) == 2 && args[1] == "--stdout" {
+			stdoutFlag = true
+		} else if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--stdout]")
 			os.Exit(2)
 		}
 	case "revoke":
@@ -63,7 +66,7 @@ func pairCmd(cfgPath string, args []string) {
 
 	switch args[0] {
 	case "create":
-		pairCreate(cfg, store)
+		pairCreate(cfg, store, stdoutFlag)
 	case "revoke":
 		pairRevokeAll(store)
 	case "status":
@@ -77,7 +80,7 @@ func pairCmd(cfgPath string, args []string) {
 // If the bot is already paired, it refuses and exits 1 without minting (§3).
 // When unpaired, the plaintext code is printed once to stdout alone; a
 // one-line human hint is printed to stderr.
-func pairCreate(cfg *Config, store *nuntius.PairStore) {
+func pairCreate(cfg *Config, store *nuntius.PairStore, stdoutOnly bool) {
 	o, err := store.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -101,7 +104,11 @@ func pairCreate(cfg *Config, store *nuntius.PairStore) {
 		os.Exit(1)
 	}
 	fmt.Println(code)
-	fmt.Fprintf(os.Stderr, "send '/pair <code>' to the bot before it expires (%s from now)\n", cfg.Nuntius.PairCodeTTL)
+	if stdoutOnly {
+		fmt.Fprintf(os.Stderr, "pairing code written to stdout; treat it as sensitive — terminal output may end up in shell history. Prefer 'hearthd pair redeem --token-stdin' in scripts (expires in %s)\n", cfg.Nuntius.PairCodeTTL)
+	} else {
+		fmt.Fprintf(os.Stderr, "send '/pair <code>' to the bot before it expires (%s from now)\n", cfg.Nuntius.PairCodeTTL)
+	}
 }
 
 // pairRevokeAll clears all pending pairing codes (§3).

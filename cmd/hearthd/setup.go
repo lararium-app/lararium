@@ -680,6 +680,21 @@ func runLocalModels(cfgPath string, cfg *Config, roots []string, discoveryTimeou
 	return nil
 }
 
+// MaskTelegramToken renders a masked representation of a Telegram bot token
+// (first 6 … last 4) so secrets are not printed in console logs or setup output (L-14).
+func MaskTelegramToken(tok string) string {
+	tok = strings.TrimSpace(tok)
+	if len(tok) <= 10 {
+		return "••••"
+	}
+	return tok[:6] + "…" + tok[len(tok)-4:]
+}
+
+// PrintTelegramSetup prints the Telegram setup status with the bot token masked (L-14).
+func PrintTelegramSetup(out io.Writer, token string) {
+	fmt.Fprintf(out, "Telegram bot token: %s (full value lives in config)\n", MaskTelegramToken(token))
+}
+
 func printNonTTYState(out io.Writer, cfgPath string, cfg *Config) {
 	if cfg == nil {
 		fmt.Fprintf(out, "Config file: %s\n", cfgPath)
@@ -703,6 +718,12 @@ func printNonTTYState(out io.Writer, cfgPath string, cfg *Config) {
 	}
 	fmt.Fprintf(out, "  Default chain: %v\n", cfg.Models.Default)
 	fmt.Fprintf(out, "  Compact chain: %v\n", cfg.Models.Compact)
+	if cfg.Nuntius.Enabled {
+		tok, _ := cfg.Nuntius.Token(nil)
+		if tok != "" {
+			fmt.Fprintf(out, "  Telegram bot token: %s (full value lives in config)\n", MaskTelegramToken(tok))
+		}
+	}
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "To configure via environment variables, export your provider key (e.g. OPENROUTER_API_KEY) and set providers/models in lararium.yaml.")
 	fmt.Fprintln(out, "To run the interactive setup wizard (first-door token creation, remote-access guidance, provider setup), run hearthd in a terminal with a TTY: hearthd setup")
