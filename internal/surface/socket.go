@@ -212,9 +212,17 @@ func checkSelfInclusionSocket(root, outAbs string) error {
 	if err != nil {
 		return fmt.Errorf("resolve root: %w", err)
 	}
+	if realRoot, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = realRoot
+	}
 	absOut, err := filepath.Abs(outAbs)
 	if err != nil {
 		return fmt.Errorf("resolve out: %w", err)
+	}
+	if realOut, err := filepath.EvalSymlinks(absOut); err == nil {
+		absOut = realOut
+	} else if parent, err := filepath.EvalSymlinks(filepath.Dir(absOut)); err == nil {
+		absOut = filepath.Join(parent, filepath.Base(absOut))
 	}
 	rel, err := filepath.Rel(absRoot, absOut)
 	if err != nil {

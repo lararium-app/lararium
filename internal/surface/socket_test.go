@@ -166,3 +166,34 @@ func TestSocketCloseRemovesFile(t *testing.T) {
 		t.Errorf("socket file survived Close")
 	}
 }
+
+func TestSocketSelfInclusionSymlinkedSubdir(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	outsideDir := t.TempDir()
+	symlinkPath := filepath.Join(outsideDir, "sym_state")
+	if err := os.Symlink(stateDir, symlinkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Direct symlinked directory as out path
+	if err := checkSelfInclusionSocket(root, symlinkPath); err == nil {
+		t.Fatal("expected error passing symlinked state subdir as output, got nil (L-1)")
+	}
+
+	// 2. File inside symlinked state subdir
+	outInsideSymlink := filepath.Join(symlinkPath, "bundle.lararium-backup")
+	if err := checkSelfInclusionSocket(root, outInsideSymlink); err == nil {
+		t.Fatal("expected error passing backup path inside symlinked state subdir, got nil (L-1)")
+	}
+
+	// 3. Legitimate outside path should not fail
+	legitOut := filepath.Join(outsideDir, "legit.lararium-backup")
+	if err := checkSelfInclusionSocket(root, legitOut); err != nil {
+		t.Fatalf("expected legit outside path to succeed, got: %v", err)
+	}
+}

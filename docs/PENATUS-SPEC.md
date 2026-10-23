@@ -473,7 +473,9 @@ Extension stays `<name>.lararium-backup`.
    walk holds it across the **whole tree**, vault+MAC+surrogates — and
    their relation to `keys.json` — are one coherent instant.
 4. **Output law.** `--out <p>`; default `./hearth-<UTC ts>.lararium-backup`
-   (cwd). An `--out` inside the hearth root → refuse (self-inclusion).
+   (cwd). An `--out` inside the hearth root → refuse (self-inclusion); both
+   hearth root and output path evaluate symlinks via filepath.EvalSymlinks before
+   comparison (L-1).
 
 
 ### 4.5.4 Restore (A4.2, S10.1, V10.1)
