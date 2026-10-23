@@ -27,8 +27,10 @@ func newReplayBridge(t *testing.T) *Bridge {
 	if err != nil {
 		t.Fatalf("state file: %v", err)
 	}
-	return &Bridge{inbox: ix, pair: ps, state: sf,
-		log: log.New(io.Discard, "", 0), stop: make(chan struct{})}
+	return &Bridge{
+		inbox: ix, pair: ps, state: sf,
+		log: log.New(io.Discard, "", 0), stop: make(chan struct{}),
+	}
 }
 
 func pairOwner(t *testing.T, ps *PairStore, userID string) {
