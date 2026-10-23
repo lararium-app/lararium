@@ -10,7 +10,7 @@ import (
 // TestM15_RedactURL verifies that errors containing URLs with sensitive query parameters
 // (such as refresh_token) have the query string stripped while preserving host, path,
 // status codes, and status text (M15, CUSTOS-SPEC §4.5).
-func TestM15_RedactURL(t *testing.T) {
+func TestM15_redactURL(t *testing.T) {
 	origErr := errors.New("request failed: https://accounts.google.com/token?refresh_token=SECRET (status 400 Bad Request)")
 	redacted := redactURL(origErr)
 	if redacted == nil {

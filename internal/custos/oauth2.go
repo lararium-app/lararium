@@ -197,11 +197,6 @@ func redactURL(err error) error {
 	return &redactURLError{orig: err, msg: redacted}
 }
 
-// RedactURL exports redactURL for testing and callers outside custos package (M15).
-func RedactURL(err error) error {
-	return redactURL(err)
-}
-
 // DefaultTokenForward performs the token-endpoint POST. Non-loopback http://
 // endpoints are refused (production wiring); loopback http:// is allowed so
 // V13 runs against a local fake OAuth server.
