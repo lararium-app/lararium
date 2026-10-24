@@ -15,14 +15,14 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
 
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # docker/setup-qemu-action v3
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # docker/setup-qemu-action v4.4.0
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # docker/setup-buildx-action v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # docker/setup-buildx-action v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # docker/login-action v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # docker/login-action v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -60,14 +60,14 @@ jobs:
         # failing run and no image was ever published). Gate on the step
         # output computed above instead.
         if: steps.tags.outputs.has_dockerhub == 'yes'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # docker/login-action v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # docker/login-action v4.6.0
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # docker/build-push-action v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # docker/build-push-action v7.4.0
         with:
           context: .
           file: docker/Dockerfile
