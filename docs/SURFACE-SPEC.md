@@ -95,6 +95,17 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
   already-streaming SSE connection is not retroactively cut (documented
   trade-off: cutting mid-turn would violate P3; the turn completes and
   persists, later requests 401).
+- `hearthd token list` (audit L-7, 2026-10-23) prints the live inventory:
+  label, created date, and the first 8 hex of the stored hash as an
+  identifying prefix — display metadata only, so "no listing of values,
+  ever" still holds. A bearer token is a shared secret with **no owner
+  binding**: any live token grants full API access, and minting is
+  operator-CLI-only. Acceptable only while the hearth is single-operator;
+  this note is the mandatory revisit trigger before multi-user onboarding.
+- `hearthd pair unpair <user_id>` sweeps this store (audit L-7): the entry
+  labeled `<user_id>` (the pairing convention) is revoked outright, and
+  every surviving token is printed — unpair must never leave API
+  credentials live silently.
 - The embedded page reads its token from the URL fragment once
   (`/#lar1_…`), immediately strips it from the address bar via
   `history.replaceState`, and keeps it in `sessionStorage` — tab-scoped,
