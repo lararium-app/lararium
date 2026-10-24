@@ -111,7 +111,10 @@ Then: `docker compose exec hearthd hearthd token create me`
 
 ### Bare host (no Docker)
 
+Run these from the **repo root** (not `docker/`):
+
 ```bash
+cd lararium
 go build -o hearthd ./cmd/hearthd   # Go 1.26+
 ./hearthd setup                      # interactive provider configuration
 ./hearthd serve
