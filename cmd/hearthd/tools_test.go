@@ -58,7 +58,7 @@ func TestSaveMemoryRoundTrip(t *testing.T) {
 func TestAppendAndRemoveMemoryLines(t *testing.T) {
 	home := t.TempDir()
 
-	if err := appendMemoryLine(home, "User prefers dark mode", "high"); err != nil {
+	if err := appendMemoryLine(home, "User prefers dark mode", "high", penatus.MemSourceAssistant); err != nil {
 		t.Fatalf("appendMemoryLine: %v", err)
 	}
 

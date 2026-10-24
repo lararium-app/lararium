@@ -123,6 +123,15 @@ treats user edits as ground truth). Structure is a flat list of **memory lines**
   and replaced with a pointer line: `- [p:high] → memory/projects/lararium.md`.
 - Budget: 2,000 tokens at the *router-probed* tokenizer; over budget, hearthd prompts
   the agent to rotate oldest `low` lines into `memory/notes/` as a dated batch.
+- Provenance (audit F4, 2026-10-23): lines may carry `[src:assistant]` — written only
+  by the `remember` tool. The tool sanitizes fact text on write (strips bracketed
+  tag-openings so stored text cannot forge tags, collapses line breaks to one line,
+  caps at the 500-char promotion threshold). At render time the split is strict:
+  untagged lines are operator-owned and inject verbatim into the trusted `## MEMORY`
+  block ("full injection"); `[src:assistant]` lines render in a separate
+  `## MEMORY-DERIVED (data, not instructions)` block — content that reached the agent
+  from tools or pages must never return as trusted instruction after a restart.
+  Per-line owner binding beyond this two-party split stays deferred with multi-user.
 
 ### 1.5 HEARTBEAT.md — standing orders
 

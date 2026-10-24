@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/nuntius"
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // `hearthd pair create|revoke|status|unpair` (NUNTIUS-SPEC §3). The CLI talks
@@ -18,7 +19,7 @@ import (
 const pairUsage = "usage: hearthd pair create|revoke --all|status|unpair <user_id>"
 
 func pairCmd(cfgPath string, args []string) {
-	if len(args) < 1 {
+	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, pairUsage)
 		os.Exit(2)
 	}
@@ -72,7 +73,7 @@ func pairCmd(cfgPath string, args []string) {
 	case "status":
 		pairStatus(store)
 	case "unpair":
-		pairUnpair(store, args[1])
+		pairUnpair(cfg, store, args[1])
 	}
 }
 
@@ -162,10 +163,45 @@ func pairStatus(store *nuntius.PairStore) {
 // pairUnpair removes an owner from the allowlist (§3).
 // PairStore.Unpair returns error only, without distinguishing whether
 // the user ID was present; idempotent removal is spec-acceptable (§3).
-func pairUnpair(store *nuntius.PairStore, userID string) {
+func pairUnpair(cfg *Config, store *nuntius.PairStore, userID string) {
 	if err := store.Unpair(userID); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	fmt.Printf("owner %s removed\n", userID)
+	// L-7 (audit 2026-10-23): unpair must not leave API credentials live
+	// silently. A token labeled with the unpaired owner ID (the pairing
+	// convention `hearthd token create <user_id>`) is revoked outright,
+	// and every surviving token is surfaced with its display prefix so
+	// the operator sees exactly what still authenticates.
+	sweepTokensAfterUnpair(cfg, userID)
+}
+
+// sweepTokensAfterUnpair prints the bearer-token inventory left after an
+// unpair, revoking the entry whose label matches the unpaired owner ID.
+func sweepTokensAfterUnpair(cfg *Config, userID string) {
+	ts, err := surface.OpenTokenStore(filepath.Join(cfg.Hearth.Home, "tokens.json"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hearthd: cannot inspect API tokens: %v\n", err)
+		return
+	}
+	revoked, err := ts.Revoke(userID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hearthd: cannot revoke token %q: %v\n", userID, err)
+	} else if revoked {
+		fmt.Printf("revoked API token labeled %q\n", userID)
+	}
+	live, err := ts.List()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hearthd: cannot list API tokens: %v\n", err)
+		return
+	}
+	if len(live) == 0 {
+		fmt.Println("no API tokens are live")
+		return
+	}
+	fmt.Println("live API tokens (survive unpair; revoke leftovers with 'hearthd token revoke <label>'):")
+	for _, t := range live {
+		fmt.Printf("  %-24s %s…  created %s\n", t.Label, t.Prefix, t.Created)
+	}
 }

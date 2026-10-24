@@ -263,8 +263,9 @@ func main() {
 // Create prints the plaintext exactly once, plus the ready URL whose
 // fragment never reaches a proxy log.
 func tokenCmd(cfgPath string, args []string) {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label>")
+	// "list" takes no label; create/revoke do.
+	if len(args) == 0 || (args[0] != "list" && len(args) < 2) {
+		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label> | list")
 		os.Exit(2)
 	}
 	cfg, err := LoadConfig(cfgPath)
@@ -297,8 +298,28 @@ func tokenCmd(cfgPath string, args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("revoked %q (effective on the daemon's next request)\n", args[1])
+	case "list":
+		// L-7: nothing may stay live invisibly. Display-only view —
+		// hash prefixes, never plaintext.
+		store, err := surface.OpenTokenStore(filepath.Join(cfg.Hearth.Home, "tokens.json"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		live, err := store.List()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if len(live) == 0 {
+			fmt.Println("(no API tokens are live)")
+			return
+		}
+		for _, t := range live {
+			fmt.Printf("%-24s %s…  created %s\n", t.Label, t.Prefix, t.Created)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label>")
+		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label> | list")
 		os.Exit(2)
 	}
 }
