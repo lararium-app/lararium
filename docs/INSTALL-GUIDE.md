@@ -30,7 +30,7 @@ Requirements:
 ## 2. Install — Docker image (recommended)
 
 Tags are on the releases page; `<version>` below means a pinned tag like
-`v1.0.0-beta1` (avoid `:latest` during beta).
+`v1.0.0-beta3` (avoid `:latest` during beta).
 
 1. Start the container. It publishes the web chat + API on your machine's
    loopback only:
