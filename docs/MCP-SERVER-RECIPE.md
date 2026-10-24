@@ -5,7 +5,12 @@ This walkthrough connects a Model Context Protocol (MCP) server to Lararium over
 ## Prerequisites
 
 - Node.js and `npx` installed on the host.
-- For Docker installations: `custosd` spawns child processes inside the container, so `command` binaries must exist inside the image. On Docker, prefer the HTTP transport or run a custom image with Node.js installed.
+- **This is a bare-host walkthrough.** The Docker quick-start ships `hearthd`
+  only — `custosd` is not part of that image and does not run in that stack,
+  so MCP connectors cannot work there. Build the binaries per README →
+  Quick start ("Bare host"). (Running `custosd` in its own container is
+  possible: `command` binaries must then exist *inside that* image — prefer
+  the HTTP transport or a custom image with Node.js installed.)
 
 ## Declare it
 
