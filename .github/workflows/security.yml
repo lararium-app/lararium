@@ -44,7 +44,7 @@ jobs:
                   -f sarif -r /repo/gitleaks.sarif ."
       - name: Upload SARIF
         if: always() && hashFiles('gitleaks.sarif') != ''
-        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.28.11
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
@@ -109,12 +109,12 @@ jobs:
         # The daemon go:embeds web/dist; CI does not build the UI here.
         # One stub file satisfies the embed pattern for extraction.
         run: mkdir -p web/dist && touch web/dist/index.html
-      - uses: github/codeql-action/init@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.28.11
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: go
           queries: security-and-quality
       - name: Build for extraction
         run: go build ./...
-      - uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.28.11
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           category: /language:go
