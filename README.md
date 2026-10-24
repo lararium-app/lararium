@@ -38,7 +38,7 @@ already carry.
   fail-closed networking, hard resource caps. The threat model assumes prompt
   injection *succeeds*; the cage makes misbehavior physically expensive.
 
-## Status: beta (v1.0.0-beta1)
+## Status: beta (v1.0.0-beta3)
 
 > [!WARNING]
 > Lararium is in **public beta**. File formats are frozen per-component; wire
