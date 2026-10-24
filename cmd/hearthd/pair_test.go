@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/nuntius"
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // NUNTIUS-SPEC §3 pairing CLI coverage: build the real binary and drive
@@ -227,8 +228,9 @@ func TestPairUnpair(t *testing.T) {
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("unpair failed: code=%d stderr=%q", exitCode, stderr)
 	}
-	if stdout != "owner 42 removed\n" {
-		t.Fatalf("unpair stdout = %q, want %q", stdout, "owner 42 removed\n")
+	// L-7: the sweep report follows the removal line.
+	if want := "owner 42 removed\nno API tokens are live\n"; stdout != want {
+		t.Fatalf("unpair stdout = %q, want %q", stdout, want)
 	}
 
 	// Verify owner is removed on disk.
@@ -245,8 +247,73 @@ func TestPairUnpair(t *testing.T) {
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("idempotent unpair failed: code=%d stderr=%q", exitCode, stderr)
 	}
-	if stdout != "owner 99999 removed\n" {
-		t.Fatalf("idempotent unpair stdout = %q, want %q", stdout, "owner 99999 removed\n")
+	if want := "owner 99999 removed\nno API tokens are live\n"; stdout != want {
+		t.Fatalf("idempotent unpair stdout = %q, want %q", stdout, want)
+	}
+}
+
+// L-7 (audit 2026-10-23): unpair revokes a token labeled with the owner
+// ID and surfaces every surviving token — nothing stays live invisibly.
+func TestPairUnpairTokenSweep(t *testing.T) {
+	bin := buildCLI(t)
+	cfgPath, home := hearthHome(t)
+
+	store, err := nuntius.NewPairStore(filepath.Join(home, "nuntius"))
+	if err != nil {
+		t.Fatalf("NewPairStore: %v", err)
+	}
+	now := time.Now()
+	code, err := store.Mint(now, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if res, err := store.Redeem("42", code, now); err != nil || res != nuntius.RedeemPaired {
+		t.Fatalf("Redeem: res=%v err=%v", res, err)
+	}
+
+	ts, err := surface.OpenTokenStore(filepath.Join(home, "tokens.json"))
+	if err != nil {
+		t.Fatalf("OpenTokenStore: %v", err)
+	}
+	if _, err := ts.Create("42"); err != nil {
+		t.Fatalf("Create owner-labelled: %v", err)
+	}
+	if _, err := ts.Create("phone"); err != nil {
+		t.Fatalf("Create phone: %v", err)
+	}
+
+	stdout, stderr, exitCode := runPairCLI(t, bin, cfgPath, "unpair", "42")
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("unpair failed: code=%d stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, `revoked API token labeled "42"`) {
+		t.Errorf("owner-labelled token not revoked in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "phone") || !strings.Contains(stdout, "survive unpair") {
+		t.Errorf("surviving token not surfaced:\n%s", stdout)
+	}
+	// Inventory must not leak material: the stored hash prefix is fine,
+	// but the on-disk format never contains plaintext anyway — assert the
+	// output carries no lar1_ string.
+	if strings.Contains(stdout, "lar1_") {
+		t.Errorf("token material in output:\n%s", stdout)
+	}
+
+	live, err := ts.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(live) != 1 || live[0].Label != "phone" {
+		t.Fatalf("post-unpair live set = %+v, want only phone", live)
+	}
+
+	// `token list` shows the survivor with a display prefix only.
+	stdout, stderr, exitCode = runTokenCLI(t, bin, cfgPath, "list")
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("token list: code=%d stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "phone") || strings.Contains(stdout, "lar1_") {
+		t.Errorf("token list output wrong:\n%s", stdout)
 	}
 }
 
@@ -586,10 +653,10 @@ func TestPairOwnerMigrationDance(t *testing.T) {
 		t.Fatalf("step 4 create should refuse: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
-	// 5. Unpair
+	// 5. Unpair (L-7 sweep report follows the removal line)
 	stdout, stderr, code = runPairCLI(t, bin, cfgPath, "unpair", "migrating_owner")
-	if code != 0 || stderr != "" || stdout != "owner migrating_owner removed\n" {
-		t.Fatalf("step 5 unpair failed: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	if want := "owner migrating_owner removed\nno API tokens are live\n"; code != 0 || stderr != "" || stdout != want {
+		t.Fatalf("step 5 unpair failed: code=%d stdout=%q want %q stderr=%q", code, stdout, want, stderr)
 	}
 
 	// 6. Create works again
@@ -623,4 +690,27 @@ func TestPairCorruptState(t *testing.T) {
 	if !strings.Contains(stderr, "corrupt nuntius state") {
 		t.Fatalf("stderr = %q, want corrupt state error", stderr)
 	}
+}
+
+// runTokenCLI drives `hearthd -config <cfg> token ...`.
+func runTokenCLI(t *testing.T, bin, cfgPath string, args ...string) (string, string, int) {
+	t.Helper()
+	fullArgs := []string{"-config", cfgPath, "token"}
+	fullArgs = append(fullArgs, args...)
+	cmd := exec.Command(bin, fullArgs...)
+	cmd.Env = os.Environ()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			t.Fatalf("run %v: %v", fullArgs, err)
+		}
+	}
+	return stdout.String(), stderr.String(), code
 }

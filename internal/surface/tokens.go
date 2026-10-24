@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 )
@@ -226,4 +227,42 @@ func (s *TokenStore) writeEntries(entries []tokenEntry) error {
 	}
 
 	return os.Rename(tmpName, s.path)
+}
+
+// TokenInfo is the display view of one issued token: label, creation
+// date, and a short identifying prefix derived from the stored hash.
+// The prefix comes from the one-way hash, never the plaintext, so
+// listing tokens cannot leak credentials (L-7).
+type TokenInfo struct {
+	Label   string
+	Created string
+	Prefix  string
+}
+
+// List returns every live token sorted by label (L-7, audit 2026-10-23):
+// bearer tokens are a shared secret with no owner binding, so the
+// operator must always be able to enumerate exactly what is live before
+// multi-user work lands. Display metadata only — never plaintext.
+func (s *TokenStore) List() ([]TokenInfo, error) {
+	unlock, err := s.lock(syscall.LOCK_SH)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	entries, err := s.readEntries()
+	if err != nil {
+		return nil, err
+	}
+
+	infos := make([]TokenInfo, 0, len(entries))
+	for _, e := range entries {
+		prefix := e.Hash
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		infos = append(infos, TokenInfo{Label: e.Label, Created: e.Created, Prefix: prefix})
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Label < infos[j].Label })
+	return infos, nil
 }

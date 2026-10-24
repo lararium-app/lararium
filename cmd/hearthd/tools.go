@@ -42,7 +42,14 @@ func buildTools(home string) []loop.Tool {
 				if a.Priority == "" {
 					a.Priority = "med"
 				}
-				if err := appendMemoryLine(home, a.Text, a.Priority); err != nil {
+				// F4: assistant-persisted facts are sanitized (no forged
+				// tags, one line) and carry [src:assistant] so the prompt
+				// assembler can frame them as data, not instructions.
+				text := penatus.SanitizeFactText(a.Text)
+				if text == "" {
+					return "", fmt.Errorf("text is required")
+				}
+				if err := appendMemoryLine(home, text, a.Priority, penatus.MemSourceAssistant); err != nil {
 					return "", err
 				}
 				return "stored", nil
@@ -182,13 +189,13 @@ func saveMemory(home string, doc penatus.Doc) error {
 	return os.Rename(tmpName, target)
 }
 
-func appendMemoryLine(home, text, priority string) error {
+func appendMemoryLine(home, text, priority, source string) error {
 	doc, err := loadMemory(home)
 	if err != nil {
 		return err
 	}
 	lines := penatus.ParseMemoryBody(doc.Body)
-	lines = append(lines, penatus.MemLine{Priority: priority, Since: time.Now().UTC().Format("2006-01-02"), Text: text})
+	lines = append(lines, penatus.MemLine{Priority: priority, Since: time.Now().UTC().Format("2006-01-02"), Source: source, Text: text})
 	doc.Body = penatus.SerializeMemoryBody(lines)
 	return saveMemory(home, doc)
 }

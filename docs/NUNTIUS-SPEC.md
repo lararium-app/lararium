@@ -165,6 +165,10 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
   `hearthd pair unpair <user_id>` removes an owner. Clearing the pairing
   MUST also clear `owner_chat` in `state.json` so approval and custody
   cards are dropped rather than delivered to the former owner's chat.
+  As a second act (audit L-7), unpair sweeps the surface token store:
+  the owner-labelled token is revoked and every surviving bearer token is
+  listed — removing the chat identity must not leave the holder's API
+  access live and invisible (SURFACE-SPEC §3).
 - Redeem: the bot's first-ever state is **unpaired**. While unpaired, the
   ONLY accepted input is `/pair <code>`; every other message gets the
   static line `pairing required` — rate-limited to one reply per user ID
