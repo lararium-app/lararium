@@ -7,10 +7,23 @@ This walkthrough connects a Model Context Protocol (MCP) server to Lararium over
 - Node.js and `npx` installed on the host.
 - **This is a bare-host walkthrough.** The Docker quick-start ships `hearthd`
   only — `custosd` is not part of that image and does not run in that stack,
-  so MCP connectors cannot work there. Build the binaries per README →
-  Quick start ("Bare host"). (Running `custosd` in its own container is
-  possible: `command` binaries must then exist *inside that* image — prefer
+  so MCP connectors cannot work there. (Running `custosd` in its own container
+  is possible: `command` binaries must then exist *inside that* image — prefer
   the HTTP transport or a custom image with Node.js installed.)
+- **Build all three binaries** (`$REPO` is your Lararium checkout; Go 1.26+).
+  Build the web bundle first — `hearthd` embeds `web/dist/` at compile time,
+  and git ships only a stub of it:
+
+  ```bash
+  cd "$REPO"
+  (cd web && npm ci && npm run build)   # web chat + approval-card assets
+  go build -o bin/custos  ./cmd/custos
+  go build -o bin/custosd ./cmd/custosd
+  go build -o bin/hearthd ./cmd/hearthd
+  ```
+
+  Skipping the npm step yields a `hearthd` whose served page references a
+  404ing script: the door answers, but chat and approval cards never appear.
 
 ## Declare it
 
@@ -37,15 +50,30 @@ custos:
         list_timeout: 60s
 ```
 
-Initialize the custody vault and start the daemons. Below, `$REPO` is your Lararium checkout; build the `custos`, `custosd`, and `hearthd` binaries into `$REPO/bin/` and keep `lararium.yaml` at `$REPO/lararium.yaml`:
+Initialize the custody vault and start the daemons. `$REPO` is your Lararium
+checkout; keep `lararium.yaml` at `$REPO/lararium.yaml` (binaries were built
+into `$REPO/bin/` above). The `unlock_keyfile` above must exist *before*
+`init` — it is the vault passphrase read once at spawn for headless unlock;
+create it 0600:
+
+```bash
+umask 077
+head -c 32 /dev/urandom | base64 > /ABS/PATH/unlock.key
+```
+
+Then initialize and start. `hearthd setup --defaults` scaffolds the persona
+files (`SOUL.md` and friends) that `hearthd serve` refuses to boot without;
+it leaves an existing `lararium.yaml` untouched:
 
 ```console
-$ $REPO/bin/custos -config $REPO/lararium.yaml init
-$ $REPO/bin/custosd -config $REPO/lararium.yaml serve
-$ $REPO/bin/hearthd -config $REPO/lararium.yaml serve
+$ $REPO/bin/custos  -config $REPO/lararium.yaml init
+$ $REPO/bin/hearthd -config $REPO/lararium.yaml setup --defaults
+$ $REPO/bin/custosd -config $REPO/lararium.yaml serve   # no banner; use `custos mcp status`
+$ $REPO/bin/hearthd -config $REPO/lararium.yaml serve   # prints "web chat + API on …"
 ```
 
 `custosd` and `hearthd` are independent daemons; neither launches the other.
+Run both in the background (or two terminals) so you can keep querying them.
 
 ## Verify the rail
 
@@ -71,6 +99,20 @@ toggle-simulated-logging        none        Toggle Simulated Logging    {"$schem
 … (14 tools in total; 10 rows omitted)
 ```
 
+Rail calls run under the same custody policy as chat turns, and every unseen
+tool defaults to `ask`. The CLI carries no approval prompt: a gated call
+fails with the bare error `read response: EOF`, and the true cause appears
+only in the audit chain (`worker_call_denied reason:approval`). Approve the
+connector first — `trust` writes one connector-wide `auto` rule
+(`everything/*`), undone by `custos mcp distrust everything`:
+
+```console
+$ $REPO/bin/custos -config $REPO/lararium.yaml mcp trust everything
+```
+
+Prefer per-card control over a connector-wide rule? Approve each call in
+the web UI instead (see “Use it in chat”). The round-trip then succeeds:
+
 Execute a tool call round-trip using arguments defined in the tool inputSchema:
 
 ```console
@@ -80,9 +122,28 @@ $ $REPO/bin/custos -config $REPO/lararium.yaml mcp call everything echo '{"messa
 
 ## Use it in chat
 
-To route chat turns to an LLM provider, configure the `models:` and `providers:` blocks described in [README.md](../README.md#quick-start).
+To route chat turns to an LLM provider, add `models:` and `providers:`
+blocks to `lararium.yaml`. A local OpenAI-compatible server (llama.cpp,
+Ollama, vLLM, LM Studio) needs no key — just omit the field:
 
-When `hearthd` connects to `custosd` over `doors_sock`, tools from active connectors join the chat turn registry automatically. Model-facing tool names follow the pattern:
+```yaml
+models:
+  default:
+    - local/your-model-id
+providers:
+  - name: local
+    base_url: http://127.0.0.1:8080/v1
+```
+
+For hosted endpoints, add `api_key_env: OPENROUTER_API_KEY` (or similar) to
+the provider block and export the variable; see the comments in
+`docker/config/lararium.yaml` for the full menu.
+
+When `hearthd serve` connects to `custosd` over `doors_sock`, tools from
+active connectors join the chat turn registry automatically — this happens
+on the **web chat** surface. The local REPL (`bin/hearthd` with no
+subcommand) runs without the door, so rail tools never appear there.
+Model-facing tool names follow the pattern:
 
 ```
 mcp__<connector>__<tool>
@@ -92,7 +153,7 @@ For the `everything` connector, the `echo` and `get-sum` tools appear as `mcp__e
 
 Per [MCP-SPEC.md](MCP-SPEC.md), every unseen rail tool defaults to policy verdict `ask`. Annotation flags reported by servers (such as `read_only`) do not grant automatic approval. When the model selects a rail tool, the web interface displays an approval card showing the tool name and arguments. Selecting `Always` writes an `auto` rule bound to the tool schema fingerprint. If a server refresh alters the tool description or schema, the fingerprint changes, the rule is revoked, and subsequent invocations revert to `ask`.
 
-In the Doors view of the web UI, the "MCP connectors" card shows connector name `everything`, status pill `ready`, and total discovered tool count.
+In the Doors view of the web UI, the "MCP connectors" card shows connector name `everything`, status pill `ready`, and total discovered tool count. The chat, its approval cards, and the HTTP API behind them (token-opened door URLs, streaming, resolving cards remotely) are specified in [SURFACE-SPEC.md](SURFACE-SPEC.md).
 
 ## Tighten it
 
@@ -123,9 +184,10 @@ If a connector fails to reach `ready` state, inspect `custos mcp status` and mat
 
 | State | Reason | Cause | Remedy |
 |---|---|---|---|
-| `backoff` | `spawn_failed` | Command binary missing, unexecutable, or failed on launch | Verify `command` is an absolute path to an executable file accessible to the process |
+| (daemon exits at boot) | config error `bad_command` | `command` names a nonexistent or non-executable path — custosd refuses to start at all | Fix the path in `lararium.yaml`; a bad binary is treated as a config fault, not retried |
+| `backoff`, then `disabled` after the restart budget | `spawn_failed` | Binary exists but the process fails on launch | Verify `command` is an absolute path to a runnable program; check its args and stderr |
 | `backoff` | `list_timeout` | `tools/list` exceeded deadline during initial startup | Increase `list_timeout` in `lararium.yaml` to accommodate package download or process startup |
 | `disabled` | `credential_unavailable` | Referenced `${vault:...}` credential not found or vault is locked | Unlock the vault via `custos unlock` or configure `custos.unlock_keyfile` |
 | `disabled` | `name_occupied` | Connector name matches a credential name in the vault or a reserved namespace | Rename the connector in `lararium.yaml` to an unreserved identifier |
 
-Running `custos mcp status` immediately after startup while `npx` performs an initial cold download can fail with `read response: EOF`. During initial startup, the connector holds its initialization lock across `tools/list`, which can outlast the 5-second CLI socket deadline. Allow the download to finish before querying status.
+`custos mcp status` or `mcp call` failing with `read response: EOF` has two common causes: (1) the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying; (2) the call was gated by policy (`ask`) and no one approved it — see “Verify the rail”.
