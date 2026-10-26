@@ -10,7 +10,9 @@ This walkthrough connects a Model Context Protocol (MCP) server to Lararium over
   so MCP connectors cannot work there. (Running `custosd` in its own container
   is possible: `command` binaries must then exist *inside that* image — prefer
   the HTTP transport or a custom image with Node.js installed.)
-- **Build all three binaries** (`$REPO` is your Lararium checkout; Go 1.26+).
+- **Build all three binaries** (`$REPO` is your Lararium checkout; Go 1.26+
+  — with the default `GOTOOLCHAIN=auto`, an older Go installs 1.26 itself on
+  first build).
   Build the web bundle first — `hearthd` embeds `web/dist/` at compile time,
   and git ships only a stub of it:
 
@@ -112,20 +114,19 @@ toggle-simulated-logging        none        Toggle Simulated Logging    {"$schem
 ```
 
 Rail calls run under the same custody policy as chat turns, and every unseen
-tool defaults to `ask`. The CLI carries no approval prompt: a gated call
-parks — the command simply waits (or closes early with `read response: EOF`)
-— until someone resolves the pending card, and an unresolved park auto-denies
-after `ask_hold_timeout` (default 5m30s). Approve the connector first —
-`trust` writes one connector-wide `auto` rule (`everything/*`), undone by
+tool defaults to `ask`. The CLI carries no approval prompt and publishes no
+approval card: a gated call simply waits until it auto-denies after
+`ask_hold_timeout` (default 5m30s) and the command closes with
+`read response: EOF`. Approve the connector first — `trust` writes one
+connector-wide `auto` rule (`everything/*`), undone by
 `custos mcp distrust everything`:
 
 ```console
 $ $REPO/bin/custos -config $REPO/lararium.yaml mcp trust everything
 ```
 
-`trust` silences the CLI/automation lane only: web chat keeps its own
-per-call approval cards even for a trusted connector (next section). The
-round-trip then succeeds:
+The rule covers every lane: with `trust` in place, chat turns skip the
+approval card for this connector’s tools too. The round-trip then succeeds:
 
 Execute a tool call round-trip using arguments defined in the tool inputSchema:
 
@@ -171,7 +172,11 @@ button (the API equivalent is `POST /v1/sessions`, see
 [SURFACE-SPEC.md](SURFACE-SPEC.md)). Ask the model to “call
 mcp__everything__echo with the message hello”.
 
-Per [MCP-SPEC.md](MCP-SPEC.md), every unseen rail tool defaults to policy verdict `ask`. Annotation flags reported by servers (such as `read_only`) do not grant automatic approval. When the model selects a rail tool, the web interface displays an approval card showing the tool name and arguments. Selecting `Always` writes an `auto` rule bound to the tool schema fingerprint. If a server refresh alters the tool description or schema, the fingerprint changes, the rule is revoked, and subsequent invocations revert to `ask`.
+If the reply comes back empty, the provider failed or was slow — a cold
+model slot loads on first request. Confirm the server answers
+(`curl <base_url>/models`) and send the turn again.
+
+Per [MCP-SPEC.md](MCP-SPEC.md), every unseen rail tool defaults to policy verdict `ask`. Annotation flags reported by servers (such as `read_only`) do not grant automatic approval. When the model selects a rail tool that no rule auto-approves, the web interface displays an approval card naming the tool and destination; the arguments sit behind `Edit Parameters`. Selecting `Always` writes an `auto` rule bound to the tool schema fingerprint, so later chat turns skip the card for that tool. If a server refresh alters the tool description or schema, the fingerprint changes, the rule is revoked, and subsequent invocations revert to `ask`. A connector made fully `trust`ed earlier shows no cards at all — `custos mcp distrust` restores the per-call flow.
 
 In the Doors view of the web UI, the "MCP connectors" card shows connector name `everything`, status pill `ready`, and total discovered tool count. The chat, its approval cards, and the HTTP API behind them (token-opened door URLs, streaming, resolving cards remotely) are specified in [SURFACE-SPEC.md](SURFACE-SPEC.md).
 
@@ -210,4 +215,4 @@ If a connector fails to reach `ready` state, inspect `custos mcp status` and mat
 | `disabled` | `credential_unavailable` | A referenced `${env:NAME}` was unset when the daemon started, or a `${vault:...}` credential was not found or the vault is locked | Export the variable or unlock the vault via `custos unlock` (or configure `custos.unlock_keyfile`), then restart the daemon |
 | `disabled` | `name_occupied` | Connector name matches a credential name in the vault or a reserved namespace | Rename the connector in `lararium.yaml` to an unreserved identifier |
 
-`custos mcp status` or `mcp call` failing with `read response: EOF` has two common causes: (1) the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying; (2) the call hit the `ask` gate and is parked waiting for an approval someone has to give (web chat, or `POST /v1/custos/cards/{id}/resolve`) — see “Verify the rail”. A parked call is cancelled if the calling CLI connection closes, and auto-denies after `ask_hold_timeout`.
+`custos mcp status` or `mcp call` failing with `read response: EOF` has two common causes: (1) the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying; (2) the call hit the `ask` gate — the CLI has no way to approve, so it waits out `ask_hold_timeout` and closes; run the `trust` step above (or drive the tool from a chat turn, where approval cards do appear).
