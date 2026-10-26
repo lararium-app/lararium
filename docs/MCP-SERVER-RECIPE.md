@@ -48,7 +48,19 @@ custos:
         command: /ABS/PATH/npx
         args: ["-y", "@modelcontextprotocol/server-everything"]
         list_timeout: 60s
+
+models:
+  default:
+    - local/your-model-id
+providers:
+  - name: local
+    base_url: http://127.0.0.1:8080/v1
 ```
+
+Keep the `models:` and `providers:` blocks in place even if you have not
+chosen a server yet: `setup` and `serve` both refuse a config whose
+`models.default` chain is empty, so a connector-only config cannot start.
+You swap in real values in “Use it in chat”.
 
 Initialize the custody vault and start the daemons. `$REPO` is your Lararium
 checkout; keep `lararium.yaml` at `$REPO/lararium.yaml` (binaries were built
@@ -124,23 +136,14 @@ $ $REPO/bin/custos -config $REPO/lararium.yaml mcp call everything echo '{"messa
 
 ## Use it in chat
 
-To route chat turns to an LLM provider, add `models:` and `providers:`
-blocks to `lararium.yaml`. A local OpenAI-compatible server on the **same
-machine** (loopback `base_url`) needs no key — just omit the field:
-
-```yaml
-models:
-  default:
-    - local/your-model-id
-providers:
-  - name: local
-    base_url: http://127.0.0.1:8080/v1
-```
-
-A keyless provider on another host (for example a llama.cpp box on your
-LAN) still needs a key value on record — loopback endpoints are the only
-keyless exception. Servers like llama.cpp ignore the header, so any
-placeholder works:
+Chat turns route through the `models:` and `providers:` blocks you declared
+in “Declare it” — replace the placeholders with your inference server’s
+values. A local OpenAI-compatible server on the **same machine** (loopback
+`base_url`) needs no key. A provider on another host (for example a
+llama.cpp box on your LAN) still needs a key value on record — loopback
+endpoints are the only keyless exception. Servers like llama.cpp ignore the
+header, so any placeholder works; `keys set` prompts for it in your
+terminal:
 
 ```console
 $ $REPO/bin/hearthd -config $REPO/lararium.yaml keys set local
@@ -191,7 +194,7 @@ custos:
 ```
 
 - `tool_allowlist`: Limits tools exposed to the model. Unlisted tools are excluded from registration.
-- `env`: Reference host environment variables via `${env:NAME}` or stored credentials via `${vault:ID}`. Literal values in `env` trigger boot audit warnings.
+- `env`: Reference host environment variables via `${env:NAME}` or stored credentials via `${vault:ID}`. Literal values in `env` trigger boot audit warnings. Export any `${env:NAME}` variable *before* `custosd` starts — an unset one lands the connector `disabled` with `credential_unavailable`.
 - `max_concurrent_calls`: Bounds simultaneous tool executions between 1 and 16 (default 4).
 - Configuration reload: `lararium.yaml` changes take effect on daemon restart. `custos mcp refresh <name>` re-reads tool catalogs from running servers without reloading daemon configuration.
 
@@ -204,7 +207,7 @@ If a connector fails to reach `ready` state, inspect `custos mcp status` and mat
 | (daemon exits at boot) | config error `bad_command` | `command` names a nonexistent or non-executable path — custosd refuses to start at all | Fix the path in `lararium.yaml`; a bad binary is treated as a config fault, not retried |
 | `backoff`, then `disabled` after the restart budget | `spawn_failed` | Binary exists but the process fails on launch | Verify `command` is an absolute path to a runnable program; check its args and stderr |
 | `backoff` | `list_timeout` | `tools/list` exceeded deadline during initial startup | Increase `list_timeout` in `lararium.yaml` to accommodate package download or process startup |
-| `disabled` | `credential_unavailable` | Referenced `${vault:...}` credential not found or vault is locked | Unlock the vault via `custos unlock` or configure `custos.unlock_keyfile` |
+| `disabled` | `credential_unavailable` | A referenced `${env:NAME}` was unset when the daemon started, or a `${vault:...}` credential was not found or the vault is locked | Export the variable or unlock the vault via `custos unlock` (or configure `custos.unlock_keyfile`), then restart the daemon |
 | `disabled` | `name_occupied` | Connector name matches a credential name in the vault or a reserved namespace | Rename the connector in `lararium.yaml` to an unreserved identifier |
 
 `custos mcp status` or `mcp call` failing with `read response: EOF` has two common causes: (1) the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying; (2) the call hit the `ask` gate and is parked waiting for an approval someone has to give (web chat, or `POST /v1/custos/cards/{id}/resolve`) — see “Verify the rail”. A parked call is cancelled if the calling CLI connection closes, and auto-denies after `ask_hold_timeout`.
