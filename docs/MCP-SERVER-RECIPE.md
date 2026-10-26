@@ -101,17 +101,19 @@ toggle-simulated-logging        none        Toggle Simulated Logging    {"$schem
 
 Rail calls run under the same custody policy as chat turns, and every unseen
 tool defaults to `ask`. The CLI carries no approval prompt: a gated call
-fails with the bare error `read response: EOF`, and the true cause appears
-only in the audit chain (`worker_call_denied reason:approval`). Approve the
-connector first — `trust` writes one connector-wide `auto` rule
-(`everything/*`), undone by `custos mcp distrust everything`:
+parks — the command simply waits (or closes early with `read response: EOF`)
+— until someone resolves the pending card, and an unresolved park auto-denies
+after `ask_hold_timeout` (default 5m30s). Approve the connector first —
+`trust` writes one connector-wide `auto` rule (`everything/*`), undone by
+`custos mcp distrust everything`:
 
 ```console
 $ $REPO/bin/custos -config $REPO/lararium.yaml mcp trust everything
 ```
 
-Prefer per-card control over a connector-wide rule? Approve each call in
-the web UI instead (see “Use it in chat”). The round-trip then succeeds:
+`trust` silences the CLI/automation lane only: web chat keeps its own
+per-call approval cards even for a trusted connector (next section). The
+round-trip then succeeds:
 
 Execute a tool call round-trip using arguments defined in the tool inputSchema:
 
@@ -123,8 +125,8 @@ $ $REPO/bin/custos -config $REPO/lararium.yaml mcp call everything echo '{"messa
 ## Use it in chat
 
 To route chat turns to an LLM provider, add `models:` and `providers:`
-blocks to `lararium.yaml`. A local OpenAI-compatible server (llama.cpp,
-Ollama, vLLM, LM Studio) needs no key — just omit the field:
+blocks to `lararium.yaml`. A local OpenAI-compatible server on the **same
+machine** (loopback `base_url`) needs no key — just omit the field:
 
 ```yaml
 models:
@@ -135,9 +137,18 @@ providers:
     base_url: http://127.0.0.1:8080/v1
 ```
 
-For hosted endpoints, add `api_key_env: OPENROUTER_API_KEY` (or similar) to
-the provider block and export the variable; see the comments in
-`docker/config/lararium.yaml` for the full menu.
+A keyless provider on another host (for example a llama.cpp box on your
+LAN) still needs a key value on record — loopback endpoints are the only
+keyless exception. Servers like llama.cpp ignore the header, so any
+placeholder works:
+
+```console
+$ $REPO/bin/hearthd -config $REPO/lararium.yaml keys set local
+```
+
+For hosted endpoints, use a real key: add `api_key_env: OPENROUTER_API_KEY`
+(or similar) to the provider block and export the variable; see the
+comments in `docker/config/lararium.yaml` for the full menu.
 
 When `hearthd serve` connects to `custosd` over `doors_sock`, tools from
 active connectors join the chat turn registry automatically — this happens
@@ -150,6 +161,12 @@ mcp__<connector>__<tool>
 ```
 
 For the `everything` connector, the `echo` and `get-sum` tools appear as `mcp__everything__echo` and `mcp__everything__get-sum`.
+
+Open the URL printed by `hearthd token create` (it carries the token) and
+start a chat — a fresh install has none, so use the sidebar’s new-chat
+button (the API equivalent is `POST /v1/sessions`, see
+[SURFACE-SPEC.md](SURFACE-SPEC.md)). Ask the model to “call
+mcp__everything__echo with the message hello”.
 
 Per [MCP-SPEC.md](MCP-SPEC.md), every unseen rail tool defaults to policy verdict `ask`. Annotation flags reported by servers (such as `read_only`) do not grant automatic approval. When the model selects a rail tool, the web interface displays an approval card showing the tool name and arguments. Selecting `Always` writes an `auto` rule bound to the tool schema fingerprint. If a server refresh alters the tool description or schema, the fingerprint changes, the rule is revoked, and subsequent invocations revert to `ask`.
 
@@ -190,4 +207,4 @@ If a connector fails to reach `ready` state, inspect `custos mcp status` and mat
 | `disabled` | `credential_unavailable` | Referenced `${vault:...}` credential not found or vault is locked | Unlock the vault via `custos unlock` or configure `custos.unlock_keyfile` |
 | `disabled` | `name_occupied` | Connector name matches a credential name in the vault or a reserved namespace | Rename the connector in `lararium.yaml` to an unreserved identifier |
 
-`custos mcp status` or `mcp call` failing with `read response: EOF` has two common causes: (1) the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying; (2) the call was gated by policy (`ask`) and no one approved it — see “Verify the rail”.
+`custos mcp status` or `mcp call` failing with `read response: EOF` has two common causes: (1) the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying; (2) the call hit the `ask` gate and is parked waiting for an approval someone has to give (web chat, or `POST /v1/custos/cards/{id}/resolve`) — see “Verify the rail”. A parked call is cancelled if the calling CLI connection closes, and auto-denies after `ask_hold_timeout`.
