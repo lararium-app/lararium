@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lararium-app/lararium/internal/surface"
+	"github.com/lararium-app/lararium/web"
 )
 
 type safeBuffer struct {
@@ -147,6 +150,13 @@ func TestHearthdHelpNeverMutates(t *testing.T) {
 }
 
 func TestServe_StubWebAssetsWarning(t *testing.T) {
+	// The warning fires only when the embedded bundle is the placeholder
+	// stub. CI's go job builds the web UI before running tests, so there
+	// the embed carries real assets and serve correctly stays quiet; the
+	// stub path is exercised in source trees without a built bundle.
+	if !surface.IsStubWebFS(web.FS) {
+		t.Skip("web/dist carries built assets in this tree; stub warning only fires on stub bundles")
+	}
 	bin := buildHearthdCLI(t)
 	cfgPath, home := makeThrowawayHearth(t)
 	for _, name := range []string{"SOUL.md", "IDENTITY.md", "USER.md"} {
