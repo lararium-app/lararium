@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -364,7 +365,19 @@ func (c *Config) unmarshalNode(value *yaml.Node) error {
 	}
 	type plain Config
 	if err := value.Decode((*plain)(c)); err != nil {
-		return err
+		var ce *ConfigError
+		if errors.As(err, &ce) {
+			return err
+		}
+		line, col := ExtractLineCol(nil, err)
+		if value.Line > 0 && line == 1 {
+			line = value.Line
+			col = value.Column
+		}
+		return &ConfigError{
+			Reason:  ReasonUnknownKey,
+			Message: fmt.Sprintf("line %d, column %d: decode custos config: %v", line, col, err),
+		}
 	}
 	return nil
 }
@@ -425,9 +438,14 @@ func (c *ConnectorsConfig) UnmarshalYAML(value *yaml.Node) error {
 				}
 				var raw rawMCPServerCfg
 				if err := entryNode.Decode(&raw); err != nil {
+					line, col := ExtractLineCol(nil, err)
+					if entryNode.Line > 0 && line == 1 {
+						line = entryNode.Line
+						col = entryNode.Column
+					}
 					err := &ConfigError{
 						Reason:  ReasonUnknownKey,
-						Message: fmt.Sprintf("decode mcp entry: %v", err),
+						Message: fmt.Sprintf("line %d, column %d: decode mcp entry: %v", line, col, err),
 					}
 					c.unmarshalErr = err
 					return err
@@ -445,7 +463,92 @@ func (c *ConnectorsConfig) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+var (
+	reLineOnly = regexp.MustCompile(`line (\d+)`)
+	reLineCol  = regexp.MustCompile(`line (\d+)(?:, column (\d+))?`)
+)
+
+// ExtractLineCol attempts to determine the 1-based line and column from a YAML
+// parse/type error and the underlying YAML data.
+func ExtractLineCol(data []byte, err error) (int, int) {
+	line := 1
+	col := 1
+	if err == nil {
+		return line, col
+	}
+
+	errMsg := err.Error()
+	var te *yaml.TypeError
+	if errors.As(err, &te) && len(te.Errors) > 0 {
+		errMsg = te.Errors[0]
+	}
+
+	if m := reLineCol.FindStringSubmatch(errMsg); len(m) > 1 {
+		if l, parseErr := strconv.Atoi(m[1]); parseErr == nil && l > 0 {
+			line = l
+		}
+		if len(m) > 2 && m[2] != "" {
+			if c, parseErr := strconv.Atoi(m[2]); parseErr == nil && c > 0 {
+				col = c
+			}
+		}
+	} else if m := reLineOnly.FindStringSubmatch(errMsg); len(m) > 1 {
+		if l, parseErr := strconv.Atoi(m[1]); parseErr == nil && l > 0 {
+			line = l
+		}
+	}
+
+	if col == 1 && len(data) > 0 {
+		lines := strings.Split(string(data), "\n")
+		if line <= len(lines) {
+			targetLine := lines[line-1]
+			for idx, ch := range targetLine {
+				if ch != ' ' && ch != '\t' && ch != '\r' {
+					col = idx + 1
+					break
+				}
+			}
+		}
+	}
+
+	return line, col
+}
+
+// FormatYAMLError formats a YAML syntax error or TypeError with path, line, and column.
+func FormatYAMLError(path string, data []byte, err error) string {
+	line, col := ExtractLineCol(data, err)
+	return fmt.Sprintf("config error: %s: line %d, column %d: %v", path, line, col, err)
+}
+
+// ReportYAMLErrorAndExit prints a formatted YAML error with file path, line, and column, then exits non-zero.
+func ReportYAMLErrorAndExit(path string, data []byte, err error) {
+	fmt.Fprintln(configStderr, FormatYAMLError(path, data, err))
+	configExit(1)
+}
+
+func isYAMLError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var te *yaml.TypeError
+	if errors.As(err, &te) {
+		return true
+	}
+	var ce *ConfigError
+	if errors.As(err, &ce) {
+		return strings.Contains(ce.Message, "yaml parse:") || strings.Contains(ce.Message, "yaml:") || strings.Contains(ce.Message, "cannot unmarshal")
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "yaml:") || strings.Contains(msg, "yaml parse:") || strings.Contains(msg, "cannot unmarshal")
+}
+
 func reportConfigErrorAndExit(err error) {
+	var ce *ConfigError
+	if errors.As(err, &ce) {
+		fmt.Fprintf(configStderr, "config error: %s: %s\n", ce.Reason, ce.Message)
+		configExit(1)
+		return
+	}
 	reason := ErrorReason(err)
 	if reason == "" {
 		reason = ReasonUnknownKey
@@ -458,9 +561,20 @@ func reportConfigErrorAndExit(err error) {
 // On rejection, it prints the named reason to stderr and exits non-zero
 // per MCP-SPEC §3.
 func LoadConfigFile(path string) *Config {
-	cfg, err := LoadConfig(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
+		fmt.Fprintf(configStderr, "config error: %s: %v\n", path, err)
+		configExit(1)
+		return nil
+	}
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		if isYAMLError(err) {
+			ReportYAMLErrorAndExit(path, data, err)
+			return nil
+		}
 		reportConfigErrorAndExit(err)
+		return nil
 	}
 	return cfg
 }
@@ -495,9 +609,10 @@ func LoadConfig(path string) (*Config, error) {
 func ParseConfig(data []byte) (*Config, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
+		line, col := ExtractLineCol(data, err)
 		return nil, &ConfigError{
 			Reason:  ReasonUnknownKey,
-			Message: fmt.Sprintf("yaml parse: %v", err),
+			Message: fmt.Sprintf("line %d, column %d: yaml parse: %v", line, col, err),
 		}
 	}
 

@@ -19,6 +19,7 @@ import (
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
+	"github.com/lararium-app/lararium/web"
 )
 
 // Config is the whole of lararium.yaml. Unknown keys are an ERROR (fasti
@@ -209,27 +210,59 @@ func main() {
 	if len(args) > 0 {
 		switch args[0] {
 		case "serve":
+			if hasHelpFlag(args[1:]) {
+				serveHelp()
+				return
+			}
 			serve(*cfgPath)
 			return
 		case "setup":
+			if hasHelpFlag(args[1:]) {
+				setupHelp()
+				return
+			}
 			setupCmd(*cfgPath, args[1:])
 			return
 		case "token":
+			if hasHelpFlag(args[1:]) {
+				tokenHelp(args[1:])
+				return
+			}
 			tokenCmd(*cfgPath, args[1:])
 			return
 		case "keys":
+			if hasHelpFlag(args[1:]) {
+				keysHelp(args[1:])
+				return
+			}
 			keysCmd(*cfgPath, args[1:])
 			return
 		case "pair":
+			if hasHelpFlag(args[1:]) {
+				pairHelp(args[1:])
+				return
+			}
 			pairCmd(*cfgPath, args[1:])
 			return
 		case "backup":
+			if hasHelpFlag(args[1:]) {
+				backupHelp(args[1:])
+				return
+			}
 			backupCmd(*cfgPath, args[1:])
 			return
 		case "restore":
+			if hasHelpFlag(args[1:]) {
+				restoreHelp()
+				return
+			}
 			restoreCmd(*cfgPath, args[1:])
 			return
 		default:
+			if hasHelpFlag(args) {
+				flag.Usage()
+				os.Exit(0)
+			}
 			if !strings.HasPrefix(args[0], "-") {
 				fmt.Fprintf(os.Stderr, "hearthd: unknown command %q\n", args[0])
 				flag.Usage()
@@ -418,9 +451,7 @@ func serve(cfgPath string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	for _, w := range warnings {
-		fmt.Fprintln(os.Stderr, "⚠ "+w)
-	}
+	logServeWarnings(warnings)
 
 	// ApprovalHub and Hub
 	ap := surface.NewApprovalHub(cfg.Serve.ApprovalTimeout)
@@ -502,4 +533,130 @@ func serve(cfgPath string) {
 	}
 	sock.Close()
 	stopBridge()
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-h" || a == "--help" || a == "-help" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSubverb(args []string, verb string) bool {
+	for _, a := range args {
+		if a == verb {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenHelp(args []string) {
+	if hasSubverb(args, "create") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd token create <label>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "revoke") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd token revoke <label>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "list") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd token list")
+		os.Exit(0)
+	}
+	fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label> | list")
+	os.Exit(0)
+}
+
+func keysHelp(args []string) {
+	if hasSubverb(args, "set") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd keys set <provider>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "rm") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd keys rm <provider>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "list") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd keys list")
+		os.Exit(0)
+	}
+	fmt.Fprintln(os.Stderr, "usage: hearthd keys list|set <provider>|rm <provider>")
+	os.Exit(0)
+}
+
+func pairHelp(args []string) {
+	if hasSubverb(args, "create") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--stdout]")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "revoke") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd pair revoke --all")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "status") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd pair status")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "unpair") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd pair unpair <user_id>")
+		os.Exit(0)
+	}
+	fmt.Fprintln(os.Stderr, "usage: hearthd pair create|revoke --all|status|unpair <user_id>")
+	os.Exit(0)
+}
+
+func backupHelp(args []string) {
+	if hasSubverb(args, "create") {
+		fmt.Fprintf(os.Stderr, "usage: hearthd backup create [--out <path>] [--no-config] [--to <age1...>] [--passphrase] [--plaintext]\n\n%s\n", backup.SecretsHonestyLine)
+		os.Exit(0)
+	}
+	if hasSubverb(args, "list") {
+		fmt.Fprintf(os.Stderr, "usage: hearthd backup list <file> [--identity <file>]\n")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "verify") {
+		fmt.Fprintf(os.Stderr, "usage: hearthd backup verify <file> [--identity <file>]\n")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "extract-config") {
+		fmt.Fprintf(os.Stderr, "usage: hearthd backup extract-config <file> <path> [--identity <file>]\n")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "keygen") {
+		fmt.Fprintf(os.Stderr, "usage: hearthd backup keygen [--out <identity-file>]\n")
+		os.Exit(0)
+	}
+	printBackupUsage()
+	os.Exit(0)
+}
+
+func restoreHelp() {
+	printRestoreUsage()
+	os.Exit(0)
+}
+
+func setupHelp() {
+	fmt.Fprintf(os.Stderr, "Usage: hearthd setup [--config <path>] [--defaults]\n\nInteractive AI provider and model setup wizard.\n")
+	os.Exit(0)
+}
+
+// logServeWarnings prints config/system-prompt warnings, then warns when
+// the embedded web bundle carries no JS assets (a stub dist), so a source
+// checkout without `npm run build` says so at boot instead of serving a
+// blank chat UI.
+func logServeWarnings(warnings []string) {
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "⚠ "+w)
+	}
+	if surface.IsStubWebFS(web.FS) {
+		fmt.Fprintln(os.Stderr, "warning: web assets not built — run (cd web && npm ci && npm run build) and rebuild, or use the official Docker image; the chat UI will not load")
+	}
+}
+
+func serveHelp() {
+	fmt.Fprintf(os.Stderr, "Usage: hearthd serve [--config <path>] [--model <model>]\n")
+	os.Exit(0)
 }

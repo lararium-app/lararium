@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -25,13 +26,27 @@ type ConfigFile struct {
 func loadConfig(cfgPath, hearthOverride string) (string, *custos.Config) {
 	var c ConfigFile
 	if raw, err := os.ReadFile(cfgPath); err == nil { //nolint:gosec // operator-provided config path
-		_ = yaml.Unmarshal(raw, &c)
+		if uerr := yaml.Unmarshal(raw, &c); uerr != nil {
+			var ce *custos.ConfigError
+			if !errors.As(uerr, &ce) {
+				custos.ReportYAMLErrorAndExit(cfgPath, raw, uerr)
+			}
+		}
 		// Dogfooding trap (issue #83): a top-level `connectors:` key
 		// parses cleanly into nothing and rail startup looks silent.
 		// Say it out loud once at boot instead.
 		if w := strayConnectorsWarning(raw); w != "" {
 			fmt.Fprintln(os.Stderr, w)
 		}
+	} else if cfgPath != "lararium.yaml" || os.Getenv("LARARIUM_CONFIG") != "" || !os.IsNotExist(err) {
+		// A named config (flag or LARARIUM_CONFIG) that cannot be read is a
+		// boot fault: running with silent defaults once meant a typo'd path
+		// quietly booted a fresh vault in the wrong place (issue #172
+		// follow-through; hearthd has always treated this as fatal).
+		// Only the never-created default config in the cwd stays lenient so
+		// first-run init/setup flows keep working.
+		fmt.Fprintf(os.Stderr, "config error: %s: %v\n", cfgPath, err)
+		os.Exit(1)
 	}
 
 	home := c.Hearth.Home
@@ -76,6 +91,24 @@ func main() {
 	flag.Parse()
 
 	args := flag.Args()
+	if hasHelpFlag(os.Args[1:]) {
+		if len(args) > 0 {
+			switch args[0] {
+			case "serve":
+				fmt.Fprintln(os.Stderr, "usage: custosd serve [--config <path>] [--hearth <path>]")
+			case "status":
+				fmt.Fprintln(os.Stderr, "usage: custosd status [--config <path>]")
+			case "shutdown":
+				fmt.Fprintln(os.Stderr, "usage: custosd shutdown [--config <path>]")
+			default:
+				fmt.Fprintln(os.Stderr, "usage: custosd [serve|status|shutdown] [--config <path>] [--hearth <path>]")
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: custosd [serve|status|shutdown] [--config <path>] [--hearth <path>]")
+		}
+		os.Exit(0)
+	}
+
 	cmd := "serve"
 	if len(args) > 0 {
 		cmd = args[0]
@@ -90,6 +123,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "custosd: start: %v\n", err)
 			os.Exit(1)
 		}
+
+		doorsPath := filepath.Join(stateDir, "doors.sock")
+		ctlPath := filepath.Join(stateDir, "ctl.sock")
+		vaultState := "locked"
+		if d.Vault().IsUnlocked() {
+			if cfg.UnlockKeyfile != "" {
+				vaultState = "unlocked (keyfile)"
+			} else {
+				vaultState = "unlocked"
+			}
+		}
+		fmt.Fprintf(os.Stderr, "custosd serve: doors on %s \u2014 ctl on %s \u2014 vault: %s\n", doorsPath, ctlPath, vaultState)
 
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -141,4 +186,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "usage: custosd [serve|status|shutdown]\n")
 		os.Exit(2)
 	}
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-h" || a == "--help" || a == "-help" {
+			return true
+		}
+	}
+	return false
 }

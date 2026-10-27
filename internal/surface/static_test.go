@@ -191,3 +191,35 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestIsStubWebFS(t *testing.T) {
+	stubFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte("<!DOCTYPE html><html><body><h1>Lararium</h1></body></html>"),
+		},
+	}
+	if !IsStubWebFS(stubFS) {
+		t.Errorf("IsStubWebFS(stubFS) = false, want true")
+	}
+
+	populatedFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte("<!DOCTYPE html><html><body><h1>Lararium</h1></body></html>"),
+		},
+		"assets/index-123.js": &fstest.MapFile{
+			Data: []byte("console.log('bundle');"),
+		},
+	}
+	if IsStubWebFS(populatedFS) {
+		t.Errorf("IsStubWebFS(populatedFS) = true, want false")
+	}
+
+	emptyFS := fstest.MapFS{}
+	if IsStubWebFS(emptyFS) {
+		t.Errorf("IsStubWebFS(emptyFS) = true, want false")
+	}
+
+	if IsStubWebFS(nil) {
+		t.Errorf("IsStubWebFS(nil) = true, want false")
+	}
+}

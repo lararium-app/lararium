@@ -843,3 +843,33 @@ func TestCustosMCP_TrustDistrustCLI(t *testing.T) {
 		t.Fatalf("second distrust: code %d stdout %q", code, stdout)
 	}
 }
+
+// A named config path (--config) that does not exist must be fatal (issue
+// #172 follow-through): a typo'd path must not silently run with empty
+// defaults. Only the never-created DEFAULT config in the cwd stays lenient.
+func TestCustos_ExplicitMissingConfigFatal(t *testing.T) {
+	bin := buildCustosCLI(t)
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "nope", "lararium.yaml")
+
+	cmd := exec.Command(bin, "--config", missing, "status")
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("expected non-zero exit for missing explicit config; stderr: %s", stderr.String())
+	}
+	if out := stderr.String(); !strings.Contains(out, "config error") {
+		t.Fatalf("expected 'config error' in stderr, got: %s", out)
+	}
+
+	// Default config missing in cwd: still lenient (first-run init flows).
+	cmd = exec.Command(bin, "status")
+	cmd.Dir = dir
+	stderr.Reset()
+	cmd.Stderr = &stderr
+	_ = cmd.Run() // may fail for other reasons (no socket); must NOT be a config error
+	if out := stderr.String(); strings.Contains(out, "config error") {
+		t.Fatalf("missing DEFAULT config must stay lenient, got: %s", out)
+	}
+}
