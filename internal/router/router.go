@@ -51,6 +51,44 @@ func (e *ChainError) Error() string {
 	return "all chain targets failed: [" + strings.Join(parts, "; ") + "]"
 }
 
+// Unwrap returns the last attempted leg's error, or nil if no legs.
+func (e *ChainError) Unwrap() error {
+	if len(e.Legs) == 0 {
+		return nil
+	}
+	return e.Legs[len(e.Legs)-1].Err
+}
+
+// ShortReason returns a concise human-readable summary of the failure,
+// including the last leg's error if available.
+func (e *ChainError) ShortReason() string {
+	if len(e.Legs) == 0 {
+		return "all chain targets failed"
+	}
+	last := e.Legs[len(e.Legs)-1]
+	if last.Err != nil {
+		return fmt.Sprintf("all chain targets failed (last: %v)", last.Err)
+	}
+	return "all chain targets failed"
+}
+
+// ProviderErrorReason extracts a human-readable failure reason from a provider error.
+// Returns (reason, true) if err is a provider/chain failure.
+func ProviderErrorReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	var ce *ChainError
+	if errors.As(err, &ce) {
+		return "provider failed: " + ce.ShortReason(), true
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "all chain targets failed") {
+		return "provider failed: " + msg, true
+	}
+	return "", false
+}
+
 // NewRouter creates a router with a default "chat" profile.
 func NewRouter(def Profile) *Router {
 	return &Router{

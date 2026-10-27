@@ -14,6 +14,8 @@ the §1 runtime inventory and new §4.5 — whole-hearth backup & restore
 Companion amendments: SURFACE-SPEC §3A (CLI shapes), CUSTOS-SPEC v10
 (installation-event scoping sentence). §§1–4 text unchanged otherwise —
 the amendment is additive.
+Amendment v11 (amendment A5, pending PO ratification, applied 2026-10-26):
+the §2 `msg` event gains optional `error` — additive, parsers unchanged.
 Format version: `penatus/1`. Every bundle, file header, and event carries this tag.
 
 Design rules (from ARCHITECTURE.md §1, restated as format law):
@@ -191,7 +193,7 @@ Core event types (v1):
 
 | `t` | Payload fields | Meaning |
 |---|---|---|
-| `msg` | `role` (`user\|assistant\|tool`), `text`, `src` (provenance, below), `model`, `usage`, `update_id` (optional; A3, NUNTIUS-SPEC §7.4: integer, present on both `msg` events — user and assistant — of a nuntius-initiated turn; absent for web/repl. Additive: parsers and field-set verification treat it as optional) | a completed message (streaming deltas are NOT persisted) |
+| `msg` | `role` (`user\|assistant\|tool`), `text`, `error` (optional; A5: short human-readable reason the turn failed, on `role: "assistant"` events whose `text` is empty; absent on successful messages. Additive: parsers treat it as optional), `src` (provenance, below), `model`, `usage`, `update_id` (optional; A3, NUNTIUS-SPEC §7.4: integer, present on both `msg` events — user and assistant — of a nuntius-initiated turn; absent for web/repl. Additive: parsers and field-set verification treat it as optional) | a completed message (streaming deltas are NOT persisted) |
 | `tool_call` | `call_id`, `name`, `args`, `approval` (`auto\|approved:<id>\|denied:<id>`) | dispatch record |
 | `tool_result` | `call_id`, `ok`, `result_digest`, `result_ref` (path under `sessions/<id>/blobs/` if > 8 KB) | outcome |
 | `compact` | see §3 | compaction checkpoint |
