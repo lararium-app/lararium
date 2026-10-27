@@ -235,6 +235,14 @@ type turnDonePayload struct {
 	OutTokens int   `json:"out_tokens"`
 }
 
+func rawJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("surface: rawJSON marshal: " + err.Error())
+	}
+	return json.RawMessage(b)
+}
+
 // payloadJSON marshals a payload struct built in this file; those types
 // contain only strings/bools/ints, so Marshal cannot fail.
 func payloadJSON(v any) string {
@@ -576,6 +584,24 @@ func (h *Hub) executeTurn(
 	// client disconnect (spec §5 P3), bounded by turn_timeout only.
 	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.currentTools(), approver)
 	if err != nil {
+		if reason, ok := router.ProviderErrorReason(err); ok {
+			stdlog.Printf("hearthd serve: turn on %s failed: %s", sessionID, reason) //nolint:gosec // sessionID is regex-validated (spec §4), reason is formatted
+			asstFields := map[string]json.RawMessage{
+				"role":  rawJSON("assistant"),
+				"text":  rawJSON(""),
+				"error": rawJSON(reason),
+			}
+			if updateID != 0 {
+				asstFields["update_id"] = rawJSON(updateID)
+			}
+			_ = log.Append(penatus.Event{
+				T:      "msg",
+				TS:     time.Now().UTC().Format(time.RFC3339),
+				Fields: asstFields,
+			})
+			ts.terminal("error", payloadJSON(map[string]string{"error": reason}))
+			return err
+		}
 		stdlog.Printf("hearthd serve: turn on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours
 		ts.fail()
 		return err

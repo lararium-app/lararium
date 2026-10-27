@@ -826,3 +826,156 @@ func TestHeadlessTurnNoWriter(t *testing.T) {
 	// end should not block or panic
 	ts.end()
 }
+
+func TestTurn_ProviderFailureExplicitError(t *testing.T) {
+	sp := &stubProvider{
+		name: "failer",
+		caps: router.Caps{SupportsTools: false, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello failed"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	hub.HandleMessage(w, req, "main")
+
+	// 1. Assert turn settled terminal (no longer in flight)
+	if hub.InFlight("main") {
+		t.Fatal("turn should have settled terminal, but InFlight is true")
+	}
+
+	// 2. Parse SSE frames and assert terminal event is error
+	frames := parseSSEFrames(w.Body.String())
+	if len(frames) == 0 {
+		t.Fatal("expected SSE frames, got none")
+	}
+	lastFrame := frames[len(frames)-1]
+	if lastFrame["event"] != "error" {
+		t.Fatalf("terminal SSE event = %v, want 'error'", lastFrame["event"])
+	}
+	data, ok := lastFrame["data"].(map[string]any)
+	if !ok || data["error"] == nil || data["error"] == "" {
+		t.Fatalf("terminal error frame missing non-empty error field: %v", lastFrame)
+	}
+
+	// 3. Inspect persisted penatus log
+	log, err := penatus.OpenLog(hub.SessionDir("main"))
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	var lastAssistant struct {
+		Role  string  `json:"role"`
+		Text  string  `json:"text"`
+		Error *string `json:"error"`
+	}
+	var assistantCount int
+	for _, ev := range log.Live() {
+		if ev.T != "msg" {
+			continue
+		}
+		var f struct {
+			Role  string  `json:"role"`
+			Text  string  `json:"text"`
+			Error *string `json:"error"`
+		}
+		b, err := ev.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON: %v", err)
+		}
+		if err := json.Unmarshal(b, &f); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if f.Role == "assistant" {
+			assistantCount++
+			lastAssistant = f
+		}
+	}
+	if assistantCount < 2 {
+		t.Fatalf("expected at least 2 assistant events (system prompt + turn), got %d", assistantCount)
+	}
+	if lastAssistant.Text != "" {
+		t.Fatalf("failed turn assistant text = %q, want empty", lastAssistant.Text)
+	}
+	if lastAssistant.Error == nil || *lastAssistant.Error == "" {
+		t.Fatal("failed turn assistant error field is missing or empty")
+	}
+	if !strings.Contains(*lastAssistant.Error, "all chain targets failed") || !strings.Contains(*lastAssistant.Error, "connection refused") {
+		t.Fatalf("unexpected assistant error text: %q", *lastAssistant.Error)
+	}
+}
+
+func TestTurn_SuccessfulTurnNoErrorMessage(t *testing.T) {
+	sp := &stubProvider{
+		name: "success",
+		caps: router.Caps{SupportsTools: false, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			return &router.Completion{Text: "all good reply", Model: "stub"}, nil
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello ok"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	hub.HandleMessage(w, req, "main")
+
+	if hub.InFlight("main") {
+		t.Fatal("turn should have settled terminal, but InFlight is true")
+	}
+
+	frames := parseSSEFrames(w.Body.String())
+	if len(frames) == 0 {
+		t.Fatal("expected SSE frames, got none")
+	}
+	lastFrame := frames[len(frames)-1]
+	if lastFrame["event"] != "turn_done" {
+		t.Fatalf("terminal SSE event = %v, want 'turn_done'", lastFrame["event"])
+	}
+
+	log, err := penatus.OpenLog(hub.SessionDir("main"))
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	var assistantFound bool
+	for _, ev := range log.Live() {
+		if ev.T != "msg" {
+			continue
+		}
+		var f struct {
+			Role  string  `json:"role"`
+			Text  string  `json:"text"`
+			Error *string `json:"error"`
+		}
+		b, err := ev.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON: %v", err)
+		}
+		if err := json.Unmarshal(b, &f); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if f.Role == "assistant" && f.Text == "all good reply" {
+			assistantFound = true
+			if f.Error != nil {
+				t.Fatalf("successful assistant event must not have error field, got: %q", *f.Error)
+			}
+			// Also inspect raw unmarshalled map to guarantee key 'error' is absent
+			var rawMap map[string]any
+			if err := json.Unmarshal(b, &rawMap); err != nil {
+				t.Fatalf("Unmarshal rawMap: %v", err)
+			}
+			if _, hasErr := rawMap["error"]; hasErr {
+				t.Fatalf("successful assistant event JSON contains 'error' key: %v", rawMap["error"])
+			}
+		}
+	}
+	if !assistantFound {
+		t.Fatal("assistant event not found in session log after successful turn")
+	}
+}

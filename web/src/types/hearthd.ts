@@ -17,6 +17,7 @@ export interface SurfaceEvent {
   time?: string;
   role?: "user" | "assistant";
   text?: string;
+  error?: string;
   name?: string;
   call_id?: string;
   args?: any;
