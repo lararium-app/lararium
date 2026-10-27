@@ -1,6 +1,6 @@
 # Connecting Your First MCP Server
 
-This walkthrough connects a Model Context Protocol (MCP) server to Lararium over standard I/O, verifies execution from the command line, and exposes the tools to model chat under the custody policy gate. Completing the steps takes approximately 5 minutes once Node.js is installed.
+This walkthrough connects a Model Context Protocol (MCP) server to Lararium over standard I/O, verifies execution from the command line, and exposes the tools to model chat under the custody policy gate. Completing the steps takes roughly 15 minutes on a fresh machine: the Go build and the first `npx` package download each add a few minutes over the interaction itself.
 
 ## Prerequisites
 
@@ -110,7 +110,7 @@ echo                            read_only   Echo Tool                   {"$schem
 get-sum                         read_only   Get Sum Tool                {"$schema":"http://json-schema.org/draft-07/schema#","properties":{"a":{"description":"First number","type":"number"},"b":{"description":"Second number","type":"number"}},"required":["a","b"],"type":"object"}
 gzip-file-as-resource           open_world  GZip File as Resource Tool  {"$schema":"http://json-schema.org/draft-07/schema#","properties":{"data":{"default":"https://raw.githubusercontent.com/modelcontextprotocol/servers/refs/heads/main/README.md","description":"URL or data URI of the file content to compress","format":"uri","type":"string"},"name":{"default":"README.md.gz","description":"Name of the output file","type":"string"},"outputType":{"default":"resourceLink","description":"How the resulting gzipped file should be returned. 'resourceLink' returns a link to a resource that can be read later, 'resource' returns a full resource object.","enum":["resourceLink","resource"],"type":"string"}},"type":"object"}
 toggle-simulated-logging        none        Toggle Simulated Logging    {"$schema":"http://json-schema.org/draft-07/schema#","properties":{},"type":"object"}
-… (14 tools in total; 10 rows omitted)
+… (14 tools in total; middle rows omitted here, output is alphabetical)
 ```
 
 Rail calls run under the same custody policy as chat turns, and every unseen
@@ -171,7 +171,8 @@ mcp__<connector>__<tool>
 
 For the `everything` connector, the `echo` and `get-sum` tools appear as `mcp__everything__echo` and `mcp__everything__get-sum`.
 
-Open the URL printed by `hearthd token create` (it carries the token) and
+Open the URL printed by `hearthd token create <label>` (it carries the
+token) and
 start a chat — a fresh install has none, so use the sidebar’s new-chat
 button (the API equivalent is `POST /v1/sessions`, see
 [SURFACE-SPEC.md](SURFACE-SPEC.md)). Ask the model to “call
@@ -197,6 +198,7 @@ custos:
         transport: stdio
         command: /ABS/PATH/npx
         args: ["-y", "@modelcontextprotocol/server-everything"]
+        list_timeout: 60s
         tool_allowlist: ["echo", "get-sum"]
         max_concurrent_calls: 4
         env:
@@ -217,6 +219,7 @@ If a connector fails to reach `ready` state, inspect `custos mcp status` and mat
 | (daemon exits at boot) | config error `bad_command` | `command` names a nonexistent or non-executable path — custosd refuses to start at all | Fix the path in `lararium.yaml`; a bad binary is treated as a config fault, not retried |
 | `backoff`, then `disabled` after the restart budget | `spawn_failed` | Binary exists but the process fails on launch | Verify `command` is an absolute path to a runnable program; check its args and stderr |
 | `backoff` | `list_timeout` | `tools/list` exceeded deadline during initial startup | Increase `list_timeout` in `lararium.yaml` to accommodate package download or process startup |
+| Web Doors view says “No MCP connectors configured” despite a correct `custos.connectors` block | door down, not config | That view reflects the live hearthd↔custosd door, not the file — it empties whenever custosd is unreachable | Confirm custosd is up (its log ends at `listening unix=`), then reload the page |
 | `disabled` | `credential_unavailable` | A referenced `${env:NAME}` was unset when the daemon started, or a `${vault:...}` credential was not found or the vault is locked | Export the variable or unlock the vault via `custos unlock` (or configure `custos.unlock_keyfile`), then restart the daemon |
 | `disabled` | `name_occupied` | Connector name matches a credential name in the vault or a reserved namespace | Rename the connector in `lararium.yaml` to an unreserved identifier |
 

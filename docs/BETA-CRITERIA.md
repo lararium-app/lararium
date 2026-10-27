@@ -94,8 +94,11 @@ release note, doc, or audit transcript), we tag beta.
       — `docs/REMOTE-ACCESS.md`: tailnet-first, Caddy/nginx TLS proxy with
       SSE-safe settings, SSH tunnel zero-config path, Host allow-list
       semantics, container bind law, bearer-token hygiene checklist
-- [ ] First MCP server recipe exists and was followed by someone who did
-      not write it
+- [x] First MCP server recipe exists and was followed by someone who did
+      not write it — `docs/MCP-SERVER-RECIPE.md`, validated by six
+      independent fresh-eyes walks on live boxes (final pair both verdict
+      Yes against `050cdcc` + round-6 fixes); residual rough edges filed
+      as #167, #172, #174, #175
 - [x] Backup → wipe → restore rehearsed on a real box, written up
       (drilled twice 2026-10-19: `docs/RECOVERY.md` — named volumes on
       v0.10.1-alpha; `docs/RUNBOOK-RECOVERY.md` — bind mounts, re-drilled
