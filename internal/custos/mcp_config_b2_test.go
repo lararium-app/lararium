@@ -20,7 +20,7 @@ func runLoaderSubprocessWithPath(t *testing.T, yamlContent string) (string, stri
 		t.Fatalf("write config file: %v", err)
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestMCPConfigLoaderHelper", "--")
+	cmd := exec.Command(os.Args[0], "-test.run=TestMCPConfigLoaderHelper", "--") //nolint:gosec // G702: re-executes this test binary with static args
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"TEST_CONFIG_PATH="+cfgPath,
@@ -75,7 +75,7 @@ func TestB2_UnknownKeySinglePrefixShape(t *testing.T) {
 		t.Errorf("stderr %q does not contain expected single-prefix message %q", stderr, wantSingle)
 	}
 
-	if strings.Contains(stderr, "unknown_key: unknown_key:") {
+	if strings.Contains(stderr, "unknown_key: unknown_key:") { //nolint:dupword // asserts the doubled prefix is absent
 		t.Errorf("stderr %q contains duplicated prefix 'unknown_key: unknown_key:'", stderr)
 	}
 }

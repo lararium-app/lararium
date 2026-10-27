@@ -244,7 +244,7 @@ func TestCustosd_UnknownKey_SinglePrefix(t *testing.T) {
 	if !strings.Contains(errStr, wantSingle) {
 		t.Errorf("stderr %q does not contain expected single-prefix message %q", errStr, wantSingle)
 	}
-	if strings.Contains(errStr, "unknown_key: unknown_key:") {
+	if strings.Contains(errStr, "unknown_key: unknown_key:") { //nolint:dupword // asserts the doubled prefix is absent
 		t.Errorf("stderr %q contains duplicated prefix", errStr)
 	}
 }

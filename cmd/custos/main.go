@@ -1442,17 +1442,17 @@ func printCustosUsage(w io.Writer) {
 
 Verbs:
   init               initialize a new vault
-  unlock             unlock vault
-  lock               lock vault
+  unlock             open the vault
+  lock               seal the vault
   status             show daemon and vault status
   audit              inspect audit records (audit verify)
   snapshots          list snapshots (snapshots list)
-  restore            restore vault snapshot (restore <gen> --yes)
+  restore            vault snapshot rollback (restore <gen> --yes)
   change-passphrase  change vault passphrase
   surrogate          manage surrogate credentials (add|list|revoke)
   policy             manage security policies (add|list|rm|reset)
   egress             manage egress filtering (strict on|off)
-  revoke             revoke a stored credential
+  revoke             remove a stored credential
   login              OAuth login flow (login gmail)
   approvals          manage approval requests (list|watch|approve|deny)
   mcp                manage MCP connectors (status|tools|refresh|call|trust|distrust)
@@ -1488,25 +1488,27 @@ func custosVerbHelp(verb string, subArgs []string) {
 	case "change-passphrase":
 		fmt.Fprintln(os.Stderr, "usage: custos change-passphrase")
 	case "surrogate":
-		if hasSubverb(subArgs, "add") {
+		switch {
+		case hasSubverb(subArgs, "add"):
 			fmt.Fprintln(os.Stderr, "usage: custos surrogate add <credential> --host <host> [--path <path>] [--port <port>] [--allow-binary]")
-		} else if hasSubverb(subArgs, "revoke") {
+		case hasSubverb(subArgs, "revoke"):
 			fmt.Fprintln(os.Stderr, "usage: custos surrogate revoke <id8>")
-		} else if hasSubverb(subArgs, "list") {
+		case hasSubverb(subArgs, "list"):
 			fmt.Fprintln(os.Stderr, "usage: custos surrogate list")
-		} else {
+		default:
 			fmt.Fprintln(os.Stderr, "usage: custos surrogate add|list|revoke [options]")
 		}
 	case "policy":
-		if hasSubverb(subArgs, "add") {
+		switch {
+		case hasSubverb(subArgs, "add"):
 			fmt.Fprintln(os.Stderr, "usage: custos policy add [<lane>] <pattern> <verdict>")
-		} else if hasSubverb(subArgs, "rm") {
+		case hasSubverb(subArgs, "rm"):
 			fmt.Fprintln(os.Stderr, "usage: custos policy rm [<lane>] <pattern>")
-		} else if hasSubverb(subArgs, "list") {
+		case hasSubverb(subArgs, "list"):
 			fmt.Fprintln(os.Stderr, "usage: custos policy list")
-		} else if hasSubverb(subArgs, "reset") {
+		case hasSubverb(subArgs, "reset"):
 			fmt.Fprintln(os.Stderr, "usage: custos policy reset")
-		} else {
+		default:
 			fmt.Fprintln(os.Stderr, "usage: custos policy add|list|rm|reset [options]")
 		}
 	case "egress":
@@ -1516,15 +1518,16 @@ func custosVerbHelp(verb string, subArgs []string) {
 	case "login":
 		fmt.Fprintln(os.Stderr, "usage: custos login gmail --client-id <id> [--manual]")
 	case "approvals":
-		if hasSubverb(subArgs, "approve") {
+		switch {
+		case hasSubverb(subArgs, "approve"):
 			fmt.Fprintln(os.Stderr, "usage: custos approvals approve <id>")
-		} else if hasSubverb(subArgs, "deny") {
+		case hasSubverb(subArgs, "deny"):
 			fmt.Fprintln(os.Stderr, "usage: custos approvals deny <id>")
-		} else if hasSubverb(subArgs, "watch") {
+		case hasSubverb(subArgs, "watch"):
 			fmt.Fprintln(os.Stderr, "usage: custos approvals watch")
-		} else if hasSubverb(subArgs, "list") {
+		case hasSubverb(subArgs, "list"):
 			fmt.Fprintln(os.Stderr, "usage: custos approvals list")
-		} else {
+		default:
 			fmt.Fprintln(os.Stderr, "usage: custos approvals list|watch|approve|deny [args]")
 		}
 	case "mcp":

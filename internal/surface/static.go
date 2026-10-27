@@ -117,7 +117,7 @@ func IsStubWebFS(fsys fs.FS) bool {
 	hasJS := false
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // unreadable entries are skipped, the walk continues
 		}
 		if !d.IsDir() {
 			ext := path.Ext(p)

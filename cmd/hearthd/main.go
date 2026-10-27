@@ -451,13 +451,7 @@ func serve(cfgPath string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	for _, w := range warnings {
-		fmt.Fprintln(os.Stderr, "⚠ "+w)
-	}
-
-	if surface.IsStubWebFS(web.FS) {
-		fmt.Fprintln(os.Stderr, "warning: web assets not built — run (cd web && npm ci && npm run build) and rebuild, or use the official Docker image; the chat UI will not load")
-	}
+	logServeWarnings(warnings)
 
 	// ApprovalHub and Hub
 	ap := surface.NewApprovalHub(cfg.Serve.ApprovalTimeout)
@@ -647,6 +641,19 @@ func restoreHelp() {
 func setupHelp() {
 	fmt.Fprintf(os.Stderr, "Usage: hearthd setup [--config <path>] [--defaults]\n\nInteractive AI provider and model setup wizard.\n")
 	os.Exit(0)
+}
+
+// logServeWarnings prints config/system-prompt warnings, then warns when
+// the embedded web bundle carries no JS assets (a stub dist), so a source
+// checkout without `npm run build` says so at boot instead of serving a
+// blank chat UI.
+func logServeWarnings(warnings []string) {
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "⚠ "+w)
+	}
+	if surface.IsStubWebFS(web.FS) {
+		fmt.Fprintln(os.Stderr, "warning: web assets not built — run (cd web && npm ci && npm run build) and rebuild, or use the official Docker image; the chat UI will not load")
+	}
 }
 
 func serveHelp() {
