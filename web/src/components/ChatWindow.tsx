@@ -15,7 +15,11 @@ interface ChatWindowProps {
   custosCards: CustosCard[];
   onSendMessage: (text: string) => void;
   onCancelTurn: () => void;
-  onResolveToolApproval: (approvalId: string, verdict: "allow" | "deny") => Promise<void>;
+  onResolveToolApproval: (
+    approvalId: string,
+    verdict: "allow" | "deny",
+    scope?: "connector"
+  ) => Promise<void>;
   onResolveCustosCard: (id: string, verdict: "once" | "always" | "deny") => Promise<void>;
 }
 

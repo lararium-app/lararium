@@ -185,7 +185,7 @@ export function DoorsPanel({ token }: DoorsPanelProps) {
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-bg text-ink max-w-4xl mx-auto w-full">
-      <ConnectorsCard token={token} />
+      <ConnectorsCard token={token} rules={rules} onRefreshRules={fetchRules} />
       <div className="flex items-center justify-between pb-4 mb-6 border-b border-line">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-panel2 border border-line text-ember">

@@ -347,10 +347,11 @@ export function App() {
 
   const handleResolveToolApproval = async (
     approvalId: string,
-    verdict: "allow" | "deny"
+    verdict: "allow" | "deny",
+    scope?: "connector"
   ) => {
     if (!currentSessionId) return;
-    await streamResolveApproval(currentSessionId, approvalId, verdict);
+    await streamResolveApproval(currentSessionId, approvalId, verdict, scope);
   };
 
   const handleTogglePreviewPanels = () => {
