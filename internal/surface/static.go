@@ -103,3 +103,30 @@ func RegisterStatic(mux *http.ServeMux, fsys fs.FS) {
 		serveFile(w, p)
 	})
 }
+
+// IsStubWebFS reports whether fsys is the unbuilt/stub web distribution.
+// It checks whether index.html is present but no JavaScript assets (.js/.mjs)
+// exist under the distribution tree.
+func IsStubWebFS(fsys fs.FS) bool {
+	if fsys == nil {
+		return false
+	}
+	if _, err := fs.Stat(fsys, "index.html"); err != nil {
+		return false
+	}
+	hasJS := false
+	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			ext := path.Ext(p)
+			if ext == ".js" || ext == ".mjs" {
+				hasJS = true
+				return fs.SkipAll
+			}
+		}
+		return nil
+	})
+	return !hasJS
+}

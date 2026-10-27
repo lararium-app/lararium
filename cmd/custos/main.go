@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,7 +31,20 @@ type ConfigFile struct {
 func loadConfig(cfgPath, hearthOverride string) (string, *custos.Config) {
 	var c ConfigFile
 	if raw, err := os.ReadFile(cfgPath); err == nil { //nolint:gosec // operator-provided config path
-		_ = yaml.Unmarshal(raw, &c)
+		if uerr := yaml.Unmarshal(raw, &c); uerr != nil {
+			var ce *custos.ConfigError
+			if !errors.As(uerr, &ce) {
+				custos.ReportYAMLErrorAndExit(cfgPath, raw, uerr)
+			}
+		}
+	} else if cfgPath != "lararium.yaml" || os.Getenv("LARARIUM_CONFIG") != "" || !os.IsNotExist(err) {
+		// A named config (flag or LARARIUM_CONFIG) that cannot be read is a
+		// fault: a typo'd path must not quietly run with empty defaults
+		// (issue #172 follow-through; hearthd has always treated this as
+		// fatal). Only the never-created default config in the cwd stays
+		// lenient so first-run init flows keep working.
+		fmt.Fprintf(os.Stderr, "config error: %s: %v\n", cfgPath, err)
+		os.Exit(1)
 	}
 
 	home := c.Hearth.Home
@@ -1105,17 +1119,35 @@ func main() {
 
 	// Allow flags anywhere before or after subcommand
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printCustosUsage(os.Stderr)
+			os.Exit(0)
+		}
 		os.Exit(2)
 	}
 
 	args := fs.Args()
 	if len(args) == 0 {
+		if hasHelpFlag(os.Args[1:]) {
+			printCustosUsage(os.Stderr)
+			os.Exit(0)
+		}
 		fmt.Fprintf(os.Stderr, "usage: custos <verb> [options]\n")
 		os.Exit(2)
 	}
 
 	verb := args[0]
 	subArgs := args[1:]
+
+	if verb == "-h" || verb == "--help" || verb == "-help" || verb == "help" {
+		printCustosUsage(os.Stderr)
+		os.Exit(0)
+	}
+
+	if hasHelpFlag(subArgs) {
+		custosVerbHelp(verb, subArgs)
+		return
+	}
 
 	stateDir, cfg := loadConfig(*cfgFlag, *hearthFlag)
 
@@ -1172,6 +1204,10 @@ func runMCP(v *custos.Vault, stateDir string, cfg *custos.Config, subArgs []stri
 	if len(subArgs) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: custos mcp status|tools|refresh|call|trust|distrust [args]\n")
 		return 2
+	}
+	if hasHelpFlag(subArgs) {
+		mcpHelp(subArgs)
+		return 0
 	}
 	switch subArgs[0] {
 	case "status":
@@ -1381,4 +1417,158 @@ func runMCPRefresh(stateDir string, cfg *custos.Config, name string) int {
 		fmt.Println("refreshed")
 	}
 	return 0
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-h" || a == "--help" || a == "-help" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSubverb(args []string, verb string) bool {
+	for _, a := range args {
+		if a == verb {
+			return true
+		}
+	}
+	return false
+}
+
+func printCustosUsage(w io.Writer) {
+	fmt.Fprintf(w, `usage: custos <verb> [options]
+
+Verbs:
+  init               initialize a new vault
+  unlock             unlock vault
+  lock               lock vault
+  status             show daemon and vault status
+  audit              inspect audit records (audit verify)
+  snapshots          list snapshots (snapshots list)
+  restore            restore vault snapshot (restore <gen> --yes)
+  change-passphrase  change vault passphrase
+  surrogate          manage surrogate credentials (add|list|revoke)
+  policy             manage security policies (add|list|rm|reset)
+  egress             manage egress filtering (strict on|off)
+  revoke             revoke a stored credential
+  login              OAuth login flow (login gmail)
+  approvals          manage approval requests (list|watch|approve|deny)
+  mcp                manage MCP connectors (status|tools|refresh|call|trust|distrust)
+
+Options:
+  -config string
+    	path to lararium.yaml (default "lararium.yaml")
+  -hearth string
+    	override hearth root directory
+  -keyfile string
+    	path to unlock keyfile
+  -yes
+    	confirm destructive action
+`)
+}
+
+func custosVerbHelp(verb string, subArgs []string) {
+	switch verb {
+	case "init":
+		fmt.Fprintln(os.Stderr, "usage: custos init [--keyfile <path>]")
+	case "unlock":
+		fmt.Fprintln(os.Stderr, "usage: custos unlock [--keyfile <path>]")
+	case "lock":
+		fmt.Fprintln(os.Stderr, "usage: custos lock [--keyfile <path>]")
+	case "status":
+		fmt.Fprintln(os.Stderr, "usage: custos status")
+	case "audit":
+		fmt.Fprintln(os.Stderr, "usage: custos audit verify")
+	case "snapshots":
+		fmt.Fprintln(os.Stderr, "usage: custos snapshots list")
+	case "restore":
+		fmt.Fprintln(os.Stderr, "usage: custos restore <gen> --yes")
+	case "change-passphrase":
+		fmt.Fprintln(os.Stderr, "usage: custos change-passphrase")
+	case "surrogate":
+		if hasSubverb(subArgs, "add") {
+			fmt.Fprintln(os.Stderr, "usage: custos surrogate add <credential> --host <host> [--path <path>] [--port <port>] [--allow-binary]")
+		} else if hasSubverb(subArgs, "revoke") {
+			fmt.Fprintln(os.Stderr, "usage: custos surrogate revoke <id8>")
+		} else if hasSubverb(subArgs, "list") {
+			fmt.Fprintln(os.Stderr, "usage: custos surrogate list")
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: custos surrogate add|list|revoke [options]")
+		}
+	case "policy":
+		if hasSubverb(subArgs, "add") {
+			fmt.Fprintln(os.Stderr, "usage: custos policy add [<lane>] <pattern> <verdict>")
+		} else if hasSubverb(subArgs, "rm") {
+			fmt.Fprintln(os.Stderr, "usage: custos policy rm [<lane>] <pattern>")
+		} else if hasSubverb(subArgs, "list") {
+			fmt.Fprintln(os.Stderr, "usage: custos policy list")
+		} else if hasSubverb(subArgs, "reset") {
+			fmt.Fprintln(os.Stderr, "usage: custos policy reset")
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: custos policy add|list|rm|reset [options]")
+		}
+	case "egress":
+		fmt.Fprintln(os.Stderr, "usage: custos egress strict on|off")
+	case "revoke":
+		fmt.Fprintln(os.Stderr, "usage: custos revoke <name>")
+	case "login":
+		fmt.Fprintln(os.Stderr, "usage: custos login gmail --client-id <id> [--manual]")
+	case "approvals":
+		if hasSubverb(subArgs, "approve") {
+			fmt.Fprintln(os.Stderr, "usage: custos approvals approve <id>")
+		} else if hasSubverb(subArgs, "deny") {
+			fmt.Fprintln(os.Stderr, "usage: custos approvals deny <id>")
+		} else if hasSubverb(subArgs, "watch") {
+			fmt.Fprintln(os.Stderr, "usage: custos approvals watch")
+		} else if hasSubverb(subArgs, "list") {
+			fmt.Fprintln(os.Stderr, "usage: custos approvals list")
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: custos approvals list|watch|approve|deny [args]")
+		}
+	case "mcp":
+		mcpHelp(subArgs)
+	default:
+		printCustosUsage(os.Stderr)
+	}
+	os.Exit(0)
+}
+
+func mcpHelp(subArgs []string) {
+	if hasSubverb(subArgs, "status") {
+		fmt.Fprintln(os.Stderr, "usage: custos mcp status\n\nShow connection status and tool counts for configured MCP servers.")
+		os.Exit(0)
+	}
+	if hasSubverb(subArgs, "tools") {
+		fmt.Fprintln(os.Stderr, "usage: custos mcp tools <name>\n\nList available tools provided by the named MCP server.")
+		os.Exit(0)
+	}
+	if hasSubverb(subArgs, "refresh") {
+		fmt.Fprintln(os.Stderr, "usage: custos mcp refresh <name>\n\nForce a tools/list refresh from the named MCP server.")
+		os.Exit(0)
+	}
+	if hasSubverb(subArgs, "call") {
+		fmt.Fprintln(os.Stderr, "usage: custos mcp call <name> <tool> [json-args]\n\nInvoke a tool on the named MCP server with optional JSON arguments.")
+		os.Exit(0)
+	}
+	if hasSubverb(subArgs, "trust") {
+		fmt.Fprintln(os.Stderr, "usage: custos mcp trust <name>\n\nAdd an auto-verdict credential policy rule for all tools of the named server.")
+		os.Exit(0)
+	}
+	if hasSubverb(subArgs, "distrust") {
+		fmt.Fprintln(os.Stderr, "usage: custos mcp distrust <name>\n\nRemove the auto-verdict policy rule for the named server.")
+		os.Exit(0)
+	}
+	fmt.Fprintf(os.Stderr, `usage: custos mcp status|tools|refresh|call|trust|distrust [args]
+
+Commands:
+  status             show connector status and health
+  tools <name>       list tools from an MCP server
+  refresh <name>     re-query tools from an MCP server
+  call <name> <tool> invoke a tool with JSON arguments
+  trust <name>       trust all tools from an MCP server without approval
+  distrust <name>    remove auto-approval for an MCP server
+`)
+	os.Exit(0)
 }
