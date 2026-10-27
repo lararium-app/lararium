@@ -211,3 +211,39 @@ func TestCallerCancelAbortsWithoutFailover(t *testing.T) {
 		t.Fatal("second target must not be tried after caller cancel")
 	}
 }
+
+func TestChainError_ShortReasonAndProviderErrorReason(t *testing.T) {
+	ceEmpty := &ChainError{}
+	if got := ceEmpty.ShortReason(); got != "all chain targets failed" {
+		t.Fatalf("empty ShortReason() = %q, want 'all chain targets failed'", got)
+	}
+
+	ce := &ChainError{
+		Legs: []ChainLeg{
+			{Provider: "openai", Model: "gpt-4", Err: errors.New("timeout")},
+			{Provider: "local", Model: "llama", Err: errors.New("connection refused")},
+		},
+	}
+	wantReason := "all chain targets failed (last: connection refused)"
+	if got := ce.ShortReason(); got != wantReason {
+		t.Fatalf("ShortReason() = %q, want %q", got, wantReason)
+	}
+	if !errors.Is(ce, ce.Legs[1].Err) {
+		t.Fatalf("Unwrap() failed: want %v", ce.Legs[1].Err)
+	}
+
+	wrapped := fmt.Errorf("complete: %w", ce)
+	reason, ok := ProviderErrorReason(wrapped)
+	if !ok {
+		t.Fatal("ProviderErrorReason returned false for wrapped ChainError")
+	}
+	wantProvReason := "provider failed: all chain targets failed (last: connection refused)"
+	if reason != wantProvReason {
+		t.Fatalf("ProviderErrorReason() = %q, want %q", reason, wantProvReason)
+	}
+
+	// Non-provider error
+	if _, ok := ProviderErrorReason(errors.New("something else")); ok {
+		t.Fatal("ProviderErrorReason returned true for non-provider error")
+	}
+}

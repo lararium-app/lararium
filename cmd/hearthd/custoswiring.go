@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/custosdoor"
+	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/surface"
 )
@@ -37,11 +39,50 @@ type CustosConfig struct {
 // set. The returned stop closes the door connection and waits for the
 // goroutine; it is idempotent.
 func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Bridge, srv *surface.Server, hub *surface.Hub, deciders ...PolicyDecider) (stop func()) {
-	client, err := custosdoor.New(custosdoor.Options{
+	var (
+		doorMu        sync.Mutex
+		doorOnline    bool
+		doorInitDone  bool
+		lastToolCount = -1
+	)
+	// logToolCount logs the rail tool census only when it changes — the
+	// tool source is consulted on every turn, so an unconditional line
+	// would be one log entry per chat message.
+	logToolCount := func(n int) {
+		doorMu.Lock()
+		defer doorMu.Unlock()
+		if n == lastToolCount {
+			return
+		}
+		lastToolCount = n
+		log.Printf("custos door: %d rail tools available", n)
+	}
+	markConnected := func() {
+		doorMu.Lock()
+		defer doorMu.Unlock()
+		if !doorOnline {
+			doorOnline = true
+			log.Print("custos door: connected")
+		}
+	}
+	markDisconnected := func() {
+		doorMu.Lock()
+		defer doorMu.Unlock()
+		if doorOnline {
+			doorOnline = false
+			log.Print("custos door: disconnected")
+		}
+	}
+
+	opts := custosdoor.Options{
 		SockPath:  cfg.DoorsSock,
 		TokenPath: cfg.DoorToken,
 		Name:      cfg.DoorName,
-	})
+		OnRetry: func(attempt int, delay time.Duration, err error) {
+			markDisconnected()
+		},
+	}
+	client, err := custosdoor.New(opts)
 	if err != nil {
 		// A half-set or invalid pair is local misconfiguration: say so
 		// once and keep serving without custody cards.
@@ -51,6 +92,21 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 	if client == nil {
 		return nil
 	}
+
+	client.SubscribeMCP(func(statuses []custosdoor.ConnectorStatus, tools []custosdoor.ToolInfo) {
+		doorMu.Lock()
+		if !doorInitDone {
+			doorInitDone = true
+			doorMu.Unlock()
+			return
+		}
+		doorMu.Unlock()
+		if statuses != nil || tools != nil {
+			markConnected()
+			logToolCount(len(tools))
+		}
+	})
+
 	if bridge != nil {
 		//nolint:contextcheck // custodyFeed edits run on the feed goroutine with their own detached 15 s ctx (same posture as nuntius background card edits)
 		bridge.WireCustody(custodyWire(client))
@@ -69,7 +125,19 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 		} else if srv != nil {
 			decider = &serverPolicyDecider{srv: srv}
 		}
-		hub.SetToolSource(mcpToolSource(client, decider))
+		baseToolSrc := mcpToolSource(client, decider)
+		toolSrc := func() []loop.Tool {
+			tools := baseToolSrc()
+			if len(tools) > 0 {
+				// A non-empty census proves the door is live; a zero
+				// census also happens while the door is down, so it
+				// must not claim connectivity or log noise.
+				markConnected()
+				logToolCount(len(tools))
+			}
+			return tools
+		}
+		hub.SetToolSource(toolSrc)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)

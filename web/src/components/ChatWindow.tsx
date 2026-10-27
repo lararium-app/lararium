@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from "react";
-import { Copy, RotateCcw, Check, Square, Send, ChevronRight, Paperclip, Mic } from "lucide-react";
+import { Copy, RotateCcw, Check, Square, Send, ChevronRight, Paperclip, Mic, AlertTriangle } from "lucide-react";
 import { Session, SurfaceEvent, ApprovalRequest, CustosCard } from "../types/hearthd";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { ToolApprovalCard, CustosApprovalCard } from "./ApprovalCard";
@@ -307,6 +307,31 @@ export function ChatWindow({
 
               if (item.kind === "msg" && item.event.role === "assistant") {
                 const msgId = `msg-${item.index}`;
+                if (item.event.error) {
+                  return (
+                    <div key={msgId} className="flex flex-col items-start max-w-[85%]">
+                      <div className="w-full px-4 py-3 rounded-xl bg-err/10 border border-err/30 shadow-e1 text-sm sm:text-[15px] leading-relaxed text-err">
+                        <div className="flex items-start gap-2.5">
+                          <AlertTriangle className="w-4 h-4 text-err shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0 font-mono text-xs sm:text-[13px] text-err break-words">
+                            {item.event.error}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5 px-1 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => handleRetry(item.index)}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-panel border border-line hover:bg-panel2 text-xs text-ink transition-colors cursor-pointer"
+                          title="Retry turn"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5 text-ember" />
+                          <span>Retry</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                   <div key={msgId} className="flex flex-col items-start max-w-[85%] group">
                     <div className="w-full px-4 py-3 rounded-xl bg-panel border border-line shadow-e1 text-sm sm:text-[15px] leading-relaxed text-ink">

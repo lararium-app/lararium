@@ -137,8 +137,21 @@ func (r *runtime) Close() {
 	}
 }
 
+// isCustosConfigured reports whether a custody block is configured in lararium.yaml.
+func isCustosConfigured(cfg CustosConfig) bool {
+	return cfg.DoorsSock != "" || cfg.DoorToken != "" || cfg.DoorName != "" || cfg.UnlockKeyfile != "" || len(cfg.Connectors.MCP) > 0
+}
+
+// replBanner writes advisory lines to out at REPL startup based on configuration.
+func replBanner(out io.Writer, cfg *Config) {
+	if cfg != nil && isCustosConfigured(cfg.Custos) {
+		fmt.Fprintln(out, "note: rail tools (mcp__*) work in the web chat via 'hearthd serve', not in this REPL.")
+	}
+}
+
 func repl(rt *runtime) {
 	fmt.Printf("hearthd — %s (ctrl-C to interrupt a turn, /exit to quit)\n", rt.home)
+	replBanner(os.Stdout, rt.cfg)
 	// Show probed window once, up front (detection, not assumption).
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	caps, err := rt.rt.Probe(ctx, "chat")
@@ -194,10 +207,21 @@ func repl(rt *runtime) {
 			}
 			return false, ""
 		}
-		text, err := rt.sess.RunTurnTools(ctx, line, func(d string) { fmt.Print(d) }, rt.tools, approver)
+		var streamedDelta bool
+		text, err := rt.sess.RunTurnTools(ctx, line, func(d string) {
+			streamedDelta = true
+			fmt.Print(d)
+		}, rt.tools, approver)
 		stop()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "\nerror:", err)
+			if reason, ok := router.ProviderErrorReason(err); ok {
+				if streamedDelta {
+					fmt.Println()
+				}
+				fmt.Println("error:", reason)
+			} else {
+				fmt.Fprintln(os.Stderr, "\nerror:", err)
+			}
 			if text != "" {
 				fmt.Fprintln(os.Stderr, "(partial reply was NOT logged)")
 			}
