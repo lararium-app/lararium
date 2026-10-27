@@ -2,6 +2,7 @@ package custosdoor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -345,4 +346,62 @@ func TestDetachClearsMCPState(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("MCP state survived detach: statuses=%+v", cl.Statuses())
+}
+
+// TestMCPClient_CallDoesNotBlockResolve verifies that a parked MCP-CALL uses
+// its own dedicated connection and does not hold cmdMu on c.sess, allowing
+// ResolveVia to settle a card immediately while Call is waiting (A-2).
+func TestMCPClient_CallDoesNotBlockResolve(t *testing.T) {
+	cl, fs, cleanup := setupTestClient(t)
+	defer cleanup()
+	mainConn := waitAttached(t, cl, fs)
+
+	cardID := "a_1234567890abcdef"
+	callResultCh := make(chan string, 1)
+	callErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		res, err := cl.Call(ctx, "alpha", "echo", json.RawMessage(`{"message":"hi"}`))
+		if err != nil {
+			callErrCh <- err
+			return
+		}
+		callResultCh <- string(res)
+	}()
+
+	// Accept the dedicated MCP-CALL connection on the fake server.
+	callConn := fs.hello(t, "[]")
+	if got := callConn.recv(t); got != `MCP-CALL alpha echo {"message":"hi"}` {
+		t.Fatalf("Call command = %q", got)
+	}
+
+	// While Call is parked on callConn, Resolve on the main session must
+	// complete immediately and release callConn upon receiving APPROVE.
+	go func() {
+		approveLine := mainConn.recv(t)
+		if approveLine != "APPROVE "+cardID+" once via web" {
+			t.Errorf("expected APPROVE on mainConn, got %q", approveLine)
+		}
+		mainConn.send("OK")
+		callConn.send(`OK {"content":[{"type":"text","text":"echo:hi"}]}`)
+	}()
+
+	state, err := cl.Resolve(cardID, VerdictOnce)
+	if err != nil || state != StateApproved {
+		t.Fatalf("Resolve = (%q, %v), want (%q, nil)", state, err, StateApproved)
+	}
+
+	select {
+	case err := <-callErrCh:
+		t.Fatalf("Call returned error: %v", err)
+	case got := <-callResultCh:
+		if !strings.Contains(got, "echo:hi") {
+			t.Fatalf("Call result = %q, want echo:hi", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Call did not finish after Resolve")
+	}
 }

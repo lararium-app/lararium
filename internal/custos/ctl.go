@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -120,8 +121,12 @@ type CtlServer struct {
 // SetRailRegistry attaches the RailRegistry to the control server (§9).
 func (s *CtlServer) SetRailRegistry(r *RailRegistry) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.rail = r
+	w := s.workers
+	s.mu.Unlock()
+	if w != nil && r != nil {
+		w.BindRailRegistry(r)
+	}
 }
 
 func (s *CtlServer) railRegistry() *RailRegistry {
@@ -146,8 +151,18 @@ func (s *CtlServer) SetProxy(p *Proxy) {
 // SetWorkers attaches the worker lane server to the control server (§5.1).
 func (s *CtlServer) SetWorkers(w *WorkerServer) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.workers = w
+	if s.hub == nil && w != nil && w.hub != nil {
+		s.hub = w.hub
+	}
+	r := s.rail
+	if r == nil && w != nil {
+		r = w.RailRegistry()
+	}
+	s.mu.Unlock()
+	if w != nil && r != nil {
+		w.BindRailRegistry(r)
+	}
 }
 
 // SetHub attaches the ApprovalHub to the control server (§6.4a).
@@ -366,9 +381,23 @@ func (s *CtlServer) Close() error {
 
 // CtlClient communicates with the daemon over ctl.sock.
 type CtlClient struct {
-	sockPath string
-	token    string
-	timeout  time.Duration
+	sockPath  string
+	token     string
+	timeout   time.Duration
+	parkedOut io.Writer
+}
+
+// SetParkedWriter sets the destination for interim parked-approval notices
+// (defaults to os.Stderr when nil).
+func (c *CtlClient) SetParkedWriter(w io.Writer) {
+	c.parkedOut = w
+}
+
+func (c *CtlClient) parkedWriter() io.Writer {
+	if c.parkedOut != nil {
+		return c.parkedOut
+	}
+	return os.Stderr
 }
 
 // NewCtlClient creates a client connecting to ctl.sock with token read from stateDir.
@@ -429,6 +458,12 @@ func (c *CtlClient) RoundTripWithArg(cmd, arg string) (string, error) {
 // round-trip deadline (slow-path verbs: MCP-CALL waits for a worker
 // exec, which can outlast ctlCommandTimeout).
 func (c *CtlClient) RoundTripWithArgTimeout(cmd, arg string, timeout time.Duration) (string, error) {
+	if cmd == "MCP-CALL" {
+		minDeadline := workerConnDeadline(DefaultAskHoldTimeout, DefaultWorkerExecTimeout)
+		if timeout < minDeadline {
+			timeout = minDeadline
+		}
+	}
 	d := net.Dialer{Timeout: c.timeout}
 	conn, err := d.DialContext(context.Background(), "unix", c.sockPath)
 	if err != nil {
@@ -441,14 +476,31 @@ func (c *CtlClient) RoundTripWithArgTimeout(cmd, arg string, timeout time.Durati
 		return "", err
 	}
 
-	resp, err := bufio.NewReader(conn).ReadString('\n')
+	reader := bufio.NewReader(conn)
+	resp, err := reader.ReadString('\n')
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
 	resp = strings.TrimRight(resp, "\r\n")
 
+	var parkedID string
+	if strings.HasPrefix(resp, "PARKED ") {
+		parkedID = strings.TrimSpace(strings.TrimPrefix(resp, "PARKED "))
+		fmt.Fprintf(c.parkedWriter(), "call parked pending approval (id %s)\n", parkedID)
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+		resp, err = reader.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("approval denied or timed out while parked (id %s)", parkedID)
+		}
+		resp = strings.TrimRight(resp, "\r\n")
+	}
+
 	if strings.HasPrefix(resp, "ERR ") {
-		return "", errors.New(strings.TrimPrefix(resp, "ERR "))
+		reason := strings.TrimPrefix(resp, "ERR ")
+		if parkedID != "" {
+			return "", fmt.Errorf("approval %s (id %s)", reason, parkedID)
+		}
+		return "", errors.New(reason)
 	}
 	if strings.HasPrefix(resp, "OK ") {
 		return strings.TrimPrefix(resp, "OK "), nil

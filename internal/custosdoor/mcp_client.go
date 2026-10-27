@@ -1,15 +1,23 @@
 package custosdoor
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// defaultMCPCallTimeout bounds a synchronous MCP-CALL over doors.sock:
+// default ask hold (330 s) + default worker exec (60 s) + 30 s slack (§7).
+const defaultMCPCallTimeout = (330 + 60 + 30) * time.Second
 
 type mcpState struct {
 	mu       sync.RWMutex
@@ -293,8 +301,13 @@ func (c *Client) Refresh(ctx context.Context, name string) error {
 // → `OK <result-json>` | `ERR <reason>`. argsJSON must be a raw JSON
 // object matching the tool's InputSchema (empty → "{}"). The returned
 // bytes are the raw execution result frame (MCP content[] shape, §6.3).
-// Tool execution is slow-path (worker exec timeout + rail budget per
-// §7), so unlike the metadata verbs the reply wait defaults to 90 s.
+//
+// Because an ask-gated MCP-CALL blocks server-side on the approval card
+// hold (up to ask_hold_timeout + worker_exec_timeout + 30 s slack, §7),
+// Call opens a dedicated doors.sock connection rather than holding
+// c.cmdMu on c.sess. That keeps c.sess free to stream CARD/GONE events
+// and settle human resolutions (APPROVE/DENY via ResolveVia) immediately
+// inside the hold window (A-2).
 func (c *Client) Call(ctx context.Context, connector, tool string, argsJSON json.RawMessage) (json.RawMessage, error) {
 	if connector == "" {
 		return nil, fmt.Errorf("custos: empty connector name")
@@ -307,52 +320,109 @@ func (c *Client) Call(ctx context.Context, connector, tool string, argsJSON json
 		args = "{}"
 	}
 
-	c.cmdMu.Lock()
-	defer c.cmdMu.Unlock()
-
-	c.mu.Lock()
-	s := c.sess
-	c.mu.Unlock()
-	if s == nil {
-		return nil, ErrDoorDown
-	}
-
-	select {
-	case <-s.ack:
-	default:
-	}
-
-	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-	if _, err := s.conn.Write([]byte("MCP-CALL " + connector + " " + tool + " " + args + "\n")); err != nil {
-		s.conn.Close()
+	raw, err := os.ReadFile(c.opts.TokenPath)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
 	}
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" || strings.ContainsAny(tok, " \t\r\n\x00") {
+		return nil, fmt.Errorf("%w: empty or malformed door token", ErrDoorDown)
+	}
 
-	callTimeout := 90 * time.Second
+	callTimeout := defaultMCPCallTimeout
 	if d, ok := ctx.Deadline(); ok {
 		if rem := time.Until(d); rem > 0 && rem < callTimeout {
 			callTimeout = rem
 		}
 	}
+
+	var d net.Dialer
+	dctx, cancelDial := context.WithTimeout(ctx, min(helloTimeout, callTimeout))
+	conn, err := d.DialContext(dctx, "unix", c.opts.SockPath)
+	cancelDial()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
+	}
+	defer conn.Close()
+
 	t := time.NewTimer(callTimeout)
 	defer t.Stop()
+	var timedOut atomic.Bool
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-t.C:
+			timedOut.Store(true)
+			_ = conn.Close()
+		case <-stop:
+		}
+	}()
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-s.dead:
-		return nil, ErrDoorDown
-	case <-t.C:
-		s.conn.Close()
-		return nil, errors.New("custos: MCP-CALL reply timed out")
-	case line := <-s.ack:
-		if strings.HasPrefix(line, "OK ") {
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if _, err := conn.Write([]byte("HELLO " + tok + " " + c.name + "\n")); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
+
+	br := bufio.NewReaderSize(conn, 64<<10)
+	_ = conn.SetReadDeadline(time.Now().Add(min(helloTimeout, callTimeout)))
+	helloLine, err := readLine(br)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	switch {
+	case helloLine == "ERR bad_token":
+		return nil, ErrBadToken
+	case strings.HasPrefix(helloLine, "OK "):
+	case strings.HasPrefix(helloLine, "ERR "):
+		return nil, mapMCPErr(strings.TrimPrefix(helloLine, "ERR "))
+	default:
+		return nil, fmt.Errorf("custos: unexpected HELLO reply %q", truncate(helloLine))
+	}
+
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if _, err := conn.Write([]byte("MCP-CALL " + connector + " " + tool + " " + args + "\n")); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
+
+	for {
+		line, err := readLine(br)
+		if err != nil {
+			if timedOut.Load() {
+				return nil, errors.New("custos: MCP-CALL reply timed out")
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("%w: %w", ErrDoorDown, err)
+		}
+		switch {
+		case strings.HasPrefix(line, "CARD "),
+			strings.HasPrefix(line, "GONE "),
+			strings.HasPrefix(line, "MCP-STATUS "),
+			strings.HasPrefix(line, "MCP-TOOLS "):
+			c.handleLine(nil, line)
+		case strings.HasPrefix(line, "PARKED "):
+			// Interim parked notice; continue waiting for terminal OK/ERR.
+		case strings.HasPrefix(line, "OK "):
 			return json.RawMessage(strings.TrimPrefix(line, "OK ")), nil
-		}
-		if strings.HasPrefix(line, "ERR ") {
+		case strings.HasPrefix(line, "ERR "):
 			return nil, mapMCPErr(strings.TrimPrefix(line, "ERR "))
+		default:
+			return nil, fmt.Errorf("custos: unexpected reply %q", truncate(line))
 		}
-		return nil, fmt.Errorf("custos: unexpected reply %q", truncate(line))
 	}
 }
 

@@ -114,12 +114,12 @@ toggle-simulated-logging        none        Toggle Simulated Logging    {"$schem
 ```
 
 Rail calls run under the same custody policy as chat turns, and every unseen
-tool defaults to `ask`. The CLI carries no approval prompt and surfaces no
-approvable card: a gated call waits out a fixed 60-second dispatch hold (it
-does not read `ask_hold_timeout` — tracked as
-[#175](https://github.com/lararium-app/lararium/issues/175)), then
-auto-denies and the command closes with `read response: EOF`. Approve the
-connector first — `trust` writes one
+tool defaults to `ask`. When an `ask`-gated `custos mcp call` runs, the CLI
+prints `call parked pending approval (id a_…)` while the approval card surfaces
+in the web UI (`GET /v1/custos/cards` / `custos approvals`) for up to
+`custos.ask_hold_timeout` (default 5m30s / 330 s), executing once approved or
+exiting with an approval verdict if denied or timed out. Alternatively, approve
+the connector ahead of time — `trust` writes one
 connector-wide `auto` rule (`everything/*`), undone by
 `custos mcp distrust everything`:
 
@@ -182,7 +182,7 @@ If the reply comes back empty, the provider failed or was slow — a cold
 model slot loads on first request. Confirm the server answers
 (`curl <base_url>/models`) and send the turn again.
 
-Per [MCP-SPEC.md](MCP-SPEC.md), every unseen rail tool defaults to policy verdict `ask`. Annotation flags reported by servers (such as `read_only`) do not grant automatic approval. When the model selects a rail tool that no rule auto-approves, the web interface displays an approval card naming the tool and destination; the arguments sit behind `Edit Parameters`. **Current-build caveat:** the pending call behind a card is killed 60 s after the tool call, and card resolutions have been observed to arrive too late to count (`Allow once` and the resolve API block, then the call denies at the 60 s mark — [#175](https://github.com/lararium-app/lararium/issues/175)). If `echo` comes back `denied`, that is this bug, not your setup: the working path for rail tools today is the `trust` rule above. Selecting `Always` is designed to write an `auto` rule bound to the tool schema fingerprint, so later chat turns skip the card for that tool. If a server refresh alters the tool description or schema, the fingerprint changes, the rule is revoked, and subsequent invocations revert to `ask`. A connector made fully `trust`ed earlier shows no cards at all — `custos mcp distrust` restores the per-call flow.
+Per [MCP-SPEC.md](MCP-SPEC.md), every unseen rail tool defaults to policy verdict `ask`. Annotation flags reported by servers (such as `read_only`) do not grant automatic approval. When the model selects a rail tool that no rule auto-approves, the web interface displays an approval card naming the tool and destination; the arguments sit behind `Edit Parameters`. The pending call waits up to `custos.ask_hold_timeout` (default 5m30s / 330 s) for a resolution (`Allow once`, `Always`, or `Deny`). Selecting `Always` writes an `auto` rule bound to the tool schema fingerprint, so later chat turns skip the card for that tool. If a server refresh alters the tool description or schema, the fingerprint changes, the rule is revoked, and subsequent invocations revert to `ask`. A connector made fully `trust`ed earlier shows no cards at all — `custos mcp distrust` restores the per-call flow.
 
 In the Doors view of the web UI, the "MCP connectors" card shows connector name `everything`, status pill `ready`, and total discovered tool count. The chat, its approval cards, and the HTTP API behind them (token-opened door URLs, streaming, resolving cards remotely) are specified in [SURFACE-SPEC.md](SURFACE-SPEC.md).
 
@@ -223,4 +223,4 @@ If a connector fails to reach `ready` state, inspect `custos mcp status` and mat
 | `disabled` | `credential_unavailable` | A referenced `${env:NAME}` was unset when the daemon started, or a `${vault:...}` credential was not found or the vault is locked | Export the variable or unlock the vault via `custos unlock` (or configure `custos.unlock_keyfile`), then restart the daemon |
 | `disabled` | `name_occupied` | Connector name matches a credential name in the vault or a reserved namespace | Rename the connector in `lararium.yaml` to an unreserved identifier |
 
-`custos mcp status` or `mcp call` failing with `read response: EOF` has two common causes: (1) the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying; (2) the call hit the `ask` gate — the CLI has no way to approve, so it waits out the 60-second dispatch hold and closes; run the `trust` step above (approval cards from chat turns cannot be resolved in time in the current build, [#175](https://github.com/lararium-app/lararium/issues/175)).
+`custos mcp status` failing with `read response: EOF` commonly occurs when the connector holds its initialization lock across `tools/list` while `npx` performs a cold package download, which can outlast the 5-second CLI socket deadline — let the download finish before querying. An `ask`-gated `custos mcp call` prints `call parked pending approval (id a_…)` and waits up to `custos.ask_hold_timeout` (default 5m30s / 330 s) for approval in the web UI or via `custos approvals approve <id>` (or use `custos mcp trust <name>` to auto-approve).

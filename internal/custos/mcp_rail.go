@@ -67,14 +67,16 @@ type MCPConnector struct {
 	debPending bool
 
 	// Injected seams & options
-	auditSink   AuditSink
-	vaultGate   VaultGate
-	envResolver func(string) (string, error)
-	revoker     FingerprintRevoker
-	clock       func() time.Time
-	afterFunc   func(time.Duration, func()) *time.Timer
-	sigkillWait time.Duration
-	execTimeout time.Duration
+	auditSink      AuditSink
+	vaultGate      VaultGate
+	envResolver    func(string) (string, error)
+	revoker        FingerprintRevoker
+	clock          func() time.Time
+	afterFunc      func(time.Duration, func()) *time.Timer
+	sigkillWait    time.Duration
+	execTimeout    time.Duration
+	askHoldTimeout time.Duration
+	workers        *WorkerServer
 
 	changeListener atomic.Pointer[MCPChangeListener]
 }
@@ -130,7 +132,18 @@ func WithSigkillGrace(d time.Duration) Option {
 // WithExecTimeout sets the worker execution timeout ceiling.
 func WithExecTimeout(d time.Duration) Option {
 	return func(c *MCPConnector) {
-		c.execTimeout = d
+		if d > 0 {
+			c.execTimeout = d
+		}
+	}
+}
+
+// WithAskHoldTimeout sets the approval hold ceiling for ask-gated MCP-CALLs.
+func WithAskHoldTimeout(d time.Duration) Option {
+	return func(c *MCPConnector) {
+		if d > 0 {
+			c.askHoldTimeout = d
+		}
 	}
 }
 
@@ -275,10 +288,7 @@ func (c *MCPConnector) Execute(
 	c.mu.Unlock()
 
 	// 2. Concurrency semaphore bounded by worker execution timeout
-	execTimeout := c.execTimeout
-	if execTimeout <= 0 {
-		execTimeout = DefaultWorkerExecTimeout
-	}
+	execTimeout := c.ExecTimeout()
 	waitCtx, waitCancel := context.WithTimeout(ctx, execTimeout)
 	defer waitCancel()
 
@@ -440,4 +450,69 @@ func (c *MCPConnector) notifyChange(toolsChanged bool) {
 		name := c.cfg.Name
 		go fn(name, toolsChanged)
 	}
+}
+
+// SetExecTimeout updates the configured worker execution timeout ceiling.
+func (c *MCPConnector) SetExecTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.execTimeout = d
+	c.mu.Unlock()
+}
+
+// ExecTimeout returns the connector's configured worker execution timeout,
+// falling back to DefaultWorkerExecTimeout (60 s) only when unset.
+func (c *MCPConnector) ExecTimeout() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.execTimeout > 0 {
+		return c.execTimeout
+	}
+	return DefaultWorkerExecTimeout
+}
+
+// SetAskHoldTimeout updates the configured ask-hold timeout for this connector.
+func (c *MCPConnector) SetAskHoldTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.askHoldTimeout = d
+	c.mu.Unlock()
+}
+
+// AskHoldTimeout returns the connector's configured approval hold timeout
+// (0 when no config has been bound).
+func (c *MCPConnector) AskHoldTimeout() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.askHoldTimeout > 0 {
+		return c.askHoldTimeout
+	}
+	if c.workers != nil && c.workers.cfg != nil && c.workers.cfg.AskHoldTimeout > 0 {
+		return c.workers.cfg.AskHoldTimeout
+	}
+	return 0
+}
+
+func (c *MCPConnector) setWorkers(ws *WorkerServer) {
+	c.mu.Lock()
+	c.workers = ws
+	if ws != nil && ws.cfg != nil {
+		if ws.cfg.WorkerExecTimeout > 0 {
+			c.execTimeout = ws.cfg.WorkerExecTimeout
+		}
+		if ws.cfg.AskHoldTimeout > 0 {
+			c.askHoldTimeout = ws.cfg.AskHoldTimeout
+		}
+	}
+	c.mu.Unlock()
+}
+
+func (c *MCPConnector) workersServer() *WorkerServer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.workers
 }

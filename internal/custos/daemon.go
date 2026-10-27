@@ -34,6 +34,7 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 	proxy := NewProxy(v, hub, cfg)
 	workers := NewWorkerServer(v, hub, cfg)
 	rail := workers.RailRegistry()
+	workers.BindRailRegistry(rail)
 
 	return &Daemon{
 		cfg:      cfg,
