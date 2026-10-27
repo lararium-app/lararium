@@ -115,6 +115,7 @@ Run these from the **repo root** (not `docker/`):
 
 ```bash
 cd lararium
+(cd web && npm ci && npm run build)   # web chat assets; hearthd embeds web/dist/
 go build -o hearthd ./cmd/hearthd   # Go 1.26+
 ./hearthd setup                      # interactive provider configuration
 ./hearthd serve
