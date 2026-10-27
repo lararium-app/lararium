@@ -227,20 +227,30 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 			switch {
 			case errors.Is(err, ErrCardAnswered) || err.Error() == "already_answered":
 				s.error(w, "already_answered", http.StatusConflict)
+				return
 			case errors.Is(err, ErrStaleVerdict) || err.Error() == "stale_verdict":
 				s.error(w, "stale_verdict", http.StatusConflict)
+				return
 			case errors.Is(err, ErrLocked) || err.Error() == "locked":
 				s.error(w, "locked", http.StatusLocked)
+				return
 			case errors.Is(err, ErrIPAskOnly) || err.Error() == "ip_ask_only":
 				s.error(w, "ip_ask_only", http.StatusBadRequest)
+				return
 			case errors.Is(err, ErrBadSource) || err.Error() == "bad_source":
 				s.error(w, "bad_source", http.StatusBadRequest)
+				return
 			default:
+				if hub := s.approvalsViaRegistry(); hub != nil {
+					if _, ok := hub.SessionOf(id); ok {
+						break
+					}
+				}
 				// #nosec G706 -- id is shape-validated by the card ID gate, logSanitize strips control chars
 				stdlog.Printf("surface: custos card resolve %s failed: %v", logSanitize(id), err)
 				s.error(w, "internal error", http.StatusInternalServerError)
+				return
 			}
-			return
 		}
 	}
 

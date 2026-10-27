@@ -2,7 +2,10 @@ package custos
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
+
+	"github.com/lararium-app/lararium/internal/surface"
 )
 
 // askCard parks the worker call behind an approval card carrying the tool
@@ -154,4 +157,77 @@ func (ws *WorkerServer) RegisterParkForTest(id, cellID, cred, tool, review strin
 		review:    review,
 		createdAt: time.Now(),
 	})
+}
+
+// BindRailRegistry propagates the worker server's configured AskHoldTimeout,
+// WorkerExecTimeout, and park manager reference onto every MCPConnector in
+// reg (and ws.rail).
+func (ws *WorkerServer) BindRailRegistry(reg *RailRegistry) {
+	if ws == nil {
+		return
+	}
+	if reg != nil {
+		for _, conn := range reg.Connectors() {
+			conn.setWorkers(ws)
+		}
+	}
+	if ws.rail != nil && ws.rail != reg {
+		for _, conn := range ws.rail.Connectors() {
+			conn.setWorkers(ws)
+		}
+	}
+}
+
+// registerMCPPark registers an ask-gated MCP-CALL in both the ApprovalHub and
+// the worker park manager (mirroring askCard) so that CardSnapshot,
+// DoorServer.buildCardWireLocking, RebroadcastCard, and storeAlwaysRule all
+// observe the parked call (A-3).
+func (ws *WorkerServer) registerMCPPark(
+	hub *surface.ApprovalHub,
+	actor, cred, host, tool, review string,
+	hold time.Duration,
+) (id string, decisionCh <-chan bool, unpark func()) {
+	if hub == nil {
+		return "", nil, func() {}
+	}
+	if actor == "" {
+		actor = "ctl"
+	}
+	if host == "" {
+		host = cred
+	}
+	dest := cred + "/" + tool
+	if ws == nil || ws.parkMgr == nil {
+		id, decisionCh = hub.RegisterCustos(actor, cred, dest, review, hold, nil)
+		return id, decisionCh, func() {}
+	}
+
+	pm := ws.parkMgr
+	var flow *parkedFlow
+	id, decisionCh = hub.RegisterCustos(actor, cred, dest, review, hold, func(cardID string) {
+		flow = &parkedFlow{
+			id:        cardID,
+			cellID:    actor,
+			cred:      cred,
+			host:      host,
+			path:      tool,
+			review:    review,
+			outcomeCh: make(chan string, 1),
+			createdAt: time.Now(),
+		}
+		pm.mu.Lock()
+		pm.addParkLocked(flow)
+		pm.mu.Unlock()
+	})
+	ws.refreshCard(id)
+
+	var once sync.Once
+	unpark = func() {
+		once.Do(func() {
+			pm.mu.Lock()
+			pm.removeParkLocked(flow)
+			pm.mu.Unlock()
+		})
+	}
+	return id, decisionCh, unpark
 }
