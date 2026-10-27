@@ -222,8 +222,34 @@ each owns its override explicitly):
   `<connector>/<tool>`) + `host` (per §4.2) +
   `names=["blocks_collapsed"|"text_truncated"|"structuredContent_dropped"]`;
   `mcp_always_revoked` → `tool` + `cred`. No new audit fields exist.
+- **A9** — §3 (MCP-CALL approval lane, issue #175): an `ask`-verdict
+  `MCP-CALL` no longer holds its own connection hostage across the human
+  hold, and parked calls are visible on every lane.
+  (a) **Server**: the MCP-CALL ask gate holds for the configured
+  `custos.ask_hold_timeout` (default 330 s), not the former hardcoded
+  60 s; the ctl.sock command deadline for `MCP-CALL` is the frozen §7
+  budget anchor `workerConnDeadline = hold + exec + 30 s` (defaults
+  420 s), replacing A3's narrower `exec_timeout + 30 s`.
+  (b) **ctl.sock frame**: a new additive single-line reply frame
+  `PARKED <id>` may appear once, after the card registers and before the
+  blocking decision — still one line per the frame law (V-sibling
+  test pins it). `CtlClient.RoundTripWithArgTimeout` prints
+  `call parked pending approval (id …)` to the operator on receipt and
+  keeps waiting; on denial/timeout the error reads
+  `approval denied (id …)` (distinct from transport errors, so
+  `read response: …` on a dead socket still means dead socket,
+  issue #167).
+  (c) **Cards**: a parked rail call registers through the same
+  park-manager path as worker-lane asks (`registerMCPPark`), so
+  `CardSnapshot` and the door stream carry the full card on the CLI
+  lane too.
+  (d) **Door client**: `internal/custosdoor` `Client.Call` dials a
+  **dedicated** `doors.sock` connection per call (budget =
+  `workerConnDeadline`) instead of holding the shared session under
+  `cmdMu` across the hold — an approval response from the same client
+  can always reach the door while a call is parked.
 
-Stated count: eight.
+Stated count: nine.
 
 ## 2. Principles (load-bearing)
 
