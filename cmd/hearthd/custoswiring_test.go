@@ -159,8 +159,8 @@ func TestCustosDoor_ConnectAndDisconnectLogging(t *testing.T) {
 func TestREPLBanner_WithCustosConfig(t *testing.T) {
 	cfg := &Config{
 		Custos: CustosConfig{
-			DoorsSock: "/tmp/doors.sock",
-			DoorToken: "/tmp/door.token",
+			DoorsSock: "/tmp/test-doors.sock",
+			DoorToken: "/tmp/test-door.token", //nolint:gosec // G101: illustrative fixture path, not a credential
 		},
 	}
 	var buf bytes.Buffer
