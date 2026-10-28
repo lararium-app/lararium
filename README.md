@@ -38,7 +38,7 @@ already carry.
   fail-closed networking, hard resource caps. The threat model assumes prompt
   injection *succeeds*; the cage makes misbehavior physically expensive.
 
-## Status: beta (v1.0.0-beta3)
+## Status: beta (v1.0.0-beta4)
 
 > [!WARNING]
 > Lararium is in **public beta**. File formats are frozen per-component; wire
@@ -53,8 +53,12 @@ already carry.
   clickable tool-approval cards in the browser.
 - **Telegram bridge** (`nuntius`) — one-owner bridge with pairing codes,
   streaming replies, and approval cards that resolve from the phone.
-- **Android companion app** (beta) — pairs by QR code, receives approval push
-  notifications, and resolves cards with one tap; the gated tool then executes.
+- **Android companion app** (beta) — chat, approval cards with one-tap
+  Allow/Deny notifications, and a lock-screen guard for sensitive content.
+  Pair it from **Settings → Pair with hearth** with a pairing link or an API
+  token. Sideload the APK:
+  [lararium-app/android-client](https://github.com/lararium-app/android-client) ·
+  [latest release](https://github.com/lararium-app/android-client/releases/latest).
 - **MCP connectors** — any [Model Context Protocol](https://modelcontextprotocol.io)
   server becomes policy-gated tools. See [configuration](#connecting-an-mcp-server) below.
 
