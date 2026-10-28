@@ -365,7 +365,7 @@ func ClassifyWorkerErrorForTest(err error) V13TestError {
 // field individually (api_key secret; oauth2 client_secret, refresh_token,
 // access_token separately) and every loaded surrogate token, replaced
 // left-to-right non-overlapping with [redacted]; values < 8 chars are never
-// replaced (KEYS-SPEC floor).
+// replaced (package-level minimum length floor to avoid over-redacting short substrings).
 func (ws *WorkerServer) ScrubDetail(detail string) string {
 	pairs := ws.scrubNeedles()
 	if len(pairs) == 0 {

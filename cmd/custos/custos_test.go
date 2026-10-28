@@ -105,6 +105,32 @@ func TestCustosCLI(t *testing.T) {
 		t.Errorf("audit verify output = %q, want prefix 'chain ok'", stdout.String())
 	}
 
+	// 3b. custos login with forged state must be refused and audited as login_denied (CUSTOS-SPEC V13)
+	loginCmd := exec.Command(bin, "--config", cfgPath, "login", "gmail", "--client-id", "test-client-id", "--manual")
+	loginCmd.Stdin = strings.NewReader("clientsecret123\n" + pass + "\nhttp://127.0.0.1:8080/cb?code=fakecode&state=forged-state-12345\n")
+	stderr.Reset()
+	loginCmd.Stderr = &stderr
+	if err := loginCmd.Run(); err == nil {
+		t.Fatal("login with forged state expected error, got nil")
+	}
+
+	// Verify that the login_denied record was emitted in the audit trail:
+	vCheck := custos.NewVault(filepath.Join(home, "custos"), time.Second)
+	recs, err := vCheck.Audit().ReadTailRecords(20)
+	if err != nil {
+		t.Fatalf("read audit records: %v", err)
+	}
+	var foundDenied bool
+	for _, r := range recs {
+		if r.Kind == custos.AuditKindLoginDenied && r.Actor == "cli" && r.Reason == "state_mismatch" {
+			foundDenied = true
+			break
+		}
+	}
+	if !foundDenied {
+		t.Fatalf("forged-state login denial did not emit login_denied(state_mismatch) audit record; records: %+v", recs)
+	}
+
 	// 4. custos unlock
 	cmd = exec.Command(bin, "--config", cfgPath, "unlock")
 	cmd.Stdin = strings.NewReader(pass + "\n")
