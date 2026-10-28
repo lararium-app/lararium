@@ -18,7 +18,7 @@ import (
 func TestGmailResiduals_NilVaultAndLocked(t *testing.T) {
 	ctx := context.Background()
 	expiredCred := Credential{
-		AccessToken:  "old-token",
+		AccessToken:  "at-stale-token",
 		AccessExpiry: time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
 	}
 
@@ -167,7 +167,7 @@ func TestGmailResiduals_AssertURLHost(t *testing.T) {
 func TestGmailResiduals_SendAndReadMalformedJSON(t *testing.T) {
 	ctx := context.Background()
 	freshCred := Credential{
-		AccessToken:  "ya29.test-valid-access-token",
+		AccessToken:  "at-test-access-aaaa",
 		AccessExpiry: time.Now().Add(1 * time.Hour).Format(time.RFC3339),
 	}
 
@@ -298,7 +298,7 @@ func TestGmailResiduals_RandMessageIDFailure(t *testing.T) {
 	// 3. Connector execSend path mapping to internal:
 	ctx := context.Background()
 	freshCred := Credential{
-		AccessToken:  "ya29.valid-token",
+		AccessToken:  "at-fixture-stale",
 		AccessExpiry: time.Now().Add(time.Hour).Format(time.RFC3339),
 	}
 	g := NewGmailConnector(nil)
