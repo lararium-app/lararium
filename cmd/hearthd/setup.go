@@ -443,6 +443,38 @@ type SetupOptions struct {
 	DefaultDeviceName *string
 }
 
+// loadSetupConfig loads the config for the interactive setup wizard, or
+// scaffolds an in-memory default when the file does not exist (second return
+// reports the missing case). HEARTH_HOME overrides any config value in both
+// paths, matching the container entrypoint's precedence (issue #110).
+func loadSetupConfig(cfgPath string, getenv func(string) string) (*Config, bool, error) {
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, false, fmt.Errorf("cannot load existing config %q: %w", cfgPath, err)
+		}
+		home := "hearth"
+		if getenv("HEARTH_HOME") != "" {
+			home = custos.ResolveHearthHomeEnv("", "", getenv)
+		}
+		return &Config{
+			Hearth: HearthConfig{
+				Home:                 home,
+				CompactionTriggerPct: 80,
+				MaxTokens:            512,
+			},
+			Serve: surface.ServeConfig{
+				Listen:       "0.0.0.0:7717",
+				AllowedHosts: []string{"localhost", "127.0.0.1", "[::1]"},
+			},
+		}, true, nil
+	}
+	if getenv("HEARTH_HOME") != "" {
+		cfg.Hearth.Home = custos.ResolveHearthHomeEnv("", cfg.Hearth.Home, getenv)
+	}
+	return cfg, false, nil
+}
+
 // RunSetup runs the hearthd setup wizard according to the specification.
 func RunSetup(opts SetupOptions) error {
 	out := opts.Out
@@ -489,32 +521,9 @@ func RunSetup(opts SetupOptions) error {
 		}
 	}
 
-	var isMissing bool
-	cfg, err := LoadConfig(cfgPath)
+	cfg, isMissing, err := loadSetupConfig(cfgPath, getenv)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("cannot load existing config %q: %w", cfgPath, err)
-		}
-		isMissing = true
-		home := "hearth"
-		if env := getenv("HEARTH_HOME"); env != "" {
-			home = custos.ResolveHearthHomeEnv("", "", getenv)
-		}
-		cfg = &Config{
-			Hearth: HearthConfig{
-				Home:                 home,
-				CompactionTriggerPct: 80,
-				MaxTokens:            512,
-			},
-			Serve: surface.ServeConfig{
-				Listen:       "0.0.0.0:7717",
-				AllowedHosts: []string{"localhost", "127.0.0.1", "[::1]"},
-			},
-		}
-	} else {
-		if env := getenv("HEARTH_HOME"); env != "" {
-			cfg.Hearth.Home = custos.ResolveHearthHomeEnv("", cfg.Hearth.Home, getenv)
-		}
+		return err
 	}
 
 	// Non-TTY stdin: print current config state + env-var instructions, exit 0, touch NO files.
@@ -1326,13 +1335,13 @@ func RunDefaults(out io.Writer, cfgPath string) error {
 		fmt.Fprintf(out, "created: %s\n", cfgPath)
 	}
 
-	if err := os.MkdirAll(hearthHome, 0o755); err != nil { //nolint:gosec // G703: operator-owned home path
+	if err := os.MkdirAll(hearthHome, 0o755); err != nil {
 		return fmt.Errorf("creating hearth home %s: %w", hearthHome, err)
 	}
 
 	for _, name := range hearth.TemplateFiles {
 		dest := filepath.Join(hearthHome, name)
-		if _, err := os.Stat(dest); err == nil { //nolint:gosec // G703: operator-owned home path
+		if _, err := os.Stat(dest); err == nil {
 			fmt.Fprintf(out, "left in place: %s\n", dest)
 			continue
 		} else if !errors.Is(err, fs.ErrNotExist) {
