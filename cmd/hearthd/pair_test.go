@@ -317,6 +317,53 @@ func TestPairUnpairTokenSweep(t *testing.T) {
 	}
 }
 
+// TestPairUnpairAppTokenSweep verifies that unpairing an app user revokes the token labeled "paired:<user_id>".
+func TestPairUnpairAppTokenSweep(t *testing.T) {
+	bin := buildCLI(t)
+	cfgPath, home := hearthHome(t)
+
+	store, err := nuntius.NewPairStore(filepath.Join(home, "nuntius"))
+	if err != nil {
+		t.Fatalf("NewPairStore: %v", err)
+	}
+	now := time.Now()
+	code, err := store.Mint(now, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	const appUserID = "app:pixel-8"
+	if res, err := store.Redeem(appUserID, code, now); err != nil || res != nuntius.RedeemPaired {
+		t.Fatalf("Redeem: res=%v err=%v", res, err)
+	}
+
+	ts, err := surface.OpenTokenStore(filepath.Join(home, "tokens.json"))
+	if err != nil {
+		t.Fatalf("OpenTokenStore: %v", err)
+	}
+	if _, err := ts.Create("paired:" + appUserID); err != nil {
+		t.Fatalf("Create paired token: %v", err)
+	}
+	if _, err := ts.Create("surviving_token"); err != nil {
+		t.Fatalf("Create surviving: %v", err)
+	}
+
+	stdout, stderr, exitCode := runPairCLI(t, bin, cfgPath, "unpair", appUserID)
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("unpair failed: code=%d stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, `revoked API token labeled "paired:`+appUserID+`"`) {
+		t.Errorf("paired token not revoked in output:\n%s", stdout)
+	}
+
+	live, err := ts.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(live) != 1 || live[0].Label != "surviving_token" {
+		t.Fatalf("post-unpair live set = %+v, want only surviving_token", live)
+	}
+}
+
 func TestPairSubcommandRegistrationAndUsage(t *testing.T) {
 	bin := buildCLI(t)
 	cfgPath, _ := hearthHome(t)

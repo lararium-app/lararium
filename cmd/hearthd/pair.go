@@ -187,11 +187,13 @@ func sweepTokensAfterUnpair(cfg *Config, userID string) {
 		fmt.Fprintf(os.Stderr, "hearthd: cannot inspect API tokens: %v\n", err)
 		return
 	}
-	revoked, err := ts.Revoke(userID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "hearthd: cannot revoke token %q: %v\n", userID, err)
-	} else if revoked {
-		fmt.Printf("revoked API token labeled %q\n", userID)
+	for _, l := range []string{userID, "paired:" + userID} {
+		revoked, err := ts.Revoke(l)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hearthd: cannot revoke token %q: %v\n", l, err)
+		} else if revoked {
+			fmt.Printf("revoked API token labeled %q\n", l)
+		}
 	}
 	live, err := ts.List()
 	if err != nil {
@@ -205,5 +207,31 @@ func sweepTokensAfterUnpair(cfg *Config, userID string) {
 	fmt.Println("live API tokens (survive unpair; revoke leftovers with 'hearthd token revoke <label>'):")
 	for _, t := range live {
 		fmt.Printf("  %-24s %s…  created %s\n", t.Label, t.Prefix, t.Created)
+	}
+}
+
+// pairStoreAdapter adapts *nuntius.PairStore to surface.PairStore (issue #184).
+type pairStoreAdapter struct {
+	store *nuntius.PairStore
+}
+
+func newPairStoreAdapter(store *nuntius.PairStore) surface.PairStore {
+	if store == nil {
+		return nil
+	}
+	return &pairStoreAdapter{store: store}
+}
+
+func (a *pairStoreAdapter) Redeem(userID, code string, now time.Time) (surface.RedeemResult, error) {
+	res, err := a.store.Redeem(userID, code, now)
+	switch res {
+	case nuntius.RedeemPaired:
+		return surface.RedeemPaired, err
+	case nuntius.RedeemInvalid:
+		return surface.RedeemInvalid, err
+	case nuntius.RedeemAlready:
+		return surface.RedeemAlready, err
+	default:
+		return surface.RedeemInvalid, err
 	}
 }
