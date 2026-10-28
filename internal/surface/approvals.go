@@ -582,62 +582,83 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 		return 404, errors.New("not found")
 	}
 	if ap.state != "pending" {
-		hook := h.staleVerdictHook
-		cred := ap.cred
-		cell := ap.cell
-		origReason := ap.reason
-		currState := ap.state
-		h.mu.Unlock()
-		stdlog.Printf("approvals: ignored late resolution attempt for %s (already terminal %s, via %q)", logSanitize(id), logSanitize(currState), logSanitize(via)) //nolint:gosec // logSanitize neutralizes control chars
-		if allow && hook != nil {
-			hook(id, sessionID, cred, cell, origReason)
-		}
-		return 410, errors.New("already resolved")
+		return h.lateResolveLocked(id, sessionID, via, ap, allow)
 	}
 
 	toolName := ap.name
 	trustHook := h.connectorTrustHook
-
-	// If allow and scope=connector: mint rule before settling.
-	// Atomic: if minting fails, the card is not settled.
-	if allow && scope == "connector" {
-		if trustHook == nil {
-			h.mu.Unlock()
-			return 500, errors.New("connector trust hook unavailable")
-		}
-		h.mu.Unlock()
-		if err := trustHook(toolName); err != nil {
-			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
-		}
-		h.mu.Lock()
-		if ap.state != "pending" {
-			h.mu.Unlock()
-			return 410, errors.New("already resolved")
-		}
-	}
 
 	state, reason := "denied", "denied"
 	if allow {
 		state, reason = "approved", "ok"
 	}
 
-	if !ap.settle(state, reason, source) {
-		hook := h.staleVerdictHook
-		cred := ap.cred
-		cell := ap.cell
-		origReason := ap.reason
-		currState := ap.state
-		h.mu.Unlock()
-		stdlog.Printf("approvals: ignored late resolution attempt for %s (already terminal %s, via %q)", logSanitize(id), logSanitize(currState), logSanitize(via)) //nolint:gosec // logSanitize neutralizes control chars
-		if allow && hook != nil {
-			hook(id, sessionID, cred, cell, origReason)
+	// issue #183 (mint-on-win): the connector trust rule must exist iff the
+	// card actually ends approved. Claim the card with stamp() — which does
+	// NOT release the parked waiter — mint the rule outside the lock, then
+	// release the verdict. A competing resolve that arrives mid-mint sees
+	// the claimed state and gets 410, so a losing click can never orphan a
+	// minted rule; a failed mint puts the card back exactly pending, with
+	// its auto-deny timer re-armed.
+	if allow && scope == "connector" {
+		if trustHook == nil {
+			h.mu.Unlock()
+			return 500, errors.New("connector trust hook unavailable")
 		}
-		return 410, errors.New("already resolved")
+		prevReason, prevSource, prevTimer := ap.reason, ap.source, ap.timer
+		if !ap.stamp(state, reason, source) {
+			return h.lateResolveLocked(id, sessionID, via, ap, allow)
+		}
+		ap.via = via
+		h.mu.Unlock()
+		err := trustHook(toolName)
+		h.mu.Lock()
+		if err != nil {
+			ap.state, ap.reason, ap.source, ap.via = "pending", prevReason, prevSource, ""
+			if prevTimer != nil {
+				if d := time.Until(ap.expiresAt); d > 0 {
+					ap.timer = time.AfterFunc(d, func() { h.resolveTimeout(id) })
+				} else {
+					ap.timer = nil
+				}
+			}
+			h.mu.Unlock()
+			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
+		}
+		select {
+		case ap.ch <- true:
+		default:
+		}
+		h.mu.Unlock()
+		h.fanTerminalVia(id, sessionID, state, reason, source, via)
+		return 200, nil
+	}
+
+	if !ap.settle(state, reason, source) {
+		return h.lateResolveLocked(id, sessionID, via, ap, allow)
 	}
 	ap.via = via
 	h.mu.Unlock()
 	h.fanTerminalVia(id, sessionID, state, reason, source, via)
 	return 200, nil
+}
+
+// lateResolveLocked handles a resolve attempt against an already terminal
+// (or mid-mint claimed) card: log, optionally re-present via the stale
+// verdict hook (allow only), 410. Called with h.mu held; unlocks before
+// invoking the hook.
+func (h *ApprovalHub) lateResolveLocked(id, sessionID, via string, ap *approval, allow bool) (int, error) {
+	hook := h.staleVerdictHook
+	cred := ap.cred
+	cell := ap.cell
+	origReason := ap.reason
+	currState := ap.state
+	h.mu.Unlock()
+	stdlog.Printf("approvals: ignored late resolution attempt for %s (already terminal %s, via %q)", logSanitize(id), logSanitize(currState), logSanitize(via)) //nolint:gosec // logSanitize neutralizes control chars
+	if allow && hook != nil {
+		hook(id, sessionID, cred, cell, origReason)
+	}
+	return 410, errors.New("already resolved")
 }
 
 // CancelByCredential cancels every pending card for cred (and optional cell) with reason credential_revoked per CUSTOS CA-3, §6.4.
