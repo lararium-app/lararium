@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/surface"
 )
@@ -31,6 +32,7 @@ func keysCmd(cfgPath string, args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 	store := keystore.New(cfg.Hearth.Home)
 	socket := filepath.Join(cfg.Hearth.Home, "hearthd.sock")
 

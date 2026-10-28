@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lararium-app/lararium/internal/backup"
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/router"
@@ -277,6 +278,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 	chain := cfg.Models.Default
 	if *modelFlag != "" {
 		chain = []string{*modelFlag}
@@ -306,6 +308,7 @@ func tokenCmd(cfgPath string, args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 	switch args[0] {
 	case "create":
 		token, err := createDoorToken(cfg, args[1])
@@ -377,6 +380,7 @@ func serve(cfgPath string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 	// Fill spec defaults (port, approval/turn timeouts) BEFORE anything
 	// reads cfg.Serve: a zero timeout would arm already-expired contexts.
 	if err := cfg.Serve.Normalize(); err != nil {

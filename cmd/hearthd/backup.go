@@ -11,6 +11,7 @@ import (
 	"filippo.io/age"
 
 	"github.com/lararium-app/lararium/internal/backup"
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
@@ -90,6 +91,7 @@ func backupCreateCmd(cfgPath string, args []string) {
 		exitFunc(1)
 		return
 	}
+	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 
 	home := cfg.Hearth.Home
 	outPath := *outFlag

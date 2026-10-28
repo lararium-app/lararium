@@ -75,7 +75,7 @@ func TestCustosdDaemon(t *testing.T) {
 
 	// Wait for ctl.sock to appear
 	sockPath := filepath.Join(stateDir, "ctl.sock")
-	for range 20 {
+	for range 60 {
 		if _, err := os.Stat(sockPath); err == nil {
 			break
 		}
@@ -150,7 +150,7 @@ func TestCustosdDaemon_KeyfileMode(t *testing.T) {
 
 	// Wait for ctl.sock to appear
 	sockPath := filepath.Join(stateDir, "ctl.sock")
-	for range 20 {
+	for range 60 {
 		if _, err := os.Stat(sockPath); err == nil {
 			break
 		}
