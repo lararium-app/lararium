@@ -129,8 +129,8 @@ func nuntiusWire(hub *surface.Hub, ap *surface.ApprovalHub, defaultModel string)
 		SetBridgeLive:     ap.SetBridgeLive,
 		SetBridgeTimeout:  ap.SetBridgeTimeout,
 		MarkUndeliverable: ap.MarkUndeliverable,
-		ResolveApproval: func(sessionID, approvalID string, allow bool) int {
-			return ap.ResolveFrom(sessionID, approvalID, allow, "telegram")
+		ResolveApproval: func(sessionID, approvalID string, allow bool, scope ...string) int {
+			return ap.ResolveFrom(sessionID, approvalID, allow, "telegram", scope...)
 		},
 		SessionOf:        ap.SessionOf,
 		PendingApprovals: ap.PendingCount,

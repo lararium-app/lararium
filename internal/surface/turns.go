@@ -704,26 +704,62 @@ func auditHubPair(ap *ApprovalHub, sessionID, id, turnFallback string) (string, 
 	return reason, source
 }
 
+// SetConnectorTrustHook registers the minter hook called when an approval card
+// is resolved with scope "connector" (issue #142).
+func (h *Hub) SetConnectorTrustHook(hook func(toolName string) error) {
+	if h.ap != nil {
+		h.ap.SetConnectorTrustHook(hook)
+	}
+}
+
 // HandleApproval serves POST /v1/sessions/{id}/approvals/{aid}: resolves
-// a pending approval (allow|deny). 200 resolved, 404 unknown, 410 already
-// resolved (spec §5 approval state machine).
+// a pending approval (allow|deny) with optional scope parameter (connector).
+// 200 resolved, 400 bad request, 404 unknown, 410 already resolved (spec §5
+// approval state machine, issue #142).
 func (h *Hub) HandleApproval(w http.ResponseWriter, r *http.Request, sessionID, approvalID string) {
 	var req struct {
 		Decision string `json:"decision"`
+		Scope    string `json:"scope"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONBody(w, http.StatusBadRequest, `{"error":"invalid request body"}`)
 		return
 	}
 
-	switch h.ap.Resolve(sessionID, approvalID, req.Decision == "allow") {
+	scope := req.Scope
+	if scope == "" {
+		scope = r.URL.Query().Get("scope")
+	}
+
+	if req.Decision != "allow" && scope != "" {
+		writeJSONBody(w, http.StatusBadRequest, `{"error":"cannot combine scope with deny"}`)
+		return
+	}
+
+	if scope != "" && scope != "connector" {
+		writeJSONBody(w, http.StatusBadRequest, `{"error":"invalid scope"}`)
+		return
+	}
+
+	code, err := h.ap.ResolveScopeVia(sessionID, approvalID, req.Decision == "allow", "web", "", scope)
+	switch code {
 	case 200:
 		writeJSONBody(w, http.StatusOK, `{"ok":true}`)
+	case 400:
+		errMsg := "invalid request"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		writeJSONAny(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 	case 404:
 		writeJSONBody(w, http.StatusNotFound, `{"error":"not found"}`)
 	case 410:
 		writeJSONBody(w, http.StatusGone, `{"error":"already resolved"}`)
 	default:
-		writeJSONBody(w, http.StatusInternalServerError, `{"error":"internal error"}`)
+		errMsg := "internal error"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		writeJSONAny(w, code, map[string]string{"error": errMsg})
 	}
 }

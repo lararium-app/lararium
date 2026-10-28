@@ -195,9 +195,21 @@ export function useHearthStream({ token, onTurnComplete, onError }: UseHearthStr
   );
 
   const resolveApproval = useCallback(
-    async (sessionId: string, approvalId: string, verdict: "allow" | "deny") => {
+    async (
+      sessionId: string,
+      approvalId: string,
+      verdict: "allow" | "deny",
+      scope?: "connector"
+    ) => {
       if (!token || !sessionId) return;
       try {
+        const payload: { verdict: string; decision: string; scope?: string } = {
+          verdict,
+          decision: verdict,
+        };
+        if (scope) {
+          payload.scope = scope;
+        }
         const resp = await fetch(
           `/v1/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`,
           {
@@ -206,7 +218,7 @@ export function useHearthStream({ token, onTurnComplete, onError }: UseHearthStr
               "Content-Type": "application/json",
               Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ verdict, decision: verdict }),
+            body: JSON.stringify(payload),
           }
         );
         if (!resp.ok) {

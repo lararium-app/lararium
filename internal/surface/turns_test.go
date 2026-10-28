@@ -647,6 +647,98 @@ func TestHub_HandleApprovalForeignSession(t *testing.T) {
 	}
 }
 
+func TestHub_HandleApprovalScope(t *testing.T) {
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: true, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			return &router.Completion{Text: "done", Model: "stub"}, nil
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	// 1. Deny with scope -> 400
+	id1, _ := hub.ap.Register("main", "mcp__tool__one", `{}`, func(id string) {})
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/approvals/"+id1, strings.NewReader(`{"decision":"deny","scope":"connector"}`))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	hub.HandleApproval(w1, req1, "main", id1)
+	if w1.Code != http.StatusBadRequest {
+		t.Fatalf("deny+scope status = %d, want 400", w1.Code)
+	}
+
+	// 2. Invalid scope -> 400
+	id2, _ := hub.ap.Register("main", "mcp__tool__two", `{}`, func(id string) {})
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/approvals/"+id2, strings.NewReader(`{"decision":"allow","scope":"something_else"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	hub.HandleApproval(w2, req2, "main", id2)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("invalid scope status = %d, want 400", w2.Code)
+	}
+
+	// 3. Allow with scope connector when hook is nil -> 500, not resolved
+	id3, ch3 := hub.ap.Register("main", "mcp__tool__three", `{}`, func(id string) {})
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/approvals/"+id3, strings.NewReader(`{"decision":"allow","scope":"connector"}`))
+	req3.Header.Set("Content-Type", "application/json")
+	w3 := httptest.NewRecorder()
+	hub.HandleApproval(w3, req3, "main", id3)
+	if w3.Code != http.StatusInternalServerError {
+		t.Fatalf("no hook status = %d, want 500", w3.Code)
+	}
+	select {
+	case <-ch3:
+		t.Fatal("ch3 settled prematurely")
+	default:
+	}
+
+	// 4. Allow with scope connector when hook returns error -> 500, not resolved
+	hub.SetConnectorTrustHook(func(tool string) error {
+		return errors.New("simulated mint failure")
+	})
+	w3b := httptest.NewRecorder()
+	req3b := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/approvals/"+id3, strings.NewReader(`{"decision":"allow","scope":"connector"}`))
+	req3b.Header.Set("Content-Type", "application/json")
+	hub.HandleApproval(w3b, req3b, "main", id3)
+	if w3b.Code != http.StatusInternalServerError {
+		t.Fatalf("hook error status = %d, want 500", w3b.Code)
+	}
+	if !strings.Contains(w3b.Body.String(), "simulated mint failure") {
+		t.Fatalf("response body = %s, want simulated mint failure error", w3b.Body.String())
+	}
+	select {
+	case <-ch3:
+		t.Fatal("ch3 settled despite hook error")
+	default:
+	}
+
+	// 5. Allow with scope connector when hook succeeds -> 200, resolved
+	var mintedTool string
+	hub.SetConnectorTrustHook(func(tool string) error {
+		mintedTool = tool
+		return nil
+	})
+	w3c := httptest.NewRecorder()
+	req3c := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/approvals/"+id3, strings.NewReader(`{"decision":"allow","scope":"connector"}`))
+	req3c.Header.Set("Content-Type", "application/json")
+	hub.HandleApproval(w3c, req3c, "main", id3)
+	if w3c.Code != http.StatusOK {
+		t.Fatalf("hook success status = %d, want 200", w3c.Code)
+	}
+	if mintedTool != "mcp__tool__three" {
+		t.Fatalf("mintedTool = %q, want mcp__tool__three", mintedTool)
+	}
+	select {
+	case dec := <-ch3:
+		if !dec {
+			t.Fatal("expected allow")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for settlement")
+	}
+}
+
 func TestHeadlessTurnSharesGate(t *testing.T) {
 	startedCh := make(chan struct{})
 	unblockCh := make(chan struct{})
