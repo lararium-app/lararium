@@ -29,6 +29,9 @@ func NewServer(s *Server) http.Handler {
 	// Health endpoint (no auth).
 	mux.HandleFunc("/v1/health", s.healthHandler)
 
+	// Pairing endpoint (no auth; issue #184).
+	mux.HandleFunc("/v1/pair", s.pairHandler)
+
 	// Everything under /v1/ requires a bearer token.
 	mux.Handle("/v1/", BearerAuth(s.Store)(http.HandlerFunc(s.dispatch)))
 

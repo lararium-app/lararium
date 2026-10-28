@@ -465,10 +465,11 @@ func serve(cfgPath string) {
 	sessions := surface.NewPenatusSource(home, hub)
 
 	srv := &surface.Server{
-		Cfg:      cfg.Serve,
-		Store:    store,
-		Sessions: sessions,
-		Hub:      hub,
+		Cfg:       cfg.Serve,
+		Store:     store,
+		Sessions:  sessions,
+		Hub:       hub,
+		PairStore: newPairStoreAdapter(openPairStore(home)),
 	}
 	// Issue #128: turn-approval cards (web chat + MCP rail) become visible
 	// and resolvable through the custody card surface.
@@ -663,4 +664,16 @@ func logServeWarnings(warnings []string) {
 func serveHelp() {
 	fmt.Fprintf(os.Stderr, "Usage: hearthd serve [--config <path>] [--model <model>]\n")
 	os.Exit(0)
+}
+
+// openPairStore opens the nuntius pairing store for the surface
+// (issue #184). A pairing store that cannot open is a fatal serve-time
+// fault, same policy as the token store next door.
+func openPairStore(home string) *nuntius.PairStore {
+	ps, err := nuntius.NewPairStore(filepath.Join(home, "nuntius"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return ps
 }

@@ -74,6 +74,11 @@ type Server struct {
 
 	Backup      BackupFunc
 	BackupCheck func() error
+
+	// PairStore is the optional pairing storage dependency (issue #184).
+	PairStore   PairStore
+	pairMu      sync.Mutex
+	pairLimiter *pairLimiter
 }
 
 // BackupFunc handles control-socket backup verbs (PENATUS §4.5.3.1).
