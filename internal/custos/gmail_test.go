@@ -845,7 +845,7 @@ func TestV13_ScrubDetail(t *testing.T) {
 	if !strings.Contains(got, "[redacted]") {
 		t.Fatalf("scrub produced no placeholder: %q", got)
 	}
-	// Short values (< 8 chars) are never replaced (KEYS-SPEC floor).
+	// Short values (< 8 chars) are never replaced (package scrubMinLength floor).
 	if out := h.ws.ScrubDetail("abc12"); out != "abc12" {
 		t.Fatalf("short value replaced: %q", out)
 	}

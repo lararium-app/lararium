@@ -3,6 +3,8 @@ package custos
 import (
 	"context"
 	"io"
+	"net"
+	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -78,7 +80,28 @@ func LockProxyParkManagerForTest(p *Proxy) func() {
 
 // SetExecTimeoutForTest overrides the worker execution budget in tests.
 func (ws *WorkerServer) SetExecTimeoutForTest(d time.Duration) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
 	ws.cfg.WorkerExecTimeout = d
+	for id, cw := range ws.cells {
+		sockPath := cw.sockPath
+		token := cw.token
+		_ = cw.ln.Close()
+		cw.wg.Wait()
+		_ = os.Remove(sockPath)
+		ln, err := net.Listen("unix", sockPath)
+		if err == nil {
+			newCw := &cellWorker{
+				cellID:   id,
+				token:    token,
+				sockPath: sockPath,
+				ln:       ln,
+			}
+			ws.cells[id] = newCw
+			newCw.wg.Add(1)
+			go ws.acceptLoop(newCw)
+		}
+	}
 }
 
 // RegisterProxyParkForTest registers a parked proxy flow for tests
