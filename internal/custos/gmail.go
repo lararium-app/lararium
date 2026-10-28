@@ -380,10 +380,13 @@ func buildRFC2822(a *sendArgs) (string, error) {
 	return enc, nil
 }
 
+// randReader is the entropy source for Message-ID generation; package-level seam for tests.
+var randReader io.Reader = rand.Reader
+
 // randMessageID mints a crypto/rand Message-ID local part.
 func randMessageID() (string, error) {
 	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := io.ReadFull(randReader, buf); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil

@@ -283,13 +283,7 @@ func runLogin(v *custos.Vault, keyfilePath string, subArgs []string) int {
 
 	res, err := custos.OAuthLogin(ctx, opts)
 	if err != nil {
-		if reason := custos.LoginDeniedReason(err); reason != "" {
-			_ = v.Audit().Append(custos.AuditRecord{
-				Kind:   custos.AuditKindLoginDenied,
-				Actor:  "cli",
-				Reason: reason,
-			})
-		}
+		emitLoginDenied(v, err)
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
@@ -300,6 +294,21 @@ func runLogin(v *custos.Vault, keyfilePath string, subArgs []string) int {
 	}
 	fmt.Printf("stored oauth2 credential %q\n", res.Name)
 	return 0
+}
+
+// emitLoginDenied records a login_denied audit record when an OAuth login flow
+// fails due to an audited refusal (§4.5, §8.1; e.g., forged or missing state).
+func emitLoginDenied(v *custos.Vault, err error) {
+	if v == nil || v.Audit() == nil {
+		return
+	}
+	if reason := custos.LoginDeniedReason(err); reason != "" {
+		_ = v.Audit().Append(custos.AuditRecord{
+			Kind:   custos.AuditKindLoginDenied,
+			Actor:  "cli",
+			Reason: reason,
+		})
+	}
 }
 
 func runStatus(v *custos.Vault, stateDir string, cfg *custos.Config) int {
