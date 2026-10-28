@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/penatus"
 )
@@ -983,5 +984,217 @@ func TestSetupMaskLogic(t *testing.T) {
 	}
 	if strings.Contains(out, "ABCDEF_secret_token") {
 		t.Fatalf("output %q leaks raw token", out)
+	}
+}
+
+func TestSetup_HomePrecedence(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	expectedFallback := filepath.Join(tempHome, ".lararium")
+
+	customEnv := filepath.Join(t.TempDir(), "env-hearth")
+	configDir := filepath.Join(t.TempDir(), "config-hearth")
+
+	cases := []struct {
+		name       string
+		hearthEnv  *string // nil = unset
+		configHome string
+		want       string
+	}{
+		{
+			name:       "HEARTH_HOME set overrides config and fallback",
+			hearthEnv:  &customEnv,
+			configHome: configDir,
+			want:       customEnv,
+		},
+		{
+			name:       "HEARTH_HOME set overrides fallback when config empty",
+			hearthEnv:  &customEnv,
+			configHome: "",
+			want:       customEnv,
+		},
+		{
+			name:       "HEARTH_HOME unset uses config-derived path",
+			hearthEnv:  nil,
+			configHome: configDir,
+			want:       configDir,
+		},
+		{
+			name:       "HEARTH_HOME unset falls back to HOME/.lararium when config empty",
+			hearthEnv:  nil,
+			configHome: "",
+			want:       expectedFallback,
+		},
+		{
+			name:       "HEARTH_HOME set-but-empty uses config-derived path",
+			hearthEnv:  ptrSetupTestString(""),
+			configHome: configDir,
+			want:       configDir,
+		},
+		{
+			name:       "HEARTH_HOME set-but-empty falls back to HOME/.lararium when config empty",
+			hearthEnv:  ptrSetupTestString(""),
+			configHome: "",
+			want:       expectedFallback,
+		},
+		{
+			name:       "configHome with tilde prefix expands under HOME",
+			hearthEnv:  nil,
+			configHome: "~/.custom-hearth",
+			want:       filepath.Join(tempHome, ".custom-hearth"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.hearthEnv == nil {
+				os.Unsetenv("HEARTH_HOME")
+			} else {
+				t.Setenv("HEARTH_HOME", *tc.hearthEnv)
+			}
+			got := custos.ResolveHearthHome("", tc.configHome)
+			if got != tc.want {
+				t.Errorf("ResolveHearthHome(\"\", %q) = %q, want %q", tc.configHome, got, tc.want)
+			}
+		})
+	}
+}
+
+func ptrSetupTestString(s string) *string {
+	return &s
+}
+
+func TestSetup_ContainerDetectionListenScaffold(t *testing.T) {
+	cases := []struct {
+		name            string
+		larariumCfgEnv  string
+		dockerenvExists bool
+		cfgPath         string
+		wantListen      string
+	}{
+		{
+			name:            "bare host (default config, no dockerenv)",
+			larariumCfgEnv:  "",
+			dockerenvExists: false,
+			cfgPath:         "lararium.yaml",
+			wantListen:      "127.0.0.1:7717",
+		},
+		{
+			name:            "bare host (custom non-etc path, no dockerenv)",
+			larariumCfgEnv:  "/home/user/.config/lararium.yaml",
+			dockerenvExists: false,
+			cfgPath:         "lararium.yaml",
+			wantListen:      "127.0.0.1:7717",
+		},
+		{
+			name:            "container via LARARIUM_CONFIG under /etc/lararium",
+			larariumCfgEnv:  "/etc/lararium/lararium.yaml",
+			dockerenvExists: false,
+			cfgPath:         "lararium.yaml",
+			wantListen:      "0.0.0.0:7717",
+		},
+		{
+			name:            "container via /.dockerenv file presence",
+			larariumCfgEnv:  "",
+			dockerenvExists: true,
+			cfgPath:         "lararium.yaml",
+			wantListen:      "0.0.0.0:7717",
+		},
+		{
+			name:            "container via both LARARIUM_CONFIG and /.dockerenv",
+			larariumCfgEnv:  "/etc/lararium/lararium.yaml",
+			dockerenvExists: true,
+			cfgPath:         "lararium.yaml",
+			wantListen:      "0.0.0.0:7717",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origCheck := dockerenvCheck
+			dockerenvCheck = func() bool { return tc.dockerenvExists }
+			t.Cleanup(func() { dockerenvCheck = origCheck })
+
+			t.Setenv("LARARIUM_CONFIG", tc.larariumCfgEnv)
+			tmpDir := t.TempDir()
+			t.Setenv("HOME", tmpDir)
+
+			cfgPath := filepath.Join(tmpDir, filepath.Base(tc.cfgPath))
+			var out bytes.Buffer
+			if err := RunDefaults(&out, cfgPath); err != nil {
+				t.Fatalf("RunDefaults failed: %v", err)
+			}
+
+			cfg, err := LoadConfig(cfgPath)
+			if err != nil {
+				t.Fatalf("LoadConfig failed: %v", err)
+			}
+
+			if cfg.Serve.Listen != tc.wantListen {
+				t.Errorf("serve.listen = %q, want %q", cfg.Serve.Listen, tc.wantListen)
+			}
+		})
+	}
+}
+
+func TestSetup_Defaults_WithHearthHome_EndToEnd(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	hearthHome := t.TempDir()
+	t.Setenv("HEARTH_HOME", hearthHome)
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "lararium.yaml")
+
+	var out bytes.Buffer
+	if err := RunDefaults(&out, cfgPath); err != nil {
+		t.Fatalf("RunDefaults failed: %v", err)
+	}
+
+	// 1. Verify persona files were written under HEARTH_HOME, not HOME
+	for _, name := range []string{"SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"} {
+		p := filepath.Join(hearthHome, name)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("expected persona file %s in HEARTH_HOME: %v", name, err)
+		}
+		badPath := filepath.Join(fakeHome, ".lararium", name)
+		if _, err := os.Stat(badPath); err == nil {
+			t.Errorf("persona file %s unexpectedly found under HOME/.lararium", name)
+		}
+	}
+
+	// 2. Load the scaffolded config and verify hearth.home points to HEARTH_HOME
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Hearth.Home != hearthHome {
+		t.Errorf("expected hearth.home = %q, got %q", hearthHome, cfg.Hearth.Home)
+	}
+
+	// 3. Create a door token using the scaffolded config
+	tok, err := createDoorToken(cfg, "test-device")
+	if err != nil {
+		t.Fatalf("createDoorToken failed: %v", err)
+	}
+	if tok == "" {
+		t.Fatal("expected non-empty token")
+	}
+
+	// 4. Verify door store (tokens.json) was written under HEARTH_HOME, never under HOME
+	hearthTokens := filepath.Join(hearthHome, "tokens.json")
+	if _, err := os.Stat(hearthTokens); err != nil {
+		t.Errorf("expected tokens.json under HEARTH_HOME (%s): %v", hearthTokens, err)
+	}
+
+	badTokens := filepath.Join(fakeHome, ".lararium", "tokens.json")
+	if _, err := os.Stat(badTokens); err == nil {
+		t.Errorf("tokens.json unexpectedly found under HOME/.lararium (%s)", badTokens)
+	}
+
+	// 5. Verify fakeHome/.lararium was never even created
+	if _, err := os.Stat(filepath.Join(fakeHome, ".lararium")); err == nil {
+		t.Errorf("HOME/.lararium directory was unexpectedly created")
 	}
 }

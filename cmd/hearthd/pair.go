@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/surface"
 )
@@ -58,6 +59,7 @@ func pairCmd(cfgPath string, args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 
 	store, err := nuntius.NewPairStore(filepath.Join(cfg.Hearth.Home, "nuntius"))
 	if err != nil {

@@ -49,17 +49,7 @@ func loadConfig(cfgPath, hearthOverride string) (string, *custos.Config) {
 		os.Exit(1)
 	}
 
-	home := c.Hearth.Home
-	if hearthOverride != "" {
-		home = hearthOverride
-	}
-	if home == "" {
-		if env := os.Getenv("HEARTH_HOME"); env != "" {
-			home = env
-		} else {
-			home = "."
-		}
-	}
+	home := custos.ResolveHearthHomeWithFallback(hearthOverride, c.Hearth.Home, ".")
 
 	stateDir := filepath.Join(home, "custos")
 	c.Custos.Normalize()

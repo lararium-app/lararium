@@ -22,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lararium-app/lararium/docker/hearth"
+	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/surface"
 )
@@ -442,6 +443,38 @@ type SetupOptions struct {
 	DefaultDeviceName *string
 }
 
+// loadSetupConfig loads the config for the interactive setup wizard, or
+// scaffolds an in-memory default when the file does not exist (second return
+// reports the missing case). HEARTH_HOME overrides any config value in both
+// paths, matching the container entrypoint's precedence (issue #110).
+func loadSetupConfig(cfgPath string, getenv func(string) string) (*Config, bool, error) {
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, false, fmt.Errorf("cannot load existing config %q: %w", cfgPath, err)
+		}
+		home := "hearth"
+		if getenv("HEARTH_HOME") != "" {
+			home = custos.ResolveHearthHomeEnv("", "", getenv)
+		}
+		return &Config{
+			Hearth: HearthConfig{
+				Home:                 home,
+				CompactionTriggerPct: 80,
+				MaxTokens:            512,
+			},
+			Serve: surface.ServeConfig{
+				Listen:       "0.0.0.0:7717",
+				AllowedHosts: []string{"localhost", "127.0.0.1", "[::1]"},
+			},
+		}, true, nil
+	}
+	if getenv("HEARTH_HOME") != "" {
+		cfg.Hearth.Home = custos.ResolveHearthHomeEnv("", cfg.Hearth.Home, getenv)
+	}
+	return cfg, false, nil
+}
+
 // RunSetup runs the hearthd setup wizard according to the specification.
 func RunSetup(opts SetupOptions) error {
 	out := opts.Out
@@ -488,24 +521,9 @@ func RunSetup(opts SetupOptions) error {
 		}
 	}
 
-	var isMissing bool
-	cfg, err := LoadConfig(cfgPath)
+	cfg, isMissing, err := loadSetupConfig(cfgPath, getenv)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("cannot load existing config %q: %w", cfgPath, err)
-		}
-		isMissing = true
-		cfg = &Config{
-			Hearth: HearthConfig{
-				Home:                 "hearth",
-				CompactionTriggerPct: 80,
-				MaxTokens:            512,
-			},
-			Serve: surface.ServeConfig{
-				Listen:       "0.0.0.0:7717",
-				AllowedHosts: []string{"localhost", "127.0.0.1", "[::1]"},
-			},
-		}
+		return err
 	}
 
 	// Non-TTY stdin: print current config state + env-var instructions, exit 0, touch NO files.
@@ -591,6 +609,9 @@ func RunSetup(opts SetupOptions) error {
 	}
 	if reloaded, err := LoadConfig(cfgPath); err == nil {
 		cfg = reloaded
+		if env := os.Getenv("HEARTH_HOME"); env != "" {
+			cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
+		}
 	}
 
 	// FIRST-DOOR & REMOTE-ACCESS STEPS (spec §1, §2)
@@ -668,6 +689,9 @@ func runLocalModels(cfgPath string, cfg *Config, roots []string, discoveryTimeou
 	}
 	if reloaded, err := LoadConfig(cfgPath); err == nil {
 		cfg = reloaded
+		if env := os.Getenv("HEARTH_HOME"); env != "" {
+			cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
+		}
 	}
 
 	// FIRST-DOOR & REMOTE-ACCESS STEPS (spec §1, §2)
@@ -1219,7 +1243,7 @@ hearth:
   max_tokens: 512
 
 serve:
-  listen: "127.0.0.1:7717"
+  listen: "%s"
   allowed_hosts: ["localhost", "127.0.0.1", "[::1]"]
 
 models:
@@ -1240,25 +1264,44 @@ providers:
 #   api_key_env: PROVIDER_API_KEY
 `
 
+var dockerenvCheck = defaultDockerenvCheck
+
+func defaultDockerenvCheck() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
+}
+
+func isUnderEtcLararium(path string) bool {
+	if path == "" {
+		return false
+	}
+	cleaned := filepath.Clean(path)
+	return cleaned == "/etc/lararium" || strings.HasPrefix(cleaned, "/etc/lararium/")
+}
+
+func isContainerScaffold(cfgPath string, getenv func(string) string) bool {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if cfg := getenv("LARARIUM_CONFIG"); isUnderEtcLararium(cfg) {
+		return true
+	}
+	if isUnderEtcLararium(cfgPath) {
+		return true
+	}
+	if dockerenvCheck != nil && dockerenvCheck() {
+		return true
+	}
+	return false
+}
+
 // RunDefaults scaffolds the bare-host reference config and persona files non-interactively.
 func RunDefaults(out io.Writer, cfgPath string) error {
 	if cfgPath == "" {
 		cfgPath = "lararium.yaml"
 	}
 
-	var homeDir string
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		homeDir = h
-	} else {
-		homeDir = os.Getenv("HOME")
-	}
-
-	defaultHearthHome := filepath.Join(homeDir, ".lararium")
-	if abs, err := filepath.Abs(defaultHearthHome); err == nil {
-		defaultHearthHome = abs
-	}
-
-	var hearthHome string
+	var configHome string
 	cfgExists := false
 	if _, err := os.Stat(cfgPath); err == nil { //nolint:gosec // G703: operator-owned config path
 		cfgExists = true
@@ -1272,32 +1315,33 @@ func RunDefaults(out io.Writer, cfgPath string) error {
 		if err != nil {
 			return fmt.Errorf("cannot load existing config %s: %w", cfgPath, err)
 		}
-		hearthHome = loaded.Hearth.Home
-		if strings.HasPrefix(hearthHome, "~/") {
-			hearthHome = filepath.Join(homeDir, hearthHome[2:])
-		}
-		if abs, err := filepath.Abs(hearthHome); err == nil {
-			hearthHome = abs
-		}
-	} else {
-		hearthHome = defaultHearthHome
+		configHome = loaded.Hearth.Home
+	}
+
+	hearthHome := custos.ResolveHearthHome("", configHome)
+
+	if !cfgExists {
 		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil { //nolint:gosec // G703: operator-owned config path
 			return fmt.Errorf("creating directory for config: %w", err)
 		}
-		content := fmt.Sprintf(bareHostConfigTemplate, hearthHome)
+		listen := "127.0.0.1:7717"
+		if isContainerScaffold(cfgPath, os.Getenv) {
+			listen = "0.0.0.0:7717"
+		}
+		content := fmt.Sprintf(bareHostConfigTemplate, hearthHome, listen)
 		if err := atomicWriteFile(cfgPath, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("writing config %s: %w", cfgPath, err)
 		}
 		fmt.Fprintf(out, "created: %s\n", cfgPath)
 	}
 
-	if err := os.MkdirAll(hearthHome, 0o755); err != nil { //nolint:gosec // G703: operator-owned home path
+	if err := os.MkdirAll(hearthHome, 0o755); err != nil {
 		return fmt.Errorf("creating hearth home %s: %w", hearthHome, err)
 	}
 
 	for _, name := range hearth.TemplateFiles {
 		dest := filepath.Join(hearthHome, name)
-		if _, err := os.Stat(dest); err == nil { //nolint:gosec // G703: operator-owned home path
+		if _, err := os.Stat(dest); err == nil {
 			fmt.Fprintf(out, "left in place: %s\n", dest)
 			continue
 		} else if !errors.Is(err, fs.ErrNotExist) {
