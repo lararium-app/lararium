@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Plug, RefreshCw } from "lucide-react";
+import { PolicyRule } from "../types/hearthd";
 
 interface ConnectorCardData {
   name: string;
@@ -11,6 +12,8 @@ interface ConnectorCardData {
 
 interface ConnectorsCardProps {
   token: string | null;
+  rules?: PolicyRule[];
+  onRefreshRules?: () => void;
 }
 
 // State → pill styling. Mirrors the closed `state` set of MCP-SPEC §7.
@@ -35,10 +38,12 @@ const POLL_MS = 15000;
 // GET /v1/mcp/connectors. Rail tools join model turns automatically
 // once a connector is ready (issue #83); this card is the operator's
 // view into what the rail is doing.
-export function ConnectorsCard({ token }: ConnectorsCardProps) {
+export function ConnectorsCard({ token, rules, onRefreshRules }: ConnectorsCardProps) {
   const [connectors, setConnectors] = useState<ConnectorCardData[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [untrusting, setUntrusting] = useState<string | null>(null);
+  const [untrustError, setUntrustError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
 
   const fetchConnectors = useCallback(async () => {
@@ -61,6 +66,35 @@ export function ConnectorsCard({ token }: ConnectorsCardProps) {
       setLoading(false);
     }
   }, [token]);
+
+  const handleUntrust = async (connectorName: string) => {
+    if (!token || untrusting) return;
+    setUntrusting(connectorName);
+    setUntrustError(null);
+    try {
+      const encodedPattern = encodeURIComponent(`${connectorName}/*`);
+      const resp = await fetch(
+        `/v1/policy/rules/${encodedPattern}?lane=credential`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: resp.statusText }));
+        throw new Error(err.error || resp.statusText);
+      }
+      if (onRefreshRules) {
+        onRefreshRules();
+      }
+    } catch (e: any) {
+      setUntrustError(e.message || `Failed to untrust ${connectorName}`);
+    } finally {
+      setUntrusting(null);
+    }
+  };
 
   useEffect(() => {
     if (!token) return;
@@ -95,8 +129,14 @@ export function ConnectorsCard({ token }: ConnectorsCardProps) {
       </div>
 
       {error && (
-        <div className="p-3 rounded-xl border border-err/30 bg-err/10 text-err text-xs font-mono">
+        <div className="p-3 mb-3 rounded-xl border border-err/30 bg-err/10 text-err text-xs font-mono">
           {error}
+        </div>
+      )}
+
+      {untrustError && (
+        <div className="p-3 mb-3 rounded-xl border border-err/30 bg-err/10 text-err text-xs font-mono">
+          {untrustError}
         </div>
       )}
 
@@ -113,25 +153,44 @@ export function ConnectorsCard({ token }: ConnectorsCardProps) {
 
       {!error && connectors !== null && connectors.length > 0 && (
         <ul className="divide-y divide-line">
-          {connectors.map((c) => (
-            <li key={c.name} className="flex items-center gap-3 py-2 first:pt-0 last:pb-0">
-              <span className="font-mono text-sm text-ink min-w-0 truncate">{c.name}</span>
-              <span
-                className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-medium border ${stateClasses(c.state)}`}
-              >
-                {c.state}
-              </span>
-              <span className="text-xs text-ink3">
-                {c.tools} tool{c.tools === 1 ? "" : "s"}
-                {c.restarts > 0 && ` · ${c.restarts} restart${c.restarts === 1 ? "" : "s"}`}
-              </span>
-              {c.reason && c.reason !== "ok" && (
-                <span className="ml-auto text-[11px] font-mono text-ink3 truncate max-w-[40%]" title={c.reason}>
-                  {c.reason}
+          {connectors.map((c) => {
+            const isTrusted = rules?.some(
+              (r) => r.lane === "credential" && r.pattern === `${c.name}/*` && r.verdict === "auto"
+            );
+            return (
+              <li key={c.name} className="flex items-center gap-3 py-2 first:pt-0 last:pb-0">
+                <span className="font-mono text-sm text-ink min-w-0 truncate">{c.name}</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-medium border ${stateClasses(c.state)}`}
+                >
+                  {c.state}
                 </span>
-              )}
-            </li>
-          ))}
+                {isTrusted && (
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-medium border bg-ok/15 text-ok border-ok/30">
+                    trusted
+                  </span>
+                )}
+                <span className="text-xs text-ink3">
+                  {c.tools} tool{c.tools === 1 ? "" : "s"}
+                  {c.restarts > 0 && ` · ${c.restarts} restart${c.restarts === 1 ? "" : "s"}`}
+                </span>
+                {isTrusted ? (
+                  <button
+                    type="button"
+                    disabled={untrusting === c.name}
+                    onClick={() => handleUntrust(c.name)}
+                    className="ml-auto px-2 py-1 rounded text-xs font-medium text-ink3 hover:text-err border border-line hover:border-err/30 transition-colors disabled:opacity-50"
+                  >
+                    {untrusting === c.name ? "Untrusting…" : "Untrust"}
+                  </button>
+                ) : c.reason && c.reason !== "ok" ? (
+                  <span className="ml-auto text-[11px] font-mono text-ink3 truncate max-w-[40%]" title={c.reason}>
+                    {c.reason}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

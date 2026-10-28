@@ -117,6 +117,9 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 		// the canonical worker-lane rule (connector/tool -> auto,
 		// always:true) so the next turn's Decide runs the call silently.
 		srv.SetAlwaysRuleHook(turnAlwaysRuleMinter(srv, client))
+		// Issue #142: an "Always: allow connector" action on a worker ask card
+		// mints the connector-wide auto rule (<connector>/* -> auto).
+		srv.SetConnectorTrustHook(turnConnectorTrustMinter(srv, client))
 	}
 	if hub != nil {
 		var decider PolicyDecider
@@ -180,6 +183,32 @@ func turnAlwaysRuleMinter(srv *surface.Server, lister MCPToolLister) func(toolNa
 			return fmt.Errorf("no rail tool matches %q (stale card or non-rail tool)", toolName)
 		}
 		return minter.AddAlwaysRule(pattern)
+	}
+}
+
+// turnConnectorTrustMinter builds the surface hook that mints the
+// "<connector>/*" worker auto rule when an approval card is resolved with
+// scope "connector" (issue #142). Reuses the exact same AddRule mutation path
+// on PolicySource that runMCPTrust uses.
+func turnConnectorTrustMinter(srv *surface.Server, lister MCPToolLister) func(toolName string) error {
+	return func(toolName string) error {
+		if srv == nil {
+			return errors.New("policy backend unavailable: cannot mint connector trust rule")
+		}
+		src := srv.PolicySource()
+		if src == nil {
+			return errors.New("policy backend unavailable: cannot mint connector trust rule")
+		}
+		connector, ok := mcpConnectorName(lister, toolName)
+		if !ok {
+			return fmt.Errorf("no rail connector matches tool %q (stale card or non-rail tool)", toolName)
+		}
+		pat := connector + "/*"
+		if _, err := custos.ValidateCredentialPattern(pat, "auto", false); err != nil {
+			return fmt.Errorf("invalid connector pattern %q: %w", pat, err)
+		}
+		_, err := src.AddRule("credential", pat, "auto")
+		return err
 	}
 }
 

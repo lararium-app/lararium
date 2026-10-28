@@ -104,6 +104,20 @@ func mcpRulePattern(lister MCPToolLister, modelName string) (string, bool) {
 	return "", false
 }
 
+// mcpConnectorName reverse-maps a model-facing tool name back onto the
+// connector name by matching against the rail's live tool list (issue #142).
+func mcpConnectorName(lister MCPToolLister, modelName string) (string, bool) {
+	if lister == nil || modelName == "" {
+		return "", false
+	}
+	for _, ti := range lister.ListTools() {
+		if mcpToolName(ti.Connector, ti.Name) == modelName || ti.Connector+"/"+ti.Name == modelName || ti.Name == modelName {
+			return ti.Connector, true
+		}
+	}
+	return "", false
+}
+
 // MCPToolLister is the rail tool-listing seam (issue #132).
 type MCPToolLister interface {
 	ListTools() []custosdoor.ToolInfo

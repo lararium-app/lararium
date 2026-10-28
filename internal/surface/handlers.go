@@ -68,8 +68,9 @@ type Server struct {
 	// card settles with "always" (issue #132; SURFACE-SPEC §4: always-
 	// rules are card-minted). Set by wiring; nil-safe: the verdict then
 	// degrades to once, loudly logged.
-	alwaysMu   sync.RWMutex
-	alwaysHook func(toolName string) error
+	alwaysMu           sync.RWMutex
+	alwaysHook         func(toolName string) error
+	connectorTrustHook func(toolName string) error
 
 	Backup      BackupFunc
 	BackupCheck func() error

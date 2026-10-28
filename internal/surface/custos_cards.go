@@ -107,6 +107,14 @@ func (s *Server) SetApprovalHub(h *ApprovalHub) {
 	s.custosMu.Lock()
 	defer s.custosMu.Unlock()
 	s.approvals = h
+	if h != nil {
+		s.alwaysMu.RLock()
+		hook := s.connectorTrustHook
+		s.alwaysMu.RUnlock()
+		if hook != nil {
+			h.SetConnectorTrustHook(hook)
+		}
+	}
 }
 
 // custosHeartbeatInterval is the SSE : ping interval (default 5 s per SURFACE-SPEC §5).
@@ -311,6 +319,21 @@ func (s *Server) SetAlwaysRuleHook(f func(toolName string) error) {
 	s.alwaysMu.Lock()
 	defer s.alwaysMu.Unlock()
 	s.alwaysHook = f
+}
+
+// SetConnectorTrustHook registers the minter hook called when an approval card
+// is resolved with scope "connector" (issue #142).
+func (s *Server) SetConnectorTrustHook(f func(toolName string) error) {
+	s.alwaysMu.Lock()
+	s.connectorTrustHook = f
+	s.alwaysMu.Unlock()
+
+	s.custosMu.RLock()
+	ap := s.approvals
+	s.custosMu.RUnlock()
+	if ap != nil {
+		ap.SetConnectorTrustHook(f)
+	}
 }
 
 func (s *Server) getAlwaysRuleHook() func(toolName string) error {

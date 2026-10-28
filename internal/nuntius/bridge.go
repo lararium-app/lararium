@@ -68,7 +68,7 @@ type WireDeps struct {
 	// state machine, attributing source "telegram". Returns the hub's
 	// status: 200 resolved, 404 unknown (session or id), 410 already
 	// resolved (§7.2: mirrors the HTTP codes).
-	ResolveApproval func(sessionID, approvalID string, allow bool) int
+	ResolveApproval func(sessionID, approvalID string, allow bool, scope ...string) int
 	// SessionOf maps an approval id to its session server-side
 	// (§7.2: the callback payload never names a session).
 	SessionOf func(approvalID string) (string, bool)

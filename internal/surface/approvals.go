@@ -7,6 +7,8 @@ package surface
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	stdlog "log"
 	"sort"
 	"strings"
@@ -75,16 +77,25 @@ type StaleVerdictHook func(id, sessionID, cred, cell, reason string)
 // approver channel remains (spec §5 approval state machine plus
 // NUNTIUS-SPEC §7 amendments A1/A5/A6/A7: first-wins, mutex-guarded).
 type ApprovalHub struct {
-	mu               sync.Mutex
-	bySession        map[string]map[string]*approval
-	timeout          time.Duration
-	bridgeTimeout    time.Duration
-	fanout           ApprovalFanout
-	bridgeLive       func() bool
-	staleVerdictHook StaleVerdictHook
-	obsMu            sync.Mutex
-	observers        map[int64]func(*CustosCard, *CustosGone)
-	obsSeq           int64
+	mu                 sync.Mutex
+	bySession          map[string]map[string]*approval
+	timeout            time.Duration
+	bridgeTimeout      time.Duration
+	fanout             ApprovalFanout
+	bridgeLive         func() bool
+	staleVerdictHook   StaleVerdictHook
+	obsMu              sync.Mutex
+	observers          map[int64]func(*CustosCard, *CustosGone)
+	obsSeq             int64
+	connectorTrustHook func(toolName string) error
+}
+
+// SetConnectorTrustHook registers the minter hook called when an approval card
+// is resolved with scope "connector" (issue #142).
+func (h *ApprovalHub) SetConnectorTrustHook(hook func(toolName string) error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.connectorTrustHook = hook
 }
 
 // SubscribeCustos registers an observer for turn-approval card lifecycle
@@ -500,44 +511,75 @@ func (h *ApprovalHub) pruneTerminalLocked(sessionID string) {
 }
 
 // Resolve settles a pending approval from the web channel. Returns the
-// HTTP status the caller should answer with: 200 resolved, 404 unknown
-// session or id, 410 already resolved (denied/approved/timed_out).
-func (h *ApprovalHub) Resolve(sessionID, id string, allow bool) int {
-	return h.ResolveFrom(sessionID, id, allow, "web")
+// HTTP status the caller should answer with: 200 resolved, 400 bad request,
+// 404 unknown session or id, 410 already resolved (denied/approved/timed_out).
+func (h *ApprovalHub) Resolve(sessionID, id string, allow bool, scope ...string) int {
+	sc := ""
+	if len(scope) > 0 {
+		sc = scope[0]
+	}
+	code, _ := h.ResolveScopeVia(sessionID, id, allow, "web", "", sc)
+	return code
 }
 
 // ResolveFrom settles a pending approval attributing the decision to
 // source ("web" | "telegram"). Same status codes as Resolve; a losing
 // click answers 410 with zero state change (§7.2 race: first wins).
-func (h *ApprovalHub) ResolveFrom(sessionID, id string, allow bool, source string) int {
-	return h.ResolveFromVia(sessionID, id, allow, source, "")
+func (h *ApprovalHub) ResolveFrom(sessionID, id string, allow bool, source string, scope ...string) int {
+	sc := ""
+	if len(scope) > 0 {
+		sc = scope[0]
+	}
+	code, _ := h.ResolveScopeVia(sessionID, id, allow, source, "", sc)
+	return code
 }
 
 // ResolveFromVia settles a pending approval attributing the decision to
-// source and via per CUSTOS-SPEC §6.4b.
-func (h *ApprovalHub) ResolveFromVia(sessionID, id string, allow bool, source, via string) int {
+// source and via per CUSTOS-SPEC §6.4b, with optional scope parameter (issue #142).
+func (h *ApprovalHub) ResolveFromVia(sessionID, id string, allow bool, source, via string, scope ...string) int {
+	sc := ""
+	if len(scope) > 0 {
+		sc = scope[0]
+	}
+	code, _ := h.ResolveScopeVia(sessionID, id, allow, source, via, sc)
+	return code
+}
+
+// ResolveScope settles a pending approval with explicit scope attribution (issue #142).
+func (h *ApprovalHub) ResolveScope(sessionID, id string, allow bool, source, scope string) (int, error) {
+	return h.ResolveScopeVia(sessionID, id, allow, source, "", scope)
+}
+
+// ResolveScopeVia settles a pending approval with explicit scope and via attribution.
+// When scope is "connector" and allow is true, the connector trust rule is minted
+// atomically from the caller's point of view: if rule minting fails, the resolve
+// does not silently succeed and the approval remains pending (issue #142).
+func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, via, scope string) (int, error) {
+	if !allow && scope != "" {
+		return 400, errors.New("cannot combine scope with deny")
+	}
+	if scope != "" && scope != "connector" {
+		return 400, errors.New("invalid scope")
+	}
+
 	h.mu.Lock()
 	if sessionID == "" {
 		ap, ok2 := h.findLocked(id)
 		if !ok2 {
 			h.mu.Unlock()
-			return 404
+			return 404, errors.New("not found")
 		}
 		sessionID = ap.sessionID
 	}
 	session, ok := h.bySession[sessionID]
 	if !ok {
 		h.mu.Unlock()
-		return 404
+		return 404, errors.New("not found")
 	}
 	ap, ok := session[id]
 	if !ok {
 		h.mu.Unlock()
-		return 404
-	}
-	state, reason := "denied", "denied"
-	if allow {
-		state, reason = "approved", "ok"
+		return 404, errors.New("not found")
 	}
 	if ap.state != "pending" {
 		hook := h.staleVerdictHook
@@ -550,8 +592,35 @@ func (h *ApprovalHub) ResolveFromVia(sessionID, id string, allow bool, source, v
 		if allow && hook != nil {
 			hook(id, sessionID, cred, cell, origReason)
 		}
-		return 410
+		return 410, errors.New("already resolved")
 	}
+
+	toolName := ap.name
+	trustHook := h.connectorTrustHook
+
+	// If allow and scope=connector: mint rule before settling.
+	// Atomic: if minting fails, the card is not settled.
+	if allow && scope == "connector" {
+		if trustHook == nil {
+			h.mu.Unlock()
+			return 500, errors.New("connector trust hook unavailable")
+		}
+		h.mu.Unlock()
+		if err := trustHook(toolName); err != nil {
+			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
+		}
+		h.mu.Lock()
+		if ap.state != "pending" {
+			h.mu.Unlock()
+			return 410, errors.New("already resolved")
+		}
+	}
+
+	state, reason := "denied", "denied"
+	if allow {
+		state, reason = "approved", "ok"
+	}
+
 	if !ap.settle(state, reason, source) {
 		hook := h.staleVerdictHook
 		cred := ap.cred
@@ -563,12 +632,12 @@ func (h *ApprovalHub) ResolveFromVia(sessionID, id string, allow bool, source, v
 		if allow && hook != nil {
 			hook(id, sessionID, cred, cell, origReason)
 		}
-		return 410
+		return 410, errors.New("already resolved")
 	}
 	ap.via = via
 	h.mu.Unlock()
 	h.fanTerminalVia(id, sessionID, state, reason, source, via)
-	return 200
+	return 200, nil
 }
 
 // CancelByCredential cancels every pending card for cred (and optional cell) with reason credential_revoked per CUSTOS CA-3, §6.4.
