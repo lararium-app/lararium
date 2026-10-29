@@ -3,3 +3,6 @@
 # removed demo gif to a redirect to the homepage. Redirects are
 # evaluated even when an asset matches the request.
 /demo.gif  /  301
+
+# Pretty privacy policy URL (Play Store listing links here).
+/privacy /privacy.html 301
