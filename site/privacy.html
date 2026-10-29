@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy — Lararium</title>
+<meta name="description" content="Lararium collects nothing. This page explains, in plain words, exactly what that means.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;1,9..144,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #100d0a;
+    --bg-raise: #171310;
+    --ink: #f0e8dc;
+    --ink-mute: #9a8f80;
+    --ink-faint: #6b6156;
+    --ember: #e8763a;
+    --ember-soft: #f2a35f;
+    --line: #2c251e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16.5px;
+    line-height: 1.7;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+  header { border-bottom: 1px solid var(--line); padding: 26px 0; }
+  header .wrap { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .logo { font-family: Fraunces, serif; font-weight: 600; font-size: 21px; color: var(--ink); text-decoration: none; }
+  .logo em { color: var(--ember); font-style: normal; }
+  nav a { color: var(--ink-mute); text-decoration: none; font-size: 14.5px; margin-left: 20px; }
+  nav a:hover { color: var(--ember-soft); }
+  main { padding: 56px 0 72px; }
+  h1 {
+    font-family: Fraunces, serif; font-weight: 300; font-size: 42px;
+    letter-spacing: -0.5px; margin-bottom: 10px;
+  }
+  .effective { color: var(--ink-faint); font-size: 14px; margin-bottom: 38px; }
+  h2 {
+    font-family: Fraunces, serif; font-weight: 400; font-size: 23px;
+    margin: 42px 0 12px; color: var(--ember-soft);
+  }
+  p { margin-bottom: 14px; color: var(--ink-mute); }
+  p strong { color: var(--ink); font-weight: 600; }
+  ul { margin: 0 0 16px 22px; color: var(--ink-mute); }
+  li { margin-bottom: 8px; }
+  .tldr {
+    background: var(--bg-raise);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ember);
+    border-radius: 8px;
+    padding: 22px 24px;
+    margin-bottom: 34px;
+  }
+  .tldr p { margin-bottom: 8px; }
+  .tldr p:last-child { margin-bottom: 0; }
+  a { color: var(--ember-soft); }
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 34px 0 46px;
+    color: var(--ink-faint);
+    font-size: 13.5px;
+  }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  footer a { color: var(--ink-mute); text-decoration: none; }
+  footer a:hover { color: var(--ember-soft); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="logo" href="/">Larar<em>i</em>um</a>
+    <nav>
+      <a href="/">Home</a>
+      <a href="https://github.com/lararium-app/lararium">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+  <h1>Privacy</h1>
+  <p class="effective">Effective October 29, 2026 · This page is versioned in
+  <a href="https://github.com/lararium-app/lararium/blob/main/site/privacy.html">the open-source repo</a>.</p>
+
+  <div class="tldr">
+    <p><strong>The short version:</strong> Lararium collects nothing from you.
+    Not because of a setting you have to find — because there is no code that
+    could. No accounts, no telemetry, no analytics, no phones home.</p>
+    <p>In Google Play terms: <strong>Lararium collects no data and shares no
+    data.</strong></p>
+  </div>
+
+  <h2>What we don't collect</h2>
+  <p>Lararium's developer never receives your messages, voice recordings,
+  credentials, usage statistics, device identifiers, crash reports, or
+  location. We don't have servers for it, and the software works without our
+  infrastructure entirely. If a Lararium feature ever needed the network, it
+  talks to <em>your</em> machines or to endpoints <em>you</em> configured —
+  never to us.</p>
+
+  <h2>Where your data actually lives</h2>
+  <ul>
+    <li><strong>Your conversations, memory, and persona files</strong> live on
+    the machine running your <code>hearthd</code> daemon — hardware you own or
+    rent. Backups and deletion are yours to run.</li>
+    <li><strong>Voice is transcribed on your phone by default</strong> (an
+    on-device recognizer). Cloud transcription would be an option you enable,
+    clearly labeled, never a silent fallback.</li>
+    <li><strong>Chats go to the model you point Lararium at.</strong> Run it
+    all on your own hardware and nothing leaves the house. If you configure a
+    third-party model provider, your prompts go to <em>that provider</em>,
+    under <em>their</em> privacy policy — that is a choice you make in
+    settings, and we call it out there too.</li>
+    <li><strong>Credentials and connector secrets</strong> are stored on your
+    hearth, used by name at the wire, and never enter a model's context.</li>
+  </ul>
+
+  <h2>App permissions</h2>
+  <p>The Android app asks for microphone (voice input) and, if you enable
+  them, calendar, contacts, notifications, or call log. Every one of those is
+  read on your device and only crosses the encrypted tunnel to your own
+  daemon if you connect that rail. Permissions you don't grant simply turn
+  features off; the app has no feature it refuses to work without.</p>
+
+  <h2>This website</h2>
+  <p>lararium.io is a static site with no cookies, no tracking pixels, and no
+  analytics. Like any public website, your browser sends a standard request
+  (IP address, user agent) to the web host, Cloudflare, whose logging is
+  outside our hands and beyond our needs.</p>
+
+  <h2>Children</h2>
+  <p>Lararium is a self-hosted tool for adults and is not directed at children
+  under 13.</p>
+
+  <h2>Changes</h2>
+  <p>If this policy changes, the date above changes and the diff is public in
+  the repo like everything else we do. We don't expect this page to grow —
+  that's rather the point.</p>
+
+  <h2>Contact</h2>
+  <p>Questions, or proof that something here isn't true:
+  <a href="mailto:security@lararium.io">security@lararium.io</a>, or open an
+  issue on <a href="https://github.com/lararium-app/lararium">GitHub</a>.</p>
+
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Lararium · built in the open, AGPL-3.0</span>
+    <span>your machine · your models · your keys</span>
+  </div>
+</footer>
+
+</body>
+</html>
