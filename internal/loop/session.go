@@ -205,6 +205,7 @@ func (s *Session) RunTurnTools(ctx context.Context, userText string, onDelta fun
 const maxSteps = 12
 
 func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
+	ctx = withSession(ctx, s)
 	// Turn-pinned key snapshot (KEYS-SPEC K6): one registry read at
 	// turn start; every provider call in this turn resolves through
 	// the pinned map, so a mid-turn reload cannot split the turn.
