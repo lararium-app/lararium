@@ -92,7 +92,8 @@ type Vault struct {
 	loadedDoc         *VaultDoc
 	loadedRegistry    *SurrogateRegistry
 	surrogatesDropped int
-	derivedKey        []byte // CUSTOS-SPEC §C3: derived secret retained in memory for process lifetime while unlocked; zeroed in Lock()
+	handleBuckets     handleBuckets // in-memory rate state for credential handles (handles.go)
+	derivedKey        []byte        // CUSTOS-SPEC §C3: derived secret retained in memory for process lifetime while unlocked; zeroed in Lock()
 	isUnlocked        bool
 	isKeyfile         bool
 	firstUnlockDone   bool // CUSTOS-SPEC §4.1, §4.2: landedness recovery runs once per boot per Vault instance

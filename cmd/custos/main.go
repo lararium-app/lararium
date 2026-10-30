@@ -630,6 +630,140 @@ func runSurrogateRevoke(v *custos.Vault, stateDir, keyfilePath string, cfg *cust
 	return 0
 }
 
+func runHandleUnlock(v *custos.Vault, keyfilePath string) (string, int) {
+	pass := getPassphrase(keyfilePath)
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, custos.ErrCustosLocked.Error())
+		return "", 1
+	}
+	if !v.IsUnlocked() {
+		if err := v.Unlock(pass, keyfilePath != ""); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return "", 1
+		}
+	}
+	return pass, 0
+}
+
+func runHandleAdd(v *custos.Vault, keyfilePath string, subArgs []string) int {
+	const usage = "usage: custos handle add <credential> --scope <pattern> [--ttl 24h] [--rate-n N --rate-window 60s]\n"
+	var posArgs, flagArgs []string
+	rest := subArgs[1:]
+	for i := 0; i < len(rest); i++ {
+		arg := rest[i]
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			if !strings.Contains(arg, "=") && i+1 < len(rest) {
+				i++
+				flagArgs = append(flagArgs, rest[i])
+			}
+		} else {
+			posArgs = append(posArgs, arg)
+		}
+	}
+	fs := flag.NewFlagSet("handle add", flag.ContinueOnError)
+	scopeFlag := fs.String("scope", "", "scope pattern (name | name/tool | name@host[:port])")
+	ttlFlag := fs.Duration("ttl", 0, "handle lifetime (0 = never expires)")
+	rateNFlag := fs.Int("rate-n", 0, "rate limit: calls per window")
+	rateWinFlag := fs.Duration("rate-window", 0, "rate limit window")
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(posArgs) != 1 || *scopeFlag == "" {
+		fmt.Fprint(os.Stderr, usage)
+		return 2
+	}
+	var rate *custos.HandleRate
+	if *rateNFlag != 0 || *rateWinFlag != 0 {
+		if *rateNFlag <= 0 || *rateWinFlag < time.Second {
+			fmt.Fprintln(os.Stderr, "--rate-n and --rate-window (>=1s) must be given together")
+			return 2
+		}
+		rate = &custos.HandleRate{N: *rateNFlag, Window: int(*rateWinFlag / time.Second)}
+	}
+	// The handle wraps an existing credential by name: no secret crosses this verb.
+	pass, code := runHandleUnlock(v, keyfilePath)
+	if code != 0 {
+		return code
+	}
+	rec, err := v.CreateHandle(pass, posArgs[0], *scopeFlag, *ttlFlag, rate, "cli")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	expires := rec.Expires
+	if expires == "" {
+		expires = "never"
+	}
+	fmt.Printf("handle: %s\nfingerprint: %s\nscope: %s\nexpires: %s\n", rec.Handle, rec.Fingerprint(), rec.Scope, expires)
+	return 0
+}
+
+func runHandleList(v *custos.Vault, keyfilePath string) int {
+	if _, code := runHandleUnlock(v, keyfilePath); code != 0 {
+		return code
+	}
+	list, err := v.ListHandles()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Println("fingerprint\tname\tscope\tcreated\texpires\trate")
+	for _, r := range list {
+		expires := r.Expires
+		if expires == "" {
+			expires = "never"
+		}
+		rate := "-"
+		if r.Rate != nil {
+			rate = fmt.Sprintf("%d/%ds", r.Rate.N, r.Rate.Window)
+		}
+		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", r.Fingerprint(), r.Name, r.Scope, r.Created, expires, rate)
+	}
+	return 0
+}
+
+func runHandleRevoke(v *custos.Vault, keyfilePath string, subArgs []string) int {
+	if len(subArgs) != 2 {
+		fmt.Fprintf(os.Stderr, "usage: custos handle revoke <fingerprint-or-handle>\n")
+		return 2
+	}
+	pass, code := runHandleUnlock(v, keyfilePath)
+	if code != 0 {
+		return code
+	}
+	tok, err := v.FindHandle(subArgs[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	if err := v.RevokeHandle(pass, tok, "cli"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	return 0
+}
+
+// runHandle dispatches the handle verb group. Handles are file-direct only:
+// there is no ctl.sock verb for them in this slice.
+func runHandle(v *custos.Vault, keyfilePath string, subArgs []string) int {
+	if len(subArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: custos handle add|list|revoke [options]\n")
+		return 2
+	}
+	switch subArgs[0] {
+	case "add":
+		return runHandleAdd(v, keyfilePath, subArgs)
+	case "list":
+		return runHandleList(v, keyfilePath)
+	case "revoke":
+		return runHandleRevoke(v, keyfilePath, subArgs)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown handle subcommand %q\n", subArgs[0])
+		return 2
+	}
+}
+
 func runSurrogate(v *custos.Vault, stateDir, keyfilePath string, cfg *custos.Config, subArgs []string) int {
 	if len(subArgs) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: custos surrogate add|list|revoke [options]\n")
@@ -1177,6 +1311,8 @@ func main() {
 		exitCode = runChangePassphrase(v, stateDir, cfg)
 	case "surrogate":
 		exitCode = runSurrogate(v, stateDir, keyfilePath, cfg, subArgs)
+	case "handle":
+		exitCode = runHandle(v, keyfilePath, subArgs)
 	case "policy":
 		exitCode = runPolicy(v, stateDir, cfg, subArgs)
 	case "egress":
@@ -1449,6 +1585,7 @@ Verbs:
   restore            vault snapshot rollback (restore <gen> --yes)
   change-passphrase  change vault passphrase
   surrogate          manage surrogate credentials (add|list|revoke)
+  handle             manage credential handles (add|list|revoke)
   policy             manage security policies (add|list|rm|reset)
   egress             manage egress filtering (strict on|off)
   revoke             remove a stored credential
@@ -1496,6 +1633,17 @@ func custosVerbHelp(verb string, subArgs []string) {
 			fmt.Fprintln(os.Stderr, "usage: custos surrogate list")
 		default:
 			fmt.Fprintln(os.Stderr, "usage: custos surrogate add|list|revoke [options]")
+		}
+	case "handle":
+		switch {
+		case hasSubverb(subArgs, "add"):
+			fmt.Fprintln(os.Stderr, "usage: custos handle add <credential> --scope <pattern> [--ttl 24h] [--rate-n N --rate-window 60s]")
+		case hasSubverb(subArgs, "revoke"):
+			fmt.Fprintln(os.Stderr, "usage: custos handle revoke <fingerprint-or-handle>")
+		case hasSubverb(subArgs, "list"):
+			fmt.Fprintln(os.Stderr, "usage: custos handle list")
+		default:
+			fmt.Fprintln(os.Stderr, "usage: custos handle add|list|revoke [options]")
 		}
 	case "policy":
 		switch {

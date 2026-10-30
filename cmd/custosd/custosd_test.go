@@ -30,6 +30,19 @@ func (s *safeBuffer) String() string {
 	return s.buf.String()
 }
 
+// awaitBanner polls the daemon's stderr for want. The banner travels through
+// the stderr pipe copy, which can land after ctl.sock already exists on a
+// loaded runner, so a single Contains check races.
+func awaitBanner(s *safeBuffer, want string) bool {
+	for range 200 {
+		if strings.Contains(s.String(), want) {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return strings.Contains(s.String(), want)
+}
+
 func buildCustosd(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "custosd")
@@ -84,7 +97,7 @@ func TestCustosdDaemon(t *testing.T) {
 
 	doorsPath := filepath.Join(stateDir, "doors.sock")
 	wantBanner := "custosd serve: doors on " + doorsPath + " \u2014 ctl on " + sockPath + " \u2014 vault: locked"
-	if !strings.Contains(stderr.String(), wantBanner) {
+	if !awaitBanner(&stderr, wantBanner) {
 		t.Errorf("stderr = %q, want banner containing %q", stderr.String(), wantBanner)
 	}
 
@@ -159,7 +172,7 @@ func TestCustosdDaemon_KeyfileMode(t *testing.T) {
 
 	doorsPath := filepath.Join(stateDir, "doors.sock")
 	wantBanner := "custosd serve: doors on " + doorsPath + " \u2014 ctl on " + sockPath + " \u2014 vault: unlocked (keyfile)"
-	if !strings.Contains(stderr.String(), wantBanner) {
+	if !awaitBanner(&stderr, wantBanner) {
 		t.Errorf("stderr = %q, want banner containing %q", stderr.String(), wantBanner)
 	}
 
