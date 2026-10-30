@@ -87,6 +87,11 @@ const (
 	AuditKindSurrogateCreated          = "surrogate_created"
 	AuditKindSurrogateRevoked          = "surrogate_revoked"
 	AuditKindSurrogateRejected         = "surrogate_rejected"
+	AuditKindHandleCreated             = "handle_created"
+	AuditKindHandleUsed                = "handle_used"
+	AuditKindHandleDeniedScope         = "handle_denied_scope"
+	AuditKindHandleDeniedRate          = "handle_denied_rate"
+	AuditKindHandleRevoked             = "handle_revoked"
 	AuditKindRegistryReconciled        = "registry_reconciled"
 	AuditKindVaultMutationIntent       = "vault_mutation_intent"
 	AuditKindVaultMutation             = "vault_mutation"
@@ -151,4 +156,7 @@ type VaultDoc struct {
 	Version     int                   `json:"version"`
 	Generation  int64                 `json:"generation"`
 	Credentials map[string]Credential `json:"credentials"`
+	// Handles holds credential-handle grant records (CREDHANDLE-SPEC R1).
+	// Absent in older vault files; the zero value loads unchanged.
+	Handles map[string]HandleRecord `json:"handles,omitempty"`
 }
