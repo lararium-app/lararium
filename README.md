@@ -56,9 +56,10 @@ already carry.
 - **Android companion app** (beta) — chat, approval cards with one-tap
   Allow/Deny notifications, and a lock-screen guard for sensitive content.
   Pair it from **Settings → Pair with hearth** with a pairing link or an API
-  token. Sideload the APK:
-  [lararium-app/android-client](https://github.com/lararium-app/android-client) ·
-  [latest release](https://github.com/lararium-app/android-client/releases/latest).
+  token. Get the app: join the closed beta on
+  [Google Play](https://play.google.com/apps/testing/app.lararium) (no email
+  list — tap Join, then Install), or sideload the latest APK from the
+  [android-client releases](https://github.com/lararium-app/android-client/releases/latest).
 - **MCP connectors** — any [Model Context Protocol](https://modelcontextprotocol.io)
   server becomes policy-gated tools. See [configuration](#connecting-an-mcp-server) below.
 
