@@ -85,49 +85,59 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 		return nil, fmt.Errorf("open session log: %w", err)
 	}
 
-	return &runtime{
-		cfg:   cfg,
-		rt:    rt,
-		home:  cfg.Hearth.Home,
-		tools: buildTools(cfg.Hearth.Home),
-		sess: &loop.Session{
-			MaxTokens: cfg.Hearth.MaxTokens,
-			OnTool: func(phase, name, approval string, ok bool) {
-				if phase == "start" {
-					fmt.Printf("\n  ⚙ calling %s (%s)…\n", name, approval)
-				} else {
-					status := "ok"
-					if !ok {
-						status = "FAILED"
-					}
-					fmt.Printf("  ⚙ %s → %s\n", name, status)
+	sched, err := loop.NewScheduler(cfg.Hearth.Home, nil)
+	if err != nil {
+		return nil, fmt.Errorf("init scheduler: %w", err)
+	}
+	tools := buildTools(cfg.Hearth.Home, sched)
+	sess := &loop.Session{
+		MaxTokens: cfg.Hearth.MaxTokens,
+		OnTool: func(phase, name, approval string, ok bool) {
+			if phase == "start" {
+				fmt.Printf("\n  ⚙ calling %s (%s)…\n", name, approval)
+			} else {
+				status := "ok"
+				if !ok {
+					status = "FAILED"
 				}
-			},
-			Log:            log,
-			Sys:            sys,
-			Router:         rt,
-			CompactProfile: "compact",
-			TriggerPct:     cfg.Hearth.CompactionTriggerPct,
-			SrcChannel:     "api",
-			// SURFACE-SPEC §6 audit schema, REPL flavor: the y/N
-			// prompt is the decision; source is always "repl"
-			// (the only field allowed to differ from a web run).
-			AuditApproval: func(approval string) (json.RawMessage, bool) {
-				decision, reason := "allowed", "ok"
-				if strings.HasPrefix(approval, "denied:") {
-					decision, reason = "denied", "ok"
-				}
-				if approval == "auto" || approval == "" {
-					reason = "not_required"
-				}
-				obj, _ := json.Marshal(struct {
-					Decision string `json:"decision"`
-					Reason   string `json:"reason"`
-					Source   string `json:"source"`
-				}{decision, reason, "repl"})
-				return obj, true
-			},
+				fmt.Printf("  ⚙ %s → %s\n", name, status)
+			}
 		},
+		Log:            log,
+		Sys:            sys,
+		Router:         rt,
+		CompactProfile: "compact",
+		TriggerPct:     cfg.Hearth.CompactionTriggerPct,
+		SrcChannel:     "api",
+		// SURFACE-SPEC §6 audit schema, REPL flavor: the y/N
+		// prompt is the decision; source is always "repl"
+		// (the only field allowed to differ from a web run).
+		AuditApproval: func(approval string) (json.RawMessage, bool) {
+			decision, reason := "allowed", "ok"
+			if strings.HasPrefix(approval, "denied:") {
+				decision, reason = "denied", "ok"
+			}
+			if approval == "auto" || approval == "" {
+				reason = "not_required"
+			}
+			obj, _ := json.Marshal(struct {
+				Decision string `json:"decision"`
+				Reason   string `json:"reason"`
+				Source   string `json:"source"`
+			}{decision, reason, "repl"})
+			return obj, true
+		},
+	}
+	sched.SetSession(sess, tools, nil)
+	sched.Start(context.Background())
+
+	return &runtime{
+		cfg:    cfg,
+		rt:     rt,
+		home:   cfg.Hearth.Home,
+		tools:  tools,
+		sess:   sess,
+		closer: []io.Closer{sched},
 	}, nil
 }
 

@@ -16,8 +16,15 @@ import (
 )
 
 // buildTools returns the v1 tool registry. home is the persona root.
-func buildTools(home string) []loop.Tool {
+func buildTools(home string, sched ...*loop.Scheduler) []loop.Tool {
+	var wakeSched *loop.Scheduler
+	if len(sched) > 0 && sched[0] != nil {
+		wakeSched = sched[0]
+	} else {
+		wakeSched, _ = loop.NewScheduler(home, nil)
+	}
 	return []loop.Tool{
+		loop.ScheduleWakeTool(wakeSched),
 		{
 			Spec: router.ToolSpec{
 				Name:        "remember",
