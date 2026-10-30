@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1069,5 +1071,246 @@ func TestTurn_SuccessfulTurnNoErrorMessage(t *testing.T) {
 	}
 	if !assistantFound {
 		t.Fatal("assistant event not found in session log after successful turn")
+	}
+}
+
+// failingResponseWriter is a minimal http.ResponseWriter and http.Flusher
+// whose Write always fails, used for testing dead listeners.
+type failingResponseWriter struct {
+	header http.Header
+}
+
+var (
+	_ http.ResponseWriter = (*failingResponseWriter)(nil)
+	_ http.Flusher        = (*failingResponseWriter)(nil)
+)
+
+func (f *failingResponseWriter) Header() http.Header {
+	if f.header == nil {
+		f.header = make(http.Header)
+	}
+	return f.header
+}
+
+func (f *failingResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("simulated write error: dead listener")
+}
+
+func (f *failingResponseWriter) WriteHeader(int) {}
+
+func (f *failingResponseWriter) Flush() {}
+
+func (f *failingResponseWriter) WriteNow() bool { return false }
+
+func TestHub_Commit(t *testing.T) {
+	oldHeartbeat := turnHeartbeat
+	turnHeartbeat = 50 * time.Millisecond
+	t.Cleanup(func() { turnHeartbeat = oldHeartbeat })
+
+	pinged := make(chan struct{})
+	var pingOnce sync.Once
+
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: false, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			select {
+			case <-pinged:
+			case <-time.After(8 * time.Second):
+				t.Fatal("no heartbeat ping received within 8 seconds")
+			}
+			return &router.Completion{Text: "commit test reply", Model: "stub"}, nil
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	var mu sync.Mutex
+	var buf strings.Builder
+	w := &funcWriter{
+		header: make(http.Header),
+		writeFn: func(p []byte) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			n, err := buf.Write(p)
+			if strings.Contains(buf.String(), ": ping") {
+				pingOnce.Do(func() { close(pinged) })
+			}
+			return n, err
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		hub.HandleMessage(w, req, "main")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("turn did not complete within 8 seconds")
+	}
+
+	mu.Lock()
+	body := buf.String()
+	mu.Unlock()
+
+	if !strings.HasPrefix(body, ": open\n\n") {
+		t.Fatalf("expected response body to begin with ': open\\n\\n', got: %q", body)
+	}
+
+	if !strings.Contains(body, ": ping\n\n") {
+		t.Fatalf("expected response body to contain ': ping\\n\\n', got: %q", body)
+	}
+
+	frames := parseSSEFrames(body)
+	var events []string
+	for _, f := range frames {
+		ev, _ := f["event"].(string)
+		if ev != "ping" {
+			events = append(events, ev)
+		}
+	}
+	expected := []string{"delta", "turn_done"}
+	if len(events) != len(expected) {
+		t.Fatalf("events = %v, want %v", events, expected)
+	}
+	for i, e := range expected {
+		if events[i] != e {
+			t.Fatalf("events[%d] = %q, want %q", i, events[i], e)
+		}
+	}
+}
+
+func TestHub_DeadListener(t *testing.T) {
+	oldHeartbeat := turnHeartbeat
+	turnHeartbeat = 50 * time.Millisecond
+	t.Cleanup(func() { turnHeartbeat = oldHeartbeat })
+
+	var counter atomic.Int64
+	called := make(chan struct{}, 1)
+
+	fw := &failingResponseWriter{}
+	ts := newTurnStream(fw, fw, func() {
+		counter.Add(1)
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+	})
+	defer ts.end()
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("counter did not reach 1 within 2 seconds")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for counter.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("counter did not reach 1 within 2 seconds")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("counter = %d, want 1", got)
+	}
+}
+
+func TestHub_DeadListenerOnPing(t *testing.T) {
+	oldHeartbeat := turnHeartbeat
+	turnHeartbeat = 50 * time.Millisecond
+	t.Cleanup(func() { turnHeartbeat = oldHeartbeat })
+
+	var counter atomic.Int64
+	called := make(chan struct{}, 1)
+
+	var writes atomic.Int32
+	pw := &funcWriter{
+		header: make(http.Header),
+		writeFn: func(p []byte) (int, error) {
+			if writes.Add(1) > 1 {
+				return 0, errors.New("heartbeat ping write failed")
+			}
+			return len(p), nil
+		},
+	}
+	ts := newTurnStream(pw, pw, func() {
+		counter.Add(1)
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+	})
+	defer ts.end()
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("denyAll was not called within 2 seconds on ping write failure")
+	}
+
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("counter = %d, want 1", got)
+	}
+}
+
+func TestHub_SetupFailureTerminal(t *testing.T) {
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: false, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			return &router.Completion{Text: "should not run", Model: "stub"}, nil
+		},
+	}
+
+	hub := setupHub(t, sp)
+
+	// Make the session directory a regular file so MkdirAll fails in executeTurn.
+	sessDir := hub.SessionDir("fail_setup")
+	if err := os.WriteFile(sessDir, []byte("regular file collision"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/fail_setup/messages", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	hub.HandleMessage(w, req, "fail_setup")
+
+	// Must be an SSE stream ending with event: error, not a plain 500 body.
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	if w.Code == http.StatusInternalServerError {
+		t.Fatalf("status = 500, want 200 SSE stream (body: %s)", w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.HasPrefix(body, ": open\n\n") {
+		t.Fatalf("expected stream body to begin with ': open\\n\\n', got: %q", body)
+	}
+
+	frames := parseSSEFrames(body)
+	if len(frames) == 0 {
+		t.Fatalf("expected SSE frames, got none (body: %s)", body)
+	}
+	lastFrame := frames[len(frames)-1]
+	if lastFrame["event"] != "error" {
+		t.Fatalf("terminal event = %v, want 'error'", lastFrame["event"])
+	}
+	data, ok := lastFrame["data"].(map[string]any)
+	if !ok || data["error"] != "turn failed" {
+		t.Fatalf("error data = %v, want 'turn failed'", lastFrame["data"])
+	}
+
+	if hub.InFlight("fail_setup") {
+		t.Fatal("session should not be in flight after setup failure")
 	}
 }
