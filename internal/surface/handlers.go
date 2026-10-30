@@ -64,6 +64,11 @@ type Server struct {
 	policyMu  sync.RWMutex
 	policySrc PolicySource
 
+	// credSrc backs the /v1/credentials admin routes (CREDHANDLE-SPEC D5);
+	// nil answers locked.
+	credMu  sync.RWMutex
+	credSrc CredentialSource
+
 	// alwaysHook mints the card-minted always-rule when a turn-approval
 	// card settles with "always" (issue #132; SURFACE-SPEC §4: always-
 	// rules are card-minted). Set by wiring; nil-safe: the verdict then

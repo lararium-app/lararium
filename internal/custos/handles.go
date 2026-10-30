@@ -394,3 +394,128 @@ func (v *Vault) RevokeHandle(passphrase, handle, actor string) error {
 	v.handleBuckets.forget(handle)
 	return nil
 }
+
+// HandleView is the display-only read shape for the phone admin list
+// (CREDHANDLE-SPEC D5): handle, name, kind, last4, created, expires, rate.
+// It never carries the credential secret; Last4 is the write-time display
+// field. Expires is "" when the handle never expires.
+type HandleView struct {
+	Handle  string
+	Name    string
+	Kind    string
+	Last4   string
+	Created string
+	Expires string
+	Rate    *HandleRate
+}
+
+// ListHandleViews returns display-only views of all handles sorted like
+// ListHandles. Unlike ListHandles (which blanks Last4 for its own callers),
+// views carry Last4 (D5). The secret value is never copied into a view.
+func (v *Vault) ListHandleViews() ([]HandleView, error) {
+	v.mu.RLock()
+	if !v.isUnlocked || v.loadedDoc == nil {
+		v.mu.RUnlock()
+		return nil, ErrCustosLocked
+	}
+	out := make([]HandleView, 0, len(v.loadedDoc.Handles))
+	for _, r := range v.loadedDoc.Handles {
+		hv := HandleView{
+			Handle:  r.Handle,
+			Name:    r.Name,
+			Kind:    v.loadedDoc.Credentials[r.Name].Kind,
+			Last4:   r.Last4,
+			Created: r.Created,
+			Expires: r.Expires,
+		}
+		if r.Rate != nil {
+			rc := *r.Rate
+			hv.Rate = &rc
+		}
+		out = append(out, hv)
+	}
+	v.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Created != out[j].Created {
+			return out[i].Created < out[j].Created
+		}
+		return SHA256Hex8(out[i].Handle) < SHA256Hex8(out[j].Handle)
+	})
+	return out, nil
+}
+
+// ViewOf returns the display view of one handle record (kind is supplied by
+// the caller, who holds the credential). The secret is not involved.
+func ViewOf(r HandleRecord, kind string) HandleView {
+	hv := HandleView{Handle: r.Handle, Name: r.Name, Kind: kind, Last4: r.Last4, Created: r.Created, Expires: r.Expires}
+	if r.Rate != nil {
+		rc := *r.Rate
+		hv.Rate = &rc
+	}
+	return hv
+}
+
+// ErrCredentialExists is returned by CreateCredentialHandle when the name is
+// already stored; the write-only create path never overwrites.
+var ErrCredentialExists = errors.New("credential already exists")
+
+// FieldError names a request field that failed validation. It carries the
+// field name only, never the offending value (CREDHANDLE-SPEC D5, V-T1b).
+type FieldError struct{ Field string }
+
+func (e *FieldError) Error() string { return "invalid field: " + e.Field }
+
+// CreateCredentialHandle is the write-only create path (CREDHANDLE-SPEC D5):
+// it stores an api_key credential under name and mints a handle over it.
+// All validation runs before any write so a bad scope or rate leaves no
+// orphan credential. The secret is audited nowhere: credential_added and
+// handle_created carry name + fingerprint only (R5). Failures are reported
+// as *FieldError (field names only), ErrCredentialExists, ErrFull or
+// ErrCustosLocked.
+func (v *Vault) CreateCredentialHandle(passphrase, name, secret, scope string, ttl time.Duration, rate *HandleRate, actor string) (HandleRecord, error) {
+	v.mu.RLock()
+	hasKey := len(v.derivedKey) > 0
+	isUnlocked := v.isUnlocked
+	v.mu.RUnlock()
+	if !isUnlocked && passphrase == "" && !hasKey {
+		return HandleRecord{}, ErrCustosLocked
+	}
+	if err := validateCredName(name); err != nil {
+		return HandleRecord{}, &FieldError{Field: "name"}
+	}
+	if secret == "" {
+		return HandleRecord{}, &FieldError{Field: "secret"}
+	}
+	if scope == "" {
+		scope = name
+	}
+	parsed, err := ValidateCredentialPattern(scope, VerdictAuto, false)
+	if err != nil || parsed.Name != name {
+		return HandleRecord{}, &FieldError{Field: "scope"}
+	}
+	if ttl < 0 {
+		return HandleRecord{}, &FieldError{Field: "ttl_seconds"}
+	}
+	if rate != nil && (rate.N <= 0 || rate.Window <= 0) {
+		return HandleRecord{}, &FieldError{Field: "rate"}
+	}
+
+	err = v.Mutate(passphrase, func(doc *VaultDoc) ([]string, error) {
+		if doc.Credentials == nil {
+			doc.Credentials = make(map[string]Credential)
+		}
+		if _, exists := doc.Credentials[name]; exists {
+			return nil, ErrCredentialExists
+		}
+		if len(doc.Credentials) >= maxCredentialNames {
+			return nil, ErrFull
+		}
+		doc.Credentials[name] = Credential{Kind: "api_key", Secret: secret}
+		return []string{name}, nil
+	}, false)
+	if err != nil {
+		return HandleRecord{}, err
+	}
+	_ = v.audit.Append(AuditRecord{Kind: AuditKindCredentialAdded, Cred: name, Actor: actor})
+	return v.CreateHandle(passphrase, name, scope, ttl, rate, actor)
+}
