@@ -553,8 +553,14 @@ func serve(cfgPath string) {
 		rt.SetProfile("compact", router.Profile{Chain: def})
 	}
 
+	sched, err := loop.NewScheduler(home, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	// Build tools
-	tools := buildTools(home)
+	tools := buildTools(home, sched)
 
 	// System prompt (validated by Hub per-session)
 	_, warnings, err := loop.SystemPrompt(home)
@@ -568,6 +574,11 @@ func serve(cfgPath string) {
 	ap := surface.NewApprovalHub(cfg.Serve.ApprovalTimeout)
 	hub := surface.NewHub(cfg.Serve, home, cfg.Hearth.MaxTokens, cfg.Hearth.CompactionTriggerPct, tools, rt, ap)
 	hub.AttachKeys(keyReg)
+
+	sched.SetTurnFunc(func(ctx context.Context, sessionID, prompt string) error {
+		return hub.RunHeadlessTurn(ctx, sessionID, prompt, "heartbeat", 0, nil)
+	})
+	sched.Start(context.Background())
 
 	sessions := surface.NewPenatusSource(home, hub)
 
@@ -623,6 +634,7 @@ func serve(cfgPath string) {
 	decider := wireCustosPolicy(srv, home, cfg.Custos)
 	stopDoor := startCustosDoor(context.Background(), cfg.Custos, bridge, srv, hub, decider)
 	stopBridge := func() {
+		sched.Stop()
 		if stopDoor != nil {
 			stopDoor()
 		}
@@ -630,9 +642,7 @@ func serve(cfgPath string) {
 			stopNuntius()
 		}
 	}
-	if stopDoor != nil || stopNuntius != nil {
-		srv.OnShutdown = stopBridge
-	}
+	srv.OnShutdown = stopBridge
 
 	fmt.Printf("hearthd serve: web chat + API on http://%s\n", serveHostPort(cfg))
 	fmt.Printf("  open a door:  hearthd token create <label>   (prints a ready URL, shown once)\n")
