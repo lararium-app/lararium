@@ -48,7 +48,10 @@ type Hub struct {
 	router     *router.Router
 	ap         *ApprovalHub
 	// keys is the live key registry handed to every Session (nil-safe).
-	keys           *keystore.Registry
+	keys *keystore.Registry
+	// secrets is the R3 redaction-needle closure handed to every Session
+	// (nil = disabled). Surface never imports custos; hearthd supplies it.
+	secrets        atomic.Pointer[func() []string]
 	mu             sync.Mutex
 	running        map[string]*turn
 	singleWriterMu sync.RWMutex
@@ -79,6 +82,27 @@ func (h *Hub) RLock() func() {
 
 // AttachKeys gives the hub the live key registry (KEYS-SPEC K6).
 func (h *Hub) AttachKeys(r *keystore.Registry) { h.keys = r }
+
+// SetSecrets installs the redaction-needle source for new sessions
+// (CREDHANDLE-SPEC R3); nil disables.
+func (h *Hub) SetSecrets(f func() []string) {
+	if f == nil {
+		h.secrets.Store(nil)
+		return
+	}
+	h.secrets.Store(&f)
+}
+
+// secretsFn is the closure handed to Session.Secrets: it resolves the
+// current source lazily so a later SetSecrets still applies.
+func (h *Hub) secretsFn() func() []string {
+	return func() []string {
+		if f := h.secrets.Load(); f != nil {
+			return (*f)()
+		}
+		return nil
+	}
+}
 
 // Approvals returns the hub's approval coordinator (NUNTIUS-SPEC §7.1).
 func (h *Hub) Approvals() *ApprovalHub { return h.ap }
@@ -585,6 +609,7 @@ func (h *Hub) executeTurn(
 	sys, _, _ := loop.SystemPrompt(h.hearthHome)
 
 	sess := &loop.Session{
+		Secrets:        h.secretsFn(),
 		MaxTokens:      h.maxTokens,
 		OnTool:         onTool,
 		Log:            log,

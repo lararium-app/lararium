@@ -194,8 +194,12 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 	tool = req.Tool
 	host = conn.Host()
 
+	// 3a. CREDHANDLE-SPEC R2: strip a handle-shaped "credential" arg before
+	// validation; the handle is never forwarded upstream.
+	args, handle := extractCredentialHandle(req.Args)
+
 	// 4. typed args schema (bad shape ⇒ bad_args).
-	if err := conn.ValidateArgs(tool, req.Args); err != nil {
+	if err := conn.ValidateArgs(tool, args); err != nil {
 		resp = errResponse(ErrCodeBadArgs, detailBadArgs)
 		ws.auditDenied(cw, connector, host, tool, "bad_args")
 		return resp
@@ -218,7 +222,7 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 		return resp
 
 	case VerdictAsk:
-		if ok, r := ws.askCard(cw, conn, tool, req.Args); !ok {
+		if ok, r := ws.askCard(cw, conn, tool, args); !ok {
 			resp = r
 			return resp
 		}
@@ -251,17 +255,35 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 
 	// Execution-time re-validation (§7 doctrine: policy rm / revoke during a
 	// hold kills the flow at the dial; the credential must still exist).
-	cred, ok := ws.vault.GetCredential(conn.Credential())
-	if !ok {
-		resp = errResponse(ErrCodeDenied, detailDeniedCredGone)
-		ws.auditDenied(cw, connector, host, tool, "credential_gone")
-		return resp
+	// R2: a handle resolves exactly once here. Denials proceed without a
+	// credential (ResolveHandle already audited them); policy above used
+	// the connector's credential name (D2).
+	var cred Credential
+	if handle != "" {
+		grant := ws.vault.ResolveHandle(handle, tool, host, 0)
+		if grant.Deny == "" {
+			c, ok := ws.vault.GetCredential(grant.Record.Name)
+			if !ok {
+				resp = errResponse(ErrCodeDenied, detailDeniedCredGone)
+				ws.auditDenied(cw, connector, host, tool, "credential_gone")
+				return resp
+			}
+			cred = c
+		}
+	} else {
+		c, ok := ws.vault.GetCredential(conn.Credential())
+		if !ok {
+			resp = errResponse(ErrCodeDenied, detailDeniedCredGone)
+			ws.auditDenied(cw, connector, host, tool, "credential_gone")
+			return resp
+		}
+		cred = c
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), ws.cfg.WorkerExecTimeout)
 	defer cancel()
 
-	result, execErr := conn.Execute(ctx, tool, req.Args, cred)
+	result, execErr := conn.Execute(ctx, tool, args, cred)
 	if execErr != nil {
 		we := classifyWorkerError(execErr)
 		resp = errResponse(we.code, we.detail)
@@ -271,6 +293,31 @@ func (ws *WorkerServer) Dispatch(cw *cellWorker, req *WorkerRequest) (resp Worke
 
 	ws.auditAllowed(cw, connector, host, tool)
 	return okResponse(result)
+}
+
+// extractCredentialHandle implements the R2 extract step: when args is a JSON
+// object whose string "credential" value carries the handle prefix, it returns
+// the args without that key plus the handle. Any other shape returns args
+// untouched and an empty handle.
+func extractCredentialHandle(args json.RawMessage) (json.RawMessage, string) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(args, &obj) != nil || obj == nil {
+		return args, ""
+	}
+	raw, ok := obj["credential"]
+	if !ok {
+		return args, ""
+	}
+	var h string
+	if json.Unmarshal(raw, &h) != nil || !strings.HasPrefix(h, handlePrefix) {
+		return args, ""
+	}
+	delete(obj, "credential")
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return args, ""
+	}
+	return out, h
 }
 
 // connectorByName looks a connector up under the dispatch lock.

@@ -90,7 +90,13 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 		return nil, fmt.Errorf("init scheduler: %w", err)
 	}
 	tools := buildTools(cfg.Hearth.Home, sched)
+	// CREDHANDLE-SPEC R3: the REPL reaches the vault the same way serve does.
+	var secrets func() []string
+	if v := openCustosVault(cfg.Hearth.Home, cfg.Custos); v != nil {
+		secrets = v.Needles
+	}
 	sess := &loop.Session{
+		Secrets:   secrets,
 		MaxTokens: cfg.Hearth.MaxTokens,
 		OnTool: func(phase, name, approval string, ok bool) {
 			if phase == "start" {
