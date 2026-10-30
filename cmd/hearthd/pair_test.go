@@ -761,3 +761,150 @@ func runTokenCLI(t *testing.T, bin, cfgPath string, args ...string) (string, str
 	}
 	return stdout.String(), stderr.String(), code
 }
+
+func TestTokenCLI_CreateExpiring(t *testing.T) {
+	bin := buildCLI(t)
+	cfgPath, _ := hearthHome(t)
+
+	// Create with --expires-in after label
+	stdout, stderr, code := runTokenCLI(t, bin, cfgPath, "create", "exp-after", "--expires-in", "2h")
+	if code != 0 || stderr != "" {
+		t.Fatalf("create --expires-in 2h failed: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "lar1_") {
+		t.Errorf("stdout missing token: %q", stdout)
+	}
+	if !strings.Contains(stdout, "expires at ") {
+		t.Errorf("stdout missing 'expires at ': %q", stdout)
+	}
+	if !strings.Contains(stdout, "Open: http://") {
+		t.Errorf("stdout missing ready URL: %q", stdout)
+	}
+
+	// Create with --expires-in before label
+	stdout, stderr, code = runTokenCLI(t, bin, cfgPath, "create", "--expires-in", "45m", "exp-before")
+	if code != 0 || stderr != "" {
+		t.Fatalf("create flag before label failed: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "lar1_") || !strings.Contains(stdout, "expires at ") {
+		t.Errorf("stdout missing token or expiry: %q", stdout)
+	}
+
+	// Create without --expires-in
+	stdout, stderr, code = runTokenCLI(t, bin, cfgPath, "create", "plain-tok")
+	if code != 0 || stderr != "" {
+		t.Fatalf("create plain failed: code=%d stderr=%q", code, stderr)
+	}
+	if strings.Contains(stdout, "expires at ") {
+		t.Errorf("plain create should not print 'expires at': %q", stdout)
+	}
+
+	// Invalid duration -> exit 2
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "create", "bad-dur", "--expires-in", "invalid")
+	if code != 2 || !strings.Contains(stderr, "invalid --expires-in duration") {
+		t.Errorf("invalid duration: code=%d stderr=%q", code, stderr)
+	}
+
+	// Non-positive duration -> exit 2
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "create", "neg-dur", "--expires-in", "-10m")
+	if code != 2 || !strings.Contains(stderr, "invalid --expires-in duration") {
+		t.Errorf("negative duration: code=%d stderr=%q", code, stderr)
+	}
+
+	// Zero duration -> exit 2
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "create", "zero-dur", "--expires-in", "0s")
+	if code != 2 || !strings.Contains(stderr, "invalid --expires-in duration") {
+		t.Errorf("zero duration: code=%d stderr=%q", code, stderr)
+	}
+
+	// Missing label -> exit 2 with create usage
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "create")
+	if code != 2 || !strings.Contains(stderr, "usage: hearthd token create <label> [--expires-in <duration>]") {
+		t.Errorf("missing label: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestTokenCLI_RevokeAndList(t *testing.T) {
+	bin := buildCLI(t)
+	cfgPath, _ := hearthHome(t)
+
+	// Create duplicates under same label
+	runTokenCLI(t, bin, cfgPath, "create", "dupe-label")
+	runTokenCLI(t, bin, cfgPath, "create", "dupe-label")
+
+	// List shows both and prints duplicate warning to stderr
+	stdout, stderr, code := runTokenCLI(t, bin, cfgPath, "list")
+	if code != 0 {
+		t.Fatalf("list failed: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "warning: duplicate tokens detected; revoke stale entries by id prefix (hearthd token revoke <prefix>)") {
+		t.Errorf("stderr missing duplicate warning:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "expires never") {
+		t.Errorf("stdout missing 'expires never':\n%s", stdout)
+	}
+
+	// Parse one of the prefixes from stdout lines
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 lines in list, got %d: %q", len(lines), stdout)
+	}
+	// Line format: "dupe-label               <prefix>…  created <date>  expires never"
+	fields := strings.Fields(lines[0])
+	if len(fields) < 2 {
+		t.Fatalf("unexpected list line format: %q", lines[0])
+	}
+	prefix := strings.TrimSuffix(fields[1], "…")
+
+	// Revoke by prefix (default mode)
+	stdout, stderr, code = runTokenCLI(t, bin, cfgPath, "revoke", prefix)
+	if code != 0 || stderr != "" {
+		t.Fatalf("revoke by prefix failed: code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if !strings.Contains(stdout, "revoked "+`"`+prefix+`"`) {
+		t.Errorf("stdout missing revoked confirmation: %q", stdout)
+	}
+
+	// Sibling survived, list now has no duplicate warning
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "list")
+	if code != 0 || stderr != "" {
+		t.Fatalf("list after single revoke had error or duplicate warning: code=%d stderr=%q", code, stderr)
+	}
+
+	// Short prefix error
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "revoke", "1234567")
+	if code != 1 || !strings.Contains(stderr, "token id prefix must be at least 8 hex characters (use the prefix from token list)") {
+		t.Errorf("short prefix: code=%d stderr=%q", code, stderr)
+	}
+
+	// Unknown prefix error
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "revoke", "0000000000")
+	if code != 1 || !strings.Contains(stderr, `no token with prefix "0000000000"`) {
+		t.Errorf("unknown prefix: code=%d stderr=%q", code, stderr)
+	}
+
+	// Create more duplicates for --by-label test
+	runTokenCLI(t, bin, cfgPath, "create", "sweep-label")
+	runTokenCLI(t, bin, cfgPath, "create", "sweep-label")
+
+	// Revoke --by-label
+	stdout, stderr, code = runTokenCLI(t, bin, cfgPath, "revoke", "--by-label", "sweep-label")
+	if code != 0 || stderr != "" {
+		t.Fatalf("revoke --by-label failed: code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if !strings.Contains(stdout, `revoked 2 token(s) labeled "sweep-label"`) {
+		t.Errorf("stdout = %q, want 'revoked 2 token(s) labeled \"sweep-label\"'", stdout)
+	}
+
+	// Revoke --by-label on already removed label
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "revoke", "--by-label", "sweep-label")
+	if code != 1 || !strings.Contains(stderr, `no token with label "sweep-label"`) {
+		t.Errorf("nonexistent label: code=%d stderr=%q", code, stderr)
+	}
+
+	// Missing target argument -> exit 2 with revoke usage
+	_, stderr, code = runTokenCLI(t, bin, cfgPath, "revoke")
+	if code != 2 || !strings.Contains(stderr, "usage: hearthd token revoke [--by-label] <id-prefix-or-label>") {
+		t.Errorf("missing target: code=%d stderr=%q", code, stderr)
+	}
+}
