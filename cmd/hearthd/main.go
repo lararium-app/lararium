@@ -620,6 +620,9 @@ func serve(cfgPath string) {
 	// Custody door client: nil stop (and nothing started) unless both
 	// custos.doors_sock and custos.door_token are set.
 	decider := wireCustosPolicy(srv, home, cfg.Custos)
+	if ns, ok := decider.(interface{ Needles() []string }); ok {
+		hub.SetSecrets(ns.Needles)
+	}
 	stopDoor := startCustosDoor(context.Background(), cfg.Custos, bridge, srv, hub, decider)
 	stopBridge := func() {
 		sched.Stop()

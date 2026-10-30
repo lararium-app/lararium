@@ -31,6 +31,27 @@ func wireCustosPolicy(srv *surface.Server, home string, cfg CustosConfig) Policy
 	if srv == nil {
 		return nil
 	}
+	v := openCustosVault(home, cfg)
+	if v == nil {
+		return nil
+	}
+	adapter := &policySourceAdapter{vault: v}
+	srv.SetPolicySource(adapter)
+	return adapter
+}
+
+// Needles exposes the vault's redaction needles (CREDHANDLE-SPEC R3) to the
+// loop's Secrets seam; nil while the vault is locked.
+func (a *policySourceAdapter) Needles() []string {
+	if a == nil || a.vault == nil {
+		return nil
+	}
+	return a.vault.Needles()
+}
+
+// openCustosVault opens the on-disk custody vault (nil when absent) and
+// unlocks it from the configured keyfile when one is set.
+func openCustosVault(home string, cfg CustosConfig) *custos.Vault {
 	stateDir := ""
 	if cfg.DoorsSock != "" {
 		stateDir = filepath.Dir(cfg.DoorsSock)
@@ -52,9 +73,7 @@ func wireCustosPolicy(srv *surface.Server, home string, cfg CustosConfig) Policy
 			}
 		}
 	}
-	adapter := &policySourceAdapter{vault: v}
-	srv.SetPolicySource(adapter)
-	return adapter
+	return v
 }
 
 // wrapPolicyErr joins surface.ErrPolicyCorrupt with custos.ErrPolicyCorrupt so errors.Is matches either sentinel across the package boundary.
