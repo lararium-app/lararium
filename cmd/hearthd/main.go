@@ -420,28 +420,9 @@ func tokenCmd(cfgPath string, args []string) {
 			os.Exit(1)
 		}
 
-		if byLabel {
-			n, err := store.RevokeLabel(target)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			if n == 0 {
-				fmt.Fprintf(os.Stderr, "no token with label %q\n", target)
-				os.Exit(1)
-			}
-			fmt.Printf("revoked %d token(s) labeled %q\n", n, target)
-		} else {
-			n, err := store.RevokeHashPrefix(target)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			if n == 0 {
-				fmt.Fprintf(os.Stderr, "no token with prefix %q\n", target)
-				os.Exit(1)
-			}
-			fmt.Printf("revoked %q (effective on the daemon's next request)\n", target)
+		if err := revokeToken(store, byLabel, target); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
 	case "list":
 		// L-7: nothing may stay live invisibly. Display-only view —
@@ -682,6 +663,53 @@ func hasSubverb(args []string, verb string) bool {
 		}
 	}
 	return false
+}
+
+// isHexTarget reports whether target is made only of hex digits (any
+// case, any length > 0), i.e. shaped like a stored-hash revoke handle
+// rather than a label. Length and uniqueness are the store's business;
+// its "at least 8 hex" message educates short prefixes.
+func isHexTarget(target string) bool {
+	if target == "" {
+		return false
+	}
+	for _, c := range []byte(target) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// revokeToken resolves one revoke target: --by-label forces the label
+// path; otherwise hex-shaped targets are stored-hash prefixes and
+// anything else is a label (the V5b spec contract `token revoke
+// <label>` stays label-first). A label that looks like hex needs
+// --by-label — same rule as before, ambiguity never guesses.
+func revokeToken(store *surface.TokenStore, byLabel bool, target string) error {
+	if !byLabel && isHexTarget(target) {
+		n, err := store.RevokeHashPrefix(target)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("no token with prefix %q", target)
+		}
+		fmt.Printf("revoked %q (effective on the daemon's next request)\n", target)
+		return nil
+	}
+	n, err := store.RevokeLabel(target)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		if byLabel {
+			return fmt.Errorf("no token with label %q", target)
+		}
+		return fmt.Errorf("no token with prefix or label %q", target)
+	}
+	fmt.Printf("revoked %d token(s) labeled %q (effective on the daemon's next request)\n", n, target)
+	return nil
 }
 
 func tokenHelp(args []string) {
