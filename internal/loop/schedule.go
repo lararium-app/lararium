@@ -60,10 +60,12 @@ type Clock interface {
 
 type realClock struct{}
 
+// Now returns the current UTC time.
 func (realClock) Now() time.Time {
 	return time.Now().UTC()
 }
 
+// AfterFunc returns a Timer that fires f after d has elapsed.
 func (realClock) AfterFunc(d time.Duration, f func()) Timer {
 	return time.AfterFunc(d, f)
 }
@@ -152,6 +154,7 @@ func (c *FakeClock) Advance(d time.Duration) {
 	}
 }
 
+// Stop cancels a pending fake timer, reporting whether it had not fired.
 func (t *fakeTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()

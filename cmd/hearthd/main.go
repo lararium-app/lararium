@@ -553,32 +553,20 @@ func serve(cfgPath string) {
 		rt.SetProfile("compact", router.Profile{Chain: def})
 	}
 
-	sched, err := loop.NewScheduler(home, nil)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	sched := mustScheduler(home)
 
 	// Build tools
 	tools := buildTools(home, sched)
 
 	// System prompt (validated by Hub per-session)
-	_, warnings, err := loop.SystemPrompt(home)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	logServeWarnings(warnings)
+	requireSystemPrompt(home)
 
 	// ApprovalHub and Hub
 	ap := surface.NewApprovalHub(cfg.Serve.ApprovalTimeout)
 	hub := surface.NewHub(cfg.Serve, home, cfg.Hearth.MaxTokens, cfg.Hearth.CompactionTriggerPct, tools, rt, ap)
 	hub.AttachKeys(keyReg)
 
-	sched.SetTurnFunc(func(ctx context.Context, sessionID, prompt string) error {
-		return hub.RunHeadlessTurn(ctx, sessionID, prompt, "heartbeat", 0, nil)
-	})
-	sched.Start(context.Background())
+	attachWakes(hub, sched)
 
 	sessions := surface.NewPenatusSource(home, hub)
 
@@ -810,6 +798,36 @@ func restoreHelp() {
 func setupHelp() {
 	fmt.Fprintf(os.Stderr, "Usage: hearthd setup [--config <path>] [--defaults]\n\nInteractive AI provider and model setup wizard.\n")
 	os.Exit(0)
+}
+
+// mustScheduler creates the wake scheduler rooted at the hearth home, or
+// exits: serve cannot honor scheduled wakes without a persistence root.
+func mustScheduler(home string) *loop.Scheduler {
+	sched, err := loop.NewScheduler(home, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return sched
+}
+
+// attachWakes routes due wakes through headless turns and starts the clock.
+func attachWakes(hub *surface.Hub, sched *loop.Scheduler) {
+	sched.SetTurnFunc(func(ctx context.Context, sessionID, prompt string) error {
+		return hub.RunHeadlessTurn(ctx, sessionID, prompt, "heartbeat", 0, nil)
+	})
+	sched.Start(context.Background())
+}
+
+// requireSystemPrompt validates the persona files at boot and logs any
+// injection-budget warnings; exits when the persona is unusable.
+func requireSystemPrompt(home string) {
+	_, warnings, err := loop.SystemPrompt(home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	logServeWarnings(warnings)
 }
 
 // logServeWarnings prints config/system-prompt warnings, then warns when
