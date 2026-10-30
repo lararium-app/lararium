@@ -315,7 +315,7 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 				if ctx.Err() != nil {
 					return final, ctx.Err()
 				}
-				out = ToolOutcome{Approval: approval, OK: false, Text: denyText, Digest: digest(tc.ArgsJSON)}
+				out = ToolOutcome{Approval: approval, OK: false, Text: s.denialText(approval, tc.Name, denyText), Digest: digest(tc.ArgsJSON)}
 			}
 			if s.OnTool != nil {
 				s.OnTool("done", tc.Name, approval, out.OK)
@@ -460,4 +460,13 @@ func mustJSON(v any) json.RawMessage {
 		panic("loop: marshal: " + err.Error())
 	}
 	return b
+}
+
+// denialText enriches a gate refusal with denialGuidance when the call was
+// denied by the approval gate; other refusals (unknown tool) pass through.
+func (s *Session) denialText(approval, tool, denyText string) string {
+	if !strings.HasPrefix(approval, "denied:") {
+		return denyText
+	}
+	return denialGuidance(denialGate(approval, s.AuditApproval), tool)
 }
