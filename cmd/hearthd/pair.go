@@ -188,10 +188,10 @@ func sweepTokensAfterUnpair(cfg *Config, userID string) {
 		return
 	}
 	for _, l := range []string{userID, "paired:" + userID} {
-		revoked, err := ts.Revoke(l)
+		revoked, err := ts.RevokeLabel(l)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hearthd: cannot revoke token %q: %v\n", l, err)
-		} else if revoked {
+		} else if revoked > 0 {
 			fmt.Printf("revoked API token labeled %q\n", l)
 		}
 	}
