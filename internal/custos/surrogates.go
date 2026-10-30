@@ -139,26 +139,36 @@ const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 // exactly 22 base62 characters via uniform rejection sampling over crypto/rand
 // per CUSTOS-SPEC §4.3 (a byte is acceptable if < 62 * floor(256/62) = 248).
 func GenerateSurrogateToken() (string, error) {
-	const tokenLen = 22
+	body, err := generateBase62(22)
+	if err != nil {
+		return "", fmt.Errorf("generate surrogate token: %w", err)
+	}
+	return "sur_" + body, nil
+}
+
+// generateBase62 returns n base62 characters via uniform rejection sampling over
+// crypto/rand (a byte is acceptable if < 62 * floor(256/62) = 248). Shared by
+// the surrogate and credential-handle token generators.
+func generateBase62(n int) (string, error) {
 	const maxAcceptable = 248 // 62 * floor(256/62) = 248; uniform without modulo bias
-	out := make([]byte, tokenLen)
+	out := make([]byte, n)
 	var generated int
 	buf := make([]byte, 32)
-	for generated < tokenLen {
+	for generated < n {
 		if _, err := io.ReadFull(rand.Reader, buf); err != nil {
-			return "", fmt.Errorf("generate surrogate token: %w", err)
+			return "", err
 		}
 		for _, b := range buf {
 			if b < maxAcceptable {
 				out[generated] = base62Alphabet[b%62]
 				generated++
-				if generated == tokenLen {
+				if generated == n {
 					break
 				}
 			}
 		}
 	}
-	return "sur_" + string(out), nil
+	return string(out), nil
 }
 
 // DecryptSurrogates decrypts surrogates.age using age scrypt under passphrase per CUSTOS §4.3.

@@ -470,6 +470,82 @@ func TestV14_CLIFrozenStringsAndExitCodes(t *testing.T) {
 	// Run policy and surrogate operations
 	testV14PolicyOps(t, bin, cfgPath)
 	testV14SurrogateOps(t, bin, cfgPath)
+	testV14HandleOps(t, bin, cfgPath, v, passphrase)
+}
+
+// testV14HandleOps covers CREDHANDLE-SPEC R1 CLI verbs: handle add/list/revoke.
+// Reuses the caller's unlocked vault (a second in-process Vault instance
+// would re-run first-unlock recovery) and seeds its own credential
+// (surrogate ops revoke "openai" before this runs).
+func testV14HandleOps(t *testing.T, bin, cfgPath string, v *custos.Vault, passphrase string) {
+	t.Helper()
+
+	const handleValue = "sk-hand...0000"
+	err := v.Mutate(passphrase, func(doc *custos.VaultDoc) ([]string, error) {
+		doc.Credentials["svc"] = custos.Credential{Kind: "api_key", Secret: handleValue}
+		return []string{"svc"}, nil
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unknown credential must fail.
+	if _, _, code := runCmd(t, bin, "", "--config", cfgPath, "handle", "add", "ghost", "--scope", "ghost"); code != 1 {
+		t.Errorf("handle add unknown credential code = %d, want 1", code)
+	}
+	if _, _, code := runCmd(t, bin, "", "--config", cfgPath, "handle", "add", "svc"); code != 2 {
+		t.Errorf("handle add without scope code = %d, want 2", code)
+	}
+
+	// Valid add: prints handle + fingerprint, never the secret.
+	stdout, stderr, code := runCmd(t, bin, "", "--config", cfgPath,
+		"handle", "add", "svc", "--scope", "svc", "--ttl", "1h",
+		"--rate-n", "5", "--rate-window", "60s")
+	if code != 0 {
+		t.Fatalf("handle add failed: %s", stderr)
+	}
+	if !strings.HasPrefix(stdout, "handle: hdl_") {
+		t.Errorf("handle add stdout = %q, want 'handle: hdl_...'", stdout)
+	}
+	if strings.Contains(stdout, handleValue) {
+		t.Error("handle add leaked the secret to stdout")
+	}
+	var handle string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "handle: ") {
+			handle = strings.TrimSpace(strings.TrimPrefix(line, "handle: "))
+		}
+	}
+	if handle == "" {
+		t.Fatal("no handle printed")
+	}
+
+	// List shows the handle (fingerprint form) without last4 or secret.
+	stdout, stderr, code = runCmd(t, bin, "", "--config", cfgPath, "handle", "list")
+	if code != 0 {
+		t.Fatalf("handle list failed: %s", stderr)
+	}
+	if !strings.Contains(stdout, "svc") || !strings.Contains(stdout, "5/60s") {
+		t.Errorf("handle list = %q, want row with svc and rate 5/60s", stdout)
+	}
+	if strings.Contains(stdout, handleValue) {
+		t.Error("handle list leaked the secret")
+	}
+
+	// Revoke by handle, then list is empty; second revoke fails.
+	if _, stderr, code := runCmd(t, bin, "", "--config", cfgPath, "handle", "revoke", handle); code != 0 {
+		t.Fatalf("handle revoke failed: %s", stderr)
+	}
+	stdout, _, code = runCmd(t, bin, "", "--config", cfgPath, "handle", "list")
+	if code != 0 {
+		t.Fatalf("handle list after revoke failed: %d", code)
+	}
+	if strings.Contains(stdout, "svc	") {
+		t.Errorf("handle still listed after revoke: %q", stdout)
+	}
+	if _, _, code := runCmd(t, bin, "", "--config", cfgPath, "handle", "revoke", handle); code != 1 {
+		t.Errorf("second handle revoke code = %d, want 1", code)
+	}
 }
 
 func TestCustosApprovalsCLI(t *testing.T) {
