@@ -290,21 +290,30 @@ func newQuietTurnStream(denyAll func()) *turnStream {
 	}
 }
 
+var turnHeartbeat = 5 * time.Second
+
 // newTurnStream starts the heartbeat (a `: ping` comment every 5 s so
-// proxies keep the stream warm). end() guarantees the heartbeat goroutine
-// is DONE before the handler returns, so the ResponseWriter is never
-// touched after that point. denyAll fires once when the listener dies.
+// proxies keep the stream warm). The stream is committed with an immediate
+// comment frame so the 200 status line reaches the client before the first
+// model token; heartbeat write failures fire the disconnect policy once.
+// end() guarantees the heartbeat goroutine is DONE before the handler
+// returns, so the ResponseWriter is never touched after that point. denyAll
+// fires once when the listener dies.
 func newTurnStream(w http.ResponseWriter, flusher http.Flusher, denyAll func()) *turnStream {
 	ts := &turnStream{w: w, flusher: flusher, hbStop: make(chan struct{}), hbDone: make(chan struct{}), denyAll: denyAll}
 	go func() {
 		defer close(ts.hbDone)
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(turnHeartbeat)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
 				ts.writeMu.Lock()
-				_, _ = w.Write([]byte(": ping\n\n"))
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					ts.writeMu.Unlock()
+					ts.disconnected()
+					return
+				}
 				flusher.Flush()
 				ts.writeMu.Unlock()
 			case <-ts.hbStop:
@@ -312,6 +321,17 @@ func newTurnStream(w http.ResponseWriter, flusher http.Flusher, denyAll func()) 
 			}
 		}
 	}()
+	ts.writeMu.Lock()
+	var writeErr error
+	if !ts.quiet {
+		_, writeErr = w.Write([]byte(": open\n\n"))
+		flusher.Flush()
+		ts.started = true
+	}
+	ts.writeMu.Unlock()
+	if writeErr != nil {
+		ts.disconnected()
+	}
 	return ts
 }
 
