@@ -1,11 +1,13 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -51,6 +53,10 @@ type Session struct {
 	// | "auto" | "denied:no-approver") to the frozen triple; ok=false
 	// omits the field (pre-schema callers).
 	AuditApproval func(approval string) (obj json.RawMessage, ok bool)
+	// Secrets, if set, supplies exact-match needles scrubbed from every
+	// event at write time (CREDHANDLE-SPEC R3/D3). nil disables. A closure
+	// keeps loop free of any custos import.
+	Secrets func() []string
 
 	// lastUsage carries In/Out tokens from the most recent completion so
 	// the trigger check uses real counts when available.
@@ -348,7 +354,83 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 }
 
 func (s *Session) appendEvent(t string, fields map[string]json.RawMessage) error {
+	fields = s.redactFields(fields)
 	return s.Log.Append(penatus.Event{T: t, TS: time.Now().UTC().Format(time.RFC3339), Fields: fields})
+}
+
+// redactFields replaces every needle occurrence in every JSON string leaf of
+// every field with [redacted] (R3). It works on decoded values so needles with
+// JSON-escapable characters match. Fields are returned untouched (byte
+// identical) when disabled or when nothing matched.
+func (s *Session) redactFields(fields map[string]json.RawMessage) map[string]json.RawMessage {
+	if s.Secrets == nil {
+		return fields
+	}
+	var needles []string
+	for _, n := range s.Secrets() {
+		if len(n) > 0 {
+			needles = append(needles, n)
+		}
+	}
+	if len(needles) == 0 {
+		return fields
+	}
+	// Longest needles first so an overlapping shorter needle cannot
+	// pre-empt a longer one.
+	sort.SliceStable(needles, func(i, j int) bool { return len(needles[i]) > len(needles[j]) })
+	pairs := make([]string, 0, 2*len(needles))
+	for _, n := range needles {
+		pairs = append(pairs, n, "[redacted]")
+	}
+	rp := strings.NewReplacer(pairs...)
+	out := make(map[string]json.RawMessage, len(fields))
+	for k, v := range fields {
+		out[k] = redactRaw(v, rp)
+	}
+	return out
+}
+
+// redactRaw scrubs one raw JSON value; on any decode problem or no change the
+// original bytes are returned.
+func redactRaw(raw json.RawMessage, rp *strings.Replacer) json.RawMessage {
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return raw
+	}
+	nv, changed := redactValue(v, rp)
+	if !changed {
+		return raw
+	}
+	b, err := json.Marshal(nv)
+	if err != nil {
+		return raw
+	}
+	return b
+}
+
+func redactValue(v any, rp *strings.Replacer) (any, bool) {
+	switch x := v.(type) {
+	case string:
+		r := rp.Replace(x)
+		return r, r != x
+	case []any:
+		ch := false
+		for i := range x {
+			nv, c := redactValue(x[i], rp)
+			x[i], ch = nv, ch || c
+		}
+		return x, ch
+	case map[string]any:
+		ch := false
+		for k, e := range x {
+			nv, c := redactValue(e, rp)
+			x[k], ch = nv, ch || c
+		}
+		return x, ch
+	}
+	return v, false
 }
 
 // MaybeCompact checks the post-turn trigger and, if over, summarizes the

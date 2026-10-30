@@ -191,6 +191,35 @@ func (v *Vault) LoadedCredentials() []Credential {
 	return out
 }
 
+// Needles returns a fresh slice of every credential secret field and every
+// surrogate token for write-time transcript redaction (CREDHANDLE-SPEC R3);
+// nil while locked.
+func (v *Vault) Needles() []string {
+	v.mu.RLock()
+	if !v.isUnlocked || v.loadedDoc == nil {
+		v.mu.RUnlock()
+		return nil
+	}
+	var out []string
+	for _, c := range v.loadedDoc.Credentials {
+		for _, s := range []string{c.Secret, c.ClientSecret, c.RefreshToken, c.AccessToken} {
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	reg := v.loadedRegistry
+	v.mu.RUnlock()
+	if reg != nil {
+		for _, s := range reg.List() {
+			if s.Token != "" {
+				out = append(out, s.Token)
+			}
+		}
+	}
+	return out
+}
+
 // Surrogates returns the loaded SurrogateRegistry or nil if locked.
 func (v *Vault) Surrogates() *SurrogateRegistry {
 	v.mu.RLock()
