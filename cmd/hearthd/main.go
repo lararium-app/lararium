@@ -4,13 +4,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -194,7 +198,7 @@ func main() {
 	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml")
 	modelFlag := flag.String("model", "", "override: model ref for this run")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  setup\n  token create|revoke <label>\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
+		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  setup\n  token create <label> [--expires-in <duration>] | revoke [--by-label] <id-prefix-or-label> | list\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
 		flag.PrintDefaults()
 	}
 
@@ -294,13 +298,15 @@ func main() {
 	repl(rt)
 }
 
-// tokenCmd implements `hearthd token create|revoke <label>` (spec §3).
+// tokenCmd implements `hearthd token create|revoke|list` (spec §3).
 // Create prints the plaintext exactly once, plus the ready URL whose
 // fragment never reaches a proxy log.
+//
+//nolint:funlen,gosec // subverbs handled in-place; usage string is CLI display, not credential
 func tokenCmd(cfgPath string, args []string) {
-	// "list" takes no label; create/revoke do.
-	if len(args) == 0 || (args[0] != "list" && len(args) < 2) {
-		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label> | list")
+	const tokenUsage = "usage: hearthd token create <label> [--expires-in <duration>] | revoke [--by-label] <id-prefix-or-label> | list"
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, tokenUsage)
 		os.Exit(2)
 	}
 	cfg, err := LoadConfig(cfgPath)
@@ -311,29 +317,113 @@ func tokenCmd(cfgPath string, args []string) {
 	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 	switch args[0] {
 	case "create":
-		token, err := createDoorToken(cfg, args[1])
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+		const createUsage = "usage: hearthd token create <label> [--expires-in <duration>]"
+		fs := flag.NewFlagSet("create", flag.ContinueOnError)
+		var expiresIn string
+		fs.StringVar(&expiresIn, "expires-in", "", "duration after which the token expires")
+		fs.SetOutput(io.Discard)
+
+		var pos []string
+		remaining := args[1:]
+		for len(remaining) > 0 {
+			if err := fs.Parse(remaining); err != nil {
+				fmt.Fprintln(os.Stderr, createUsage)
+				os.Exit(2)
+			}
+			argsLeft := fs.Args()
+			if len(argsLeft) == 0 {
+				break
+			}
+			pos = append(pos, argsLeft[0])
+			remaining = argsLeft[1:]
 		}
-		fmt.Println(token)
-		fmt.Printf("Open: http://%s/#%s\n", serveHostPort(cfg), token)
-	case "revoke":
+
+		if len(pos) != 1 {
+			fmt.Fprintln(os.Stderr, createUsage)
+			os.Exit(2)
+		}
+		label := pos[0]
+
+		var ttl time.Duration
+		if expiresIn != "" {
+			d, err := time.ParseDuration(expiresIn)
+			if err != nil || d <= 0 {
+				fmt.Fprintf(os.Stderr, "invalid --expires-in duration %q: must be positive duration (e.g. 90m, 72h)\n", expiresIn)
+				os.Exit(2)
+			}
+			ttl = d
+		}
+
 		store, err := surface.OpenTokenStore(filepath.Join(cfg.Hearth.Home, "tokens.json"))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		ok, err := store.Revoke(args[1])
+		token, err := store.CreateExpiring(label, ttl)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if !ok {
-			fmt.Fprintf(os.Stderr, "no token with label %q\n", args[1])
+		fmt.Println(token)
+		if expiresIn != "" {
+			expString := ""
+			if live, err := store.List(); err == nil {
+				hash := sha256.Sum256([]byte(token))
+				prefix := hex.EncodeToString(hash[:])
+				if len(prefix) > 8 {
+					prefix = prefix[:8]
+				}
+				for _, item := range live {
+					if item.Prefix == prefix {
+						expString = item.Expires
+						break
+					}
+				}
+			}
+			if expString == "" {
+				expString = time.Now().UTC().Add(ttl).Format(time.RFC3339)
+			}
+			fmt.Printf("expires at %s\n", expString)
+		}
+		fmt.Printf("Open: http://%s/#%s\n", serveHostPort(cfg), token)
+	case "revoke":
+		const revokeUsage = "usage: hearthd token revoke [--by-label] <id-prefix-or-label>"
+		fs := flag.NewFlagSet("revoke", flag.ContinueOnError)
+		var byLabel bool
+		fs.BoolVar(&byLabel, "by-label", false, "revoke by label instead of id prefix")
+		fs.SetOutput(io.Discard)
+
+		var pos []string
+		remaining := args[1:]
+		for len(remaining) > 0 {
+			if err := fs.Parse(remaining); err != nil {
+				fmt.Fprintln(os.Stderr, revokeUsage)
+				os.Exit(2)
+			}
+			argsLeft := fs.Args()
+			if len(argsLeft) == 0 {
+				break
+			}
+			pos = append(pos, argsLeft[0])
+			remaining = argsLeft[1:]
+		}
+
+		if len(pos) != 1 {
+			fmt.Fprintln(os.Stderr, revokeUsage)
+			os.Exit(2)
+		}
+		target := pos[0]
+
+		store, err := surface.OpenTokenStore(filepath.Join(cfg.Hearth.Home, "tokens.json"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Printf("revoked %q (effective on the daemon's next request)\n", args[1])
+
+		if err := revokeToken(store, byLabel, target); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "list":
 		// L-7: nothing may stay live invisibly. Display-only view —
 		// hash prefixes, never plaintext.
@@ -351,11 +441,28 @@ func tokenCmd(cfgPath string, args []string) {
 			fmt.Println("(no API tokens are live)")
 			return
 		}
+		labelCounts := make(map[string]int, len(live))
+		hasDupes := false
 		for _, t := range live {
-			fmt.Printf("%-24s %s…  created %s\n", t.Label, t.Prefix, t.Created)
+			labelCounts[t.Label]++
+			if labelCounts[t.Label] > 1 {
+				hasDupes = true
+			}
+			expStr := "never"
+			if t.Expires != "" {
+				expStr = t.Expires
+			}
+			line := fmt.Sprintf("%-24s %s…  created %s  expires %s", t.Label, t.Prefix, t.Created, expStr)
+			if t.Expired {
+				line += "  EXPIRED"
+			}
+			fmt.Println(line)
+		}
+		if hasDupes {
+			fmt.Fprintln(os.Stderr, "warning: duplicate tokens detected; revoke stale entries by id prefix (hearthd token revoke <prefix>)")
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label> | list")
+		fmt.Fprintln(os.Stderr, tokenUsage)
 		os.Exit(2)
 	}
 }
@@ -558,20 +665,67 @@ func hasSubverb(args []string, verb string) bool {
 	return false
 }
 
+// isHexTarget reports whether target is made only of hex digits (any
+// case, any length > 0), i.e. shaped like a stored-hash revoke handle
+// rather than a label. Length and uniqueness are the store's business;
+// its "at least 8 hex" message educates short prefixes.
+func isHexTarget(target string) bool {
+	if target == "" {
+		return false
+	}
+	for _, c := range []byte(target) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// revokeToken resolves one revoke target: --by-label forces the label
+// path; otherwise hex-shaped targets are stored-hash prefixes and
+// anything else is a label (the V5b spec contract `token revoke
+// <label>` stays label-first). A label that looks like hex needs
+// --by-label — same rule as before, ambiguity never guesses.
+func revokeToken(store *surface.TokenStore, byLabel bool, target string) error {
+	if !byLabel && isHexTarget(target) {
+		n, err := store.RevokeHashPrefix(target)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("no token with prefix %q", target)
+		}
+		fmt.Printf("revoked %q (effective on the daemon's next request)\n", target)
+		return nil
+	}
+	n, err := store.RevokeLabel(target)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		if byLabel {
+			return fmt.Errorf("no token with label %q", target)
+		}
+		return fmt.Errorf("no token with prefix or label %q", target)
+	}
+	fmt.Printf("revoked %d token(s) labeled %q (effective on the daemon's next request)\n", n, target)
+	return nil
+}
+
 func tokenHelp(args []string) {
 	if hasSubverb(args, "create") {
-		fmt.Fprintln(os.Stderr, "usage: hearthd token create <label>")
+		fmt.Fprintln(os.Stderr, "usage: hearthd token create <label> [--expires-in <duration>]")
 		os.Exit(0)
 	}
 	if hasSubverb(args, "revoke") {
-		fmt.Fprintln(os.Stderr, "usage: hearthd token revoke <label>")
+		fmt.Fprintln(os.Stderr, "usage: hearthd token revoke [--by-label] <id-prefix-or-label>")
 		os.Exit(0)
 	}
 	if hasSubverb(args, "list") {
 		fmt.Fprintln(os.Stderr, "usage: hearthd token list")
 		os.Exit(0)
 	}
-	fmt.Fprintln(os.Stderr, "usage: hearthd token create|revoke <label> | list")
+	fmt.Fprintln(os.Stderr, "usage: hearthd token create <label> [--expires-in <duration>] | revoke [--by-label] <id-prefix-or-label> | list")
 	os.Exit(0)
 }
 
