@@ -120,11 +120,14 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 			if approval == "auto" || approval == "" {
 				reason = "not_required"
 			}
-			obj, _ := json.Marshal(struct {
+			obj, err := json.Marshal(struct {
 				Decision string `json:"decision"`
 				Reason   string `json:"reason"`
 				Source   string `json:"source"`
 			}{decision, reason, "repl"})
+			if err != nil {
+				obj = []byte("{}")
+			}
 			return obj, true
 		},
 	}
