@@ -38,8 +38,8 @@ import (
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
-// suiteSecret is the distinctive fixture secret for every V-T1 proof.
-const suiteSecret = "sk-liv-VT1SUITE-00000000000000000000-9876"
+// suiteNeedle is the distinctive fixture secret for every V-T1 proof.
+const suiteNeedle = "fx-liv-VT1SUITE-00000000000000000000-9876"
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -205,7 +205,7 @@ func newVT1World(t *testing.T) *vt1World {
 		w.mu.Lock()
 		w.seen = append(w.seen, vt1Seen{path: r.URL.Path, auth: auth})
 		w.mu.Unlock()
-		if auth != "Bearer "+suiteSecret {
+		if auth != "Bearer "+suiteNeedle {
 			http.Error(rw, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -249,7 +249,7 @@ func newVT1World(t *testing.T) *vt1World {
 // returns the raw response body and the minted handle.
 func (w *vt1World) createViaAdmin(t *testing.T, extra string) (string, string) {
 	t.Helper()
-	body := `{"name":"vt1","secret":"` + suiteSecret + `"` + extra + `}`
+	body := `{"name":"vt1","secret":"` + suiteNeedle + `"` + extra + `}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials", strings.NewReader(body))
 	req.Host = "127.0.0.1:7717"
 	req.Header.Set("Authorization", "Bearer "+w.token)
@@ -306,6 +306,8 @@ func (*vt1Model) Capabilities(context.Context) (router.Caps, error) {
 }
 
 func (m *vt1Model) Complete(_ context.Context, msgs []router.Message, opts router.Options) (*router.Completion, error) {
+	//nolint:musttag // fixture captures the payload verbatim; router.Message
+	// deliberately carries no wire tags (providers re-encode via DTOs).
 	raw, err := json.Marshal(msgs)
 	if err != nil {
 		return nil, err
@@ -361,8 +363,8 @@ func (w *vt1World) connectorTool(name, workerTool string) loop.Tool {
 // assertNoSecret greps one artifact for the secret and its base64 form.
 func assertNoSecret(t *testing.T, label, data string) {
 	t.Helper()
-	b64 := base64.StdEncoding.EncodeToString([]byte(suiteSecret))
-	if strings.Contains(data, suiteSecret) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(suiteNeedle))
+	if strings.Contains(data, suiteNeedle) {
 		t.Errorf("%s contains the secret", label)
 	}
 	if strings.Contains(data, b64) {
@@ -392,7 +394,7 @@ func TestVT1a_HandleAuthenticatesNoLeak(t *testing.T) {
 
 	// The fixture HTTPS server received the real secret.
 	seen := w.requests()
-	if len(seen) != 1 || seen[0].path != "/login/a" || seen[0].auth != "Bearer "+suiteSecret {
+	if len(seen) != 1 || seen[0].path != "/login/a" || seen[0].auth != "Bearer "+suiteNeedle {
 		t.Fatalf("fixture server did not receive the real secret: %+v", seen)
 	}
 	if !strings.Contains(events, `\"authenticated\":true`) {
@@ -421,7 +423,7 @@ func TestVT1b_WriteOnlyCreate(t *testing.T) {
 	w := newVT1World(t)
 	body, handle := w.createViaAdmin(t, "")
 
-	last4 := suiteSecret[len(suiteSecret)-4:]
+	last4 := suiteNeedle[len(suiteNeedle)-4:]
 	if last4 != "9876" {
 		t.Fatalf("fixture last4 = %q", last4)
 	}
@@ -484,13 +486,16 @@ func TestVT1c_RateLimit(t *testing.T) {
 	}
 
 	seen := w.requests()
-	if len(seen) != 2 || seen[0].auth != "Bearer "+suiteSecret || seen[1].auth != "" {
+	if len(seen) != 2 || seen[0].auth != "Bearer "+suiteNeedle || seen[1].auth != "" {
 		t.Fatalf("fixture saw %+v", seen)
 	}
 	if got := auditByKind(t, w.h.v.StateDir(), custos.AuditKindHandleDeniedRate); len(got) != 1 {
 		t.Fatalf("handle_denied_rate audits = %d, want 1", len(got))
 	}
-	raw, _ := json.Marshal(r2)
+	raw, merr := json.Marshal(r2)
+	if merr != nil {
+		t.Fatalf("marshal denied response: %v", merr)
+	}
 	assertNoSecret(t, "denied response", string(raw))
 	if strings.Contains(string(raw), handle) {
 		t.Errorf("denied response echoes the handle: %s", raw)
@@ -515,7 +520,10 @@ func TestVT1d_ScopeBinding(t *testing.T) {
 	if got := auditByKind(t, w.h.v.StateDir(), custos.AuditKindHandleDeniedScope); len(got) != 1 {
 		t.Fatalf("handle_denied_scope audits = %d, want 1", len(got))
 	}
-	raw, _ := json.Marshal(rb)
+	raw, merr := json.Marshal(rb)
+	if merr != nil {
+		t.Fatalf("marshal denied response: %v", merr)
+	}
 	assertNoSecret(t, "denied response", string(raw))
 
 	// Control: tool A with the same handle still authenticates.
@@ -558,7 +566,7 @@ func TestVT1f_NonCustosRailResultRedacted(t *testing.T) {
 		Spec:    router.ToolSpec{Name: "fixture_leak", ParamsJSONSchema: `{"type":"object"}`},
 		Trusted: false,
 		Run: func(context.Context, string) (string, error) {
-			return "leaked: " + suiteSecret, nil
+			return "leaked: " + suiteNeedle, nil
 		},
 	}
 	approve := func(string, string) (bool, string) { return true, "approved:vt1" }
