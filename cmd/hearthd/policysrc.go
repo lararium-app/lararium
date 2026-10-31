@@ -37,6 +37,7 @@ func wireCustosPolicy(srv *surface.Server, home string, cfg CustosConfig) Policy
 	}
 	adapter := &policySourceAdapter{vault: v}
 	srv.SetPolicySource(adapter)
+	srv.SetCredentialSource(&credentialSourceAdapter{vault: v})
 	return adapter
 }
 

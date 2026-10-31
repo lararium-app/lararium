@@ -394,3 +394,62 @@ func TestHandleA7_SecretHygiene(t *testing.T) {
 		}
 	}
 }
+
+// TestHandleViews_CarryLast4NoSecret: ListHandleViews carries last4 and kind
+// (CREDHANDLE-SPEC D5) while ListHandles still redacts; no value equals or
+// contains the secret.
+func TestHandleViews_CarryLast4NoSecret(t *testing.T) {
+	v, _, pass := setupHandleVault(t)
+	rate := &custos.HandleRate{N: 3, Window: 60}
+	rec, err := v.CreateHandle(pass, "svc", "svc", time.Hour, rate, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, err := v.ListHandleViews()
+	if err != nil || len(views) != 1 {
+		t.Fatalf("views: %v %v", views, err)
+	}
+	hv := views[0]
+	if hv.Handle != rec.Handle || hv.Name != "svc" || hv.Kind != "api_key" || hv.Last4 != "9876" ||
+		hv.Created == "" || hv.Expires == "" || hv.Rate == nil || hv.Rate.N != 3 || hv.Rate.Window != 60 {
+		t.Fatalf("unexpected view %+v", hv)
+	}
+	for _, f := range []string{hv.Handle, hv.Name, hv.Kind, hv.Last4, hv.Created, hv.Expires} {
+		if f == handleTestValue || strings.Contains(f, handleTestValue) {
+			t.Fatal("view field carries the secret")
+		}
+	}
+	list, err := v.ListHandles()
+	if err != nil || list[0].Last4 != "" {
+		t.Fatalf("ListHandles must still redact: %+v %v", list, err)
+	}
+}
+
+func TestCreateCredentialHandle_ValidatesBeforeWrite(t *testing.T) {
+	v, _, pass := setupHandleVault(t)
+	cases := map[string]func() error{
+		"name":   func() error { _, e := v.CreateCredentialHandle(pass, "Bad Name", "x", "", 0, nil, "web"); return e },
+		"secret": func() error { _, e := v.CreateCredentialHandle(pass, "ok1", "", "", 0, nil, "web"); return e },
+		"scope": func() error {
+			_, e := v.CreateCredentialHandle(pass, "ok1", "x", "other/tool", 0, nil, "web")
+			return e
+		},
+		"rate": func() error {
+			_, e := v.CreateCredentialHandle(pass, "ok1", "x", "", 0, &custos.HandleRate{N: 0, Window: 1}, "web")
+			return e
+		},
+	}
+	for field, fn := range cases {
+		var fe *custos.FieldError
+		if err := fn(); !errors.As(err, &fe) || fe.Field != field {
+			t.Fatalf("%s: got %v", field, err)
+		}
+	}
+	// No orphan credential was written by the failed attempts.
+	if _, err := v.CreateCredentialHandle(pass, "ok1", "fresh-value-1234", "", 0, nil, "web"); err != nil {
+		t.Fatalf("name should still be free: %v", err)
+	}
+	if _, err := v.CreateCredentialHandle(pass, "ok1", "again-value-1234", "", 0, nil, "web"); !errors.Is(err, custos.ErrCredentialExists) {
+		t.Fatalf("want ErrCredentialExists, got %v", err)
+	}
+}
