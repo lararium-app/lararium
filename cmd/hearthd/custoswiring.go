@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -202,12 +203,12 @@ func startCustosAndDevices(ctx context.Context, cfg CustosConfig, home string, b
 		hub.SetSecrets(ns.Needles)
 	}
 	stopDoor := startCustosDoor(ctx, cfg, bridge, srv, hub, decider)
-	wireDevices(home, hub, decider, stopDoor)
+	wireDevices(home, hub, decider, stopDoor, srv)
 	return stopDoor
 }
 
 // wireDevices initializes the in-process device manager and wires its dynamic ToolSource per DEVICE-RAILS-SPEC D1/D4/D5.
-func wireDevices(home string, hub *surface.Hub, decider PolicyDecider, stopDoor func()) {
+func wireDevices(home string, hub *surface.Hub, decider PolicyDecider, stopDoor func(), srv *surface.Server) {
 	devMgr, err := devices.NewManager(home)
 	if err != nil {
 		log.Printf("WARN devices manager: %v", err)
@@ -221,6 +222,12 @@ func wireDevices(home string, hub *surface.Hub, decider PolicyDecider, stopDoor 
 	setHearthDeviceSource(devToolSrc, devMgr)
 	if stopDoor == nil && hub != nil {
 		hub.SetToolSource(devToolSrc)
+	}
+	if srv != nil {
+		auditLogger := custos.NewAuditLogger(filepath.Join(home, "custos"))
+		_ = auditLogger.EnsureAuditDir()
+		door := newDeviceDoorAdapter(devMgr, auditLogger)
+		srv.SetDeviceDoor(door)
 	}
 }
 

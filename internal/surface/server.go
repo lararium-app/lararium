@@ -82,6 +82,10 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 		s.dispatchCredentials(w, r)
 		return
 	}
+	if r.URL.Path == "/v1/devices" || strings.HasPrefix(r.URL.Path, "/v1/devices/") {
+		s.dispatchDevices(w, r)
+		return
+	}
 	if r.URL.Path == "/v1/sessions" {
 		switch r.Method {
 		case http.MethodGet:
