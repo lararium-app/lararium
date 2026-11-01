@@ -650,8 +650,10 @@ func TestLC_PromotionNeverLeaksLiteral(t *testing.T) {
 	// Nothing under the hearth dir (store, audit, vault, snapshots, stderr
 	// captures) and no reply frame carries a literal, raw or base64.
 	for _, lit := range []string{secret, bearerSecret, "probe-only-LITERAL-1234567"} {
-		needles := []string{lit, base64.StdEncoding.EncodeToString([]byte(lit)), base64.RawURLEncoding.EncodeToString([]byte(lit)),
-			base64.URLEncoding.EncodeToString([]byte(lit))}
+		needles := []string{
+			lit, base64.StdEncoding.EncodeToString([]byte(lit)), base64.RawURLEncoding.EncodeToString([]byte(lit)),
+			base64.URLEncoding.EncodeToString([]byte(lit)),
+		}
 		for off := 1; off < 3; off++ { // base64 of the literal at other alignments
 			enc := base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("x", off) + lit))
 			needles = append(needles, enc[4:len(enc)-4])

@@ -647,7 +647,7 @@ func (s *DoorServer) handleApprove(client *doorClient, cardID string, always boo
 		if always {
 			s.storeAlwaysRule(cardID, "surface")
 		}
-		if v != nil && v.Audit() != nil {
+		if cred != "" && v != nil && v.Audit() != nil {
 			_ = v.Audit().AppendApprovalAnsweredVia(cred, "ok", "surface", via)
 		}
 		_ = client.writeRaw([]byte("OK\n"))
@@ -682,7 +682,7 @@ func (s *DoorServer) handleDeny(client *doorClient, cardID string, via string) {
 	status := s.hub.ResolveFromVia(session, cardID, false, "surface", via)
 	switch status {
 	case 200:
-		if v != nil && v.Audit() != nil {
+		if cred != "" && v != nil && v.Audit() != nil {
 			_ = v.Audit().AppendApprovalAnsweredVia(cred, "denied", "surface", via)
 		}
 		_ = client.writeRaw([]byte("OK\n"))
@@ -1095,6 +1095,28 @@ func (s *DoorServer) ApprovalTerminalVia(id, sessionID, state, reason, source, v
 	}
 	if reason == "custos_locked" && len(clients) > 0 {
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	if s.hub != nil && (state == "denied" || state == "timed_out") {
+		if name, ok := s.hub.NameOf(id); ok && (strings.HasPrefix(name, "mcp-add:") || strings.HasPrefix(name, "mcp-edit:")) {
+			connName := strings.TrimPrefix(strings.TrimPrefix(name, "mcp-add:"), "mcp-edit:")
+			denyingVia := via
+			if denyingVia == "" {
+				if reason == "timeout" || state == "timed_out" {
+					denyingVia = "hold_expired"
+				} else {
+					denyingVia = "deny"
+				}
+			}
+			if v := s.vaultInstance(); v != nil && v.Audit() != nil {
+				_ = v.Audit().Append(AuditRecord{
+					Kind:  AuditKindMCPAddDenied,
+					Cred:  connName,
+					Actor: "door",
+					Via:   denyingVia,
+				})
+			}
+		}
 	}
 }
 

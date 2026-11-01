@@ -345,12 +345,12 @@ func (s *Server) releasePending(name, cardID string) {
 // awaitConnectorVerdict settles one add/edit. Allow -> MCP-ADD (custosd
 // persists and audits mcp_added/mcp_edited). Deny or hold expiry (the
 // decision channel's false) -> nothing was ever sent or persisted here.
-//
-// AUDIT: the surface has no audit sink and this slice may not invent one, so
-// the mcp_add_denied record is NOT written from here; the denial is logged
-// (name only). See the slice report.
-func (s *Server) awaitConnectorVerdict(door ConnectorDoor, hub *ApprovalHub, name, cardID string,
-	decision <-chan bool, body []byte, meta connectorMeta, edit bool, hold time.Duration) {
+// The mcp_add_denied audit record is dispatched through the door server's
+// terminal approval fanout.
+func (s *Server) awaitConnectorVerdict(
+	door ConnectorDoor, hub *ApprovalHub, name, cardID string,
+	decision <-chan bool, body []byte, meta connectorMeta, edit bool, hold time.Duration,
+) {
 	defer zeroBytes(body)
 	safety := time.NewTimer(hold + 10*time.Second)
 	defer safety.Stop()
@@ -364,7 +364,7 @@ func (s *Server) awaitConnectorVerdict(door ConnectorDoor, hub *ApprovalHub, nam
 
 	if !allow {
 		// #nosec G706 -- name is grammar-validated; sanitized anyway.
-		log.Printf("surface: connector %q add/edit not approved (denied or hold expired); nothing persisted (audit kind mcp_add_denied: no surface sink)", logSanitize(name))
+		log.Printf("surface: connector %q add/edit not approved (denied or hold expired); nothing persisted", logSanitize(name))
 		s.releasePending(name, cardID)
 		s.pokeConnectorRail()
 		return

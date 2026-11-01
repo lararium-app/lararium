@@ -295,7 +295,7 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 			toolName, _ = hub.NameOf(id)
 		}
 		allow := req.Verdict != "deny"
-		switch hub.ResolveFromVia("", id, allow, "custos", "") {
+		switch hub.ResolveFromVia("", id, allow, "custos", "web") {
 		case 200:
 			if req.Verdict == "always" {
 				s.mintTurnAlwaysRule(id, toolName)
