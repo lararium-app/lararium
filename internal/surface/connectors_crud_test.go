@@ -565,7 +565,8 @@ func TestConnectors_Patch_DiffCard(t *testing.T) {
 	e.srv.connLife.meta = map[string]connectorMeta{"alpha": {Fingerprint: "cafe0001", Env: []string{"OLD_VAR", "KEEP"}}}
 	e.srv.connLife.mu.Unlock()
 	e.door.probeRes = ConnectorProbe{Fingerprint: "cafe0002", Tools: []ConnectorDoorTool{
-		{Name: "shared", Flags: "none"}, {Name: "alpha_c", Flags: "read_only"}}}
+		{Name: "shared", Flags: "none"}, {Name: "alpha_c", Flags: "read_only"},
+	}}
 
 	body := `{"transport":"stdio","command":"/usr/bin/tool","env":{"KEEP":"` + connSecretEnv + `","NEW_VAR":"` + connSecretBearer + `"}}`
 	w := e.do(http.MethodPatch, "/v1/mcp/connectors/alpha", body)
