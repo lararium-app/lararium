@@ -274,6 +274,9 @@ type DoorServer struct {
 	proxy     *Proxy
 	hub       *surface.ApprovalHub
 	ln        net.Listener
+	connStore *ConnectorStore
+	mgr       *ConnectorManager
+	mgrMu     sync.Mutex
 	clients   map[*doorClient]bool
 	done      chan struct{}
 	closeOnce sync.Once
@@ -573,6 +576,10 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 		if s.handleMcpCall(client, parts[1], parts[2], args) {
 			return
 		}
+	}
+
+	if s.handleLifecycleCommand(client, line, fields) {
+		return
 	}
 
 	if s.handleMcpCommand(client, fields) {

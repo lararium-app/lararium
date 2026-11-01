@@ -79,6 +79,10 @@ type MCPConnector struct {
 	workers        *WorkerServer
 
 	changeListener atomic.Pointer[MCPChangeListener]
+
+	// lastUsed is the unix-nano time of the last successful call dispatch
+	// (0 = never; CONNECTOR-LIFE-SPEC D6).
+	lastUsed atomic.Int64
 }
 
 // MCPChangeListener receives notifications of rail state and tools changes.
@@ -185,16 +189,19 @@ func NewMCPConnector(cfg MCPServerConfig, hearthDir string, opts ...Option) *MCP
 	}
 
 	// Register empty snapshot initially
-	emptySnap := &CatalogSnapshot{
-		Connector:    cfg.Name,
+	conn.snapshot.Store(emptyCatalogSnapshot(cfg.Name))
+
+	return conn
+}
+
+func emptyCatalogSnapshot(name string) *CatalogSnapshot {
+	return &CatalogSnapshot{
+		Connector:    name,
 		ByName:       make(map[string]*SnapshotTool),
 		Fingerprints: make(map[string]string),
 		RawToCanon:   make(map[string]string),
 		CanonToRaw:   make(map[string]string),
 	}
-	conn.snapshot.Store(emptySnap)
-
-	return conn
 }
 
 // Name implements Connector.Name() (§4.2).
@@ -431,6 +438,7 @@ func (c *MCPConnector) Execute(
 		})
 	}
 
+	c.MarkUsed()
 	return json.RawMessage(convergedData), nil
 }
 

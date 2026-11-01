@@ -3,6 +3,8 @@ package custos
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 )
 
 // WithRail attaches the RailRegistry to the door server.
@@ -123,6 +125,122 @@ func (s *DoorServer) broadcastMCPFrame(frame string) {
 	for _, client := range clients {
 		client.enqueueEvent(ev)
 	}
+}
+
+// WithConnectorStore attaches the runtime connector store (the same instance
+// the boot merge loaded) so lifecycle verbs persist into it.
+func WithConnectorStore(st *ConnectorStore) DoorServerOption {
+	return func(s *DoorServer) {
+		s.connStore = st
+	}
+}
+
+// connectorManager returns the lifecycle manager, building it on first use.
+func (s *DoorServer) connectorManager() (*ConnectorManager, error) {
+	reg := s.railRegistry()
+	s.mgrMu.Lock()
+	defer s.mgrMu.Unlock()
+	if s.mgr != nil && s.mgr.reg == reg {
+		return s.mgr, nil
+	}
+	if s.connStore == nil {
+		st, err := OpenConnectorStore(s.stateDir)
+		if err != nil {
+			return nil, lcErr("store_failed")
+		}
+		s.connStore = st
+	}
+	s.mgr = NewConnectorManager(reg, s.connStore, s.vaultInstance(), s.workersInstance(), filepath.Dir(s.stateDir))
+	return s.mgr, nil
+}
+
+// handleLifecycleCommand serves MCP-ADD / MCP-PROBE / MCP-REMOVE / MCP-STATE
+// (MCP-SPEC A10, CONNECTOR-LIFE-SPEC D1). It runs only on authenticated door
+// sessions (handleConn rejects bad tokens before the command loop). Every
+// reply is exactly one frame per line; the MCP-PROBE success reply carries
+// its MCP-TOOLS frame in the same write so the pair is never interleaved with
+// broadcasts and is connection-local.
+func (s *DoorServer) handleLifecycleCommand(client *doorClient, line string, fields []string) bool {
+	verb := fields[0]
+	switch verb {
+	case "MCP-ADD", "MCP-PROBE", "MCP-REMOVE", "MCP-STATE":
+	default:
+		return false
+	}
+	reply := func(msg string) {
+		_ = client.writeRaw([]byte(msg + "\n"))
+	}
+	fail := func(err error) {
+		reply("ERR " + oneLineReason(lifecycleReason(err)))
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(line, verb))
+
+	mgr, err := s.connectorManager()
+	if err != nil {
+		fail(err)
+		return true
+	}
+
+	switch verb {
+	case "MCP-ADD":
+		idx := strings.IndexAny(rest, " \t")
+		if rest == "" || idx < 0 {
+			reply("ERR bad_request")
+			return true
+		}
+		name, cfgJSON := rest[:idx], strings.TrimSpace(rest[idx:])
+		if cfgJSON == "" {
+			reply("ERR bad_request")
+			return true
+		}
+		if err := mgr.Add(name, []byte(cfgJSON)); err != nil {
+			fail(err)
+			return true
+		}
+		reply("OK")
+
+	case "MCP-PROBE":
+		if rest == "" {
+			reply("ERR bad_request")
+			return true
+		}
+		res, err := mgr.Probe([]byte(rest))
+		if err != nil {
+			fail(err)
+			return true
+		}
+		tb, merr := json.Marshal(res.Tools)
+		if merr != nil {
+			reply("ERR internal")
+			return true
+		}
+		_ = client.writeRaw([]byte(fmt.Sprintf("OK %d %s\nMCP-TOOLS %s %s\n",
+			len(res.Tools), res.Fingerprint, probeFrameName, string(tb))))
+
+	case "MCP-REMOVE":
+		name := strings.TrimSpace(rest)
+		if name == "" || strings.ContainsAny(name, " \t") {
+			reply("ERR bad_request")
+			return true
+		}
+		if err := mgr.Remove(name); err != nil {
+			fail(err)
+			return true
+		}
+		reply("OK")
+
+	case "MCP-STATE":
+		if len(fields) != 3 || (fields[2] != "enabled" && fields[2] != "disabled") {
+			reply("ERR bad_request")
+			return true
+		}
+		if err := mgr.SetState(fields[1], fields[2] == "enabled"); err != nil {
+			fail(err)
+			return true
+		}
+		reply("OK")
+	}
+	return true
 }
 
 // handleMcpCommand delegates MCP verbs on doors.sock to the shared dispatcher.

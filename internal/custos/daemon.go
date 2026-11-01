@@ -3,6 +3,7 @@ package custos
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/lararium-app/lararium/internal/surface"
@@ -19,6 +20,11 @@ type Daemon struct {
 	ctlServer  *CtlServer
 	doorServer *DoorServer
 	stopChan   chan struct{}
+
+	// connStore is the runtime connector store (CONNECTOR-LIFE-SPEC D2);
+	// storeErr is a corrupt-store fault that makes Start refuse to boot.
+	connStore *ConnectorStore
+	storeErr  error
 }
 
 // NewDaemon initializes a Daemon with configuration.
@@ -32,7 +38,21 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 	hub := surface.NewApprovalHub(cfg.AskHoldTimeout)
 	v.SetApprovalHub(hub)
 	proxy := NewProxy(v, hub, cfg)
-	workers := NewWorkerServer(v, hub, cfg)
+
+	// Boot merge (D2): lararium.yaml seed, store overrides by name,
+	// tombstones dropped. A corrupt store is remembered and refuses Start —
+	// it carries user intent, so it is never silently discarded.
+	connStore, storeErr := OpenConnectorStore(v.StateDir())
+	var workerOpts []WorkerServerOption
+	if storeErr == nil {
+		seed := cfg.MCPServers
+		if len(seed) == 0 {
+			seed = cfg.Connectors.MCP
+		}
+		workerOpts = append(workerOpts, WithRailRegistry(
+			NewRailRegistryFromStore(seed, connStore, filepath.Dir(v.StateDir()), railOptionsForVault(v)...)))
+	}
+	workers := NewWorkerServer(v, hub, cfg, workerOpts...)
 	rail := workers.RailRegistry()
 	workers.BindRailRegistry(rail)
 
@@ -44,6 +64,9 @@ func NewDaemon(stateDir string, cfg *Config) *Daemon {
 		workers:  workers,
 		rail:     rail,
 		stopChan: make(chan struct{}),
+
+		connStore: connStore,
+		storeErr:  storeErr,
 	}
 }
 
@@ -79,6 +102,11 @@ func (d *Daemon) Hub() *surface.ApprovalHub {
 
 // Start boots custosd: checks C2 file law, checks crash doctrine, serves locked (or unlocks in keyfile mode), binds ctl.sock.
 func (d *Daemon) Start() error {
+	// 0. Corrupt runtime connector store: refuse to boot with a clear error.
+	if d.storeErr != nil {
+		return fmt.Errorf("connector store: %w", d.storeErr)
+	}
+
 	// 1. CUSTOS §C2: enforce state root and file law
 	if err := d.vault.CheckFileLaw(); err != nil {
 		return err
@@ -136,6 +164,7 @@ func (d *Daemon) Start() error {
 		WithWorkers(d.workers),
 		WithProxy(d.proxy),
 		WithRail(d.rail),
+		WithConnectorStore(d.connStore),
 	)
 	if err != nil {
 		_ = ctlServer.Close()

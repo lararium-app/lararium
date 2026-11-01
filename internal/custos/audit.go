@@ -33,6 +33,9 @@ type AuditRecord struct {
 	PrevHash string   `json:"prev_hash"`
 	Nonce    string   `json:"nonce,omitempty"`
 	Names    []string `json:"names,omitempty"`
+	// Fingerprint is the connector catalog snapshot fingerprint carried by
+	// the connector lifecycle kinds (CONNECTOR-LIFE-SPEC D9). Additive.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // AuditEntry is an alias for AuditRecord per CUSTOS-SPEC §8.1 / amendment v9.

@@ -29,6 +29,15 @@ const (
 	AuditKindMCPResultTruncated  = "mcp_result_truncated"
 	AuditKindMCPAlwaysRevoked    = "mcp_always_revoked"
 	AuditKindMCPRefresh          = "mcp_refresh"
+
+	// Connector lifecycle kinds per CONNECTOR-LIFE-SPEC D9 (A8 closed-set
+	// append). Payloads carry connector name, catalog fingerprint and env
+	// var NAMES only — never config values or secrets.
+	AuditKindMCPAdded     = "mcp_added"
+	AuditKindMCPRemoved   = "mcp_removed"
+	AuditKindMCPEdited    = "mcp_edited"
+	AuditKindMCPToggled   = "mcp_toggled"
+	AuditKindMCPAddDenied = "mcp_add_denied"
 )
 
 // Truncation audit token names per MCP-SPEC §4.5 / amendment A8.
@@ -380,6 +389,26 @@ type CatalogSnapshot struct {
 	CreatedAt    time.Time
 	TTL          time.Duration
 	ExpiresAt    time.Time
+}
+
+// CatalogFingerprint returns one SHA-256 hex digest over the whole catalog:
+// RFC 8785 canonical JSON of {canonical tool name: per-tool fingerprint}.
+// Stable across tool order; changes when any tool is added, removed or its
+// per-tool fingerprint (A6) changes.
+func (s *CatalogSnapshot) CatalogFingerprint() string {
+	if s == nil {
+		return ""
+	}
+	fps := make(map[string]any, len(s.Fingerprints))
+	for k, v := range s.Fingerprints {
+		fps[k] = v
+	}
+	data, err := CanonicalJSON(fps)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // HasTool reports whether canonical tool name exists in the snapshot.
