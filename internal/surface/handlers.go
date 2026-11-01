@@ -88,6 +88,40 @@ type Server struct {
 	PairStore   PairStore
 	pairMu      sync.Mutex
 	pairLimiter *pairLimiter
+
+	devicesMu       sync.RWMutex
+	devicesDoor     DeviceDoor
+	devicesBroker   *deviceBroker
+	devicePendingMu sync.Mutex
+	devicePending   map[string]*pendingDevice
+	devicePokeMu    sync.RWMutex
+	devicePokes     map[int64]func()
+	devicePokeSeq   int64
+}
+
+// SetDeviceDoor attaches the device control plane.
+func (s *Server) SetDeviceDoor(door DeviceDoor) {
+	s.devicesMu.Lock()
+	defer s.devicesMu.Unlock()
+	s.devicesDoor = door
+	broker := newDeviceBroker(s)
+	s.devicesBroker = broker
+	if door != nil {
+		door.SetActionBroker(broker)
+	}
+}
+
+func (s *Server) getDeviceDoor() DeviceDoor {
+	s.devicesMu.RLock()
+	defer s.devicesMu.RUnlock()
+	return s.devicesDoor
+}
+
+// DeviceBroker returns the currently attached ActionBroker, if any.
+func (s *Server) DeviceBroker() ActionBroker {
+	s.devicesMu.RLock()
+	defer s.devicesMu.RUnlock()
+	return s.devicesBroker
 }
 
 // BackupFunc handles control-socket backup verbs (PENATUS §4.5.3.1).
