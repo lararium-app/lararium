@@ -17,7 +17,11 @@ func TestConnectorStatusLastUsedAdditive(t *testing.T) {
 	if st.LastUsed != nil {
 		t.Fatalf("old row grew last_used: %v", *st.LastUsed)
 	}
-	if b, _ := json.Marshal(st); string(b) != old {
+	b, mErr := json.Marshal(st)
+	if mErr != nil {
+		t.Fatal(mErr)
+	}
+	if string(b) != old {
 		t.Fatalf("old shape changed: %s", b)
 	}
 
