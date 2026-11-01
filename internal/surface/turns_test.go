@@ -152,16 +152,23 @@ func parseSSEFrames(body string) []map[string]any {
 }
 
 func TestHub_GateConcurrentRequests(t *testing.T) {
-	// This test uses a slow provider to ensure concurrent requests hit the gate
-	started := make(chan struct{}, 1)
-	released := make(chan struct{}, 1)
+	// This test uses a slow provider to ensure concurrent requests hit the gate.
+	// The provider hooks must never block forever: releases is CLOSED by the
+	// test (broadcast), and started publishes without blocking, so a stub call
+	// that outlives the release point returns an error instead of deadlocking
+	// the suite on slower schedulers (seen on the ARM runner).
+	started := make(chan struct{}, 4)
+	releases := make(chan struct{})
 
 	sp := &stubProvider{
 		name: "slow",
 		caps: router.Caps{SupportsTools: true, ContextLength: 100000, Source: "stub"},
 		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
-			started <- struct{}{}
-			<-released
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-releases
 			return &router.Completion{Text: "done", Model: "slow"}, nil
 		},
 	}
@@ -186,11 +193,10 @@ func TestHub_GateConcurrentRequests(t *testing.T) {
 		}(i)
 	}
 
-	// Wait for the first request to start (acquire gate and call provider)
+	// Wait for the first request to start (acquire gate and call provider),
+	// then release it — close() broadcasts so every stub call returns.
 	<-started
-
-	// Release the first request
-	released <- struct{}{}
+	close(releases)
 
 	wg.Wait()
 
