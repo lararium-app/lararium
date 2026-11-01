@@ -262,10 +262,24 @@ func (m *Manager) IsTombstoned(deviceID string) bool {
 	return m.tombstones[deviceID]
 }
 
+// safeToken guards every on-disk path construction from caller-controlled
+// identifiers: only the device-slug grammar (rails.go) may ever be joined
+// into a filesystem path, which also excludes rails the vocabulary accepts
+// nowhere else, since all vocabulary names match it.
+func safeToken(kind, tok string) error {
+	if !deviceIDRegexp.MatchString(tok) {
+		return fmt.Errorf("%w: unsafe %s %q for path construction", ErrInvalidDeviceID, kind, tok)
+	}
+	return nil
+}
+
 // Forget removes the device directory tree completely and tombstones the row per DEVICE-RAILS-SPEC Wipe-on-forget.
 func (m *Manager) Forget(deviceID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := safeToken("device id", deviceID); err != nil {
+		return err
+	}
 
 	// 1. Remove directory tree completely
 	devTree := filepath.Join(m.devicesDir, deviceID)
@@ -387,6 +401,12 @@ func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Del
 	}
 
 	// Read existing doc to enforce monotonic seq across restarts
+	if err := safeToken("device id", deviceID); err != nil {
+		return err
+	}
+	if err := safeToken("rail", rail); err != nil {
+		return err
+	}
 	railFile := filepath.Join(m.devicesDir, deviceID, rail+".json")
 	var existingDoc RailDataDoc
 	if raw, err := os.ReadFile(railFile); err == nil {
@@ -429,6 +449,12 @@ func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Del
 	}
 	data = append(data, '\n')
 
+	if err := safeToken("device id", deviceID); err != nil {
+		return err
+	}
+	if err := safeToken("rail", rail); err != nil {
+		return err
+	}
 	devDir := filepath.Join(m.devicesDir, deviceID)
 	if err := writeAtomic(devDir, rail+".json", data); err != nil {
 		return fmt.Errorf("write rail store %s/%s: %w", deviceID, rail, err)
@@ -476,6 +502,12 @@ func (m *Manager) Read(deviceID, rail string) ([]byte, time.Duration, error) {
 		return nil, 0, ErrRailDisabled
 	}
 
+	if err := safeToken("device id", deviceID); err != nil {
+		return nil, 0, err
+	}
+	if err := safeToken("rail", rail); err != nil {
+		return nil, 0, err
+	}
 	railFile := filepath.Join(m.devicesDir, deviceID, rail+".json")
 	raw, err := os.ReadFile(railFile)
 	if err != nil {
@@ -506,6 +538,11 @@ func (m *Manager) Read(deviceID, rail string) ([]byte, time.Duration, error) {
 // writeAtomic writes data to dir/filename atomically via temp+rename+fsync, mode 0600.
 // Follows writeSyncTempNamed pattern (internal/custos/vault.go:36-68).
 func writeAtomic(dir, filename string, data []byte) error {
+	// Path-injection barrier: filenames are constructed from validated
+	// vocabulary tokens, but enforce single-segment here as well.
+	if filepath.Base(filename) != filename || filename == "." || filename == ".." {
+		return fmt.Errorf("unsafe filename %q", filename)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create dir %s: %w", dir, err)
 	}
