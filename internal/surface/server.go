@@ -68,8 +68,9 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if r.URL.Path == "/v1/mcp/connectors" {
-		s.mcpConnectorsHandler(w, r)
+	if r.URL.Path == "/v1/mcp/connectors" || r.URL.Path == "/v1/mcp/connector-form" ||
+		strings.HasPrefix(r.URL.Path, "/v1/mcp/connectors/") {
+		s.dispatchMCPConnectors(w, r)
 		return
 	}
 	if r.URL.Path == "/v1/policy/rules" || strings.HasPrefix(r.URL.Path, "/v1/policy/rules/") {
