@@ -30,16 +30,38 @@ type CustosCard struct {
 // GET /v1/mcp/connectors endpoint ({"connectors": [...]}). It deliberately
 // stays off the frozen CustosCard shape (CUSTOS-SPEC §6.4a): rail state is
 // observable inventory, never a resolvable approval.
+//
+// CONNECTOR-LIFE-SPEC D5/D6 grow the row additively (every field below the
+// legacy five is new). Tools stays the legacy tool COUNT — D5 names the new
+// field "tools" too, but retyping a shipped field would break existing
+// clients, so the per-tool flag list rides ToolList instead. The same shape
+// is the SSE connector_state payload: a FULL row, upsert-by-name.
+//
+// No secret value ever appears here: URLOrCommand is userinfo/query
+// stripped and Env carries variable NAMES only.
 type ConnectorCard struct {
 	Name     string `json:"name"`
 	State    string `json:"state"`
 	Tools    int    `json:"tools"`
 	Restarts int    `json:"restarts"`
 	Reason   string `json:"reason,omitempty"`
+
+	// AppState is the D6 app-facing bucket (ConnectorAppState).
+	AppState      string          `json:"app_state"`
+	Enabled       bool            `json:"enabled"`
+	ToolList      []ConnectorTool `json:"tool_list"`
+	HasWriteTools bool            `json:"has_write_tools"`
+	Fingerprint   string          `json:"fingerprint"`
+	// LastUsed is RFC3339 or null (never used / cold restart).
+	LastUsed     *string  `json:"last_used"`
+	URLOrCommand string   `json:"url_or_command"`
+	Env          []string `json:"env"`
 }
 
 // MCPConnectorsSource is an optional interface a CustosRegistry implements
-// when the MCP rail is wired. The surface serves /v1/mcp/connectors from it.
+// when the MCP rail is wired. The surface serves /v1/mcp/connectors from it
+// (legacy path; when a ConnectorDoor is wired the grown rows are built from
+// the door's mirrored status and tools instead).
 type MCPConnectorsSource interface {
 	ConnectorSnapshot() []ConnectorCard
 }
@@ -446,14 +468,5 @@ func (s *Server) mcpConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 		s.error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	cards := []ConnectorCard{}
-	s.custosMu.Lock()
-	reg := s.custosReg
-	s.custosMu.Unlock()
-	if src, ok := reg.(MCPConnectorsSource); ok {
-		if got := src.ConnectorSnapshot(); got != nil {
-			cards = got
-		}
-	}
-	writeJSONAny(w, http.StatusOK, map[string]any{"connectors": cards})
+	writeJSONAny(w, http.StatusOK, map[string]any{"connectors": s.connectorRows()})
 }
