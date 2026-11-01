@@ -257,7 +257,7 @@ func (s *Server) deviceRegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 		if allow {
 			if err := door.Register(req.DeviceID, req.DisplayName, req.RailsDeclared); err != nil {
-				log.Printf("surface: failed to persist device %s: %v", req.DeviceID, err)
+				log.Printf("surface: failed to persist device %s: %v", logSanitize(req.DeviceID), err)
 			}
 			s.pokeDeviceRail()
 

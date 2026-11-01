@@ -425,7 +425,7 @@ func assertNoNeedleText(t *testing.T, label, data, needle string) {
 func TestDevicesRegister_SuccessApproval(t *testing.T) {
 	e := setupDeviceEnv(t, true)
 
-	body := `{"device_id":"pixel-9","display_name":"Brandon's Pixel 9","rails_declared":[{"name":"calendar","read_only":true},{"name":"sms","read_only":false}]}`
+	body := `{"device_id":"pixel-9","display_name":"Pixel Nine","rails_declared":[{"name":"calendar","read_only":true},{"name":"sms","read_only":false}]}`
 	w := e.do(http.MethodPost, "/v1/devices/register", body)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("register status = %d, want 202: %s", w.Code, w.Body.String())
@@ -451,7 +451,7 @@ func TestDevicesRegister_SuccessApproval(t *testing.T) {
 	if card.ID != res.CardID {
 		t.Fatalf("card ID mismatch: %q != %q", card.ID, res.CardID)
 	}
-	if !strings.Contains(card.Review, "Brandon's Pixel 9") ||
+	if !strings.Contains(card.Review, "Pixel Nine") ||
 		!strings.Contains(card.Review, "pixel-9") ||
 		!strings.Contains(card.Review, "calendar [read_only]") ||
 		!strings.Contains(card.Review, "sms [action]") ||
@@ -468,7 +468,7 @@ func TestDevicesRegister_SuccessApproval(t *testing.T) {
 	// Wait for async persistence
 	waitFor(t, "device registered", func() bool {
 		dev, err := e.door.Get("pixel-9")
-		return err == nil && dev.DisplayName == "Brandon's Pixel 9"
+		return err == nil && dev.DisplayName == "Pixel Nine"
 	})
 
 	// Verify audit
@@ -477,7 +477,7 @@ func TestDevicesRegister_SuccessApproval(t *testing.T) {
 	for i, k := range e.door.auditKinds {
 		if k == AuditKindDeviceRegistered && e.door.audited[i].DeviceID == "pixel-9" {
 			foundAudit = true
-			if e.door.audited[i].DisplayName != "Brandon's Pixel 9" {
+			if e.door.audited[i].DisplayName != "Pixel Nine" {
 				t.Fatalf("audit DisplayName = %q", e.door.audited[i].DisplayName)
 			}
 			if len(e.door.audited[i].RailNames) != 2 {
