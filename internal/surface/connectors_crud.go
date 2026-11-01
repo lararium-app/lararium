@@ -75,10 +75,10 @@ func (s *Server) connError(w http.ResponseWriter, code int, msg, reason string) 
 // dispatchMCPConnectors routes /v1/mcp/connector-form and /v1/mcp/connectors[/...].
 func (s *Server) dispatchMCPConnectors(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
-	switch {
-	case p == "/v1/mcp/connector-form":
+	switch p {
+	case "/v1/mcp/connector-form":
 		s.connectorFormHandler(w, r)
-	case p == "/v1/mcp/connectors":
+	case "/v1/mcp/connectors":
 		switch r.Method {
 		case http.MethodGet:
 			s.mcpConnectorsHandler(w, r)
@@ -87,7 +87,7 @@ func (s *Server) dispatchMCPConnectors(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	case p == "/v1/mcp/connectors/events":
+	case "/v1/mcp/connectors/events":
 		if r.Method != http.MethodGet {
 			s.error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -216,8 +216,20 @@ func (s *Server) runConnectorGate(w http.ResponseWriter, r *http.Request, door C
 				return
 			}
 		} else {
-			top["name"], _ = json.Marshal(pathName)
-			body, _ = json.Marshal(top)
+			// Re-marshaling raw fragments can fail on pathological input;
+			// treat that as a bad config, never as a silent corrupt save.
+			nameJSON, nErr := json.Marshal(pathName)
+			if nErr != nil {
+				s.connError(w, http.StatusBadRequest, "invalid connector config", connReasonBadRequest)
+				return
+			}
+			top["name"] = nameJSON
+			rebuilt, rErr := json.Marshal(top)
+			if rErr != nil {
+				s.connError(w, http.StatusBadRequest, "invalid connector config", connReasonBadRequest)
+				return
+			}
+			body = rebuilt
 		}
 	}
 	defer zeroBytes(body)
@@ -297,7 +309,8 @@ func (s *Server) runConnectorGate(w http.ResponseWriter, r *http.Request, door C
 	// The waiter needs the config past this handler's return; take a copy
 	// (zeroed once the verdict is applied).
 	held := append([]byte(nil), body...)
-	go s.awaitConnectorVerdict(door, hub, name, cardID, decision, held, meta, edit, hold)
+	//nolint:gosec,contextcheck // G118+contextcheck: the verdict may land after this handler returns; the waiter enforces its own hold deadline.
+	go s.awaitConnectorVerdict(door, hub, name, cardID, decision, held, meta, hold)
 
 	// (e) 202 immediately — name and card id only.
 	writeJSONAny(w, http.StatusAccepted, map[string]string{"name": name, "card_id": cardID})
@@ -349,7 +362,7 @@ func (s *Server) releasePending(name, cardID string) {
 // terminal approval fanout.
 func (s *Server) awaitConnectorVerdict(
 	door ConnectorDoor, hub *ApprovalHub, name, cardID string,
-	decision <-chan bool, body []byte, meta connectorMeta, edit bool, hold time.Duration,
+	decision <-chan bool, body []byte, meta connectorMeta, hold time.Duration,
 ) {
 	defer zeroBytes(body)
 	safety := time.NewTimer(hold + 10*time.Second)
@@ -415,7 +428,7 @@ func (s *Server) connectorDeleteHandler(w http.ResponseWriter, r *http.Request, 
 	// refusal is treated the same — DELETE of an absent connector is 204.
 	if err := door.Remove(r.Context(), name); err != nil {
 		var re *ConnectorReasonError
-		if !(errors.As(err, &re) && re.Reason == "not_found") {
+		if !errors.As(err, &re) || re.Reason != "not_found" {
 			s.connDoorError(w, "remove", err, false)
 			return
 		}
@@ -489,11 +502,11 @@ type connectorOld struct {
 
 // sanitizeReviewText neutralizes control characters and bounds a
 // child-supplied string (tool names are untrusted input on a card).
-func sanitizeReviewText(s string, max int) string {
+func sanitizeReviewText(s string, maxRunes int) string {
 	s = logSanitize(s)
-	if utf8.RuneCountInString(s) > max {
+	if utf8.RuneCountInString(s) > maxRunes {
 		r := []rune(s)
-		s = string(r[:max]) + "…"
+		s = string(r[:maxRunes]) + "…"
 	}
 	return s
 }
@@ -503,7 +516,7 @@ func cleanFingerprint(fp string) string {
 		return ""
 	}
 	for _, c := range fp {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
 			return ""
 		}
 	}

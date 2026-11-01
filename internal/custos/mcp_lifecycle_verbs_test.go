@@ -26,7 +26,7 @@ import (
 	"github.com/lararium-app/lararium/internal/custos"
 )
 
-const lcPass = "lc-test-passphrase-77"
+const lcPass = "lc-test-passphrase-77" //nolint:gosec // G101: fixture canary passphrase
 
 // TestLifecycleHelperProcess is the fixture child for lifecycle tests: a real
 // MCP stdio server (tools alpha[read-only], beta) that records its pid and,
@@ -36,10 +36,10 @@ func TestLifecycleHelperProcess(t *testing.T) {
 		return
 	}
 	if p := os.Getenv("LC_PIDFILE"); p != "" {
-		_ = os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())), 0o600)
+		_ = os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())), 0o600) //nolint:gosec // G703: helper-process paths are fixture input, not attacker input
 	}
 	if p := os.Getenv("LC_OUTFILE"); p != "" {
-		_ = os.WriteFile(p, []byte(os.Getenv("LC_SECRET")), 0o600)
+		_ = os.WriteFile(p, []byte(os.Getenv("LC_SECRET")), 0o600) //nolint:gosec // G703: helper-process paths are fixture input, not attacker input
 	}
 	switch os.Getenv("LC_MODE") {
 	case "die":
@@ -199,16 +199,16 @@ func (c *lcClient) send(line string) string {
 	}
 }
 
-func waitState(t *testing.T, c *custos.MCPConnector, state string) custos.ConnectorStatus {
+func waitState(t *testing.T, c *custos.MCPConnector) custos.ConnectorStatus {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		if st := c.Status(); st.State == state {
+		if st := c.Status(); st.State == custos.MCPStateReady {
 			return st
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("connector %s never reached %s (now %+v)", c.Name(), state, c.Status())
+	t.Fatalf("connector %s never reached ready (now %+v)", c.Name(), c.Status())
 	return custos.ConnectorStatus{}
 }
 
@@ -253,11 +253,31 @@ func readStore(t *testing.T, stateDir string) map[string]any {
 func storeNames(t *testing.T, stateDir string) (conns []string, tombs []string) {
 	t.Helper()
 	m := readStore(t, stateDir)
-	for _, c := range m["connectors"].([]any) {
-		conns = append(conns, c.(map[string]any)["name"].(string))
+	connList, ok := m["connectors"].([]any)
+	if !ok {
+		t.Fatalf("connectors key is %T, want []any", m["connectors"])
 	}
-	for _, n := range m["tombstones"].([]any) {
-		tombs = append(tombs, n.(string))
+	for _, c := range connList {
+		rec, ok := c.(map[string]any)
+		if !ok {
+			t.Fatalf("connector entry %v is not an object", c)
+		}
+		nm, ok := rec["name"].(string)
+		if !ok {
+			t.Fatalf("connector name %v is not a string", rec["name"])
+		}
+		conns = append(conns, nm)
+	}
+	tombList, ok := m["tombstones"].([]any)
+	if !ok {
+		t.Fatalf("tombstones key is %T, want []any", m["tombstones"])
+	}
+	for _, n := range tombList {
+		tb, ok := n.(string)
+		if !ok {
+			t.Fatalf("tombstone %v is not a string", n)
+		}
+		tombs = append(tombs, tb)
 	}
 	return conns, tombs
 }
@@ -353,7 +373,7 @@ func TestLC_AddReplaceRemove(t *testing.T) {
 	if conn == nil {
 		t.Fatal("not registered")
 	}
-	st := waitState(t, conn, custos.MCPStateReady)
+	st := waitState(t, conn)
 	if st.Tools != 2 {
 		t.Fatalf("tools = %d", st.Tools)
 	}
@@ -378,7 +398,7 @@ func TestLC_AddReplaceRemove(t *testing.T) {
 	if conn2 == conn {
 		t.Fatal("replace kept the old connector")
 	}
-	if st := waitState(t, conn2, custos.MCPStateReady); st.Tools != 1 {
+	if st := waitState(t, conn2); st.Tools != 1 {
 		t.Fatalf("replaced tools = %d", st.Tools)
 	}
 	if pid2 := readPid(t, pidFile); pid2 == pid1 {
@@ -430,7 +450,7 @@ func TestLC_AuditKinds(t *testing.T) {
 	if got := c.send("MCP-ADD aud " + cfg); got != "OK" {
 		t.Fatal(got)
 	}
-	waitState(t, h.d.Rail().Connector("aud"), custos.MCPStateReady)
+	waitState(t, h.d.Rail().Connector("aud"))
 	if got := c.send("MCP-STATE aud disabled"); got != "OK" {
 		t.Fatal(got)
 	}
@@ -443,7 +463,7 @@ func TestLC_AuditKinds(t *testing.T) {
 		if err != nil || info.IsDir() {
 			return err
 		}
-		b, _ := os.ReadFile(p)
+		b, _ := os.ReadFile(p) //nolint:gosec // G122: sweep of a test-owned tmpdir; no symlink race outside the fixture
 		for _, ln := range strings.Split(string(b), "\n") {
 			var rec custos.AuditRecord
 			if json.Unmarshal([]byte(ln), &rec) != nil || rec.Cred != "aud" {
@@ -497,7 +517,10 @@ func TestLC_ProbeSuccessLeavesNoTrace(t *testing.T) {
 	if !strings.HasPrefix(frame, "MCP-TOOLS _probe ") {
 		t.Fatalf("probe frame = %q", frame)
 	}
-	var tools []struct{ Name, Flags string }
+	var tools []struct {
+		Name  string `json:"name"`
+		Flags string `json:"flags"`
+	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(frame, "MCP-TOOLS _probe ")), &tools); err != nil || len(tools) != 2 {
 		t.Fatalf("probe tools = %q (%v)", frame, err)
 	}
@@ -522,7 +545,7 @@ func TestLC_ProbeSuccessLeavesNoTrace(t *testing.T) {
 		t.Fatal(got)
 	}
 	conn := h.d.Rail().Connector("probed")
-	waitState(t, conn, custos.MCPStateReady)
+	waitState(t, conn)
 	if conn.Fingerprint() != m[2] {
 		t.Fatalf("fingerprint probe=%s add=%s", m[2], conn.Fingerprint())
 	}
@@ -561,7 +584,7 @@ func TestLC_ProbeBootFailureReapsChild(t *testing.T) {
 }
 
 func TestLC_PromotionNeverLeaksLiteral(t *testing.T) {
-	const secret = "sk-promote-LITERAL-9d41c7e2f0"
+	const secret = "sk-promote-LITERAL-9d41c7e2f0" //nolint:gosec // G101: fixture canary secret
 	const bearerSecret = "bearer-LITERAL-55aa77cc33ee"
 	t.Setenv("LC_PROMO_TEST_REF", "env-ref-value")
 	dir := shortGuardDir(t)
@@ -580,7 +603,7 @@ func TestLC_PromotionNeverLeaksLiteral(t *testing.T) {
 		t.Fatalf("add = %q", got)
 	}
 	conn := h.d.Rail().Connector("promo")
-	waitState(t, conn, custos.MCPStateReady)
+	waitState(t, conn)
 
 	// Composed child sees the resolved value, identically to a hand-written ref.
 	if b, _ := os.ReadFile(outFile); string(b) != secret {
@@ -589,8 +612,14 @@ func TestLC_PromotionNeverLeaksLiteral(t *testing.T) {
 
 	// Store holds a ${vault:} ref; the vault holds the value.
 	m := readStore(t, h.stateDir)
-	rec := m["connectors"].([]any)[0].(map[string]any)
-	env := rec["env"].(map[string]any)
+	rec, ok := m["connectors"].([]any)[0].(map[string]any)
+	if !ok {
+		t.Fatalf("connector[0] is not an object: %v", m["connectors"])
+	}
+	env, ok := rec["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("connector env is not an object: %v", rec["env"])
+	}
 	ref, _ := env["LC_SECRET"].(string)
 	mm := regexp.MustCompile(`^\$\{vault:([a-z0-9][a-z0-9_-]{0,63})\}$`).FindStringSubmatch(ref)
 	if mm == nil {
@@ -625,9 +654,13 @@ func TestLC_PromotionNeverLeaksLiteral(t *testing.T) {
 	}
 	m = readStore(t, h.stateDir)
 	var webRec map[string]any
-	for _, e := range m["connectors"].([]any) {
-		if e.(map[string]any)["name"] == "web" {
-			webRec = e.(map[string]any)
+	connList, listOK := m["connectors"].([]any)
+	if !listOK {
+		t.Fatalf("connectors key is %T, want []any", m["connectors"])
+	}
+	for _, e := range connList {
+		if rec, ok := e.(map[string]any); ok && rec["name"] == "web" {
+			webRec = rec
 		}
 	}
 	bref, _ := webRec["bearer"].(string)
@@ -660,11 +693,11 @@ func TestLC_PromotionNeverLeaksLiteral(t *testing.T) {
 		}
 		err := filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || info.Mode()&os.ModeSocket != 0 {
-				return nil
+				return nil //nolint:nilerr // sweep ignores unreadable entries by design
 			}
-			b, rerr := os.ReadFile(p)
+			b, rerr := os.ReadFile(p) //nolint:gosec // G122: sweep of a test-owned tmpdir; no symlink race outside the fixture
 			if rerr != nil {
-				return nil
+				return nil //nolint:nilerr // sweep ignores unreadable entries by design
 			}
 			for _, n := range needles {
 				if strings.Contains(string(b), n) {
@@ -717,7 +750,7 @@ func TestLC_StateTogglePersistsAcrossRestart(t *testing.T) {
 		t.Fatal(got)
 	}
 	conn := h.d.Rail().Connector("tog")
-	waitState(t, conn, custos.MCPStateReady)
+	waitState(t, conn)
 	pid := readPid(t, pidFile)
 
 	if got := c.send("MCP-STATE tog disabled"); got != "OK" {
@@ -755,12 +788,12 @@ func TestLC_StateTogglePersistsAcrossRestart(t *testing.T) {
 	if got := c2.send("MCP-STATE tog enabled"); got != "OK" {
 		t.Fatal(got)
 	}
-	waitState(t, conn2, custos.MCPStateReady)
+	waitState(t, conn2)
 
 	// And enabled persists across another restart.
 	h2.stop()
 	h3 := startLC(t, dir, nil)
-	waitState(t, h3.d.Rail().Connector("tog"), custos.MCPStateReady)
+	waitState(t, h3.d.Rail().Connector("tog"))
 }
 
 func TestLC_TombstoneBeatsYAMLSeedAcrossRestart(t *testing.T) {
@@ -774,7 +807,7 @@ func TestLC_TombstoneBeatsYAMLSeedAcrossRestart(t *testing.T) {
 		Env:       map[string]string{"GO_WANT_LC_HELPER": "1", "LC_PIDFILE": pidFile},
 	}}
 	h := startLC(t, dir, seed)
-	waitState(t, h.d.Rail().Connector("seeded"), custos.MCPStateReady)
+	waitState(t, h.d.Rail().Connector("seeded"))
 	c := h.dial()
 
 	// YAML seed can be toggled without copying its config into the store.
@@ -948,16 +981,22 @@ func TestLC_LastUsedAdditiveAndPersisted(t *testing.T) {
 		t.Fatal(got)
 	}
 	conn := h.d.Rail().Connector("used")
-	waitState(t, conn, custos.MCPStateReady)
+	waitState(t, conn)
 
-	raw, _ := json.Marshal(conn.Status())
+	raw, rerr := json.Marshal(conn.Status())
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
 	if strings.Contains(string(raw), "last_used") {
 		t.Fatalf("unused connector status carries last_used: %s", raw)
 	}
 	if _, err := conn.Execute(context.Background(), "alpha", json.RawMessage(`{}`), custos.Credential{}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	raw, _ = json.Marshal(conn.Status())
+	raw, mErr := json.Marshal(conn.Status())
+	if mErr != nil {
+		t.Fatal(mErr)
+	}
 	var row map[string]any
 	if err := json.Unmarshal(raw, &row); err != nil {
 		t.Fatal(err)
@@ -995,7 +1034,7 @@ func TestLC_StatusFrameBroadcastOnRemove(t *testing.T) {
 	if got := c.send("MCP-ADD gone " + lcConfig(t, "gone", nil, nil)); got != "OK" {
 		t.Fatal(got)
 	}
-	waitState(t, h.d.Rail().Connector("gone"), custos.MCPStateReady)
+	waitState(t, h.d.Rail().Connector("gone"))
 	watcher := h.dial()
 	if got := c.send("MCP-REMOVE gone"); got != "OK" {
 		t.Fatal(got)

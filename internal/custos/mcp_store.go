@@ -123,13 +123,13 @@ func OpenConnectorStore(stateDir string) (*ConnectorStore, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return s, nil
 		}
-		return nil, fmt.Errorf("%w: read %s: %v", ErrConnectorStoreCorrupt, s.path, err)
+		return nil, fmt.Errorf("%w: read %s: %w", ErrConnectorStoreCorrupt, s.path, err)
 	}
 	var doc connectorStoreDoc
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrConnectorStoreCorrupt, s.path, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrConnectorStoreCorrupt, s.path, err)
 	}
 	if dec.More() {
 		return nil, fmt.Errorf("%w: %s: trailing data", ErrConnectorStoreCorrupt, s.path)

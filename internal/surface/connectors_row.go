@@ -82,7 +82,7 @@ func parseConnectorTools(in []ConnectorDoorTool) []ConnectorTool {
 // unless the user switched it off (disabled/user_disabled). Other disabled
 // reasons (name_occupied, credential_unavailable) are NOT user toggles.
 func connectorUserEnabled(state, reason string) bool {
-	return !(state == railStateDisabled && reason == railReasonUser)
+	return state != railStateDisabled || reason != railReasonUser
 }
 
 // connectorCredentialReason reports the A7 credential latch / handle-gone

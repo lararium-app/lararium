@@ -19,10 +19,10 @@ import (
 // Distinctive fixture secrets: none of these may appear in ANY response
 // body, card text, SSE payload or log line.
 const (
-	connSecretEnv    = "ENVSECRET-9f2c7a41d0b3"
+	connSecretEnv    = "ENVSECRET-9f2c7a41d0b3" //nolint:gosec // G101: fixture canary — the test asserts this value never leaks
 	connSecretBearer = "BEARERSECRET-5e8a1c77aa90"
-	connSecretURL    = "URLPASS-3d6b0e92f1c4"
-	connSecretArg    = "ARGSECRET-71aa3c5be208"
+	connSecretURL    = "URLPASS-3d6b0e92f1c4"   //nolint:gosec // G101: fixture canary — the test asserts this value never leaks
+	connSecretArg    = "ARGSECRET-71aa3c5be208" //nolint:gosec // G101: fixture canary — the test asserts this value never leaks
 )
 
 type fakeConnDoor struct {
@@ -240,6 +240,7 @@ func captureLog(t *testing.T) *bytes.Buffer {
 
 type lockedBuf struct {
 	bytes.Buffer
+
 	mu *sync.Mutex
 }
 
@@ -345,7 +346,10 @@ func TestConnectors_Post_HappyPathRaisesCardNoSecrets(t *testing.T) {
 		}
 	}
 	assertNoSecrets(t, "card review", review)
-	raw, _ := json.Marshal(cards)
+	raw, mErr := json.Marshal(cards) //nolint:gosec // G117: "cred" is a custody-handle id field, not a secret
+	if mErr != nil {
+		t.Fatal(mErr)
+	}
 	assertNoSecrets(t, "cards JSON", string(raw))
 	if !strings.Contains(review, "--mode=fast") || !strings.Contains(review, "[redacted]") {
 		t.Fatalf("args not shown/masked as designed:\n%s", review)
@@ -987,7 +991,7 @@ func TestConnectors_SnapshotGrowth(t *testing.T) {
 }
 
 func TestSummarizeURL_StripsUserinfo(t *testing.T) {
-	cases := map[string]string{
+	cases := map[string]string{ //nolint:gosec // G101: the values are credential-redaction fixtures, not credentials
 		"scheme://user:pass@host/x":            "scheme://host/x",
 		"https://u:p@api.example.com:8443/a/b": "https://api.example.com:8443/a/b",
 		"http://127.0.0.1:1/x?token=abc#frag":  "http://127.0.0.1:1/x?…",
@@ -1019,7 +1023,7 @@ func readSSE(t *testing.T, ctx context.Context, url, tok string) <-chan [2]strin
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // body is closed by the streaming goroutine below
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1137,7 +1141,7 @@ func TestConnectors_SSE_NoSecretsInPayload(t *testing.T) {
 	<-e.door.addDone
 	e.door.set([]ConnectorDoorStatus{{Name: "alpha", State: "ready", Tools: 2}},
 		map[string][]ConnectorDoorTool{"alpha": e.door.probeRes.Tools})
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		select {
 		case ev := <-ch:
 			assertNoSecrets(t, "event "+ev[0], ev[1])
@@ -1178,7 +1182,7 @@ func TestConnectors_SSE_OverflowDisconnects(t *testing.T) {
 	})
 	// The first event wedges the handler in Write; later rows pile into the
 	// 64-slot buffer and overflow it.
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		e.door.set([]ConnectorDoorStatus{{Name: "alpha", State: "ready", Tools: i}}, nil)
 	}
 	close(sw.release)

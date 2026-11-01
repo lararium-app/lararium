@@ -30,9 +30,10 @@ const (
 	AuditKindMCPAlwaysRevoked    = "mcp_always_revoked"
 	AuditKindMCPRefresh          = "mcp_refresh"
 
-	// Connector lifecycle kinds per CONNECTOR-LIFE-SPEC D9 (A8 closed-set
-	// append). Payloads carry connector name, catalog fingerprint and env
-	// var NAMES only — never config values or secrets.
+	// AuditKindMCPAdded and its siblings below are the connector lifecycle
+	// kinds per CONNECTOR-LIFE-SPEC D9 (A8 closed-set append). Payloads
+	// carry connector name, catalog fingerprint and env var NAMES only —
+	// never config values or secrets.
 	AuditKindMCPAdded     = "mcp_added"
 	AuditKindMCPRemoved   = "mcp_removed"
 	AuditKindMCPEdited    = "mcp_edited"
