@@ -113,6 +113,10 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 	}
 	if srv != nil {
 		srv.SetCustosRegistry(NewCustosWebAdapter(client))
+		// CONNECTOR-LIFE-SPEC D3-D7: CRUD verbs, probe gate, status SSE
+		// rail and grown snapshot ride this door client; without it
+		// (door unconfigured) those routes answer 503.
+		srv.SetConnectorDoor(newConnectorDoorAdapter(client))
 		// Issue #132: an "always" verdict on a turn-approval card mints
 		// the canonical worker-lane rule (connector/tool -> auto,
 		// always:true) so the next turn's Decide runs the call silently.

@@ -245,6 +245,14 @@ func (h *ApprovalHub) HasStaleVerdictHook() bool {
 
 // RegisterCustos registers a pending approval card for a custos request per CUSTOS-SPEC §6.4.
 func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeout time.Duration, onEvent func(approvalID string)) (id string, decision <-chan bool) {
+	return h.registerCustosNamed(cell, cred, cred, dest, argsSummary, timeout, onEvent)
+}
+
+// registerCustosNamed is the RegisterCustos body with the card's tool/name
+// label split from cred. RegisterCustos passes name == cred (unchanged
+// behaviour); the connector-lifecycle gate (connectors_crud.go) passes an
+// empty cell/cred so the card rides the phone custody stream and a label.
+func (h *ApprovalHub) registerCustosNamed(cell, cred, name, dest, argsSummary string, timeout time.Duration, onEvent func(approvalID string)) (id string, decision <-chan bool) {
 	h.mu.Lock()
 	id = generateApprovalID()
 	ch := make(chan bool, 1)
@@ -253,7 +261,7 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 		ch:        ch,
 		state:     "pending",
 		sessionID: cell,
-		name:      cred,
+		name:      name,
 		// H3.1: the review text the park path built (recipient,
 		// subject, params) must reach every surface; dest stays
 		// separately addressable (IP-literal checks).
@@ -285,7 +293,7 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 	if onEvent != nil {
 		onEvent(id)
 	}
-	h.fanPending(id, cell, cred, reviewText(dest, argsSummary))
+	h.fanPending(id, cell, name, reviewText(dest, argsSummary))
 	return id, ch
 }
 

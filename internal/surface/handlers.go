@@ -64,6 +64,10 @@ type Server struct {
 	policyMu  sync.RWMutex
 	policySrc PolicySource
 
+	// connLife is the connector lifecycle state (CONNECTOR-LIFE-SPEC D3-D6):
+	// door, committed-shape record, pending add/edit gates, rail pokes.
+	connLife connectorLife
+
 	// credSrc backs the /v1/credentials admin routes (CREDHANDLE-SPEC D5);
 	// nil answers locked.
 	credMu  sync.RWMutex
