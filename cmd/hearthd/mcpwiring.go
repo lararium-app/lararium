@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/custosdoor"
+	"github.com/lararium-app/lararium/internal/devices"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/router"
 )
@@ -65,26 +65,7 @@ func mcpToolSource(client MCPToolClient, deciders ...PolicyDecider) func() []loo
 // mcpToolName maps a connector+tool pair onto a model-facing name that
 // satisfies the strictest provider grammar (^[a-zA-Z0-9_-]{1,64}$).
 func mcpToolName(connector, tool string) string {
-	name := "mcp__" + connector + "__" + tool
-	var b strings.Builder
-	b.Grow(len(name))
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	s := b.String()
-	const maxName = 64
-	if len(s) > maxName {
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(name))
-		suffix := fmt.Sprintf("_%08x", h.Sum32())
-		s = s[:maxName-len(suffix)] + suffix
-	}
-	return s
+	return devices.ToolName(connector, tool)
 }
 
 // mcpRulePattern reverse-maps a model-facing tool name back onto the

@@ -36,6 +36,10 @@ type AuditRecord struct {
 	// Fingerprint is the connector catalog snapshot fingerprint carried by
 	// the connector lifecycle kinds (CONNECTOR-LIFE-SPEC D9). Additive.
 	Fingerprint string `json:"fingerprint,omitempty"`
+	// DeviceID is the device identifier carried by device rails audit kinds (DEVICE-RAILS-SPEC D8). Additive.
+	DeviceID string `json:"device_id,omitempty"`
+	// DisplayName is the device display name carried by device rails audit kinds (DEVICE-RAILS-SPEC D8). Additive.
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 // AuditEntry is an alias for AuditRecord per CUSTOS-SPEC §8.1 / amendment v9.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/lararium-app/lararium/internal/custos"
 	"github.com/lararium-app/lararium/internal/custosdoor"
+	"github.com/lararium-app/lararium/internal/devices"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/surface"
@@ -142,6 +143,12 @@ func startCustosDoor(ctx context.Context, cfg CustosConfig, bridge *nuntius.Brid
 				markConnected()
 				logToolCount(len(tools))
 			}
+			deviceWiringMu.RLock()
+			devSrc := hearthDeviceSource
+			deviceWiringMu.RUnlock()
+			if devSrc != nil {
+				tools = append(tools, devSrc()...)
+			}
 			return tools
 		}
 		hub.SetToolSource(toolSrc)
@@ -169,6 +176,54 @@ type alwaysRuleMinter interface {
 	AddAlwaysRule(pattern string) error
 }
 
+// deviceRulePatternResolver resolves model-facing tool names to worker rule patterns.
+type deviceRulePatternResolver interface {
+	RulePattern(modelName string) (string, bool)
+}
+
+var (
+	deviceWiringMu     sync.RWMutex
+	hearthDeviceSource func() []loop.Tool
+	hearthDeviceRule   deviceRulePatternResolver
+)
+
+// setHearthDeviceSource registers the device ToolSource and rule resolver into hearthd.
+func setHearthDeviceSource(src func() []loop.Tool, resolver deviceRulePatternResolver) {
+	deviceWiringMu.Lock()
+	defer deviceWiringMu.Unlock()
+	hearthDeviceSource = src
+	hearthDeviceRule = resolver
+}
+
+// startCustosAndDevices wires policy, door client, and devices dynamic tool sources.
+func startCustosAndDevices(ctx context.Context, cfg CustosConfig, home string, bridge *nuntius.Bridge, srv *surface.Server, hub *surface.Hub) func() {
+	decider := wireCustosPolicy(srv, home, cfg)
+	if ns, ok := decider.(interface{ Needles() []string }); ok && hub != nil {
+		hub.SetSecrets(ns.Needles)
+	}
+	stopDoor := startCustosDoor(ctx, cfg, bridge, srv, hub, decider)
+	wireDevices(home, hub, decider, stopDoor)
+	return stopDoor
+}
+
+// wireDevices initializes the in-process device manager and wires its dynamic ToolSource per DEVICE-RAILS-SPEC D1/D4/D5.
+func wireDevices(home string, hub *surface.Hub, decider PolicyDecider, stopDoor func()) {
+	devMgr, err := devices.NewManager(home)
+	if err != nil {
+		log.Printf("WARN devices manager: %v", err)
+		return
+	}
+	var devDecider devices.PolicyDecider
+	if dec, ok := decider.(devices.PolicyDecider); ok {
+		devDecider = dec
+	}
+	devToolSrc := devMgr.ToolSource(devDecider)
+	setHearthDeviceSource(devToolSrc, devMgr)
+	if stopDoor == nil && hub != nil {
+		hub.SetToolSource(devToolSrc)
+	}
+}
+
 // turnAlwaysRuleMinter builds the surface hook that mints the
 // "<connector>/<tool>" worker rule for a turn-approval card settled with
 // "always" (issue #132). The minter is resolved dynamically from the
@@ -183,6 +238,14 @@ func turnAlwaysRuleMinter(srv *surface.Server, lister MCPToolLister) func(toolNa
 			return errors.New("policy backend unavailable: cannot mint always-rule")
 		}
 		pattern, ok := mcpRulePattern(lister, toolName)
+		if !ok {
+			deviceWiringMu.RLock()
+			devRule := hearthDeviceRule
+			deviceWiringMu.RUnlock()
+			if devRule != nil {
+				pattern, ok = devRule.RulePattern(toolName)
+			}
+		}
 		if !ok {
 			return fmt.Errorf("no rail tool matches %q (stale card or non-rail tool)", toolName)
 		}
