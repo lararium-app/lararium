@@ -451,9 +451,9 @@ func (w *vt2World) deleteReq(path string) int {
 	return resp.StatusCode
 }
 
-func (w *vt2World) getJSON(path string) (string, int) {
+func (w *vt2World) getJSON() (string, int) {
 	w.t.Helper()
-	req, err := http.NewRequest(http.MethodGet, w.tsrv.URL+path, nil)
+	req, err := http.NewRequest(http.MethodGet, w.tsrv.URL+"/v1/mcp/connectors", nil)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -468,9 +468,9 @@ func (w *vt2World) getJSON(path string) (string, int) {
 	return b.String(), resp.StatusCode
 }
 
-func (w *vt2World) waitForReady(name string, timeout time.Duration) {
+func (w *vt2World) waitForReady(name string) {
 	w.t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, st := range w.doorClient.Statuses() {
 			if st.Name == name && st.State == "ready" {
@@ -549,11 +549,12 @@ func (w *vt2World) openSSE(t *testing.T, path string) *vt2SSEReader {
 			if strings.HasPrefix(line, ":") {
 				continue
 			}
-			if strings.HasPrefix(line, "event: ") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
 				curEvent = strings.TrimPrefix(line, "event: ")
-			} else if strings.HasPrefix(line, "data: ") {
+			case strings.HasPrefix(line, "data: "):
 				curData = strings.TrimPrefix(line, "data: ")
-			} else if line == "" && curEvent != "" {
+			case line == "" && curEvent != "":
 				ev := vt2SSEEvent{Kind: curEvent, Data: curData}
 				curEvent, curData = "", ""
 				select {
@@ -568,7 +569,7 @@ func (w *vt2World) openSSE(t *testing.T, path string) *vt2SSEReader {
 	return reader
 }
 
-func (r *vt2SSEReader) nextEvent(t *testing.T, timeout time.Duration) vt2SSEEvent {
+func (r *vt2SSEReader) nextEvent(t *testing.T) vt2SSEEvent {
 	t.Helper()
 	select {
 	case ev := <-r.events:
@@ -576,16 +577,17 @@ func (r *vt2SSEReader) nextEvent(t *testing.T, timeout time.Duration) vt2SSEEven
 	case err := <-r.errs:
 		t.Fatalf("SSE stream error: %v", err)
 		return vt2SSEEvent{}
-	case <-time.After(timeout):
-		t.Fatalf("SSE read timed out after %v", timeout)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("SSE read timed out")
 		return vt2SSEEvent{}
 	}
 }
 
 // assertNoNeedle asserts neither raw needle nor standard/raw/URL base64 forms
 // appear in the payload.
-func assertNoNeedle(t *testing.T, label, data, needle string) {
+func assertNoNeedle(t *testing.T, label, data string) {
 	t.Helper()
+	needle := vt2Needle
 	if strings.Contains(data, needle) {
 		t.Errorf("%s contains secret needle", label)
 	}
@@ -638,7 +640,7 @@ func TestVT2a(t *testing.T) {
 	}
 
 	// Custody card arrives on the phone stream without polling.
-	cardEv := cardSSE.nextEvent(t, 5*time.Second)
+	cardEv := cardSSE.nextEvent(t)
 	if cardEv.Kind != "custos_card" || !strings.Contains(cardEv.Data, postRes.CardID) {
 		t.Fatalf("unexpected card event: kind=%s data=%s", cardEv.Kind, cardEv.Data)
 	}
@@ -652,7 +654,7 @@ func TestVT2a(t *testing.T) {
 	// Read connector_state SSE event with deadline, no polling.
 	var cardRow surface.ConnectorCard
 	for {
-		stateEv := sse.nextEvent(t, 5*time.Second)
+		stateEv := sse.nextEvent(t)
 		if stateEv.Kind == "connector_state" {
 			var row surface.ConnectorCard
 			if err := json.Unmarshal([]byte(stateEv.Data), &row); err == nil && row.Name == "vt2a" {
@@ -668,7 +670,7 @@ func TestVT2a(t *testing.T) {
 	}
 
 	// GET /v1/mcp/connectors: inventory reflects ready and tool count.
-	listBody, listCode := w.getJSON("/v1/mcp/connectors")
+	listBody, listCode := w.getJSON()
 	if listCode != http.StatusOK {
 		t.Fatalf("GET /v1/mcp/connectors = %d: %s", listCode, listBody)
 	}
@@ -749,7 +751,7 @@ func TestVT2b(t *testing.T) {
 	}
 
 	// GET lists no such connector.
-	listBody, listCode := w.getJSON("/v1/mcp/connectors")
+	listBody, listCode := w.getJSON()
 	if listCode != http.StatusOK {
 		t.Fatalf("GET /v1/mcp/connectors = %d: %s", listCode, listBody)
 	}
@@ -805,7 +807,7 @@ func TestVT2c(t *testing.T) {
 	if resCode != http.StatusOK {
 		t.Fatalf("resolve = %d: %s", resCode, resBody)
 	}
-	w.waitForReady("vt2c", 5*time.Second)
+	w.waitForReady("vt2c")
 
 	// Step 4: Second POST of already-committed name -> 409 duplicate_name.
 	body3, code3 := w.postJSON("/v1/mcp/connectors", cfgJSON)
@@ -862,7 +864,7 @@ func TestVT2d(t *testing.T) {
 	_ = json.Unmarshal([]byte(patchBody), &patchRes)
 
 	// Card review text shows the removed tool.
-	cardEv := cardSSE.nextEvent(t, 5*time.Second)
+	cardEv := cardSSE.nextEvent(t)
 	if !strings.Contains(cardEv.Data, "beta") || !strings.Contains(cardEv.Data, "tools removed") {
 		t.Fatalf("card review text missing removed tool beta: %s", cardEv.Data)
 	}
@@ -876,7 +878,7 @@ func TestVT2d(t *testing.T) {
 	// Snapshot tools count drops in GET /v1/mcp/connectors.
 	t1 := time.Now()
 	for {
-		listBody, _ := w.getJSON("/v1/mcp/connectors")
+		listBody, _ := w.getJSON()
 		var listRes struct {
 			Connectors []surface.ConnectorCard `json:"connectors"`
 		}
@@ -929,7 +931,7 @@ func TestVT2e(t *testing.T) {
 	// Verify seeded connector exists at boot.
 	t0 := time.Now()
 	for {
-		body, _ := w.getJSON("/v1/mcp/connectors")
+		body, _ := w.getJSON()
 		if strings.Contains(body, seedName) {
 			break
 		}
@@ -949,13 +951,13 @@ func TestVT2e(t *testing.T) {
 	}
 
 	// Gone from GET /v1/mcp/connectors immediately.
-	listBody, _ := w.getJSON("/v1/mcp/connectors")
+	listBody, _ := w.getJSON()
 	if strings.Contains(listBody, seedName) {
 		t.Fatalf("GET still lists %s after delete: %s", seedName, listBody)
 	}
 
 	// connector_gone event arrives on SSE rail.
-	goneEv := sse.nextEvent(t, 5*time.Second)
+	goneEv := sse.nextEvent(t)
 	if goneEv.Kind != "connector_gone" || !strings.Contains(goneEv.Data, seedName) {
 		t.Fatalf("want connector_gone for %s, got kind=%s data=%s", seedName, goneEv.Kind, goneEv.Data)
 	}
@@ -965,7 +967,7 @@ func TestVT2e(t *testing.T) {
 	w.restartDaemon(seedConfig)
 
 	// Tombstone-over-YAML-seed is proven: stays gone after cold restart.
-	recheckBody, recheckCode := w.getJSON("/v1/mcp/connectors")
+	recheckBody, recheckCode := w.getJSON()
 	if recheckCode != http.StatusOK {
 		t.Fatalf("GET after restart = %d: %s", recheckCode, recheckBody)
 	}
@@ -995,7 +997,7 @@ func TestVT2f(t *testing.T) {
 	if code != http.StatusAccepted {
 		t.Fatalf("POST = %d: %s", code, body)
 	}
-	assertNoNeedle(t, "POST response body", body, vt2Needle)
+	assertNoNeedle(t, "POST response body", body)
 
 	var res struct {
 		CardID string `json:"card_id"`
@@ -1003,24 +1005,24 @@ func TestVT2f(t *testing.T) {
 	_ = json.Unmarshal([]byte(body), &res)
 
 	// Custody card review text does not leak secret.
-	cardEv := cardSSE.nextEvent(t, 5*time.Second)
-	assertNoNeedle(t, "custos_card SSE event", cardEv.Data, vt2Needle)
+	cardEv := cardSSE.nextEvent(t)
+	assertNoNeedle(t, "custos_card SSE event", cardEv.Data)
 
 	// Approve card.
 	resBody, resCode := w.postJSON("/v1/custos/cards/"+res.CardID+"/resolve", `{"verdict":"once"}`)
 	if resCode != http.StatusOK {
 		t.Fatalf("resolve = %d: %s", resCode, resBody)
 	}
-	assertNoNeedle(t, "resolve response body", resBody, vt2Needle)
+	assertNoNeedle(t, "resolve response body", resBody)
 
 	// Wait for connector to commit and become ready.
-	w.waitForReady("vt2f", 5*time.Second)
+	w.waitForReady("vt2f")
 
 	// Assert connector_state SSE events do not leak secret.
 	for {
 		select {
 		case stateEv := <-sse.events:
-			assertNoNeedle(t, "connector_state SSE event", stateEv.Data, vt2Needle)
+			assertNoNeedle(t, "connector_state SSE event", stateEv.Data)
 		default:
 			goto sseChecked
 		}
@@ -1028,25 +1030,25 @@ func TestVT2f(t *testing.T) {
 sseChecked:
 
 	// GET response body does not leak secret.
-	listBody, _ := w.getJSON("/v1/mcp/connectors")
-	assertNoNeedle(t, "GET connectors response body", listBody, vt2Needle)
+	listBody, _ := w.getJSON()
+	assertNoNeedle(t, "GET connectors response body", listBody)
 
 	// Stored config has only ${vault:...} reference, no literal.
 	storeData, err := os.ReadFile(filepath.Join(w.stateDir, "connectors.json"))
 	if err != nil {
 		t.Fatalf("read connectors.json: %v", err)
 	}
-	assertNoNeedle(t, "connectors.json", string(storeData), vt2Needle)
+	assertNoNeedle(t, "connectors.json", string(storeData))
 	if !strings.Contains(string(storeData), "${vault:") {
 		t.Fatalf("connectors.json lacks ${vault:...} reference: %s", storeData)
 	}
 
 	// Daemon logs do not leak secret.
-	assertNoNeedle(t, "daemon log", w.logbuf.String(), vt2Needle)
+	assertNoNeedle(t, "daemon log", w.logbuf.String())
 
 	// Audit lines do not leak secret.
 	auditLines := strings.Join(readAuditLines(t, w.stateDir), "\n")
-	assertNoNeedle(t, "audit lines", auditLines, vt2Needle)
+	assertNoNeedle(t, "audit lines", auditLines)
 
 	// Wire authentication proof: child received real secret and echoed it.
 	t0 := time.Now()
@@ -1081,7 +1083,7 @@ func TestVT2g(t *testing.T) {
 	}
 	_ = json.Unmarshal([]byte(body), &res)
 	_, _ = w.postJSON("/v1/custos/cards/"+res.CardID+"/resolve", `{"verdict":"once"}`)
-	w.waitForReady("vt2g", 5*time.Second)
+	w.waitForReady("vt2g")
 
 	// Open status and custody card SSE streams.
 	sse := w.openSSE(t, "/v1/mcp/connectors/events")
@@ -1094,7 +1096,7 @@ func TestVT2g(t *testing.T) {
 	}
 	var ev1 vt2SSEEvent
 	for {
-		ev := sse.nextEvent(t, 5*time.Second)
+		ev := sse.nextEvent(t)
 		if ev.Kind == "connector_state" && strings.Contains(ev.Data, "disabled") {
 			ev1 = ev
 			break
@@ -1121,7 +1123,7 @@ func TestVT2g(t *testing.T) {
 	}
 	var ev2 vt2SSEEvent
 	for {
-		ev := sse.nextEvent(t, 5*time.Second)
+		ev := sse.nextEvent(t)
 		if ev.Kind == "connector_state" && (strings.Contains(ev.Data, "read+act") || strings.Contains(ev.Data, "ready")) {
 			ev2 = ev
 			break
@@ -1149,7 +1151,7 @@ func TestVT2g(t *testing.T) {
 func TestVT2h(t *testing.T) {
 	w := newVT2World(t)
 
-	credName := "cred-vt2h"
+	credName := "cred-vt2h" //nolint:gosec // G101: fixture canary name
 
 	// 1. Write initial credential via T1 admin endpoint.
 	initCred := `{"name":"` + credName + `","secret":"init-secret-1234"}`
@@ -1171,7 +1173,7 @@ func TestVT2h(t *testing.T) {
 	}
 	_ = json.Unmarshal([]byte(body), &res)
 	_, _ = w.postJSON("/v1/custos/cards/"+res.CardID+"/resolve", `{"verdict":"once"}`)
-	w.waitForReady("vt2h", 5*time.Second)
+	w.waitForReady("vt2h")
 
 	// Open status SSE stream before mutating credential.
 	sse := w.openSSE(t, "/v1/mcp/connectors/events")
@@ -1185,7 +1187,7 @@ func TestVT2h(t *testing.T) {
 	// Hop 1: state becomes needs-re-auth with reason credential.
 	var cardHop1 surface.ConnectorCard
 	for {
-		hop1 := sse.nextEvent(t, 5*time.Second)
+		hop1 := sse.nextEvent(t)
 		if hop1.Kind == "connector_state" {
 			_ = json.Unmarshal([]byte(hop1.Data), &cardHop1)
 			if cardHop1.AppState == "needs-re-auth" {
@@ -1213,7 +1215,7 @@ func TestVT2h(t *testing.T) {
 	// Hop 2: state becomes ready (read+act). Assert strict event order.
 	var cardHop2 surface.ConnectorCard
 	for {
-		hop2 := sse.nextEvent(t, 5*time.Second)
+		hop2 := sse.nextEvent(t)
 		if hop2.Kind == "connector_state" {
 			_ = json.Unmarshal([]byte(hop2.Data), &cardHop2)
 			if cardHop2.AppState == "read+act" || cardHop2.State == "ready" {
@@ -1244,7 +1246,7 @@ func TestVT2i(t *testing.T) {
 	}
 	_ = json.Unmarshal([]byte(body), &res)
 	_, _ = w.postJSON("/v1/custos/cards/"+res.CardID+"/resolve", `{"verdict":"once"}`)
-	w.waitForReady("vt2i", 5*time.Second)
+	w.waitForReady("vt2i")
 
 	// Raw unix-socket client speaking old door protocol.
 	sockPath, tokenPath := custos.DoorPaths(w.stateDir)
