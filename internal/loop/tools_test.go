@@ -163,3 +163,40 @@ func TestLargeResultSpillsBlob(t *testing.T) {
 		t.Fatalf("blob unreadable: %v len=%d", err, len(b))
 	}
 }
+
+func TestFullArgsPreservedOnCard(t *testing.T) {
+	longArgs := `{"phone_number":"+15551234567","extra":"` + strings.Repeat("a", 300) + `"}`
+	var capturedSummary string
+	ap := func(name, summary string) (bool, string) {
+		capturedSummary = summary
+		return true, "app-1"
+	}
+
+	// Tool with FullArgs: false should truncate to 200 chars + "…"
+	eTruncated := newToolEngine([]Tool{{
+		Spec:     router.ToolSpec{Name: "action_tool", ParamsJSONSchema: `{}`},
+		Trusted:  false,
+		FullArgs: false,
+	}}, t.TempDir(), ap)
+	approval, tool, deny := eTruncated.Gate(router.ToolCall{Name: "action_tool", ArgsJSON: longArgs})
+	if approval != "approved:app-1" || tool == nil || deny != "" {
+		t.Fatalf("gate failed: approval=%s deny=%s", approval, deny)
+	}
+	if len(capturedSummary) > 205 || !strings.HasSuffix(capturedSummary, "…") {
+		t.Fatalf("expected truncated summary, got len %d: %s", len(capturedSummary), capturedSummary)
+	}
+
+	// Tool with FullArgs: true must preserve the entire JSON verbatim
+	eFull := newToolEngine([]Tool{{
+		Spec:     router.ToolSpec{Name: "action_tool", ParamsJSONSchema: `{}`},
+		Trusted:  false,
+		FullArgs: true,
+	}}, t.TempDir(), ap)
+	approval, tool, deny = eFull.Gate(router.ToolCall{Name: "action_tool", ArgsJSON: longArgs})
+	if approval != "approved:app-1" || tool == nil || deny != "" {
+		t.Fatalf("gate failed: approval=%s deny=%s", approval, deny)
+	}
+	if capturedSummary != longArgs {
+		t.Fatalf("expected full args preserved, got: %s", capturedSummary)
+	}
+}

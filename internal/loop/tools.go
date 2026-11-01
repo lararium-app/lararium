@@ -18,7 +18,10 @@ type Tool struct {
 	// Trusted tools run without asking; untrusted ones go through the
 	// approval hook (spec §2: approval = auto | approved:<id> | denied:<id>).
 	Trusted bool
-	Run     func(ctx context.Context, argsJSON string) (string, error)
+	// FullArgs preserves the complete arguments JSON when requesting approval,
+	// bypassing the default 200-byte summarization (e.g. for device action tools).
+	FullArgs bool
+	Run      func(ctx context.Context, argsJSON string) (string, error)
 }
 
 // Approver is asked for permission to run an untrusted tool. It receives a
@@ -77,7 +80,11 @@ func (e *toolEngine) Gate(call router.ToolCall) (approval string, t *Tool, denyT
 	if e.approver == nil {
 		return "denied:no-approver", nil, "tool requires approval but no approver is wired"
 	}
-	ok, id := e.approver(call.Name, summarize(call.ArgsJSON))
+	summary := summarize(call.ArgsJSON)
+	if t.FullArgs {
+		summary = call.ArgsJSON
+	}
+	ok, id := e.approver(call.Name, summary)
 	if !ok {
 		return "denied:" + orNone(id), nil, "user denied this tool call"
 	}

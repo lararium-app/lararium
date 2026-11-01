@@ -39,6 +39,14 @@ const (
 	AuditKindMCPEdited    = "mcp_edited"
 	AuditKindMCPToggled   = "mcp_toggled"
 	AuditKindMCPAddDenied = "mcp_add_denied"
+
+	// AuditKindDeviceRegistered and its siblings below are the device rails audit kinds
+	// per DEVICE-RAILS-SPEC D8 / R5. Payloads record device_id, display_name, fingerprint,
+	// rail names, and credential NAME only — never tokens, addresses, or phone numbers.
+	AuditKindDeviceRegistered         = "device_registered"
+	AuditKindDeviceForgotten          = "device_forgotten"
+	AuditKindDeviceRailToggled        = "device_rail_toggled"
+	AuditKindDeviceRegistrationDenied = "device_registration_denied"
 )
 
 // Truncation audit token names per MCP-SPEC §4.5 / amendment A8.
