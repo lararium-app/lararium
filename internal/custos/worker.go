@@ -163,16 +163,7 @@ func NewWorkerServer(vault *Vault, hub *surface.ApprovalHub, cfg *Config, opts .
 		if vault != nil {
 			hearthDir = filepath.Dir(vault.StateDir())
 		}
-		var railOpts []Option
-		if vault != nil {
-			railOpts = append(railOpts,
-				WithAuditSink(&auditSinkAdapter{logger: vault.Audit()}),
-				WithVaultGate(newVaultGateAdapter(vault)),
-				WithEnvResolver(newEnvResolver(vault)),
-				WithFingerprintRevoker(&policyFingerprintRevoker{policy: vault.Policy()}),
-			)
-		}
-		ws.rail = NewRailRegistry(mcpCfgs, hearthDir, railOpts...)
+		ws.rail = NewRailRegistry(mcpCfgs, hearthDir, railOptionsForVault(vault)...)
 	}
 
 	for _, conn := range ws.rail.Connectors() {
@@ -187,6 +178,27 @@ func NewWorkerServer(vault *Vault, hub *surface.ApprovalHub, cfg *Config, opts .
 	}
 
 	return ws
+}
+
+// railOptionsForVault returns the connector options every rail connector is
+// built with (boot lane and dynamic MCP-ADD share them).
+func railOptionsForVault(vault *Vault) []Option {
+	if vault == nil {
+		return nil
+	}
+	return []Option{
+		WithAuditSink(&auditSinkAdapter{logger: vault.Audit()}),
+		WithVaultGate(newVaultGateAdapter(vault)),
+		WithEnvResolver(newEnvResolver(vault)),
+		WithFingerprintRevoker(&policyFingerprintRevoker{policy: vault.Policy()}),
+	}
+}
+
+// UnregisterConnector removes a connector by name from the worker lane.
+func (ws *WorkerServer) UnregisterConnector(name string) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	delete(ws.connectors, name)
 }
 
 // RailRegistry returns the internal RailRegistry.

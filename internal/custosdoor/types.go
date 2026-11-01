@@ -40,6 +40,10 @@ type ConnectorStatus struct {
 	Tools    int    `json:"tools"`
 	Restarts int    `json:"restarts"`
 	Reason   string `json:"reason"`
+	// LastUsed is the RFC3339 time of the last successful call dispatch
+	// (CONNECTOR-LIFE-SPEC D6); additive — absent until first use, and old
+	// clients ignore it.
+	LastUsed *string `json:"last_used,omitempty"`
 }
 
 // ToolInfo is one connector tool description row per MCP-SPEC §4.2 / §9.

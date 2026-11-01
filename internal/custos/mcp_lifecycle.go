@@ -37,6 +37,10 @@ const (
 	MCPReasonTransport             = "transport"
 	MCPReasonNameOccupied          = "name_occupied"
 	MCPReasonCredentialUnavailable = "credential_unavailable" //nolint:gosec // frozen reason constant, not a credential
+
+	// MCPReasonUserDisabled marks a user toggle (MCP-STATE disabled) so the
+	// status row renders "disabled" rather than a fault (CONNECTOR-LIFE-SPEC D6).
+	MCPReasonUserDisabled = "user_disabled"
 )
 
 // OnFirstUnlock performs the first-unlock sequence per MCP-SPEC §7:
@@ -48,6 +52,20 @@ func (c *MCPConnector) OnFirstUnlock(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// A user-disabled connector is never started at boot (D6).
+	if c.userDisabledLocked() {
+		return nil
+	}
+	return c.firstUnlockLocked(ctx)
+}
+
+func (c *MCPConnector) userDisabledLocked() bool {
+	return c.state == MCPStateDisabled && c.reason == MCPReasonUserDisabled
+}
+
+// firstUnlockLocked is the shared boot/enable start sequence (occupancy
+// refusal, identity slot, spawn). Caller holds c.mu.
+func (c *MCPConnector) firstUnlockLocked(ctx context.Context) error {
 	// 1. Occupancy refusal check: vault names opaque while sealed,
 	// checked unsealed
 	if c.vaultGate != nil {
@@ -92,7 +110,7 @@ func (c *MCPConnector) OnFirstUnlock(ctx context.Context) error {
 //
 //nolint:contextcheck // background retry timers and child monitors outlive startLocked context
 func (c *MCPConnector) startLocked(ctx context.Context) error {
-	if c.state == MCPStateDisabled && c.reason == MCPReasonNameOccupied {
+	if c.state == MCPStateDisabled && (c.reason == MCPReasonNameOccupied || c.reason == MCPReasonUserDisabled) {
 		return nil
 	}
 
@@ -415,6 +433,11 @@ func (c *MCPConnector) NotifyCredentialGone(name string) {
 
 	// (a) Mark disabled, reason credential_unavailable under short lock
 	c.mu.Lock()
+	if c.userDisabledLocked() {
+		// A user toggle outranks a credential fault; enable re-evaluates.
+		c.mu.Unlock()
+		return
+	}
 	c.state = MCPStateDisabled
 	c.reason = MCPReasonCredentialUnavailable
 	c.cancelRetryLocked()
@@ -475,6 +498,11 @@ func (c *MCPConnector) ManualRefresh(ctx context.Context) error {
 	if c.state == MCPStateDisabled && c.reason == MCPReasonNameOccupied {
 		c.mu.Unlock()
 		return errors.New("connector name occupied in vault")
+	}
+
+	if c.userDisabledLocked() {
+		c.mu.Unlock()
+		return errors.New("connector disabled")
 	}
 
 	// Manual refresh explicitly clears the restart budget and backoff duration per §7
@@ -617,6 +645,9 @@ type ConnectorStatus struct {
 	Tools    int    `json:"tools"`
 	Restarts int    `json:"restarts"`
 	Reason   string `json:"reason"`
+	// LastUsed is the RFC3339 time of the last successful call dispatch
+	// (CONNECTOR-LIFE-SPEC D6); additive — absent until first use.
+	LastUsed *string `json:"last_used,omitempty"`
 }
 
 // Status returns current connector status for MCP-STATUS.
@@ -635,7 +666,118 @@ func (c *MCPConnector) Status() ConnectorStatus {
 		Tools:    numTools,
 		Restarts: len(c.restarts),
 		Reason:   c.reason,
+		LastUsed: formatLastUsed(c.LastUsed()),
 	}
+}
+
+func formatLastUsed(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339)
+	return &s
+}
+
+// MarkUsed stamps the connector's last_used time (successful call dispatch).
+func (c *MCPConnector) MarkUsed() {
+	c.lastUsed.Store(c.clock().UnixNano())
+}
+
+// SetLastUsed restores a persisted last_used time (boot merge).
+func (c *MCPConnector) SetLastUsed(t time.Time) {
+	if t.IsZero() {
+		c.lastUsed.Store(0)
+		return
+	}
+	c.lastUsed.Store(t.UnixNano())
+}
+
+// LastUsed returns the last successful call time, or nil if never used.
+func (c *MCPConnector) LastUsed() *time.Time {
+	n := c.lastUsed.Load()
+	if n == 0 {
+		return nil
+	}
+	t := time.Unix(0, n).UTC()
+	return &t
+}
+
+// Config returns a copy of the connector's configuration.
+func (c *MCPConnector) Config() MCPServerConfig {
+	return c.cfg
+}
+
+// Enabled reports whether the connector is not user-disabled.
+func (c *MCPConnector) Enabled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.userDisabledLocked()
+}
+
+// Fingerprint returns the catalog snapshot fingerprint ("" unless ready).
+func (c *MCPConnector) Fingerprint() string {
+	c.mu.Lock()
+	ready := c.state == MCPStateReady
+	c.mu.Unlock()
+	if !ready {
+		return ""
+	}
+	return c.snapshot.Load().CatalogFingerprint()
+}
+
+// StartUserDisabled marks a not-yet-started connector as user-disabled so
+// boot never starts it (store boot merge).
+func (c *MCPConnector) StartUserDisabled() {
+	c.mu.Lock()
+	c.state = MCPStateDisabled
+	c.reason = MCPReasonUserDisabled
+	c.mu.Unlock()
+}
+
+// Shutdown stops the connector for good (remove / replace): retry timer
+// cancelled, child process group torn down and reaped before it returns.
+// notify controls whether the change listener fires.
+func (c *MCPConnector) Shutdown(notify bool) {
+	c.mu.Lock()
+	c.cancelRetryLocked()
+	c.state = MCPStateDisabled
+	c.reason = MCPReasonUserDisabled
+	c.teardownChildLocked()
+	c.mu.Unlock()
+	if notify {
+		c.notifyChange(false)
+	}
+}
+
+// SetUserDisabled applies the user disable toggle: child stopped and reaped,
+// retry cancelled, catalog cleared, state disabled/user_disabled.
+func (c *MCPConnector) SetUserDisabled() {
+	c.mu.Lock()
+	c.cancelRetryLocked()
+	c.teardownChildLocked()
+	c.state = MCPStateDisabled
+	c.reason = MCPReasonUserDisabled
+	c.snapshot.Store(emptyCatalogSnapshot(c.cfg.Name))
+	c.mu.Unlock()
+	c.notifyChange(true)
+}
+
+// UserEnable clears a user disable and starts the connector with the same
+// sequence the boot lane uses (occupancy refusal, identity slot, spawn).
+// Enabling an already-enabled connector is a no-op.
+func (c *MCPConnector) UserEnable(ctx context.Context) error {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.userDisabledLocked() {
+		return nil
+	}
+	c.state = MCPStateStarting
+	c.reason = MCPReasonOK
+	c.restarts = nil
+	c.backoffDur = time.Second
+	return c.firstUnlockLocked(ctx)
 }
 
 // ToolStatus represents the tool row for MCP-TOOLS per MCP-SPEC §9.
@@ -724,6 +866,69 @@ func (r *RailRegistry) SetChangeListener(l MCPChangeListener) {
 	for _, c := range r.connectors {
 		c.SetChangeListener(l)
 	}
+}
+
+// ErrConnectorNotFound is returned by registry ops on an unknown name.
+var ErrConnectorNotFound = errors.New("connector not found")
+
+// Unregister removes a connector from the registry and returns it (nil when
+// unknown). The caller owns stopping it.
+func (r *RailRegistry) Unregister(name string) *MCPConnector {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c := r.connectors[name]
+	if c == nil {
+		return nil
+	}
+	delete(r.connectors, name)
+	for i, n := range r.names {
+		if n == name {
+			r.names = append(r.names[:i:i], r.names[i+1:]...)
+			break
+		}
+	}
+	return c
+}
+
+// Replace installs c under its name and returns the connector it displaced
+// (nil when the name was new). The caller must already have stopped the old
+// connector so no two children ever hold the name at once.
+func (r *RailRegistry) Replace(c *MCPConnector) *MCPConnector {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	old := r.connectors[c.Name()]
+	if old == nil {
+		r.names = append(r.names, c.Name())
+	}
+	r.connectors[c.Name()] = c
+	if r.changeListener != nil {
+		c.SetChangeListener(r.changeListener)
+	}
+	return old
+}
+
+// NotifyChanged fires the registry change listener for name (status
+// broadcast), e.g. after a connector was removed from the rail.
+func (r *RailRegistry) NotifyChanged(name string, toolsChanged bool) {
+	r.mu.RLock()
+	l := r.changeListener
+	r.mu.RUnlock()
+	if l != nil {
+		go l(name, toolsChanged)
+	}
+}
+
+// SetUserEnabled applies the user enable/disable toggle to a connector.
+func (r *RailRegistry) SetUserEnabled(ctx context.Context, name string, enabled bool) error {
+	c := r.Connector(name)
+	if c == nil {
+		return ErrConnectorNotFound
+	}
+	if !enabled {
+		c.SetUserDisabled()
+		return nil
+	}
+	return c.UserEnable(ctx)
 }
 
 // RegisterConnector adds or replaces a connector in the registry.

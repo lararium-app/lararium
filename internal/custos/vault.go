@@ -260,6 +260,7 @@ func (v *Vault) CheckFileLaw() error {
 		"surrogates.age":    true,
 		"fingerprints.json": true,
 		"policy.json":       true,
+		"connectors.json":   true,
 		"custos.lock":       true,
 		"ctl.sock":          true,
 		"ctl.token":         true,
