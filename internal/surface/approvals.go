@@ -77,17 +77,18 @@ type StaleVerdictHook func(id, sessionID, cred, cell, reason string)
 // approver channel remains (spec §5 approval state machine plus
 // NUNTIUS-SPEC §7 amendments A1/A5/A6/A7: first-wins, mutex-guarded).
 type ApprovalHub struct {
-	mu                 sync.Mutex
-	bySession          map[string]map[string]*approval
-	timeout            time.Duration
-	bridgeTimeout      time.Duration
-	fanout             ApprovalFanout
-	bridgeLive         func() bool
-	staleVerdictHook   StaleVerdictHook
-	obsMu              sync.Mutex
-	observers          map[int64]func(*CustosCard, *CustosGone)
-	obsSeq             int64
-	connectorTrustHook func(toolName string) error
+	mu                       sync.Mutex
+	bySession                map[string]map[string]*approval
+	timeout                  time.Duration
+	bridgeTimeout            time.Duration
+	fanout                   ApprovalFanout
+	bridgeLive               func() bool
+	staleVerdictHook         StaleVerdictHook
+	obsMu                    sync.Mutex
+	observers                map[int64]func(*CustosCard, *CustosGone)
+	obsSeq                   int64
+	connectorTrustHook       func(toolName string) error
+	registerCustosNamedCalls int
 }
 
 // SetConnectorTrustHook registers the minter hook called when an approval card
@@ -254,6 +255,7 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 // empty cell/cred so the card rides the phone custody stream and a label.
 func (h *ApprovalHub) registerCustosNamed(cell, cred, name, dest, argsSummary string, timeout time.Duration, onEvent func(approvalID string)) (id string, decision <-chan bool) {
 	h.mu.Lock()
+	h.registerCustosNamedCalls++
 	id = generateApprovalID()
 	ch := make(chan bool, 1)
 	ap := &approval{
@@ -295,6 +297,13 @@ func (h *ApprovalHub) registerCustosNamed(cell, cred, name, dest, argsSummary st
 	}
 	h.fanPending(id, cell, name, reviewText(dest, argsSummary))
 	return id, ch
+}
+
+// RegisterCustosNamedCalls returns the number of times registerCustosNamed was invoked.
+func (h *ApprovalHub) RegisterCustosNamedCalls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.registerCustosNamedCalls
 }
 
 // reviewText composes the destination line and the caller-built review

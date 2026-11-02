@@ -30,6 +30,7 @@ type fakeDeviceDoor struct {
 	actionBroker ActionBroker
 	audited      []DeviceAuditPayload
 	auditKinds   []string
+	registerErr  error
 }
 
 func newFakeDeviceDoor() *fakeDeviceDoor {
@@ -91,6 +92,9 @@ func (d *fakeDeviceDoor) ValidateRails(rails []DeclaredRail) error {
 func (d *fakeDeviceDoor) Register(id, displayName string, rails []DeclaredRail) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.registerErr != nil {
+		return d.registerErr
+	}
 	delete(d.tombstones, id)
 	now := time.Now().UTC()
 	lsStr := now.Format(time.RFC3339)
@@ -302,10 +306,11 @@ func setupDeviceEnv(t *testing.T, withDoor bool) *testDeviceEnv {
 	}
 
 	srv := &Server{
-		Store:    store,
-		Sessions: &fakeSessionSource{},
-		Hub:      &fakeHub{},
-		Cfg:      ServeConfig{AllowedHosts: []string{"localhost", "127.0.0.1"}},
+		Store:             store,
+		Sessions:          &fakeSessionSource{},
+		Hub:               &fakeHub{},
+		Cfg:               ServeConfig{AllowedHosts: []string{"localhost", "127.0.0.1"}},
+		DeviceAutoApprove: false,
 	}
 	hub := NewApprovalHub(time.Minute)
 	srv.SetApprovalHub(hub)
@@ -659,6 +664,274 @@ func TestDevicesRegister_DuplicateAndPending(t *testing.T) {
 	wRe := e.do(http.MethodPost, "/v1/devices/register", bodyA)
 	if wRe.Code != http.StatusAccepted {
 		t.Fatalf("re-registration code = %d, want 202: %s", wRe.Code, wRe.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 1b. POST /v1/devices/register auto-approval tests (DEVICE-RAILS-SPEC Rev 3)
+// ---------------------------------------------------------------------------
+
+func TestDevicesRegister_AutoApprove_Success(t *testing.T) {
+	e := setupDeviceEnv(t, true)
+	e.srv.DeviceAutoApprove = true
+
+	// Pre-conditions
+	if e.hub.RegisterCustosNamedCalls() != 0 {
+		t.Fatalf("initial registerCustosNamedCalls = %d, want 0", e.hub.RegisterCustosNamedCalls())
+	}
+	if len(e.hub.PendingTurnCards()) != 0 {
+		t.Fatalf("initial pending turn cards = %d, want 0", len(e.hub.PendingTurnCards()))
+	}
+
+	body := `{"device_id":"pixel-auto","display_name":"Pixel Auto","rails_declared":[{"name":"calendar","read_only":true},{"name":"sms","read_only":false}]}`
+	w := e.do(http.MethodPost, "/v1/devices/register", body)
+
+	// (a) Respond 200 (NOT 202) + JSON {"device_id": ..., "auto_approved": true}
+	if w.Code != http.StatusOK {
+		t.Fatalf("register status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	var res struct {
+		DeviceID     string `json:"device_id"`
+		AutoApproved bool   `json:"auto_approved"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if res.DeviceID != "pixel-auto" || !res.AutoApproved {
+		t.Fatalf("unexpected response body: %+v", res)
+	}
+
+	// (e) ApprovalHub was never consulted: fake hub records zero registerCustosNamed calls
+	if calls := e.hub.RegisterCustosNamedCalls(); calls != 0 {
+		t.Fatalf("expected 0 registerCustosNamed calls, got %d", calls)
+	}
+	if cards := e.hub.PendingTurnCards(); len(cards) != 0 {
+		t.Fatalf("expected 0 pending cards, got %d", len(cards))
+	}
+
+	// (a) Device visible via door.List
+	doorList := e.door.List()
+	var foundInDoor bool
+	for _, card := range doorList {
+		if card.DeviceID == "pixel-auto" {
+			foundInDoor = true
+			if card.DisplayName != "Pixel Auto" {
+				t.Fatalf("door.List DisplayName = %q, want Pixel Auto", card.DisplayName)
+			}
+			if len(card.Rails) != 2 {
+				t.Fatalf("door.List Rails count = %d, want 2", len(card.Rails))
+			}
+		}
+	}
+	if !foundInDoor {
+		t.Fatalf("device pixel-auto not found in door.List")
+	}
+
+	// (a) Device visible via GET /v1/devices afterwards
+	wGet := e.do(http.MethodGet, "/v1/devices", "")
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("GET /v1/devices status = %d, want 200", wGet.Code)
+	}
+	var getResp struct {
+		Devices []DeviceCard `json:"devices"`
+	}
+	if err := json.Unmarshal(wGet.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("unmarshal /v1/devices: %v", err)
+	}
+	var foundInGet bool
+	for _, dev := range getResp.Devices {
+		if dev.DeviceID == "pixel-auto" {
+			foundInGet = true
+			if dev.DisplayName != "Pixel Auto" {
+				t.Fatalf("GET /v1/devices DisplayName = %q, want Pixel Auto", dev.DisplayName)
+			}
+			if dev.Reason == "pending_approval" {
+				t.Fatalf("device must be live now, but reason = pending_approval")
+			}
+		}
+	}
+	if !foundInGet {
+		t.Fatalf("device pixel-auto not found in GET /v1/devices response: %s", wGet.Body.String())
+	}
+
+	// (d) Audit got a device_registered entry
+	e.door.mu.Lock()
+	foundAudit := false
+	for i, k := range e.door.auditKinds {
+		if k == AuditKindDeviceRegistered && e.door.audited[i].DeviceID == "pixel-auto" {
+			foundAudit = true
+			if e.door.audited[i].DisplayName != "Pixel Auto" {
+				t.Fatalf("audit DisplayName = %q", e.door.audited[i].DisplayName)
+			}
+			if e.door.audited[i].Actor != "surface" {
+				t.Fatalf("audit Actor = %q, want surface", e.door.audited[i].Actor)
+			}
+			if len(e.door.audited[i].RailNames) != 2 {
+				t.Fatalf("audit RailNames count = %d", len(e.door.audited[i].RailNames))
+			}
+		}
+	}
+	e.door.mu.Unlock()
+	if !foundAudit {
+		t.Fatalf("expected device_registered audit entry")
+	}
+
+	// Clean s.devicePending: no residue left behind
+	e.srv.devicePendingMu.Lock()
+	if _, pending := e.srv.devicePending["pixel-auto"]; pending {
+		t.Fatalf("devicePending still contains pixel-auto reservation")
+	}
+	e.srv.devicePendingMu.Unlock()
+}
+
+func TestDevicesRegister_AutoApprove_DuplicateConflict(t *testing.T) {
+	e := setupDeviceEnv(t, true)
+	e.srv.DeviceAutoApprove = true
+
+	body := `{"device_id":"pixel-dup","display_name":"Pixel Dup","rails_declared":[{"name":"calendar","read_only":true}]}`
+
+	// First registration succeeds
+	w1 := e.do(http.MethodPost, "/v1/devices/register", body)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("initial register status = %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// (b) Duplicate device still 409
+	w2 := e.do(http.MethodPost, "/v1/devices/register", body)
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("duplicate register status = %d, want 409: %s", w2.Code, w2.Body.String())
+	}
+	var errResp map[string]string
+	_ = json.Unmarshal(w2.Body.Bytes(), &errResp)
+	if errResp["reason"] != "duplicate_name" {
+		t.Fatalf("reason = %q, want duplicate_name", errResp["reason"])
+	}
+}
+
+func TestDevicesRegister_AutoApprove_PendingConflict(t *testing.T) {
+	e := setupDeviceEnv(t, true)
+	e.srv.DeviceAutoApprove = true
+
+	// Simulate an in-flight pending reservation
+	e.devicePending("pixel-pend", "Pending Dev")
+
+	body := `{"device_id":"pixel-pend","display_name":"Pending Dev","rails_declared":[{"name":"calendar","read_only":true}]}`
+	w := e.do(http.MethodPost, "/v1/devices/register", body)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("pending register status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	var errResp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &errResp)
+	if errResp["reason"] != "pending_add" {
+		t.Fatalf("reason = %q, want pending_add", errResp["reason"])
+	}
+}
+
+func TestDevicesRegister_AutoApprove_InvalidRailsMismatch(t *testing.T) {
+	e := setupDeviceEnv(t, true)
+	e.srv.DeviceAutoApprove = true
+
+	// (c) Invalid rails still 400 rail_mismatch: read rail with read_only: false
+	body1 := `{"device_id":"pixel-misflag","display_name":"Bad Rail","rails_declared":[{"name":"calendar","read_only":false}]}`
+	w1 := e.do(http.MethodPost, "/v1/devices/register", body1)
+	if w1.Code != http.StatusBadRequest {
+		t.Fatalf("misflag register status = %d, want 400: %s", w1.Code, w1.Body.String())
+	}
+	var errResp1 map[string]string
+	_ = json.Unmarshal(w1.Body.Bytes(), &errResp1)
+	if errResp1["reason"] != "rail_mismatch" {
+		t.Fatalf("reason = %q, want rail_mismatch", errResp1["reason"])
+	}
+
+	// (c) Undeclared rail name
+	body2 := `{"device_id":"pixel-unknown","display_name":"Unknown Rail","rails_declared":[{"name":"not_a_rail","read_only":true}]}`
+	w2 := e.do(http.MethodPost, "/v1/devices/register", body2)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("unknown rail register status = %d, want 400: %s", w2.Code, w2.Body.String())
+	}
+	var errResp2 map[string]string
+	_ = json.Unmarshal(w2.Body.Bytes(), &errResp2)
+	if errResp2["reason"] != "rail_mismatch" {
+		t.Fatalf("reason = %q, want rail_mismatch", errResp2["reason"])
+	}
+
+	// Verify nothing was registered or audited
+	if len(e.door.List()) != 0 {
+		t.Fatalf("expected no devices registered in door")
+	}
+	e.door.mu.Lock()
+	auditCount := len(e.door.audited)
+	e.door.mu.Unlock()
+	if auditCount != 0 {
+		t.Fatalf("expected no audits emitted")
+	}
+}
+
+func TestDevicesRegister_AutoApprove_InvalidDeviceID(t *testing.T) {
+	e := setupDeviceEnv(t, true)
+	e.srv.DeviceAutoApprove = true
+
+	body := `{"device_id":"INVALID_UPPERCASE","display_name":"Bad ID","rails_declared":[{"name":"calendar","read_only":true}]}`
+	w := e.do(http.MethodPost, "/v1/devices/register", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid id register status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	var errResp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &errResp)
+	if errResp["reason"] != "bad_device_id" {
+		t.Fatalf("reason = %q, want bad_device_id", errResp["reason"])
+	}
+}
+
+func TestDevicesRegister_AutoApprove_StoreError(t *testing.T) {
+	e := setupDeviceEnv(t, true)
+	e.srv.DeviceAutoApprove = true
+	e.door.registerErr = errors.New("simulated database failure")
+
+	body := `{"device_id":"pixel-fail","display_name":"Pixel Fail","rails_declared":[{"name":"calendar","read_only":true}]}`
+	w := e.do(http.MethodPost, "/v1/devices/register", body)
+
+	// Must respond 500 with reason "store_error"
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("store error register status = %d, want 500: %s", w.Code, w.Body.String())
+	}
+	var errResp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &errResp)
+	if errResp["reason"] != "store_error" {
+		t.Fatalf("reason = %q, want store_error", errResp["reason"])
+	}
+
+	// And do NOT leave the pending reservation behind (clean s.devicePending)
+	e.srv.devicePendingMu.Lock()
+	if _, pending := e.srv.devicePending["pixel-fail"]; pending {
+		t.Fatalf("pending reservation was not cleaned up after store error")
+	}
+	e.srv.devicePendingMu.Unlock()
+}
+
+func TestDevicesRegister_AutoApprove_ApprovalHubNeverConsulted(t *testing.T) {
+	e := setupDeviceEnv(t, true)
+	e.srv.DeviceAutoApprove = true
+	// Completely detach the ApprovalHub (set to nil)
+	e.srv.SetApprovalHub(nil)
+
+	body := `{"device_id":"pixel-nohub","display_name":"No Hub Phone","rails_declared":[{"name":"calendar","read_only":true}]}`
+	w := e.do(http.MethodPost, "/v1/devices/register", body)
+
+	// Must succeed 200 without needing ApprovalHub
+	if w.Code != http.StatusOK {
+		t.Fatalf("register status = %d, want 200 with nil ApprovalHub: %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		DeviceID     string `json:"device_id"`
+		AutoApproved bool   `json:"auto_approved"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if res.DeviceID != "pixel-nohub" || !res.AutoApproved {
+		t.Fatalf("unexpected response: %+v", res)
 	}
 }
 
