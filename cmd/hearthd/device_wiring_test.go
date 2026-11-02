@@ -106,8 +106,9 @@ func TestDeviceDoorWiringAndActionLoopInHearthd(t *testing.T) {
 	}
 
 	srv := &surface.Server{
-		Store: store,
-		Cfg:   surface.ServeConfig{AllowedHosts: []string{"localhost", "127.0.0.1"}},
+		Store:             store,
+		Cfg:               surface.ServeConfig{AllowedHosts: []string{"localhost", "127.0.0.1"}},
+		DeviceAutoApprove: false,
 	}
 	approvalHub := surface.NewApprovalHub(time.Minute)
 	srv.SetApprovalHub(approvalHub)
@@ -316,4 +317,57 @@ func (r *safeRecorder) Code() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.code
+}
+
+func TestDeviceDoorWiringAutoApproveInHearthd(t *testing.T) {
+	home := t.TempDir()
+	store, err := surface.OpenTokenStore(t.TempDir() + "/tokens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := store.Create("test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &surface.Server{
+		Store:             store,
+		Cfg:               surface.ServeConfig{AllowedHosts: []string{"localhost", "127.0.0.1"}},
+		DeviceAutoApprove: true,
+	}
+	approvalHub := surface.NewApprovalHub(time.Minute)
+	srv.SetApprovalHub(approvalHub)
+
+	wireDevices(home, nil, nil, nil, srv)
+
+	h := surface.NewServer(srv)
+
+	doReq := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Host = "127.0.0.1:7717"
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	regBody := `{"device_id":"pixel-auto","display_name":"Auto Pixel","rails_declared":[{"name":"calendar","read_only":true}]}`
+	regW := doReq(http.MethodPost, "/v1/devices/register", regBody)
+	if regW.Code != http.StatusOK {
+		t.Fatalf("register status = %d, want 200: %s", regW.Code, regW.Body.String())
+	}
+	var regRes struct {
+		DeviceID     string `json:"device_id"`
+		AutoApproved bool   `json:"auto_approved"`
+	}
+	if err := json.Unmarshal(regW.Body.Bytes(), &regRes); err != nil {
+		t.Fatal(err)
+	}
+	if regRes.DeviceID != "pixel-auto" || !regRes.AutoApproved {
+		t.Fatalf("unexpected response: %+v", regRes)
+	}
+	if approvalHub.RegisterCustosNamedCalls() != 0 {
+		t.Fatalf("approvalHub should not be consulted, got %d calls", approvalHub.RegisterCustosNamedCalls())
+	}
 }

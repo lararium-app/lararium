@@ -40,6 +40,19 @@ type Config struct {
 	Custos CustosConfig `yaml:"custos"`
 	// Backup configures backup sealing and identity (PENATUS §4.5.2a).
 	Backup BackupConfig `yaml:"backup"`
+	// Devices configures device rails (DEVICE-RAILS-SPEC).
+	Devices DevicesConfig `yaml:"devices"`
+}
+
+type DevicesConfig struct {
+	AutoApprove *bool `yaml:"auto_approve"`
+}
+
+func (d DevicesConfig) IsAutoApprove() bool {
+	if d.AutoApprove == nil {
+		return true
+	}
+	return *d.AutoApprove
 }
 
 type BackupConfig struct {
@@ -87,6 +100,10 @@ func LoadConfig(path string) (*Config, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	if c.Devices.AutoApprove == nil {
+		t := true
+		c.Devices.AutoApprove = &t
 	}
 	if c.Hearth.Home == "" {
 		return nil, fmt.Errorf("config: hearth.home is required")
@@ -571,11 +588,12 @@ func serve(cfgPath string) {
 	sessions := surface.NewPenatusSource(home, hub)
 
 	srv := &surface.Server{
-		Cfg:       cfg.Serve,
-		Store:     store,
-		Sessions:  sessions,
-		Hub:       hub,
-		PairStore: newPairStoreAdapter(openPairStore(home)),
+		Cfg:               cfg.Serve,
+		Store:             store,
+		Sessions:          sessions,
+		Hub:               hub,
+		PairStore:         newPairStoreAdapter(openPairStore(home)),
+		DeviceAutoApprove: cfg.Devices.IsAutoApprove(),
 	}
 	// Issue #128: turn-approval cards (web chat + MCP rail) become visible
 	// and resolvable through the custody card surface.

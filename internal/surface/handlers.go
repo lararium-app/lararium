@@ -89,6 +89,9 @@ type Server struct {
 	pairMu      sync.Mutex
 	pairLimiter *pairLimiter
 
+	// DeviceAutoApprove bypasses custody cards on device registration (DEVICE-RAILS-SPEC Rev 3).
+	DeviceAutoApprove bool
+
 	devicesMu       sync.RWMutex
 	devicesDoor     DeviceDoor
 	devicesBroker   *deviceBroker
@@ -122,6 +125,15 @@ func (s *Server) DeviceBroker() ActionBroker {
 	s.devicesMu.RLock()
 	defer s.devicesMu.RUnlock()
 	return s.devicesBroker
+}
+
+// SetDeviceAutoApprove configures whether device registration is auto-approved without consent cards.
+func (s *Server) SetDeviceAutoApprove(auto bool) {
+	s.DeviceAutoApprove = auto
+}
+
+func (s *Server) deviceAutoApprove() bool {
+	return s.DeviceAutoApprove || s.Cfg.DeviceAutoApprove
 }
 
 // BackupFunc handles control-socket backup verbs (PENATUS §4.5.3.1).

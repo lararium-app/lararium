@@ -138,6 +138,77 @@ func (s *Server) deviceGetHandler(w http.ResponseWriter, _ *http.Request, id str
 	s.error(w, "not found", http.StatusNotFound)
 }
 
+// deviceRegisterRequest is the POST /v1/devices/register payload.
+type deviceRegisterRequest struct {
+	DeviceID      string         `json:"device_id"`
+	DisplayName   string         `json:"display_name"`
+	RailsDeclared []DeclaredRail `json:"rails_declared"`
+	Fingerprint   string         `json:"fingerprint,omitempty"`
+}
+
+// autoApproveDeviceRegistration completes registration synchronously when
+// auto-approval is on: the bearer token presented is the user's consent
+// (DEVICE-RAILS-SPEC Rev 3). Called with s.devicePendingMu held; the
+// reservation made by the caller is cleared here either way. An audit
+// record is always written for an auto-approved device.
+func (s *Server) autoApproveDeviceRegistration(w http.ResponseWriter, r *http.Request, door DeviceDoor, req deviceRegisterRequest) {
+	fp, credName := s.bearerFingerprintAndCred(r)
+	if req.Fingerprint != "" {
+		cleanFP := cleanFingerprint(req.Fingerprint)
+		if cleanFP != "" {
+			fp = cleanFP
+		}
+	}
+	if fp == "" {
+		fp = "fp-" + req.DeviceID
+	}
+
+	s.devicePending[req.DeviceID] = &pendingDevice{
+		deviceID:     req.DeviceID,
+		displayName:  req.DisplayName,
+		rails:        req.RailsDeclared,
+		registeredAt: time.Now().UTC(),
+		fingerprint:  fp,
+	}
+	s.devicePendingMu.Unlock()
+	s.pokeDeviceRail()
+
+	if err := door.Register(req.DeviceID, req.DisplayName, req.RailsDeclared); err != nil {
+		s.devicePendingMu.Lock()
+		delete(s.devicePending, req.DeviceID)
+		s.devicePendingMu.Unlock()
+		s.pokeDeviceRail()
+		log.Printf("surface: failed to persist device %s: %v", logSanitize(req.DeviceID), err)
+		writeJSONAny(w, http.StatusInternalServerError, map[string]string{"error": err.Error(), "reason": "store_error"})
+		return
+	}
+
+	s.devicePendingMu.Lock()
+	delete(s.devicePending, req.DeviceID)
+	s.devicePendingMu.Unlock()
+	s.pokeDeviceRail()
+
+	var railNames []string
+	for _, rr := range req.RailsDeclared {
+		railNames = append(railNames, rr.Name)
+	}
+
+	payload := DeviceAuditPayload{
+		DeviceID:    req.DeviceID,
+		DisplayName: req.DisplayName,
+		Fingerprint: fp,
+		CredName:    credName,
+		RailNames:   railNames,
+		Actor:       "surface",
+	}
+	_ = door.Audit(AuditKindDeviceRegistered, payload)
+
+	writeJSONAny(w, http.StatusOK, map[string]any{
+		"device_id":     req.DeviceID,
+		"auto_approved": true,
+	})
+}
+
 // deviceRegisterHandler serves POST /v1/devices/register.
 func (s *Server) deviceRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	door := s.getDeviceDoor()
@@ -152,12 +223,7 @@ func (s *Server) deviceRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		DeviceID      string         `json:"device_id"`
-		DisplayName   string         `json:"display_name"`
-		RailsDeclared []DeclaredRail `json:"rails_declared"`
-		Fingerprint   string         `json:"fingerprint,omitempty"`
-	}
+	var req deviceRegisterRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSONAny(w, http.StatusBadRequest, map[string]string{"error": "invalid request body", "reason": "bad_request"})
 		return
@@ -193,6 +259,11 @@ func (s *Server) deviceRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	if _, pending := s.devicePending[req.DeviceID]; pending {
 		s.devicePendingMu.Unlock()
 		writeJSONAny(w, http.StatusConflict, map[string]string{"error": "an add of this device is already pending approval", "reason": "pending_add"})
+		return
+	}
+
+	if s.deviceAutoApprove() {
+		s.autoApproveDeviceRegistration(w, r, door, req)
 		return
 	}
 

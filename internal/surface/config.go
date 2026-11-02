@@ -12,10 +12,11 @@ import (
 // surface listens and its two timeouts. All zero values normalize to
 // spec defaults.
 type ServeConfig struct {
-	Listen          string        `yaml:"listen"`
-	AllowedHosts    []string      `yaml:"allowed_hosts"`
-	ApprovalTimeout time.Duration `yaml:"approval_timeout"`
-	TurnTimeout     time.Duration `yaml:"turn_timeout"`
+	Listen            string        `yaml:"listen"`
+	AllowedHosts      []string      `yaml:"allowed_hosts"`
+	ApprovalTimeout   time.Duration `yaml:"approval_timeout"`
+	TurnTimeout       time.Duration `yaml:"turn_timeout"`
+	DeviceAutoApprove bool          `yaml:"device_auto_approve,omitempty"`
 }
 
 // Normalize fills spec defaults (port 7717, approval 5m, turn 10m) and

@@ -172,5 +172,6 @@ directive 2026-11-01); non-first-party device registration; TLS interception (pe
 
 ## Changelog
 
+- Rev 3 — auto-approve registration (PO directive 2026-11-02): registration no longer raises a consent card; bearer authorization is sufficient.
 - v2 (2026-11-01): transport reversed to phone-push per PO directive; v1 never merged.
 - v1 (2026-11-01): initial freeze text per issue #217 (rejected: tailnet pull transport).
