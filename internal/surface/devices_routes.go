@@ -196,6 +196,65 @@ func (s *Server) deviceRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.deviceAutoApprove() {
+		fp, credName := s.bearerFingerprintAndCred(r)
+		if req.Fingerprint != "" {
+			cleanFP := cleanFingerprint(req.Fingerprint)
+			if cleanFP != "" {
+				fp = cleanFP
+			}
+		}
+		if fp == "" {
+			fp = "fp-" + req.DeviceID
+		}
+
+		s.devicePending[req.DeviceID] = &pendingDevice{
+			deviceID:     req.DeviceID,
+			displayName:  req.DisplayName,
+			rails:        req.RailsDeclared,
+			registeredAt: time.Now().UTC(),
+			fingerprint:  fp,
+		}
+		s.devicePendingMu.Unlock()
+		s.pokeDeviceRail()
+
+		if err := door.Register(req.DeviceID, req.DisplayName, req.RailsDeclared); err != nil {
+			s.devicePendingMu.Lock()
+			delete(s.devicePending, req.DeviceID)
+			s.devicePendingMu.Unlock()
+			s.pokeDeviceRail()
+			log.Printf("surface: failed to persist device %s: %v", logSanitize(req.DeviceID), err)
+			writeJSONAny(w, http.StatusInternalServerError, map[string]string{"error": err.Error(), "reason": "store_error"})
+			return
+		}
+
+		s.devicePendingMu.Lock()
+		delete(s.devicePending, req.DeviceID)
+		s.devicePendingMu.Unlock()
+		s.pokeDeviceRail()
+
+		var railNames []string
+		for _, r := range req.RailsDeclared {
+			railNames = append(railNames, r.Name)
+		}
+
+		payload := DeviceAuditPayload{
+			DeviceID:    req.DeviceID,
+			DisplayName: req.DisplayName,
+			Fingerprint: fp,
+			CredName:    credName,
+			RailNames:   railNames,
+			Actor:       "surface",
+		}
+		_ = door.Audit(AuditKindDeviceRegistered, payload)
+
+		writeJSONAny(w, http.StatusOK, map[string]any{
+			"device_id":     req.DeviceID,
+			"auto_approved": true,
+		})
+		return
+	}
+
 	hub := s.approvalsViaRegistry()
 	if hub == nil {
 		s.devicePendingMu.Unlock()
