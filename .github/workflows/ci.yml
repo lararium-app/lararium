@@ -142,3 +142,14 @@ jobs:
           cache: true
       - name: V-T2 exit suite
         run: go test -run 'VT2' ./internal/custos/ -count=1 -v
+
+  device-rails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: V-T3 exit suite
+        run: go test -run 'VT3' -count=1 ./internal/custos/ -v
