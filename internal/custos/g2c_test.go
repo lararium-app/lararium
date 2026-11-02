@@ -162,6 +162,19 @@ func TestG2c_FirstUnlockTriggers(t *testing.T) {
 	ctlServer.SetWorkers(ws)
 	ctlServer.SetRailRegistry(reg)
 
+	// Deterministic quiescence (flake fix): UNLOCK fires the asynchronous
+	// first-unlock connector starts, and their state transitions persist
+	// vault generations into this temp state dir. Stop every connector and
+	// the worker server before t.TempDir's automatic cleanup, or a slow CI
+	// runner races RemoveAll with a late snapshot write ("directory not
+	// empty" — observed on the shared ubuntu-latest pool).
+	t.Cleanup(func() {
+		for _, c := range reg.Connectors() {
+			c.Shutdown(false)
+		}
+		_ = ws.Close()
+	})
+
 	// Before unlock: FirstUnlockCount is 0, connectors sit in starting
 	if count := reg.FirstUnlockCount(); count != 0 {
 		t.Fatalf("initial FirstUnlockCount = %d, want 0", count)
