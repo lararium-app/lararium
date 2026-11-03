@@ -287,7 +287,8 @@ running text came from.
 (markdown, human-readable per principle 2 — the file layer is the product's memory):
 frontmatter `{id, title, status: active|paused|done|failed|stale, requirements:
 [{text, done, evidence: [seq...]}], turn_count, turn_budget, step_after (duration,
-default 15m), next_due (RFC3339 — absent only in terminal states), session_id,
+default 15m), next_due (RFC3339 — absent when paused, stale, or terminal),
+session_id,
 next_hint, created_at, created_seq}`.
 Lifecycle: `hearthd goal new "<title>" [--session S] --requirement "<r>" [--budget
 N turns] [--step-after dur]` — `turn_budget` defaults **25**, `step_after` 15m
@@ -333,7 +334,8 @@ auto-fail (status `failed`) after 30 days untouched (checked at boot and on each
 step) — no zombie objectives.
 Goals run never concurrently with each other (worker gate, D3).
 Goal events (penatus kind, `kind:"goal"` on the fasti rail): `goal_created`,
-`goal_stepped`, `goal_closed`, `goal_close_refused`, `goal_staled`, `goal_failed`.
+`goal_stepped`, `goal_paused`, `goal_resumed`, `goal_closed`,
+`goal_close_refused`, `goal_staled`, `goal_failed`.
 
 **D11 — config block, all-or-nothing like everything else.** `lararium.yaml` gains:
 
@@ -505,3 +507,8 @@ at all (D3), keeping AUDIT-LOCKS law true by construction).
   parenthetical rewritten to the adoption path (r4m5); stale model-citation
   line removed from the step prompt (r4m6); socket `list` streams projected
   summary rows so 4096-byte framing holds as evidence grows (r4m7).
+- v1 Rev-5 (2026-11-02): G1 round-5 — **0 BLOCKING** (7/7 round-4 fixes verified;
+  text judged "internally consistent, implementable, freeze-ready"). Two minors
+  folded: `next_due` presence rule corrected (absent when paused/stale/terminal,
+  matching the arming law); `goal_paused`/`goal_resumed` added to the goal audit
+  event set.
