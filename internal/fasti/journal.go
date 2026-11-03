@@ -15,18 +15,22 @@ import (
 
 // JournalEvent represents a single event in the fasti run journal (spec F1-4, D3, D4, D7, D12).
 type JournalEvent struct {
-	Seq       int64          `json:"seq"`
-	Type      string         `json:"type"`               // e.g. "fasti_fired", "fasti_job_created", "fasti_job_paused"
-	Timestamp string         `json:"timestamp"`          // RFC3339 timestamp
-	JobID     string         `json:"job_id,omitempty"`   // target job ID
-	JobName   string         `json:"job_name,omitempty"` // target job name
-	Status    string         `json:"status,omitempty"`   // "fired", "skipped", "deferred", "silenced"
-	Reason    string         `json:"reason,omitempty"`   // "session_busy", "engine_busy", "dst_gap", "slipped_while_offline", "quiet_collapse", "stale_discard", "shutdown"
-	Prompt    string         `json:"prompt,omitempty"`   // prompt text or summary
-	SessionID string         `json:"session_id,omitempty"`
-	DueAt     string         `json:"due_at,omitempty"`
-	FiredAt   string         `json:"fired_at,omitempty"`
-	Details   map[string]any `json:"details,omitempty"`
+	Seq          int64          `json:"seq"`
+	Type         string         `json:"type"`               // e.g. "fasti_fired", "fasti_job_created", "fasti_job_paused"
+	Timestamp    string         `json:"timestamp"`          // RFC3339 timestamp
+	JobID        string         `json:"job_id,omitempty"`   // target job ID
+	JobName      string         `json:"job_name,omitempty"` // target job name
+	GoalID       string         `json:"goal_id,omitempty"`  // target goal ID
+	Kind         string         `json:"kind,omitempty"`     // event kind: "job", "goal", etc.
+	Status       string         `json:"status,omitempty"`   // "fired", "skipped", "deferred", "silenced"
+	Reason       string         `json:"reason,omitempty"`   // "session_busy", "engine_busy", "dst_gap", "slipped_while_offline", "quiet_collapse", "stale_discard", "shutdown"
+	Mode         string         `json:"mode,omitempty"`     // "agent", "user_force", etc.
+	Prompt       string         `json:"prompt,omitempty"`   // prompt text or summary
+	SessionID    string         `json:"session_id,omitempty"`
+	DueAt        string         `json:"due_at,omitempty"`
+	FiredAt      string         `json:"fired_at,omitempty"`
+	EvidenceSeqs []int64        `json:"evidence_seqs,omitempty"`
+	Details      map[string]any `json:"details,omitempty"`
 }
 
 // Journal is the append-only events store under <hearth>/fasti/events.jsonl.
