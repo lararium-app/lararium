@@ -1,0 +1,1318 @@
+package fasti
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lararium-app/lararium/internal/loop"
+)
+
+// ErrTurnInFlight is returned when a turn is already running for the session.
+// fasti must not import internal/surface; this mirrors turns.go:24.
+var ErrTurnInFlight = errors.New("turn in flight")
+
+// ErrJobNotFound indicates that a requested job ID does not exist in the store.
+var ErrJobNotFound = errors.New("job not found")
+
+// TurnRunner runs a headless turn for sessionID with prompt.
+// Implementations return ErrTurnInFlight if a turn is already running for sessionID
+// (such as Hub.RunHeadlessTurn in internal/surface/turns.go:491).
+type TurnRunner func(ctx context.Context, sessionID, prompt string) error
+
+// EngineOption configures a fasti Engine.
+type EngineOption func(*Engine)
+
+// WithClock overrides the injected Clock (used by tests with FakeClock).
+func WithClock(c loop.Clock) EngineOption {
+	return func(e *Engine) {
+		if c != nil {
+			e.clock = c
+		}
+	}
+}
+
+// WithRunner sets the turn runner for executing headless turns.
+func WithRunner(r TurnRunner) EngineOption {
+	return func(e *Engine) {
+		e.runner = r
+	}
+}
+
+// WithLocation sets the local timezone used for next-due calculation.
+func WithLocation(loc *time.Location) EngineOption {
+	return func(e *Engine) {
+		if loc != nil {
+			e.loc = loc
+		}
+	}
+}
+
+// Engine implements the fasti proactivity scheduler (spec D1-D5, F1-1..F1-6).
+type Engine struct {
+	cfg    Config
+	home   string
+	clock  loop.Clock
+	runner TurnRunner
+	loc    *time.Location
+
+	jobsPath string
+	journal  *Journal
+
+	// Concurrency channels:
+	cmdCh        chan any
+	workerCh     chan firingTask
+	workerDoneCh chan firingResult
+	stopCh       chan struct{}
+	stopped      bool
+	stopOnce     sync.Once
+	loopWg       sync.WaitGroup
+	workerWg     sync.WaitGroup
+
+	ctx       context.Context //nolint:containedctx // engine-scoped lifecycle ctx: the worker honors ctx.Err() for D13 shutdown
+	cancelCtx context.CancelFunc
+
+	// State owned strictly by the command loop goroutine:
+	jobs          []Job
+	activeTimers  map[string]loop.Timer
+	retryTimers   map[string]loop.Timer
+	workerBusy    bool
+	currentFiring *firingTask
+}
+
+type firingTask struct {
+	jobID     string
+	sessionID string
+	prompt    string
+	dueAt     time.Time
+	reason    string
+}
+
+type firingResult struct {
+	task firingTask
+	err  error
+}
+
+// Command types handled by the command loop.
+type (
+	cmdAddJob struct {
+		job  Job
+		resp chan addJobResp
+	}
+	addJobResp struct {
+		job Job
+		err error
+	}
+
+	cmdRemoveJob struct {
+		id   string
+		resp chan error
+	}
+
+	cmdPauseJob struct {
+		id   string
+		resp chan error
+	}
+
+	cmdResumeJob struct {
+		id   string
+		resp chan error
+	}
+
+	cmdRunJob struct {
+		id   string
+		resp chan error
+	}
+
+	cmdGetJob struct {
+		id   string
+		resp chan getJobResp
+	}
+	getJobResp struct {
+		job Job
+		err error
+	}
+
+	cmdListJobs struct {
+		resp chan []Job
+	}
+
+	cmdJobDue struct {
+		jobID      string
+		due        time.Time
+		isGap      bool
+		skippedDue time.Time
+	}
+
+	cmdDispatchTask struct {
+		task firingTask
+	}
+
+	cmdShutdown struct {
+		resp chan struct{}
+	}
+
+	cmdJobRetry struct {
+		jobID       string
+		originalDue time.Time
+	}
+
+	cmdSync struct {
+		resp chan struct{}
+	}
+)
+
+// New creates and initializes a new fasti Engine.
+func New(cfg Config, home string, opts ...EngineOption) (*Engine, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validate config: %w", err)
+	}
+
+	loc, err := cfg.Location()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	e := &Engine{
+		cfg:          cfg,
+		home:         home,
+		loc:          loc,
+		jobsPath:     JobsFilePath(home),
+		cmdCh:        make(chan any, 128),
+		workerCh:     make(chan firingTask, 1), // Depth 1 worker mailbox (D3)
+		workerDoneCh: make(chan firingResult, 16),
+		stopCh:       make(chan struct{}),
+		ctx:          ctx,
+		cancelCtx:    cancel,
+		activeTimers: make(map[string]loop.Timer),
+		retryTimers:  make(map[string]loop.Timer),
+	}
+
+	for _, opt := range opts {
+		opt(e)
+	}
+
+	if e.clock == nil {
+		return nil, errors.New("a Clock must be provided (e.g. WithClock)")
+	}
+
+	// Initialize journal
+	j, err := OpenJournal(filepath.Join(home, "fasti"), e.clock)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("open journal: %w", err)
+	}
+	e.journal = j
+
+	// Load jobs from store
+	jobs, err := LoadJobs(e.jobsPath)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("load jobs: %w", err)
+	}
+	e.jobs = jobs
+
+	return e, nil
+}
+
+func cleanAbandonedTempFiles(dir string) {
+	patterns := []string{"jobs.json-*.tmp", "events.jsonl-*.tmp"}
+	for _, p := range patterns {
+		matches, err := filepath.Glob(filepath.Join(dir, p))
+		if err == nil {
+			for _, m := range matches {
+				_ = os.Remove(m)
+			}
+		}
+	}
+}
+
+// Start boots the engine, processes offline replay (V-Pb, F1-6), arms pending timers,
+// and starts the command loop and single firing worker goroutines.
+func (e *Engine) Start(ctx context.Context) error {
+	// Spec m14: clean up abandoned temporary files from crashed writers at boot
+	cleanAbandonedTempFiles(filepath.Join(e.home, "fasti"))
+
+	now := e.clock.Now().UTC()
+
+	// Process offline replay per V-Pb and D7 downtime collapse
+	var missedJobs []Job
+	for i := range e.jobs {
+		job := &e.jobs[i]
+		if !job.Enabled || job.Paused {
+			continue
+		}
+
+		if job.NextDue == "" {
+			res, err := e.calculateNextDue(job, now)
+			if err == nil {
+				job.NextDue = res.Due.Format(time.RFC3339)
+			}
+			continue
+		}
+
+		dueTime, err := time.Parse(time.RFC3339, job.NextDue)
+		if err != nil {
+			continue
+		}
+
+		if !dueTime.After(now) {
+			// Missed while offline!
+			if now.Sub(dueTime) > e.cfg.CatchupWindow {
+				// Past catchup_window: stale discard (D7)
+				_, _ = e.journal.Append(JournalEvent{
+					Type:      "fasti_fired",
+					Status:    "skipped",
+					Reason:    "stale_discard",
+					JobID:     job.ID,
+					JobName:   job.Name,
+					DueAt:     job.NextDue,
+					SessionID: job.Session,
+				})
+			} else {
+				// Replay EXACTLY ONCE with slipped_while_offline (D7, V-Pb)
+				missedJobs = append(missedJobs, *job)
+			}
+
+			// Recompute next future due strictly after now
+			res, err := e.calculateNextDue(job, now)
+			if err == nil {
+				job.NextDue = res.Due.Format(time.RFC3339)
+			}
+		}
+	}
+
+	// Persist updated jobs state after offline catchup calculation
+	if err := SaveJobs(e.jobsPath, e.jobs); err != nil {
+		return fmt.Errorf("save jobs on start: %w", err)
+	}
+
+	// Arm future timers for all active jobs BEFORE starting runLoop (Spec B4: no map writes outside loop)
+	for i := range e.jobs {
+		job := &e.jobs[i]
+		if job.Enabled && !job.Paused && job.NextDue != "" {
+			dueTime, err := time.Parse(time.RFC3339, job.NextDue)
+			if err == nil {
+				e.armTimerLocked(job, dueTime, false, time.Time{})
+			}
+		}
+	}
+
+	// Start worker goroutine
+	e.workerWg.Add(1)
+	go e.runWorker()
+
+	// Start command loop goroutine
+	e.loopWg.Add(1)
+	go e.runLoop()
+
+	// Dispatch missed offline firings via the command mailbox (Spec B4/D3: loop owns all dispatch)
+	for _, mj := range missedJobs {
+		task := firingTask{
+			jobID:     mj.ID,
+			sessionID: mj.Session,
+			prompt:    mj.Prompt,
+			dueAt:     now,
+			reason:    "slipped_while_offline",
+		}
+		e.sendCommand(cmdDispatchTask{task: task})
+	}
+
+	return nil
+}
+
+// Stop halts the engine, cancelling active timers and waiting for worker completion.
+func (e *Engine) Stop() {
+	e.stopOnce.Do(func() {
+		// Cancel context to abort any in-flight worker turn
+		e.cancelCtx()
+
+		// Spec B4: Stop() sends shutdown command through the mailbox, lets the loop stop its own timers and reply
+		respCh := make(chan struct{})
+		select {
+		case e.cmdCh <- cmdShutdown{resp: respCh}:
+			select {
+			case <-respCh:
+			case <-time.After(10 * time.Second): // 10s shutdown deadline per Spec D13
+			}
+		case <-time.After(10 * time.Second):
+		}
+
+		// Wait for command loop to exit first
+		e.loopWg.Wait()
+
+		// Now safely close workerCh since command loop is stopped
+		close(e.workerCh)
+
+		// Wait for worker to exit
+		e.workerWg.Wait()
+
+		e.stopped = true
+	})
+}
+
+// Close implements io.Closer by stopping the engine.
+func (e *Engine) Close() error {
+	e.Stop()
+	return nil
+}
+
+// Journal returns the active run journal.
+func (e *Engine) Journal() *Journal {
+	return e.journal
+}
+
+// runWorker is the single firing worker goroutine (spec D3/R3 global one-turn gate).
+func (e *Engine) runWorker() {
+	defer e.workerWg.Done()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case task, ok := <-e.workerCh:
+			if !ok {
+				return
+			}
+			var err error
+			if e.runner != nil {
+				err = e.runner(e.ctx, task.sessionID, task.prompt)
+			}
+			e.workerDoneCh <- firingResult{task: task, err: err}
+		}
+	}
+}
+
+// runLoop is the command loop goroutine (spec D3/R3).
+func (e *Engine) runLoop() {
+	defer e.loopWg.Done()
+
+	for {
+		// Prioritize completing worker tasks before servicing new commands
+		select {
+		case res := <-e.workerDoneCh:
+			e.handleWorkerDone(res)
+			continue
+		default:
+		}
+
+		select {
+		case <-e.stopCh:
+			return
+
+		case res := <-e.workerDoneCh:
+			e.handleWorkerDone(res)
+
+		case rawCmd := <-e.cmdCh:
+			switch cmd := rawCmd.(type) {
+			case cmdAddJob:
+				e.handleAddJob(cmd)
+			case cmdRemoveJob:
+				e.handleRemoveJob(cmd)
+			case cmdPauseJob:
+				e.handlePauseJob(cmd)
+			case cmdResumeJob:
+				e.handleResumeJob(cmd)
+			case cmdRunJob:
+				e.handleRunJob(cmd)
+			case cmdGetJob:
+				e.handleGetJob(cmd)
+			case cmdListJobs:
+				e.handleListJobs(cmd)
+			case cmdJobDue:
+				e.handleJobDue(cmd)
+			case cmdJobRetry:
+				e.handleJobRetry(cmd)
+			case cmdSync:
+				e.handleSync(cmd)
+			case cmdDispatchTask:
+				e.dispatchOrDefer(cmd.task)
+			case cmdShutdown:
+				// Spec B4: loop stops its own timers and replies
+				for _, t := range e.activeTimers {
+					if t != nil {
+						t.Stop()
+					}
+				}
+				for _, t := range e.retryTimers {
+					if t != nil {
+						t.Stop()
+					}
+				}
+
+				// Spec D13: the loop stays alive until the cancelled worker's completion event is received
+				if e.workerBusy {
+					select {
+					case res := <-e.workerDoneCh:
+						e.handleWorkerDone(res)
+					case <-time.After(10 * time.Second):
+					}
+				}
+
+				close(cmd.resp)
+				close(e.stopCh)
+				return
+			}
+		}
+	}
+}
+
+func (e *Engine) handleSync(cmd cmdSync) {
+	if e.workerBusy {
+		select {
+		case res := <-e.workerDoneCh:
+			e.handleWorkerDone(res)
+		case <-e.stopCh:
+			return
+		}
+	}
+	cmd.resp <- struct{}{}
+}
+
+func (e *Engine) handleAddJob(cmd cmdAddJob) {
+	job := cmd.job
+	now := e.clock.Now().UTC()
+
+	if job.ID == "" {
+		job.ID = NewJobID(now)
+	}
+	if err := job.Validate(); err != nil {
+		cmd.resp <- addJobResp{err: err}
+		return
+	}
+
+	for _, existing := range e.jobs {
+		if existing.ID == job.ID {
+			cmd.resp <- addJobResp{err: fmt.Errorf("job id %q already exists", job.ID)}
+			return
+		}
+	}
+
+	// User-tier add creates job enabled (spec D9)
+	job.Enabled = true
+	job.Paused = false
+
+	res, err := e.calculateNextDue(&job, now)
+	if err != nil {
+		cmd.resp <- addJobResp{err: fmt.Errorf("calculate initial next due: %w", err)}
+		return
+	}
+	job.NextDue = res.Due.Format(time.RFC3339)
+
+	e.jobs = append(e.jobs, job)
+	if err := SaveJobs(e.jobsPath, e.jobs); err != nil {
+		e.jobs = e.jobs[:len(e.jobs)-1]
+		cmd.resp <- addJobResp{err: fmt.Errorf("save jobs: %w", err)}
+		return
+	}
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:      "fasti_job_created",
+		JobID:     job.ID,
+		JobName:   job.Name,
+		Prompt:    job.Prompt,
+		SessionID: job.Session,
+		DueAt:     job.NextDue,
+	})
+
+	e.armTimerLocked(&job, res.Due, res.IsDstGap, res.SkippedDue)
+	cmd.resp <- addJobResp{job: job}
+}
+
+func (e *Engine) handleRemoveJob(cmd cmdRemoveJob) {
+	idx := -1
+	for i, j := range e.jobs {
+		if j.ID == cmd.id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		cmd.resp <- ErrJobNotFound
+		return
+	}
+
+	removed := e.jobs[idx]
+	if t, ok := e.activeTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.activeTimers, cmd.id)
+	}
+	if t, ok := e.retryTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.retryTimers, cmd.id)
+	}
+
+	e.jobs = append(e.jobs[:idx], e.jobs[idx+1:]...)
+	if err := SaveJobs(e.jobsPath, e.jobs); err != nil {
+		cmd.resp <- fmt.Errorf("save jobs: %w", err)
+		return
+	}
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:    "fasti_job_removed",
+		JobID:   removed.ID,
+		JobName: removed.Name,
+	})
+
+	cmd.resp <- nil
+}
+
+func (e *Engine) handlePauseJob(cmd cmdPauseJob) {
+	job := e.findJob(cmd.id)
+	if job == nil {
+		cmd.resp <- ErrJobNotFound
+		return
+	}
+
+	if job.Paused {
+		// Replay idempotence: no-op success ack (spec D8)
+		cmd.resp <- nil
+		return
+	}
+
+	// Spec D5 / M11: Paused and Enabled are distinct; pause sets Paused only
+	job.Paused = true
+	if t, ok := e.activeTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.activeTimers, cmd.id)
+	}
+	if t, ok := e.retryTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.retryTimers, cmd.id)
+	}
+
+	if err := SaveJobs(e.jobsPath, e.jobs); err != nil {
+		cmd.resp <- fmt.Errorf("save jobs: %w", err)
+		return
+	}
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:    "fasti_job_paused",
+		Reason:  "user_pause",
+		JobID:   job.ID,
+		JobName: job.Name,
+	})
+
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleResumeJob(cmd cmdResumeJob) {
+	job := e.findJob(cmd.id)
+	if job == nil {
+		cmd.resp <- ErrJobNotFound
+		return
+	}
+
+	if !job.Paused && job.Enabled {
+		// Replay idempotence
+		cmd.resp <- nil
+		return
+	}
+
+	job.Paused = false
+	job.Enabled = true
+
+	now := e.clock.Now().UTC()
+	res, err := e.calculateNextDue(job, now)
+	if err != nil {
+		cmd.resp <- fmt.Errorf("calculate next due: %w", err)
+		return
+	}
+
+	job.NextDue = res.Due.Format(time.RFC3339)
+	if err := SaveJobs(e.jobsPath, e.jobs); err != nil {
+		cmd.resp <- fmt.Errorf("save jobs: %w", err)
+		return
+	}
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:    "fasti_job_resumed",
+		JobID:   job.ID,
+		JobName: job.Name,
+		DueAt:   job.NextDue,
+	})
+
+	e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleRunJob(cmd cmdRunJob) {
+	job := e.findJob(cmd.id)
+	if job == nil {
+		cmd.resp <- ErrJobNotFound
+		return
+	}
+
+	now := e.clock.Now().UTC()
+	task := firingTask{
+		jobID:     job.ID,
+		sessionID: job.Session,
+		prompt:    job.Prompt,
+		dueAt:     now,
+		reason:    "manual_run",
+	}
+
+	e.dispatchOrDefer(task)
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleGetJob(cmd cmdGetJob) {
+	job := e.findJob(cmd.id)
+	if job == nil {
+		cmd.resp <- getJobResp{err: ErrJobNotFound}
+		return
+	}
+	cmd.resp <- getJobResp{job: *job}
+}
+
+func (e *Engine) handleListJobs(cmd cmdListJobs) {
+	out := make([]Job, len(e.jobs))
+	copy(out, e.jobs)
+	cmd.resp <- out
+}
+
+func (e *Engine) handleJobDue(cmd cmdJobDue) {
+	job := e.findJob(cmd.jobID)
+	if job == nil || !job.Enabled || job.Paused {
+		return
+	}
+
+	now := e.clock.Now().UTC()
+
+	// Handle spring-forward gap: skip with dst_gap event (Spec D4, B3)
+	if cmd.isGap {
+		// Spec B3: skip event names the skipped wall due (cmd.skippedDue)
+		// One-event-per-armed-due rule collapses all gap minutes to this skip event.
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Status:    "skipped",
+			Reason:    "dst_gap",
+			JobID:     job.ID,
+			JobName:   job.Name,
+			DueAt:     cmd.skippedDue.Format(time.RFC3339),
+			SessionID: job.Session,
+		})
+
+		// Check if the gap-end time is itself a legitimate due occurrence (Spec B3)
+		ps, err := ParseSchedule(job.Schedule)
+		if err == nil && ps.Matches(cmd.due, e.loc) {
+			// Spec B3: gap end matches schedule (e.g. 03:00 for */5) — arm that next real due without consuming it
+			task := firingTask{
+				jobID:     job.ID,
+				sessionID: job.Session,
+				prompt:    job.Prompt,
+				dueAt:     cmd.due,
+			}
+			e.dispatchOrDefer(task)
+			return
+		}
+
+		// Gap end does not match schedule (e.g. daily 02:30 at 03:00) — advance to next valid occurrence
+		res, err := e.calculateNextDue(job, cmd.due)
+		if err != nil {
+			// Spec M10: auto-pause on recalculation failure
+			job.Paused = true
+			job.BudgetCounters.TotalFailures++
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Status:    "failed",
+				Reason:    "schedule_recompute_failed",
+				JobID:     job.ID,
+				JobName:   job.Name,
+				Prompt:    job.Prompt,
+				SessionID: job.Session,
+				DueAt:     job.NextDue,
+			})
+		} else {
+			job.NextDue = res.Due.Format(time.RFC3339)
+			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
+		}
+		_ = SaveJobs(e.jobsPath, e.jobs)
+		return
+	}
+
+	// Forward steps / downtime collapse (Spec B1, D4, D7)
+	if now.Sub(cmd.due) > e.cfg.CatchupWindow {
+		// Spec D7: dues older than catchup_window are discarded, not replayed
+		job.BudgetCounters.TotalSkips++
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Status:    "skipped",
+			Reason:    "stale_discard",
+			JobID:     job.ID,
+			JobName:   job.Name,
+			Prompt:    job.Prompt,
+			SessionID: job.Session,
+			DueAt:     cmd.due.Format(time.RFC3339),
+		})
+
+		res, err := e.calculateNextDue(job, now)
+		if err != nil {
+			// Spec M10: auto-pause on recalculation failure
+			job.Paused = true
+			job.BudgetCounters.TotalFailures++
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Status:    "failed",
+				Reason:    "schedule_recompute_failed",
+				JobID:     job.ID,
+				JobName:   job.Name,
+				Prompt:    job.Prompt,
+				SessionID: job.Session,
+				DueAt:     job.NextDue,
+			})
+		} else {
+			job.NextDue = res.Due.Format(time.RFC3339)
+			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
+		}
+		_ = SaveJobs(e.jobsPath, e.jobs)
+		return
+	}
+
+	reason := ""
+	// Check if forward jump crossed dues while daemon ran (Spec B1, D4)
+	ps, err := ParseSchedule(job.Schedule)
+	if err == nil {
+		if ps.interval > 0 && now.Sub(cmd.due) >= ps.interval {
+			// More than one full period elapsed: collapse per D7
+			reason = "slipped_while_offline"
+		} else if ps.cron != nil {
+			nextAfter, err := ps.Next(cmd.due, e.loc)
+			if err == nil && !nextAfter.Due.After(now) {
+				// Dues crossed while daemon ran: collapse per D7
+				reason = "slipped_while_offline"
+			}
+		}
+	}
+
+	task := firingTask{
+		jobID:     job.ID,
+		sessionID: job.Session,
+		prompt:    job.Prompt,
+		dueAt:     cmd.due,
+		reason:    reason,
+	}
+
+	e.dispatchOrDefer(task)
+}
+
+func (e *Engine) handleJobRetry(cmd cmdJobRetry) {
+	delete(e.retryTimers, cmd.jobID)
+
+	job := e.findJob(cmd.jobID)
+	if job == nil || !job.Enabled || job.Paused {
+		return
+	}
+
+	task := firingTask{
+		jobID:     job.ID,
+		sessionID: job.Session,
+		prompt:    job.Prompt,
+		dueAt:     cmd.originalDue,
+	}
+
+	if e.workerBusy {
+		// Second contention: defer to next scheduled due time without incrementing skips (spec D3)
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Status:    "skipped",
+			Reason:    "engine_busy",
+			JobID:     job.ID,
+			JobName:   job.Name,
+			DueAt:     cmd.originalDue.Format(time.RFC3339),
+			SessionID: job.Session,
+		})
+
+		res, err := e.calculateNextDue(job, e.clock.Now().UTC())
+		if err != nil {
+			// Spec M10: auto-pause on recalculation failure
+			job.Paused = true
+			job.BudgetCounters.TotalFailures++
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Status:    "failed",
+				Reason:    "schedule_recompute_failed",
+				JobID:     job.ID,
+				JobName:   job.Name,
+				Prompt:    job.Prompt,
+				SessionID: job.Session,
+				DueAt:     job.NextDue,
+			})
+		} else {
+			job.NextDue = res.Due.Format(time.RFC3339)
+			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
+		}
+		_ = SaveJobs(e.jobsPath, e.jobs)
+		return
+	}
+
+	e.workerBusy = true
+	e.currentFiring = &task
+	select {
+	case e.workerCh <- task:
+	case <-e.stopCh:
+		return
+	}
+}
+
+func (e *Engine) dispatchOrDefer(task firingTask) {
+	job := e.findJob(task.jobID)
+
+	if e.workerBusy {
+		// Gate contention detected AT DISPATCH by command loop (spec D3/R3)
+		if job != nil {
+			job.BudgetCounters.TotalDefers++
+			_ = SaveJobs(e.jobsPath, e.jobs)
+		}
+
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Status:    "deferred",
+			Reason:    "engine_busy",
+			JobID:     task.jobID,
+			DueAt:     task.dueAt.Format(time.RFC3339),
+			SessionID: task.sessionID,
+		})
+
+		// Arm retry on loop timers at +60s (spec D3)
+		retryTimer := e.clock.AfterFunc(60*time.Second, func() {
+			e.sendCommand(cmdJobRetry{jobID: task.jobID, originalDue: task.dueAt})
+		})
+		e.retryTimers[task.jobID] = retryTimer
+		return
+	}
+
+	e.workerBusy = true
+	e.currentFiring = &task
+	select {
+	case e.workerCh <- task:
+	case <-e.stopCh:
+		return
+	}
+}
+
+func (e *Engine) handleWorkerDone(res firingResult) {
+	e.workerBusy = false
+	e.currentFiring = nil
+
+	job := e.findJob(res.task.jobID)
+	if job == nil {
+		return
+	}
+
+	now := e.clock.Now().UTC()
+
+	if res.err != nil {
+		if errors.Is(res.err, context.Canceled) || e.ctx.Err() != nil {
+			// Spec D13: worker cancelled mid-turn during shutdown
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Status:    "skipped",
+				Reason:    "shutdown",
+				JobID:     job.ID,
+				JobName:   job.Name,
+				Prompt:    res.task.prompt,
+				SessionID: res.task.sessionID,
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+			return
+		}
+
+		if isTurnInFlight(res.err) {
+			// Session busy: record skip event (spec D3/R3)
+			job.ConsecutiveSkips++
+			job.BudgetCounters.TotalSkips++
+
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Status:    "skipped",
+				Reason:    "session_busy",
+				JobID:     job.ID,
+				JobName:   job.Name,
+				Prompt:    res.task.prompt,
+				SessionID: res.task.sessionID,
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+
+			// On 5th consecutive skip, self-pause job (spec D3/R3, M11)
+			if job.ConsecutiveSkips >= 5 {
+				// Spec D3: "pauses itself" — set Paused only; Enabled stays true (spec D5, M11)
+				job.Paused = true
+
+				_, _ = e.journal.Append(JournalEvent{
+					Type:      "fasti_job_paused",
+					Reason:    "consecutive_skips",
+					JobID:     job.ID,
+					JobName:   job.Name,
+					Prompt:    job.Prompt,
+					SessionID: job.Session,
+				})
+
+				_ = SaveJobs(e.jobsPath, e.jobs)
+				return // Do not re-arm paused job
+			}
+		} else {
+			// Non-concurrency error
+			job.BudgetCounters.TotalFailures++
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Status:    "failed",
+				Reason:    res.err.Error(),
+				JobID:     job.ID,
+				JobName:   job.Name,
+				Prompt:    res.task.prompt,
+				SessionID: res.task.sessionID,
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+		}
+	} else {
+		// Firing successful
+		job.ConsecutiveSkips = 0
+		job.LastFire = now.Format(time.RFC3339)
+		job.BudgetCounters.TotalRuns++
+
+		reason := res.task.reason
+		if reason == "" {
+			reason = "normal"
+		}
+
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Status:    "fired",
+			Reason:    reason,
+			JobID:     job.ID,
+			JobName:   job.Name,
+			Prompt:    res.task.prompt,
+			SessionID: res.task.sessionID,
+			FiredAt:   job.LastFire,
+		})
+	}
+
+	// Re-arm for next due time
+	// Spec M5: Anchor to the DUE that just fired instead of completion time
+	var nextRes NextDueResult
+	var err error
+
+	if job.Schedule.Kind == "interval" {
+		ps, pErr := ParseSchedule(job.Schedule)
+		if pErr != nil {
+			err = pErr
+		} else {
+			nextDue := res.task.dueAt.Add(ps.interval)
+			for !nextDue.After(now) {
+				nextDue = nextDue.Add(ps.interval)
+			}
+			if job.LastFire != "" {
+				if lf, lErr := time.Parse(time.RFC3339, job.LastFire); lErr == nil {
+					for !nextDue.After(lf) {
+						nextDue = nextDue.Add(ps.interval)
+					}
+				}
+			}
+			nextRes = NextDueResult{Due: nextDue, IsDstGap: false}
+		}
+	} else {
+		nextRes, err = e.calculateNextDue(job, now)
+	}
+
+	if err != nil {
+		// Spec M10: auto-pause job and journal fasti_fired{status:failed,reason:schedule_recompute_failed}
+		job.Paused = true
+		job.BudgetCounters.TotalFailures++
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Status:    "failed",
+			Reason:    "schedule_recompute_failed",
+			JobID:     job.ID,
+			JobName:   job.Name,
+			Prompt:    job.Prompt,
+			SessionID: job.Session,
+			DueAt:     job.NextDue,
+		})
+	} else {
+		job.NextDue = nextRes.Due.Format(time.RFC3339)
+		e.armTimerLocked(job, nextRes.Due, nextRes.IsDstGap, nextRes.SkippedDue)
+	}
+
+	_ = SaveJobs(e.jobsPath, e.jobs)
+}
+
+func (e *Engine) armTimerLocked(job *Job, due time.Time, isGap bool, skippedDue time.Time) {
+	if t, ok := e.activeTimers[job.ID]; ok && t != nil {
+		t.Stop()
+		delete(e.activeTimers, job.ID)
+	}
+
+	now := e.clock.Now().UTC()
+	delay := due.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+
+	jobID := job.ID
+	timer := e.clock.AfterFunc(delay, func() {
+		e.sendCommand(cmdJobDue{jobID: jobID, due: due, isGap: isGap, skippedDue: skippedDue})
+	})
+	e.activeTimers[job.ID] = timer
+}
+
+func (e *Engine) sendCommand(cmd any) {
+	select {
+	case e.cmdCh <- cmd:
+	case <-e.stopCh:
+	}
+}
+
+func (e *Engine) calculateNextDue(job *Job, from time.Time) (NextDueResult, error) {
+	ps, err := ParseSchedule(job.Schedule)
+	if err != nil {
+		return NextDueResult{}, err
+	}
+
+	// Spec D4: "a backward NTP step cannot re-arm a due time already fired (last_fire is the floor)"
+	var lastFire time.Time
+	hasLastFire := false
+	if job.LastFire != "" {
+		if lf, err := time.Parse(time.RFC3339, job.LastFire); err == nil {
+			lastFire = lf
+			hasLastFire = true
+		}
+	}
+
+	if ps.interval > 0 {
+		// For interval: anchor from last_fire instead of now if last_fire exists (Spec B1)
+		interval := ps.interval
+		base := from
+		if hasLastFire {
+			base = lastFire
+		}
+		cand := base.Add(interval)
+		for !cand.After(from) || (hasLastFire && !cand.After(lastFire)) {
+			cand = cand.Add(interval)
+		}
+		return NextDueResult{
+			Due:      cand,
+			IsDstGap: false,
+		}, nil
+	}
+
+	// For cron: keep searching until candidate > last_fire (Spec B1)
+	searchFrom := from
+	if hasLastFire && !searchFrom.After(lastFire) {
+		searchFrom = lastFire
+	}
+
+	res, err := ps.Next(searchFrom, e.loc)
+	if err != nil {
+		return NextDueResult{}, err
+	}
+
+	// Ensure computed next-due is never <= last_fire
+	if hasLastFire {
+		for err == nil && !res.Due.After(lastFire) {
+			res, err = ps.Next(res.Due, e.loc)
+		}
+		if err != nil {
+			return NextDueResult{}, err
+		}
+	}
+
+	return res, nil
+}
+
+func (e *Engine) findJob(id string) *Job {
+	for i := range e.jobs {
+		if e.jobs[i].ID == id {
+			return &e.jobs[i]
+		}
+	}
+	return nil
+}
+
+// isTurnInFlight checks if err represents a turn-in-flight conflict.
+// F5 must propagate the ErrTurnInFlight sentinel; string matching is belt-and-braces only (Spec m13).
+func isTurnInFlight(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrTurnInFlight) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "turn in flight")
+}
+
+// Public API methods (send commands to the loop goroutine)
+
+// Sync flushes pending work and waits for any active turn firing to complete (used by tests).
+func (e *Engine) Sync(ctx context.Context) error {
+	respCh := make(chan struct{}, 1)
+	select {
+	case e.cmdCh <- cmdSync{resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case <-respCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// AddJob registers and persists a new recurring job.
+func (e *Engine) AddJob(ctx context.Context, job Job) (Job, error) {
+	respCh := make(chan addJobResp, 1)
+	select {
+	case e.cmdCh <- cmdAddJob{job: job, resp: respCh}:
+	case <-ctx.Done():
+		return Job{}, ctx.Err()
+	case <-e.stopCh:
+		return Job{}, errors.New("engine stopped")
+	}
+
+	select {
+	case res := <-respCh:
+		return res.job, res.err
+	case <-ctx.Done():
+		return Job{}, ctx.Err()
+	case <-e.stopCh:
+		return Job{}, errors.New("engine stopped")
+	}
+}
+
+// RemoveJob deletes a job by its ID.
+func (e *Engine) RemoveJob(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdRemoveJob{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// PauseJob pauses a job, stopping pending timers.
+func (e *Engine) PauseJob(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdPauseJob{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// ResumeJob unpauses a job, recalculating next_due and arming the timer.
+func (e *Engine) ResumeJob(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdResumeJob{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// RunJob triggers an immediate manual firing of a job.
+func (e *Engine) RunJob(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdRunJob{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// GetJob retrieves a job by ID.
+func (e *Engine) GetJob(ctx context.Context, id string) (Job, error) {
+	respCh := make(chan getJobResp, 1)
+	select {
+	case e.cmdCh <- cmdGetJob{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return Job{}, ctx.Err()
+	case <-e.stopCh:
+		return Job{}, errors.New("engine stopped")
+	}
+
+	select {
+	case res := <-respCh:
+		return res.job, res.err
+	case <-ctx.Done():
+		return Job{}, ctx.Err()
+	case <-e.stopCh:
+		return Job{}, errors.New("engine stopped")
+	}
+}
+
+// ListJobs returns a snapshot of all registered jobs.
+func (e *Engine) ListJobs(ctx context.Context) ([]Job, error) {
+	respCh := make(chan []Job, 1)
+	select {
+	case e.cmdCh <- cmdListJobs{resp: respCh}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.stopCh:
+		return nil, errors.New("engine stopped")
+	}
+
+	select {
+	case jobs := <-respCh:
+		return jobs, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.stopCh:
+		return nil, errors.New("engine stopped")
+	}
+}
