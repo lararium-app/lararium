@@ -93,9 +93,13 @@ and the heartbeat start work ONLY via
 `Hub.RunHeadlessTurn(ctx, sessionID, prompt, channel, 0, onDelta)` (turns.go:491),
 where onDelta is a per-firing text accumulator. No
 fasti code assembles a `loop.Session` directly (that path is the REPL's, repl.go:98).
-**Turn-output law**: the accumulated delta text IS the announcement source —
-`Bridge.Announce` (D7) ships the accumulator's final content, and the heartbeat's
-`HEARTBEAT_OK` verdict (D6) is evaluated on it; the session log's `msg` events
+**Turn-output law**: the accumulated delta text is the ONLY announcement source —
+but shipping is routed, never blanket (announce-routing law, D7): a firing
+announces only if it EXPECTS to (crons: `announce` set; goals: the closing turn
+only; heartbeat: accumulator not `HEARTBEAT_OK`). An un-announced firing's
+accumulator still feeds audit summaries, it just never reaches `Bridge.Announce`;
+the heartbeat's `HEARTBEAT_OK` verdict (D6) is evaluated on the accumulator; the
+session log's `msg` events
 (persisted unconditionally) are the durable fallback when the accumulator comes up
 empty (mid-turn cancel). A nil-onDelta firing that expected to announce is a
 defect, not a mode.
@@ -112,10 +116,13 @@ one-turn gate lives here). `RunHeadlessTurn` runs ONLY on the worker; the comman
 loop never executes a turn; results return via a buffered completion channel.
 A firing into a session that is already in flight (`ErrTurnInFlight`, turns.go:24)
 does NOT block and does NOT queue: the worker records a `fasti_fired` event with
-`{"status":"skipped","reason":"session_busy"}` and moves on. A firing deferred by
-fasti's OWN gate (another fasti turn executing) is `reason:"engine_busy"` — the
-worker queues it for retry at +60s, it does NOT increment any job's skip counter,
-and only a retry that still lands on session_busy counts as a skip. Two distinct
+`{"status":"skipped","reason":"session_busy"}` and moves on. Gate contention is
+detected AT DISPATCH by the command loop (the worker is a mailbox with depth 1):
+if the worker is occupied when a due-time arrives, the loop records
+`reason:"engine_busy"` and arms the retry on the LOOP's timers (+60s, loop-owned
+per R3 — the worker never schedules anything, it owns no mailbox-drain beyond its
+current turn), and only a retry that still lands on session_busy counts as a
+skip. Two distinct
 reasons, because only session_busy feeds the auto-pause: a job that skips 5
 consecutive due times pauses itself and raises one notice (via D7) — a dead
 session must not be answered by a growing queue nor by silence, but a busy
@@ -162,8 +169,8 @@ ambiguous residue — mirroring the "standing orders are the human's control
 surface" law of HEARTBEAT.md
 (§1.5) and the device auto-registration precedent in reverse (adding standing
 agency needs a card; reading a rail does not). Audit: penatus events
-`fasti_job_created/paused/removed/timeout` (fields: id, name, schedule,
-created_by — never
+`fasti_job_created/enabled/paused/resumed/removed/timeout` (fields: id, name,
+schedule, created_by, and for cards the settling via — never
 secrets, D9).
 
 **D6 — heartbeat is the §1.5 executor, and only that.** On startup and each wake,
@@ -187,7 +194,9 @@ owner chats (`rememberOwnerChat`, bridge.go:945) through the gated `SendMessage`
 (:321) — every existing flood bucket, 429 pause (:361), and token-scrubbing applies
 unchanged; if nuntius is disabled, announces fall back to surface-events-only (D8)
 and the penatus event stands as the record. Quiet hours (schema per D5; heartbeat's
-§1.5 `quiet` always runs in `defers` mode): a window suppresses ANNOUNCEMENTS for
+§1.5 `quiet` always runs in `defers` mode): the baseline window is
+`fasti.quiet_hours` (D11; "" = no baseline), inherited by every job and goal
+unless the job's `quiet` object overrides it; a window suppresses ANNOUNCEMENTS for
 every fasti source, and suppresses FIRINGS in `defers` mode — a deferred cron due
 inside the window is rescheduled to the quiet-window end, where each job collapses
 to EXACTLY ONE firing (the most-recent due prompt, `reason:"quiet_collapse"`);
@@ -220,8 +229,15 @@ the bootstrap, replacing Last-Event-ID law), `POST /v1/fasti/jobs` body
 `{name, schedule:{kind:"cron",expr:"..."}|{kind:"interval",every:"30m"}, prompt
 (≤1000 runes, single-paragraph; longer prompts refused), session?, announce?,
 quiet?}` → the job row (validation errors: 400 + reason, matching wire discipline),
-`PATCH /v1/fasti/jobs/{id}` (enable/disable/schedule), `DELETE /v1/fasti/jobs/{id}`,
-`POST /v1/fasti/jobs/{id}/run` (fire-now, still D2/D3 law), `GET /v1/fasti/events`
+`PATCH /v1/fasti/jobs/{id}` (enable/disable/schedule/`prompt?` — a prompt update
+while `enabled:true` is rejected 400 per D9's edit workflow),
+`DELETE /v1/fasti/jobs/{id}`,
+`POST /v1/fasti/jobs/{id}/run` (fire-now, still D2/D3 law),
+`POST /v1/fasti/goals` (body = D10 `goal new` fields),
+`PATCH /v1/fasti/goals/{id}` (status ∈ {paused, active}, budget),
+`POST /v1/fasti/goals/{id}/close {mode:"user_force"}` (the only REST close path;
+the agent close path lives in-loop under R7),
+`GET /v1/fasti/events`
 (SSE: `fasti_event` full-row upserts for jobs/goals/heartbeat, cloned from
 connectors_events.go — 5s ping, 64-slot buffer whose overflow DISCONNECTS the
 client, no resume). CLI over the
@@ -251,37 +267,57 @@ immutable while enabled (edit = disable → edit → re-approve if created_by=mo
 `<hearth>/fasti/goals.json` + one journal per goal `<hearth>/fasti/goals/<id>.md`
 (markdown, human-readable per principle 2 — the file layer is the product's memory):
 frontmatter `{id, title, status: active|paused|done|failed|stale, requirements:
-[{text, done, evidence_seq?}], turn_count, turn_budget, step_after (duration,
-default 15m), session_id, next_hint}`.
+[{text, done, evidence: [seq...]}], turn_count, turn_budget, step_after (duration,
+default 15m), session_id, next_hint, created_at, created_seq}`.
 Lifecycle: `hearthd goal new "<title>" [--session S] --requirement "<r>" [--budget
-N turns]` — session defaults to `goal-<id>`; one goal, one durable log. Each goal
+N turns]` — session defaults to `goal-<id>`, `created_at`/`created_seq` (the
+session log high-water at creation) are stamped by fasti; one goal, one durable
+log. `hearthd goal list` prints id/status/turn_count/budget/next-step;
+`hearthd goal pause|resume|cancel <id>` set status (`failed` on cancel). Each goal
 step is one headless turn (D2, channel `goal`) whose prompt = journal rendering +
-the step's `seq_range` (the session-log Seq window opened since the last step) +
-"advance the goal by one concrete step". The model reports through two tools,
+the legal citation window `(created_seq, now]` + "advance the goal by one concrete
+step". The model reports through two tools,
 registered alongside `schedule_wake` (the precedent for daemon-registered loop
-tools, schedule.go:426): `fasti_goal_step {next_hint}` — writes
-`next_hint`, records progress prose into the journal as escaped checkpoint data,
-and marks requirements the step satisfied `done` with the `seq_range` seqs as
-evidence; `fasti_goal_close {evidence: [{req_index, seq}...]}`. Verification
-(R7): fasti checks the cited Seqs exist in the goal session's log and post-date
-`goal_created` — it does NOT grade their quality,
-and the closing turn's announcement always says `closed by agent, evidence seqs …`
-so a human audits it. Stepping chain: a step completing with status still `active`
+tools, schedule.go:426):
+`fasti_goal_step {next_hint, progress_prose, satisfied?: [req_index]}` and
+`fasti_goal_close {}`.
+**Step-window law** (the evidence machinery, machine-bound by construction):
+fasti stamps each step turn with `window_start` (session log high-water at turn
+start) and `window_end` (high-water at turn end); evidence seqs are NEVER
+model-supplied — `fasti_goal_step` attaches `window_start+1..call_seq` to EACH
+`satisfied` index (one requirement per step call: closing k requirements takes k
+step calls; zero steps close nothing), records `progress_prose` into the journal
+as escaped checkpoint data, writes `next_hint`, and chains the next step at
+`completion + step_after`. `fasti_goal_close` closes ONLY when every requirement
+is `done` with non-empty recorded evidence (R7: those seqs exist in the goal
+session's log and post-date `created_seq` — fasti checks existence, it does NOT
+grade their quality); a close attempt that fails this is refused with
+`goal_close_refused{reason:"evidence"}` and the goal stays `active`. On pass:
+status `done`, and the closing turn's announcement always says
+`closed by agent, evidence seqs …` so a human audits it.
+`hearthd goal close <id>` (user tier) closes regardless of evidence, audit
+`goal_closed{mode:"user_force"}` — user-tier authority is absolute over its own
+goals (SURFACE D5 doctrine); the mode field is how the difference stays visible.
+Stepping chain: a step completing with status still `active`
 schedules the NEXT step `step_after` later (D3 law applies — a busy session defers
-the chain, it does not burn a step); the chain ends only at
+the chain, it does not burn a step); `turn_count` increments ONLY when a step
+actually starts a turn (a skip reschedules, it does not charge budget); the chain ends only at
 done/failed/stale/paused — no daily cap while budget remains.
 Budget exhaustion ⇒ status `stale` + one notice; `stale` goals
-auto-fail (status `failed`) after 30 days untouched — no zombie objectives.
+auto-fail (status `failed`) after 30 days untouched (checked at boot and on each
+step) — no zombie objectives.
 Goals run never concurrently with each other (worker gate, D3).
 Goal events (penatus kind, `kind:"goal"` on the fasti rail): `goal_created`,
-`goal_stepped`, `goal_closed`, `goal_staled`, `goal_failed`.
+`goal_stepped`, `goal_closed`, `goal_close_refused`, `goal_staled`, `goal_failed`.
 
 **D11 — config block, all-or-nothing like everything else.** `lararium.yaml` gains:
 
 ```yaml
 fasti:
-  enabled: true          # default false until a user opts in? NO — see below
+  enabled: false         # default off; flipping to true is the opt-in act (R9)
   local_timezone: ""     # IANA name; "" = system zone
+  quiet_hours: ""        # daemon-wide baseline window "HH:MM-HH:MM" (local);
+                         # "" = no baseline; jobs/goals inherit unless overridden
   heartbeat:
     daily_at: "07:30"    # used when HEARTBEAT.md cadence=daily
   max_announce_per_day: 8
@@ -328,8 +364,10 @@ at all (D3), keeping AUDIT-LOCKS law true by construction).
   gate-ordered); collapse and stale-discard behave per D7.
 - **R6**: Noise budget overflow drops announcements only; the underlying turn still
   executes and its events persist; budget state is visible on `/v1/fasti/state`.
-- **R7**: A goal cannot reach `done` without per-requirement evidence seqs that
-  exist in the goal session's log and post-date `goal_created`.
+- **R7**: The daemon refuses an agent closing a goal `done` unless every
+  requirement carries recorded step-window evidence (seqs from the goal session's
+  log, post-dating `created_seq`); evidence is fasti-stamped, never model-supplied
+  (D10). User-tier force-close is always available and audited distinctly.
 - **R8**: HEARTBEAT.md is never written by the daemon; cadence/quiet changes take
   effect at the next wake with no restart.
 - **R9**: The `fasti:` block with an unknown key refuses boot; absent block = D11
@@ -367,11 +405,14 @@ at all (D3), keeping AUDIT-LOCKS law true by construction).
   scope field; a resolve attempt through the turn-card REST path is rejected —
   scope law, turns.go:784); audit rows carry `created_by=model:<session>`; card
   text never appears in logs.
-- **V-Pg (goal law)**: budget-12 goal closed by evidence seqs (R7 pass) and by fake
-  seqs (R7 refuse, stays active); a pre-`goal_created` seq cited from another log is
-  refused; step chain: busy-session step defers without burning budget (D3), next
-  step fires `step_after` after completion; budget exhaustion → `stale` + exactly
-  one notice; 30-day stale → `failed`.
+- **V-Pg (goal law)**: budget-12 goal closed only after every requirement has
+  step-window evidence (R7); a close attempt with any requirement lacking
+  evidence → `goal_close_refused`, status stays `active`; evidence seqs are
+  fasti-stamped (no tool path accepts a model-supplied seq); `hearthd goal close`
+  force-closes with `mode:"user_force"` in audit; step chain: busy-session step
+  defers without burning budget (D3), next step fires `step_after` after
+  completion; budget exhaustion → `stale` + exactly one notice; 30-day stale →
+  `failed`.
 - **V-Ph (secret + injection law)**: job prompt containing a live vault value →
   create refused (D9); goal checkpoint prose containing a forged tag-open is
   escaped in the rendered next-step prompt (needle + alignment check, V-T1
@@ -408,3 +449,13 @@ at all (D3), keeping AUDIT-LOCKS law true by construction).
   corrected to disconnect (D8/inventory); goal stepping tools + chain + session
   default (D10/V-Pg); `fasti.heartbeat.daily_at` path (D6/D11); POST body schema
   (D8); minors F9/F12/F14/F15 folded.
+- v1 Rev-2 (2026-11-02): G1 round-2 amendments (5 blocking, 3 minor, all folded):
+  announce-routing law — accumulator ships only when the firing expects to
+  announce (D2); `engine_busy` contention detected at dispatch by the command
+  loop, retries armed on loop timers (D3); goal evidence rebuilt as the
+  **step-window law** — fasti-stamped windows, one requirement per step call,
+  `fasti_goal_close {}` verifies, user force-close audited distinctly,
+  `created_at`/`created_seq` added (D10/R7/V-Pg); `fasti.quiet_hours` baseline
+  added to D11 and named as the inherited window (D7); PATCH `prompt?` gated on
+  disabled (D8); goal REST routes (D8);
+  `fasti_job_enabled/resumed` + close-mode added to audit sets (D5/D10).
