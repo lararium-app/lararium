@@ -1,8 +1,9 @@
 # PROACTIVITY-SPEC — fasti: crons, goals, and the heartbeat (P5)
 
-Status: **FREEZE-PROPOSED (v1)** — merging this document freezes the design (issue #225;
-PO directive 2026-11-02). Amendments follow the CUSTOS-SPEC append-only protocol.
-Implementation is tracked separately and MUST land the V-P suite below as its exit criterion.
+Status: **FROZEN (v1)** — PO sign-off 2026-11-02 (G1 record: the sign-off comment on the
+PR that merged this document; 7 adversarial rounds, 2 reviewers, 48 findings). Amendments
+follow the CUSTOS-SPEC append-only protocol. Implementation is tracked separately and MUST
+land the V-P suite below as its exit criterion.
 
 Companions: PENATUS-SPEC (§1.5 HEARTBEAT.md — already frozen; this spec implements it,
 it does not amend it), SURFACE-SPEC (auth, session model, audit object), NUNTIUS-SPEC
