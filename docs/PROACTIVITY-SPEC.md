@@ -129,8 +129,11 @@ skip. Two distinct
 reasons, because only session_busy feeds the auto-pause: a job that skips 5
 consecutive due times pauses itself and raises one notice (via D7) — a dead
 session must not be answered by a growing queue nor by silence, but a busy
-neighbor is no crime. User-originated turns always win contention: fasti backs
-off and retries the firing at the next due time if the hub refuses.
+neighbor is no crime. User-originated turns always win contention. Retry
+binding: `engine_busy` retries once at +60s; a hub-level refusal defers to the
+next due time; `consecutive_skips` increments AT MOST ONCE per due time (a due
+time's fate is decided by its final retry) — five busy minutes with a chatty
+user can never auto-pause a job.
 
 **D4 — cron grammar: our own 5-field parser, no new dependency.** `M H DOM MON DOW`
 supporting `*`, lists (`1,15`), ranges (`9-17`), and steps (`*/5`, `1-30/2`) —
@@ -141,7 +144,15 @@ Go-parseable IANA name, default from system) so "07:30 every morning" survives D
 a due time that falls inside a spring-forward gap is skipped with a
 `fasti_fired{status:"skipped",reason:"dst_gap"}` event; repeated times in a
 fall-back overlap fire once (monotonic next-due, never re-derive from wall clock
-alone). Borrowing a cron lib is rejected under the build-vs-borrow ledger (ARCHITECTURE
+alone). The same DST rule binds every wall-clock field in the subsystem —
+heartbeat `daily_at` and all `HH:MM-HH:MM` quiet windows (baseline and §1.5):
+a start inside a spring-forward gap fires at gap end; a window whose span
+collapses in the gap is inert that night. Clock-jump law: because next-due is
+monotonic, a backward NTP step cannot re-arm a due time already fired
+(`last_fire` is the floor), and a forward step treats crossed dues under D7's
+downtime collapse — never a per-due replay storm. `every:` is bounded
+**1m..1yr**, refused at create (`400` / `ERR`) — the wakes caps do not reach
+the interval grammar on their own. Borrowing a cron lib is rejected under the build-vs-borrow ledger (ARCHITECTURE
 §5 — own the decision paths): the grammar is ~200 lines plus a fuzz corpus.
 
 **D5 — job store is the source of truth; the model creates jobs only through a card.**
@@ -207,7 +218,14 @@ inside the window is rescheduled to the quiet-window end, where each job collaps
 to EXACTLY ONE firing (the most-recent due prompt, `reason:"quiet_collapse"`);
 due-times older than `fasti.catchup_window` (default 24h) are not replayed at all
 — discarded with one `fasti_fired{status:"skipped",reason:"stale_discard"}` per
-job. A 9-hour weeknight therefore collapses, never floods. Noise budget: per UTC day,
+job. **Downtime collapse** (the general catch-up law, V-Pb's count rule): firings
+whose due passed while the daemon was down collapse, per job, to EXACTLY ONE
+replay of the most-recent due prompt (`reason:"slipped_while_offline"`) — an
+`every:30m` job after a 20-hour outage replays once, not forty times; dues older
+than `catchup_window` discard instead. Announce fan-out is the **worker's**
+(D3): `Bridge.Announce` runs after the firing's turn returns and before the
+worker takes the next, so a stalled Telegram send or 429 pause never blocks the
+command loop or `hearthd job list`. A 9-hour weeknight therefore collapses, never floods. Noise budget: per UTC day,
 fasti may Announce at most `fasti.max_announce_per_day` (default 8) messages; the
 budget counts ANNOUNCEMENTS, not turns (thinking is free, spam is not). Overflow:
 the announcement is dropped with `fasti_fired{status:"silenced",reason:"noise_budget"}`;
@@ -263,7 +281,13 @@ job add|list|pause|resume|remove|run|edit`, `hearthd goal
 new|list|pause|resume|cancel|close`. Every store mutation
 flows through the command loop's channel — the CLI never writes jobs.json
 (single-writer, D5), and the loop services commands while the worker runs turns
-(D3), so a 5-minute turn never blocks `hearthd job list`.
+(D3), so a 5-minute turn never blocks `hearthd job list`. Replay idempotence:
+`pause|resume|remove|edit|close|cancel` are idempotent by id (a replayed command
+after a client timeout is a no-op ack), per id×verb in `state.json`; `add`/`new`
+ack the new ULID so a client can reconcile before retrying. `wakes.json` holds
+one-shot `schedule_wake` entries ONLY — job/goal next-dues live in the fasti
+stores and replay from there (same `slipped_while_offline` reason string), so
+fasti never shares `MaxPendingWakes=50` and a schedule edit touches one store.
 
 **D9 — secrets and injection posture.** Job prompts are validated at create time
 against the same needle set the scrubber uses (`Hub.SetSecrets`, turns.go:88):
@@ -280,11 +304,20 @@ a prompt edit through the user tier (CLI or REST PATCH) rewrites `created_by` to
 `user:<surface>` — the human authored the *new* text, so the card requirement is
 met by authorship, not by ceremony — with audit event `fasti_job_adopted`; a job
 is never locked out of its own edit path, and the audit always shows where the
-running text came from.
+running text came from. User-tier `job add` creates the job **enabled** (the
+human typed the command; the `enabled:false`-until-card-approval law is D5's
+card path only) — CLI `add` prints the id and the enabled state, and D9's
+disable→edit→re-enable path is always one command away.
 
 **D10 — goals: checkpointed, budgeted, requirement-checked, honest.**
-`<hearth>/fasti/goals.json` + one journal per goal `<hearth>/fasti/goals/<id>.md`
-(markdown, human-readable per principle 2 — the file layer is the product's memory):
+`<hearth>/fasti/goals.json` is the **sole machine record** (source of truth, same
+`writeSyncTempNamed` discipline as jobs), with one journal per goal
+`<hearth>/fasti/goals/<id>.md` as its human-readable rendering (per principle 2 —
+the file layer is the product's memory). **Journal law**: journals are written by
+the command loop AFTER the `goals.json` commit and are NEVER read back — a missing
+or stale journal is regenerated from `goals.json` at boot; kill -9 between the two
+writes loses at most the rendering, and V-Pb's crash case asserts `goals.json`
+wins:
 frontmatter `{id, title, status: active|paused|done|failed|stale, requirements:
 [{text, done, evidence: [seq...]}], turn_count, turn_budget, step_after (duration,
 default 15m), next_due (RFC3339 — absent when paused, stale, or terminal),
@@ -292,15 +325,22 @@ session_id,
 next_hint, created_at, created_seq}`.
 Lifecycle: `hearthd goal new "<title>" [--session S] --requirement "<r>" [--budget
 N turns] [--step-after dur]` — `turn_budget` defaults **25**, `step_after` 15m
-— session defaults to `goal-<id>`, `created_at`/`created_seq` (the
+— session defaults to `goal-<id>` and MUST be dedicated: `--session S` is refused
+(`ERR`) if S is held by another goal or by a user-facing session, because a shared
+session lets an ordinary chat turn mint goal evidence outside any step window and
+makes two goals sharing S unresolvable; `created_at`/`created_seq` (the
 session log high-water at creation) are stamped by fasti; one goal, one durable
 log. `hearthd goal list` prints id/status/turn_count/budget/next-step;
 `hearthd goal pause|resume|cancel <id>` set status (`failed` on cancel). Each goal
 step is one headless turn (D2, channel `goal`) whose prompt = journal rendering +
 "advance the goal by one concrete
-step". The model reports through two tools,
-registered alongside `schedule_wake` (the precedent for daemon-registered loop
-tools, schedule.go:426):
+step". The model reports through two tools **registered per step turn**, as
+closures bound to `{goal_id, window_start, session}` — NOT globally like
+`schedule_wake` (global registration would expose them to cron/heartbeat/user
+turns, where no step window exists). A bound tool called outside its turn
+cannot occur by construction; an unknown `goal_id` server-side is refused
+`ERR`. The step worker resolves the goal from the closure, never from message
+text:
 `fasti_goal_step {next_hint, progress_prose, satisfied?: req_index}` and
 `fasti_goal_close {}`.
 **Step-window law** (the evidence machinery, machine-bound by construction):
@@ -371,6 +411,14 @@ new lock crosses the backup→custos→keys order (D1 stores are command-loop-lo
 no cross-process flock needed; fasti takes NO lock while firing — the firing worker
 calls RunHeadlessTurn holding no fasti mutex, and the command loop never calls it
 at all (D3), keeping AUDIT-LOCKS law true by construction).
+
+**D12 — shutdown law: exit without losing an ack.** On SIGTERM: (1) the command
+loop stops arming timers and answers `ERR shutting_down` to new mutations —
+ack-then-progress means an ack'd command may never be lost, so the loop first
+drains its command channel (every accepted mutation commits), then (2) the worker
+is cancelled; cancel mid-turn is store-safe (step/journal writes happen only
+AFTER a turn returns), and an in-flight firing ends `fasti_fired{status:"skipped",
+reason:"shutdown"}` — replay at next boot follows D7's downtime collapse.
 
 ## Requirements
 
@@ -512,3 +560,15 @@ at all (D3), keeping AUDIT-LOCKS law true by construction).
   folded: `next_due` presence rule corrected (absent when paused/stale/terminal,
   matching the arming law); `goal_paused`/`goal_resumed` added to the goal audit
   event set.
+- v1 Rev-6 (2026-11-02): SECOND-OPINION review (fresh context, cold read) —
+  **3 blocking, 9 minor, zero overlap with rounds 1–5; all folded**:
+  goal-report tools are now per-step-turn closures bound to
+  `{goal_id, window_start, session}` and `--session` must be dedicated (evidence
+  could be minted from a user chat turn; rB1); `goals.json` declared sole machine
+  record with journal-as-rendering law (kill -9 cross-file divergence; rB2);
+  downtime collapse law — offline dues replay EXACTLY once per job (V-Pb's count
+  rule; rB3). Minors: skip-counter increments at most once per due time (rM1);
+  wakes.json scoped to one-shot wakes only (rM2); clock-jump law + DST extended
+  to daily_at/quiet endpoints (rM3/rM6); new shutdown law D12 (rM4); replay
+  idempotence for by-id verbs + ULID acks (rM5); announce fan-out on the worker
+  (rM7); user-tier add defaults enabled (rM8); `every:` bounded 1m..1yr (rM9).
