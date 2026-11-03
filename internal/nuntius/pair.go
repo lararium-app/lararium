@@ -268,8 +268,9 @@ func (s *PairStore) Unpair(userID string) error {
 		st, lerr := sf.Load()
 		if lerr != nil {
 			log.Printf("nuntius: unpair: owner_chat may be stale, state load failed: %v", lerr)
-		} else if st.OwnerChat != "" {
+		} else if st.OwnerChat != "" || len(st.OwnerChats) > 0 {
 			st.OwnerChat = ""
+			st.OwnerChats = nil
 			if err := sf.Save(st); err != nil {
 				return fmt.Errorf("nuntius: clear owner chat: %w", err)
 			}
