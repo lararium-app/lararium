@@ -1063,7 +1063,10 @@ func nextSSE(t *testing.T, ch <-chan [2]string, skipPing bool) [2]string {
 				continue
 			}
 			return ev
-		case <-time.After(3 * time.Second):
+		case <-time.After(5 * time.Second):
+			// Flake-family per-op deadline (issue #233): 3s was crossed
+			// twice in a row on a loaded race runner while event delivery
+			// itself is event-driven; 5s matches the hardened V7/V16 ops.
 			t.Fatal("no SSE event")
 		}
 	}

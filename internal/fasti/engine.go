@@ -20,6 +20,12 @@ var ErrTurnInFlight = errors.New("turn in flight")
 // ErrJobNotFound indicates that a requested job ID does not exist in the store.
 var ErrJobNotFound = errors.New("job not found")
 
+// ErrPromptWhileEnabled refuses prompt edits on a live job row: the edit path
+// is pause → edit → resume (spec D9 "A cron prompt is immutable while
+// enabled"; D5 M11 keeps Paused distinct from Enabled, so a paused row is
+// off the schedule and freely editable).
+var ErrPromptWhileEnabled = errors.New("cannot update prompt while job is enabled")
+
 // TurnRunner runs a headless turn for sessionID with prompt.
 // Implementations return ErrTurnInFlight if a turn is already running for sessionID
 // (such as Hub.RunHeadlessTurn in internal/surface/turns.go:491).
@@ -196,6 +202,18 @@ type (
 	cmdRunJob struct {
 		id   string
 		resp chan error
+	}
+
+	cmdEditJob struct {
+		id       string
+		prompt   *string
+		schedule *Schedule
+		resp     chan editJobResp
+	}
+
+	editJobResp struct {
+		job Job
+		err error
 	}
 
 	cmdGetJob struct {
@@ -774,6 +792,8 @@ func (e *Engine) processCommand(rawCmd any) {
 		e.handleResumeJob(cmd)
 	case cmdRunJob:
 		e.handleRunJob(cmd)
+	case cmdEditJob:
+		e.handleEditJob(cmd)
 	case cmdGetJob:
 		e.handleGetJob(cmd)
 	case cmdListJobs:
@@ -1097,6 +1117,94 @@ func (e *Engine) handleResumeJob(cmd cmdResumeJob) {
 
 	e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
 	cmd.resp <- nil
+}
+
+// handleEditJob applies a declarative prompt and/or schedule edit to one job
+// row — atomic under the single-writer law (spec D8 PATCH verbs, D3 "edit").
+//
+// Adoption law (D9): a prompt edit through the user tier rewrites created_by
+// to user:<surface> with audit event fasti_job_adopted. The engine never
+// learns which client spoke (the v1 user tier is REST-only — D8: every
+// surface, CLI and socket included, reaches the engine through it), so the
+// stamp is "user:rest". Prompt edits on a live job (enabled, not paused) are
+// refused: the edit path is pause → edit → resume (D9 "immutable while
+// enabled" plus D5's Paused/Enabled distinction from M11).
+func (e *Engine) handleEditJob(cmd cmdEditJob) {
+	job := e.findJob(cmd.id)
+	if job == nil {
+		cmd.resp <- editJobResp{err: ErrJobNotFound}
+		return
+	}
+	if cmd.prompt == nil && cmd.schedule == nil {
+		// Declarative no-op: same row back (D8 replay idempotence).
+		cmd.resp <- editJobResp{job: *job}
+		return
+	}
+
+	snapshot := *job
+	promptEdited := false
+	if cmd.prompt != nil {
+		if job.Enabled && !job.Paused {
+			cmd.resp <- editJobResp{err: ErrPromptWhileEnabled}
+			return
+		}
+		job.Prompt = *cmd.prompt
+		job.CreatedBy = "user:rest"
+		promptEdited = true
+	}
+	if cmd.schedule != nil {
+		job.Schedule = *cmd.schedule
+	}
+	if err := job.Validate(); err != nil {
+		*job = snapshot
+		cmd.resp <- editJobResp{err: err}
+		return
+	}
+
+	var res NextDueResult
+	scheduleEdited := cmd.schedule != nil
+	if scheduleEdited {
+		var err error
+		res, err = e.calculateNextDue(job, e.clock.Now().UTC())
+		if err != nil {
+			*job = snapshot
+			cmd.resp <- editJobResp{err: fmt.Errorf("calculate next due: %w", err)}
+			return
+		}
+		job.NextDue = res.Due.Format(time.RFC3339)
+	}
+
+	if err := SaveJobs(e.jobsPath, e.jobs); err != nil {
+		*job = snapshot
+		cmd.resp <- editJobResp{err: fmt.Errorf("save jobs: %w", err)}
+		return
+	}
+
+	if scheduleEdited {
+		if t, ok := e.activeTimers[cmd.id]; ok && t != nil {
+			t.Stop()
+			delete(e.activeTimers, cmd.id)
+		}
+		if t, ok := e.retryTimers[cmd.id]; ok && t != nil {
+			t.Stop()
+			delete(e.retryTimers, cmd.id)
+		}
+		if job.Enabled && !job.Paused {
+			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
+		}
+	}
+
+	if promptEdited {
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_job_adopted",
+			JobID:     job.ID,
+			JobName:   job.Name,
+			Prompt:    job.Prompt,
+			SessionID: job.Session,
+			DueAt:     job.NextDue,
+		})
+	}
+	cmd.resp <- editJobResp{job: *job}
 }
 
 func (e *Engine) handleRunJob(cmd cmdRunJob) {
@@ -2728,6 +2836,31 @@ func (e *Engine) RunJob(ctx context.Context, id string) error {
 		return ctx.Err()
 	case <-e.stopCh:
 		return errors.New("engine stopped")
+	}
+}
+
+// EditJob applies a declarative edit to one job's prompt and/or schedule
+// (spec D8 PATCH; nil pointer = leave that field alone). The edit is atomic
+// under the single-writer law and preserves id, history, and last_fire —
+// unlike a remove-and-re-add, which could lose the row across a crash.
+// See handleEditJob for the D9 adoption law enforced here.
+func (e *Engine) EditJob(ctx context.Context, id string, prompt *string, schedule *Schedule) (Job, error) {
+	respCh := make(chan editJobResp, 1)
+	select {
+	case e.cmdCh <- cmdEditJob{id: id, prompt: prompt, schedule: schedule, resp: respCh}:
+	case <-ctx.Done():
+		return Job{}, ctx.Err()
+	case <-e.stopCh:
+		return Job{}, errors.New("engine stopped")
+	}
+
+	select {
+	case res := <-respCh:
+		return res.job, res.err
+	case <-ctx.Done():
+		return Job{}, ctx.Err()
+	case <-e.stopCh:
+		return Job{}, errors.New("engine stopped")
 	}
 }
 
