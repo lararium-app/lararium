@@ -631,7 +631,7 @@ func TestHeartbeat_DaemonNeverWritesFile(t *testing.T) {
 	}
 
 	// Fire multiple wakes
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		clk.Advance(1 * time.Hour)
 		_ = eng.Sync(context.Background())
 	}

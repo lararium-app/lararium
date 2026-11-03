@@ -57,24 +57,17 @@ func ParseHeartbeat(data []byte) HeartbeatInfo {
 		}
 	} else {
 		// Leading frontmatter lines without --- delimiters
-		inBody := false
 		for i, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if inBody {
-				bodyLines = append(bodyLines, line)
-				continue
-			}
 			if trimmed == "" {
 				continue
 			}
-			if strings.HasPrefix(trimmed, "cadence:") || strings.HasPrefix(trimmed, "quiet:") ||
-				strings.HasPrefix(trimmed, "penatus:") || strings.HasPrefix(trimmed, "updated:") {
-				parseHeartbeatFrontmatterLine(trimmed, &cadence, &quiet)
-			} else {
-				inBody = true
+			if !strings.HasPrefix(trimmed, "cadence:") && !strings.HasPrefix(trimmed, "quiet:") &&
+				!strings.HasPrefix(trimmed, "penatus:") && !strings.HasPrefix(trimmed, "updated:") {
 				bodyLines = lines[i:]
 				break
 			}
+			parseHeartbeatFrontmatterLine(trimmed, &cadence, &quiet)
 		}
 	}
 
@@ -85,10 +78,7 @@ func ParseHeartbeat(data []byte) HeartbeatInfo {
 	}
 	cadence = strings.ToLower(strings.TrimSpace(cadence))
 
-	enabled := true
-	if cadence == "off" || checklist == "" {
-		enabled = false
-	}
+	enabled := cadence != "off" && checklist != ""
 
 	return HeartbeatInfo{
 		Cadence:   cadence,
@@ -153,7 +143,7 @@ func CalculateNextHeartbeatWake(info HeartbeatInfo, from time.Time, loc *time.Lo
 		return time.Time{}, false
 	}
 	if loc == nil {
-		loc = time.Local
+		loc = time.Local //nolint:gosmopolitan // spec D11: unset fasti.local_timezone means the system zone
 	}
 	tl := from.In(loc)
 

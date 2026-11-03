@@ -575,27 +575,8 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("save goals on start: %w", err)
 	}
 
-	// Arm future timers for all active jobs BEFORE starting runLoop (Spec B4: no map writes outside loop)
-	for i := range e.jobs {
-		job := &e.jobs[i]
-		if job.Enabled && !job.Paused && job.NextDue != "" {
-			dueTime, err := time.Parse(time.RFC3339, job.NextDue)
-			if err == nil {
-				e.armTimerLocked(job, dueTime, false, time.Time{})
-			}
-		}
-	}
-
-	// Arm future timers for active goals BEFORE starting runLoop
-	for i := range e.goals {
-		goal := &e.goals[i]
-		if goal.Status == "active" && goal.NextDue != "" {
-			dueTime, err := time.Parse(time.RFC3339, goal.NextDue)
-			if err == nil {
-				e.armGoalTimerLocked(goal, dueTime)
-			}
-		}
-	}
+	// Arm future timers (jobs, goals) BEFORE starting runLoop (Spec B4: no map writes outside loop)
+	e.armStartupTimersLocked()
 
 	// Arm heartbeat executor before starting runLoop (spec D6, R8)
 	e.armHeartbeatLocked()
@@ -809,6 +790,31 @@ func (e *Engine) processCommand(rawCmd any) {
 		} else {
 			e.dispatchOrDefer(cmd.task)
 		}
+	default:
+		e.processExtendedCommand(rawCmd)
+	case cmdShutdown:
+		// Spec B4: loop stops its own timers and replies
+		e.stopAllTimersLocked()
+
+		// Spec D13: the loop stays alive until the cancelled worker's completion event is received
+		if e.workerBusy {
+			select {
+			case res := <-e.workerDoneCh:
+				e.handleWorkerDone(res)
+			case <-time.After(10 * time.Second):
+			}
+		}
+
+		close(cmd.resp)
+		close(e.stopCh)
+		return
+	}
+}
+
+// processExtendedCommand dispatches the goals/quiet/heartbeat/noise command
+// set (F2/F3). Split out of processCommand to keep both switches readable.
+func (e *Engine) processExtendedCommand(rawCmd any) {
+	switch cmd := rawCmd.(type) {
 	case cmdAddGoal:
 		e.handleAddGoal(cmd)
 	case cmdPauseGoal:
@@ -847,58 +853,68 @@ func (e *Engine) processCommand(rawCmd any) {
 		e.handleHeartbeatCollapseDue(cmd)
 	case cmdNoiseSnapshot:
 		e.handleNoiseSnapshot(cmd)
-	case cmdShutdown:
-		// Spec B4: loop stops its own timers and replies
-		for _, t := range e.activeTimers {
-			if t != nil {
-				t.Stop()
-			}
-		}
-		for _, t := range e.retryTimers {
-			if t != nil {
-				t.Stop()
-			}
-		}
-		for _, t := range e.goalTimers {
-			if t != nil {
-				t.Stop()
-			}
-		}
-		for _, t := range e.goalRetryTimers {
-			if t != nil {
-				t.Stop()
-			}
-		}
-		for _, t := range e.quietCollapseTimers {
-			if t != nil {
-				t.Stop()
-			}
-		}
-		if e.heartbeatTimer != nil {
-			e.heartbeatTimer.Stop()
-		}
-		if e.heartbeatIdleTimer != nil {
-			e.heartbeatIdleTimer.Stop()
-		}
-		if e.heartbeatRetryTimer != nil {
-			e.heartbeatRetryTimer.Stop()
-		}
-		if e.heartbeatCollapseTimer != nil {
-			e.heartbeatCollapseTimer.Stop()
-		}
+	}
+}
 
-		// Spec D13: the loop stays alive until the cancelled worker's completion event is received
-		if e.workerBusy {
-			select {
-			case res := <-e.workerDoneCh:
-				e.handleWorkerDone(res)
-			case <-time.After(10 * time.Second):
+// armStartupTimersLocked arms timers for every active job and goal before the
+// loop starts (Spec B4: no map writes outside loop).
+func (e *Engine) armStartupTimersLocked() {
+	for i := range e.jobs {
+		job := &e.jobs[i]
+		if job.Enabled && !job.Paused && job.NextDue != "" {
+			dueTime, err := time.Parse(time.RFC3339, job.NextDue)
+			if err == nil {
+				e.armTimerLocked(job, dueTime, false, time.Time{})
 			}
 		}
+	}
+	for i := range e.goals {
+		goal := &e.goals[i]
+		if goal.Status == "active" && goal.NextDue != "" {
+			dueTime, err := time.Parse(time.RFC3339, goal.NextDue)
+			if err == nil {
+				e.armGoalTimerLocked(goal, dueTime)
+			}
+		}
+	}
+}
 
-		close(cmd.resp)
-		close(e.stopCh)
-		return
+// stopAllTimersLocked stops every live timer owned by the loop (shutdown path).
+func (e *Engine) stopAllTimersLocked() {
+	for _, t := range e.activeTimers {
+		if t != nil {
+			t.Stop()
+		}
+	}
+	for _, t := range e.retryTimers {
+		if t != nil {
+			t.Stop()
+		}
+	}
+	for _, t := range e.goalTimers {
+		if t != nil {
+			t.Stop()
+		}
+	}
+	for _, t := range e.goalRetryTimers {
+		if t != nil {
+			t.Stop()
+		}
+	}
+	for _, t := range e.quietCollapseTimers {
+		if t != nil {
+			t.Stop()
+		}
+	}
+	for _, t := range []loop.Timer{
+		e.heartbeatTimer,
+		e.heartbeatIdleTimer,
+		e.heartbeatRetryTimer,
+		e.heartbeatCollapseTimer,
+	} {
+		if t != nil {
+			t.Stop()
+		}
 	}
 }
 

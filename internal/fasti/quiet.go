@@ -30,7 +30,7 @@ func IsInQuietWindow(window string, t time.Time, loc *time.Location) bool {
 		return false
 	}
 	if loc == nil {
-		loc = time.Local
+		loc = time.Local //nolint:gosmopolitan // spec D11: unset fasti.local_timezone means the system zone
 	}
 	sh, sm, eh, em, ok := ParseQuietWindow(window)
 	if !ok {
@@ -57,7 +57,7 @@ func IsInQuietWindow(window string, t time.Time, loc *time.Location) bool {
 // If t is not in the window, it returns when the next quiet window ends.
 func QuietWindowEnd(window string, t time.Time, loc *time.Location) time.Time {
 	if loc == nil {
-		loc = time.Local
+		loc = time.Local //nolint:gosmopolitan // spec D11: unset fasti.local_timezone means the system zone
 	}
 	sh, sm, eh, em, ok := ParseQuietWindow(window)
 	if !ok {
