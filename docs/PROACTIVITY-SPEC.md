@@ -102,7 +102,10 @@ the heartbeat's `HEARTBEAT_OK` verdict (D6) is evaluated on the accumulator; the
 session log's `msg` events
 (persisted unconditionally) are the durable fallback when the accumulator comes up
 empty (mid-turn cancel). A nil-onDelta firing that expected to announce is a
-defect, not a mode.
+defect, not a mode. ONE exemption, daemon-authored: the goal-close announcement
+(D10) is emitted as the fixed template `closed by agent, evidence seqs <list>`
+followed by the accumulator text if any — templates are machine text like
+operational notices, not model text, so the seqs in them are trustworthy.
 Consequences by construction: approvals, audit fallback, compaction, per-turn model
 routing, TurnTimeout, and secret-needle scrubbing apply unchanged. New src-channel
 values fasti may stamp on `msg` events: `cron`, `goal`, `heartbeat` (extending the
@@ -169,7 +172,8 @@ ambiguous residue — mirroring the "standing orders are the human's control
 surface" law of HEARTBEAT.md
 (§1.5) and the device auto-registration precedent in reverse (adding standing
 agency needs a card; reading a rail does not). Audit: penatus events
-`fasti_job_created/enabled/paused/resumed/removed/timeout` (fields: id, name,
+`fasti_job_created/enabled/paused/resumed/removed/adopted/timeout` (fields: id,
+name,
 schedule, created_by, and for cards the settling via — never
 secrets, D9).
 
@@ -234,7 +238,8 @@ while `enabled:true` is rejected 400 per D9's edit workflow),
 `DELETE /v1/fasti/jobs/{id}`,
 `POST /v1/fasti/jobs/{id}/run` (fire-now, still D2/D3 law),
 `POST /v1/fasti/goals` (body = D10 `goal new` fields),
-`PATCH /v1/fasti/goals/{id}` (status ∈ {paused, active}, budget),
+`PATCH /v1/fasti/goals/{id}` (status ∈ {paused, active, failed} — `failed` is the
+cancel path; budget),
 `POST /v1/fasti/goals/{id}/close {mode:"user_force"}` (the only REST close path;
 the agent close path lives in-loop under R7),
 `GET /v1/fasti/events`
@@ -244,7 +249,9 @@ client, no resume). CLI over the
 existing `hearthd.sock` line protocol (socket.go:103-137): mutations as
 `FASTI {"verb":"add",...payload}` — ONE JSON line inside the 4096-byte cap (the
 1000-rune prompt limit keeps every legal job inside it; over-cap payloads refuse
-with `ERR payload_too_large`); `FASTI list` streams one JSON row per line until
+with `ERR payload_too_large`); `FASTI {"verb":"add|list|pause|resume|remove|run",
+"entity":"job|goal", …}` — the entity field is what tells `hearthd job list` from
+`hearthd goal list` on the wire — streams one JSON row per line until
 EOF (rows fit the cap by the same limit); ack-then-progress law unchanged: `hearthd
 job add|list|pause|resume|remove|run`, `hearthd goal ...`. Every store mutation
 flows through the command loop's channel — the CLI never writes jobs.json
@@ -261,7 +268,12 @@ therefore re-injected ONLY inside a data-tier frame, mirroring the MEMORY-DERIVE
 split (PENATUS-SPEC §1.4): the frame is fixed daemon text, checkpoint prose is
 escaped (tag-openings collapsed) before it enters the prompt. A cron prompt is
 immutable while enabled (edit = disable → edit → re-approve if created_by=model) so
-"what runs at 3am" is always auditable to what a human approved.
+'what runs at 3am' is always auditable to what a human approved. **Adoption law**:
+a prompt edit through the user tier (CLI or REST PATCH) rewrites `created_by` to
+`user:<surface>` — the human authored the *new* text, so the card requirement is
+met by authorship, not by ceremony — with audit event `fasti_job_adopted`; a job
+is never locked out of its own edit path, and the audit always shows where the
+running text came from.
 
 **D10 — goals: checkpointed, budgeted, requirement-checked, honest.**
 `<hearth>/fasti/goals.json` + one journal per goal `<hearth>/fasti/goals/<id>.md`
@@ -270,7 +282,8 @@ frontmatter `{id, title, status: active|paused|done|failed|stale, requirements:
 [{text, done, evidence: [seq...]}], turn_count, turn_budget, step_after (duration,
 default 15m), session_id, next_hint, created_at, created_seq}`.
 Lifecycle: `hearthd goal new "<title>" [--session S] --requirement "<r>" [--budget
-N turns]` — session defaults to `goal-<id>`, `created_at`/`created_seq` (the
+N turns] [--step-after dur]` — `turn_budget` defaults **25**, `step_after` 15m
+— session defaults to `goal-<id>`, `created_at`/`created_seq` (the
 session log high-water at creation) are stamped by fasti; one goal, one durable
 log. `hearthd goal list` prints id/status/turn_count/budget/next-step;
 `hearthd goal pause|resume|cancel <id>` set status (`failed` on cancel). Each goal
@@ -279,16 +292,16 @@ the legal citation window `(created_seq, now]` + "advance the goal by one concre
 step". The model reports through two tools,
 registered alongside `schedule_wake` (the precedent for daemon-registered loop
 tools, schedule.go:426):
-`fasti_goal_step {next_hint, progress_prose, satisfied?: [req_index]}` and
+`fasti_goal_step {next_hint, progress_prose, satisfied?: req_index}` and
 `fasti_goal_close {}`.
 **Step-window law** (the evidence machinery, machine-bound by construction):
 fasti stamps each step turn with `window_start` (session log high-water at turn
 start) and `window_end` (high-water at turn end); evidence seqs are NEVER
-model-supplied — `fasti_goal_step` attaches `window_start+1..call_seq` to EACH
-`satisfied` index (one requirement per step call: closing k requirements takes k
-step calls; zero steps close nothing), records `progress_prose` into the journal
-as escaped checkpoint data, writes `next_hint`, and chains the next step at
-`completion + step_after`. `fasti_goal_close` closes ONLY when every requirement
+model-supplied — `fasti_goal_step` attaches `window_start+1..call_seq` to the
+`satisfied` requirement index (SCALAR on purpose: one requirement per step call —
+closing k requirements takes k step calls; zero steps close nothing), records
+`progress_prose` into the journal as escaped checkpoint data, and writes
+`next_hint`. `fasti_goal_close` closes ONLY when every requirement
 is `done` with non-empty recorded evidence (R7: those seqs exist in the goal
 session's log and post-date `created_seq` — fasti checks existence, it does NOT
 grade their quality); a close attempt that fails this is refused with
@@ -324,11 +337,13 @@ fasti:
   catchup_window: 24h    # D7: due-times older than this are discarded, not replayed
 ```
 
-`enabled` DEFAULTS **true**. The subsystem is inert until the user gives it standing
-orders — heartbeat is already off-by-default upstream (missing or empty HEARTBEAT.md
-= off, §1.5), and with no jobs and no goals fasti fires nothing. The block decodes
-under `KnownFields(true)` (main.go:99): a typo'd key refuses boot, matching the
-comment at main.go:30 that names fasti as the cautionary lesson.
+`enabled` DEFAULTS **false**: adding a proactive subsystem must never mean a
+running daemon starts talking by itself (R9 — `enabled: true` is the opt-in act,
+effective at next start). Even once enabled, fasti stays inert until the user
+gives it standing orders — heartbeat is off-by-default upstream (missing or empty
+HEARTBEAT.md = off, §1.5), and with no jobs and no goals fasti fires nothing. The
+block decodes under `KnownFields(true)` (main.go:99): a typo'd key refuses boot,
+matching the comment at main.go:30 that names fasti as the cautionary lesson.
 
 **D12 — audit trail: penatus now, custody only if standing grants ever appear.**
 All fasti lifecycle and firing events are penatus session/daemon events (precedent:
@@ -459,3 +474,13 @@ at all (D3), keeping AUDIT-LOCKS law true by construction).
   added to D11 and named as the inherited window (D7); PATCH `prompt?` gated on
   disabled (D8); goal REST routes (D8);
   `fasti_job_enabled/resumed` + close-mode added to audit sets (D5/D10).
+- v1 Rev-3 (2026-11-02): G1 round-3 amendments (4 blocking, 4 minor, all folded):
+  D11 prose corrected to the YAML — `enabled` DEFAULTS false (r3B1); goal-close
+  announcement is a daemon-authored template exempt from the accumulator-only law
+  (r3B2/D2); `satisfied` made SCALAR — one requirement per step call, enforced by
+  schema (r3B3/D10); **adoption law** breaks the model-job edit deadlock: a
+  user-tier prompt edit rewrites `created_by` to `user:<surface>` with
+  `fasti_job_adopted` audit (r3B4/D9); socket verbs gain `entity`
+  job|goal (r3m1); goal PATCH accepts `failed` = cancel (r3m2); only
+  turn-completion schedules the next step (r3m3); `turn_budget` default 25
+  documented at CLI (r3m4).
