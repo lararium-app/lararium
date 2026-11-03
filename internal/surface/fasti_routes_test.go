@@ -296,8 +296,8 @@ func TestVPf_PatchPromptOnEnabledAndDisabled(t *testing.T) {
 	if updated.Prompt != "successfully updated prompt text" {
 		t.Fatalf("prompt was not updated: %q", updated.Prompt)
 	}
-	if updated.CreatedBy != "user" {
-		t.Fatalf("expected created_by user, got %q", updated.CreatedBy)
+	if updated.CreatedBy != "user:rest" {
+		t.Fatalf("expected created_by user:rest (D9 adoption law), got %q", updated.CreatedBy)
 	}
 
 	// 5. Re-enable the job via PATCH enabled: true
@@ -514,5 +514,76 @@ func TestVPf_GoalCloseOnlyUserForce(t *testing.T) {
 	code, _ = env.do(http.MethodPost, "/v1/fasti/goals/nonexistent/close", `{"mode": "user_force"}`)
 	if code != http.StatusNotFound {
 		t.Fatalf("expected 404 for nonexistent goal close, got %d", code)
+	}
+}
+
+// F4a reviewer-fix law test: a PATCH must be atomic and identity-preserving
+// (no remove-and-re-add): id survives, pause state survives, and a prompt
+// edit through the user tier adopts per D9 (created_by -> user:rest).
+func TestVPf_PatchIdentityAndAdoptionLaws(t *testing.T) {
+	env := setupFastiEnv(t, true)
+
+	code, body := env.do(http.MethodPost, "/v1/fasti/jobs", `{
+		"name": "identity",
+		"schedule": {"kind": "interval", "every": "1h"},
+		"prompt": "original prompt text"
+	}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create: got %d (%s)", code, body)
+	}
+	var created fasti.Job
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Pause first (D9 edit path), then edit schedule and prompt separately.
+	if code, _ := env.do(http.MethodPatch, "/v1/fasti/jobs/"+created.ID, `{"enabled": false}`); code != http.StatusOK {
+		t.Fatalf("pause: got %d", code)
+	}
+
+	code, body = env.do(http.MethodPatch, "/v1/fasti/jobs/"+created.ID, `{"schedule": {"kind": "interval", "every": "3h"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("schedule patch: got %d (%s)", code, body)
+	}
+	var afterSched fasti.Job
+	if err := json.Unmarshal(body, &afterSched); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if afterSched.ID != created.ID {
+		t.Fatalf("identity law: id changed %q -> %q", created.ID, afterSched.ID)
+	}
+	if !afterSched.Paused {
+		t.Fatalf("pause state lost through schedule edit: %+v", afterSched)
+	}
+	if afterSched.CreatedBy != "user" {
+		t.Fatalf("schedule-only edit must not adopt, created_by = %q", afterSched.CreatedBy)
+	}
+
+	code, body = env.do(http.MethodPatch, "/v1/fasti/jobs/"+created.ID, `{"prompt": "revised prompt text"}`)
+	if code != http.StatusOK {
+		t.Fatalf("prompt patch: got %d (%s)", code, body)
+	}
+	var afterPrompt fasti.Job
+	if err := json.Unmarshal(body, &afterPrompt); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if afterPrompt.ID != created.ID {
+		t.Fatalf("identity law: id changed through prompt edit")
+	}
+	if afterPrompt.CreatedBy != "user:rest" {
+		t.Fatalf("D9 adoption law: created_by = %q, want user:rest", afterPrompt.CreatedBy)
+	}
+
+	// Replay: PATCH with no fields returns the same row (declarative no-op).
+	code, body = env.do(http.MethodPatch, "/v1/fasti/jobs/"+created.ID, `{}`)
+	if code != http.StatusOK {
+		t.Fatalf("no-op patch: got %d (%s)", code, body)
+	}
+	var replayed fasti.Job
+	if err := json.Unmarshal(body, &replayed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if replayed.Prompt != "revised prompt text" || replayed.CreatedBy != "user:rest" {
+		t.Fatalf("no-op patch changed the row: %+v", replayed)
 	}
 }

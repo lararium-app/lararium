@@ -291,6 +291,10 @@ func (s *Server) fastiJobPatchHandler(w http.ResponseWriter, r *http.Request, id
 
 	updated, err := s.applyJobPatch(r.Context(), job, req)
 	if err != nil {
+		if errors.Is(err, fasti.ErrJobNotFound) {
+			s.error(w, "job not found", http.StatusNotFound)
+			return
+		}
 		s.error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -302,34 +306,14 @@ func (s *Server) fastiJobPatchHandler(w http.ResponseWriter, r *http.Request, id
 func (s *Server) applyJobPatch(ctx context.Context, job fasti.Job, req patchJobRequest) (fasti.Job, error) {
 	id := job.ID
 	if req.Prompt != nil || req.Schedule != nil {
-		if err := s.Fasti.RemoveJob(ctx, id); err != nil {
-			return fasti.Job{}, err
-		}
-		candidate := job
-		if req.Prompt != nil {
-			candidate.Prompt = *req.Prompt
-			candidate.CreatedBy = "user"
-		}
-		if req.Schedule != nil {
-			candidate.Schedule = *req.Schedule
-		}
-		added, err := s.Fasti.AddJob(ctx, candidate)
+		// One atomic engine edit (single-writer law): identity, history and
+		// pause state survive; the engine applies the D9 adoption law
+		// (created_by → user:<surface> + fasti_job_adopted audit) itself.
+		updated, err := s.Fasti.EditJob(ctx, id, req.Prompt, req.Schedule)
 		if err != nil {
 			return fasti.Job{}, err
 		}
-		if job.Paused {
-			_ = s.Fasti.PauseJob(ctx, id)
-			added.Paused = true
-		}
-		if req.Prompt != nil && s.Fasti.Journal() != nil {
-			_, _ = s.Fasti.Journal().Append(fasti.JournalEvent{
-				Type:    "fasti_job_adopted",
-				JobID:   id,
-				JobName: added.Name,
-				Prompt:  added.Prompt,
-			})
-		}
-		job = added
+		job = updated
 	}
 
 	if req.Enabled != nil {
