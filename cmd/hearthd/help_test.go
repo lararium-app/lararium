@@ -110,6 +110,23 @@ func TestHearthdHelpNeverMutates(t *testing.T) {
 		{"restore", []string{"restore", "--help"}},
 		{"setup", []string{"setup", "--help"}},
 		{"serve", []string{"serve", "--help"}},
+		{"job", []string{"job", "--help"}},
+		{"job add", []string{"job", "add", "--help"}},
+		{"job add reversed", []string{"job", "--help", "add"}},
+		{"job list", []string{"job", "list", "--help"}},
+		{"job pause", []string{"job", "pause", "--help"}},
+		{"job resume", []string{"job", "resume", "--help"}},
+		{"job remove", []string{"job", "remove", "--help"}},
+		{"job run", []string{"job", "run", "--help"}},
+		{"job edit", []string{"job", "edit", "--help"}},
+		{"goal", []string{"goal", "--help"}},
+		{"goal new", []string{"goal", "new", "--help"}},
+		{"goal new reversed", []string{"goal", "--help", "new"}},
+		{"goal list", []string{"goal", "list", "--help"}},
+		{"goal pause", []string{"goal", "pause", "--help"}},
+		{"goal resume", []string{"goal", "resume", "--help"}},
+		{"goal cancel", []string{"goal", "cancel", "--help"}},
+		{"goal close", []string{"goal", "close", "--help"}},
 	}
 
 	for _, tc := range tests {

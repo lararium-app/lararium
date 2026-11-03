@@ -172,7 +172,9 @@ func TestVPhSurface_SSE_SlowClientDisconnect(t *testing.T) {
 	select {
 	case <-done:
 		// Client disconnected as expected
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
+		// ARM runners need 5s for this drain (issue #233 family: SSE
+		// read-side deadlines at 3s flake on ubuntu-24.04-arm).
 		t.Fatalf("slow client was not disconnected within deadline")
 	}
 }
