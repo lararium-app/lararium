@@ -25,6 +25,14 @@ var ErrJobNotFound = errors.New("job not found")
 // (such as Hub.RunHeadlessTurn in internal/surface/turns.go:491).
 type TurnRunner func(ctx context.Context, sessionID, prompt string) error
 
+// Announcer defines the interface for delivering announcements (spec D7).
+type Announcer interface {
+	Announce(ctx context.Context, text string) error
+}
+
+// TextTurnRunner runs a headless turn and returns candidate announcement text (spec D2/D7).
+type TextTurnRunner func(ctx context.Context, sessionID, prompt string) (string, error)
+
 // EngineOption configures a fasti Engine.
 type EngineOption func(*Engine)
 
@@ -41,6 +49,20 @@ func WithClock(c loop.Clock) EngineOption {
 func WithRunner(r TurnRunner) EngineOption {
 	return func(e *Engine) {
 		e.runner = r
+	}
+}
+
+// WithAnnouncer sets the announcer for external message delivery (spec D7).
+func WithAnnouncer(a Announcer) EngineOption {
+	return func(e *Engine) {
+		e.announcer = a
+	}
+}
+
+// WithTextRunner sets the text-returning turn runner (spec D2/D7).
+func WithTextRunner(r TextTurnRunner) EngineOption {
+	return func(e *Engine) {
+		e.textRunner = r
 	}
 }
 
@@ -66,11 +88,14 @@ type Engine struct {
 	home       string
 	clock      loop.Clock
 	runner     TurnRunner
+	textRunner TextTurnRunner
+	announcer  Announcer
 	loc        *time.Location
 	sessionLog SessionLog
 
 	jobsPath  string
 	goalsPath string
+	statePath string
 	journal   *Journal
 
 	// Concurrency channels:
@@ -87,25 +112,45 @@ type Engine struct {
 	cancelCtx context.CancelFunc
 
 	// State owned strictly by the command loop goroutine:
-	jobs            []Job
-	goals           []Goal
-	activeTimers    map[string]loop.Timer
-	retryTimers     map[string]loop.Timer
-	goalTimers      map[string]loop.Timer
-	goalRetryTimers map[string]loop.Timer
-	activeStep      *activeGoalStep
-	workerBusy      bool
-	currentFiring   *firingTask
+	jobs                   []Job
+	goals                  []Goal
+	noiseState             *NoiseState
+	activeTimers           map[string]loop.Timer
+	retryTimers            map[string]loop.Timer
+	goalTimers             map[string]loop.Timer
+	goalRetryTimers        map[string]loop.Timer
+	quietCollapseTimers    map[string]loop.Timer
+	quietCollapses         map[string]quietCollapseEntry
+	heartbeatTimer         loop.Timer
+	heartbeatIdleTimer     loop.Timer
+	heartbeatRetryTimer    loop.Timer
+	heartbeatCollapseTimer loop.Timer
+	heartbeatCollapse      *quietCollapseEntry
+	activeStep             *activeGoalStep
+	workerBusy             bool
+	currentFiring          *firingTask
 }
 
 type firingTask struct {
-	jobID     string
-	goalID    string
-	isGoal    bool
-	sessionID string
-	prompt    string
-	dueAt     time.Time
-	reason    string
+	jobID       string
+	goalID      string
+	isGoal      bool
+	isHeartbeat bool
+	isNotice    bool
+	noticeKind  string
+	sessionID   string
+	prompt      string
+	dueAt       time.Time
+	reason      string
+	quietWindow string
+	quietMode   string
+}
+
+type quietCollapseEntry struct {
+	jobID       string
+	isHeartbeat bool
+	prompt      string
+	windowEnd   time.Time
 }
 
 type activeGoalStep struct {
@@ -116,8 +161,10 @@ type activeGoalStep struct {
 }
 
 type firingResult struct {
-	task firingTask
-	err  error
+	task             firingTask
+	err              error
+	replyText        string
+	announceDecision *announceDecision
 }
 
 // Command types handled by the command loop.
@@ -258,6 +305,38 @@ type (
 		goalID      string
 		originalDue time.Time
 	}
+
+	cmdCheckAnnounce struct {
+		task firingTask
+		text string
+		resp chan announceDecision
+	}
+	announceDecision struct {
+		allowed    bool
+		status     string
+		reason     string
+		noticeText string
+	}
+
+	cmdQuietCollapseDue struct {
+		jobID string
+	}
+
+	cmdHeartbeatDue struct {
+		due time.Time
+	}
+
+	cmdHeartbeatIdleTick struct{}
+
+	cmdHeartbeatRetry struct {
+		originalDue time.Time
+	}
+
+	cmdHeartbeatCollapseDue struct{}
+
+	cmdNoiseSnapshot struct {
+		resp chan NoiseSnapshot
+	}
 )
 
 // New creates and initializes a new fasti Engine.
@@ -274,21 +353,24 @@ func New(cfg Config, home string, opts ...EngineOption) (*Engine, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	e := &Engine{
-		cfg:             cfg,
-		home:            home,
-		loc:             loc,
-		jobsPath:        JobsFilePath(home),
-		goalsPath:       GoalsFilePath(home),
-		cmdCh:           make(chan any, 128),
-		workerCh:        make(chan firingTask, 1), // Depth 1 worker mailbox (D3)
-		workerDoneCh:    make(chan firingResult, 16),
-		stopCh:          make(chan struct{}),
-		ctx:             ctx,
-		cancelCtx:       cancel,
-		activeTimers:    make(map[string]loop.Timer),
-		retryTimers:     make(map[string]loop.Timer),
-		goalTimers:      make(map[string]loop.Timer),
-		goalRetryTimers: make(map[string]loop.Timer),
+		cfg:                 cfg,
+		home:                home,
+		loc:                 loc,
+		jobsPath:            JobsFilePath(home),
+		goalsPath:           GoalsFilePath(home),
+		statePath:           NoiseStateFilePath(home),
+		cmdCh:               make(chan any, 128),
+		workerCh:            make(chan firingTask, 1), // Depth 1 worker mailbox (D3)
+		workerDoneCh:        make(chan firingResult, 16),
+		stopCh:              make(chan struct{}),
+		ctx:                 ctx,
+		cancelCtx:           cancel,
+		activeTimers:        make(map[string]loop.Timer),
+		retryTimers:         make(map[string]loop.Timer),
+		goalTimers:          make(map[string]loop.Timer),
+		goalRetryTimers:     make(map[string]loop.Timer),
+		quietCollapseTimers: make(map[string]loop.Timer),
+		quietCollapses:      make(map[string]quietCollapseEntry),
 	}
 
 	for _, opt := range opts {
@@ -323,11 +405,19 @@ func New(cfg Config, home string, opts ...EngineOption) (*Engine, error) {
 	}
 	e.goals = goals
 
+	// Load noise state from store (spec D7, R2)
+	noiseState, err := LoadNoiseState(e.statePath, e.clock.Now().UTC())
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("load noise state: %w", err)
+	}
+	e.noiseState = noiseState
+
 	return e, nil
 }
 
 func cleanAbandonedTempFiles(dir string) {
-	patterns := []string{"jobs.json-*.tmp", "events.jsonl-*.tmp", "goals.json-*.tmp"}
+	patterns := []string{"jobs.json-*.tmp", "events.jsonl-*.tmp", "goals.json-*.tmp", "state.json-*.tmp"}
 	for _, p := range patterns {
 		matches, err := filepath.Glob(filepath.Join(dir, p))
 		if err == nil {
@@ -382,7 +472,40 @@ func (e *Engine) Start(ctx context.Context) error {
 				})
 			} else {
 				// Replay EXACTLY ONCE with slipped_while_offline (D7, V-Pb)
-				missedJobs = append(missedJobs, *job)
+				// Boot precedence (spec D7): if boot lands inside an active defers quiet window,
+				// the downtime offline-replay WAITS for the window end and merges with the window's dues
+				// into the single quiet_collapse firing (most-recent prompt wins). Downtime never bypasses quiet hours.
+				qw, qm := EffectiveQuiet(job, e.cfg.QuietHours)
+				if qw != "" && IsInQuietWindow(qw, now, e.loc) && qm == "defers" {
+					wEnd := QuietWindowEnd(qw, now, e.loc)
+					// Journal law: every wake leaves a trace — a deferred
+					// offline replay is recorded before it waits (D7).
+					_, _ = e.journal.Append(JournalEvent{
+						Type:      "fasti_fired",
+						Status:    "deferred",
+						Reason:    "quiet_hours",
+						JobID:     job.ID,
+						JobName:   job.Name,
+						Prompt:    job.Prompt,
+						SessionID: job.Session,
+						DueAt:     job.NextDue,
+					})
+					e.quietCollapses[job.ID] = quietCollapseEntry{
+						jobID:     job.ID,
+						prompt:    job.Prompt,
+						windowEnd: wEnd,
+					}
+					delay := wEnd.Sub(now)
+					if delay < 0 {
+						delay = 0
+					}
+					jobID := job.ID
+					e.quietCollapseTimers[jobID] = e.clock.AfterFunc(delay, func() {
+						e.sendCommand(cmdQuietCollapseDue{jobID: jobID})
+					})
+				} else {
+					missedJobs = append(missedJobs, *job)
+				}
 			}
 
 			// Recompute next future due strictly after now
@@ -474,6 +597,9 @@ func (e *Engine) Start(ctx context.Context) error {
 		}
 	}
 
+	// Arm heartbeat executor before starting runLoop (spec D6, R8)
+	e.armHeartbeatLocked()
+
 	// Start worker goroutine
 	e.workerWg.Add(1)
 	go e.runWorker()
@@ -484,12 +610,15 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	// Dispatch missed offline firings via the command mailbox (Spec B4/D3: loop owns all dispatch)
 	for _, mj := range missedJobs {
+		qw, qm := EffectiveQuiet(&mj, e.cfg.QuietHours)
 		task := firingTask{
-			jobID:     mj.ID,
-			sessionID: mj.Session,
-			prompt:    mj.Prompt,
-			dueAt:     now,
-			reason:    "slipped_while_offline",
+			jobID:       mj.ID,
+			sessionID:   mj.Session,
+			prompt:      mj.Prompt,
+			dueAt:       now,
+			reason:      "slipped_while_offline",
+			quietWindow: qw,
+			quietMode:   qm,
 		}
 		e.sendCommand(cmdDispatchTask{task: task})
 	}
@@ -498,13 +627,15 @@ func (e *Engine) Start(ctx context.Context) error {
 	for _, mg := range missedGoals {
 		prompt := BuildGoalStepPrompt(&mg)
 		task := firingTask{
-			jobID:     mg.ID,
-			goalID:    mg.ID,
-			isGoal:    true,
-			sessionID: mg.SessionID,
-			prompt:    prompt,
-			dueAt:     now,
-			reason:    "slipped_while_offline",
+			jobID:       mg.ID,
+			goalID:      mg.ID,
+			isGoal:      true,
+			sessionID:   mg.SessionID,
+			prompt:      prompt,
+			dueAt:       now,
+			reason:      "slipped_while_offline",
+			quietWindow: e.cfg.QuietHours,
+			quietMode:   "announce_only",
 		}
 		e.sendCommand(cmdDispatchTask{task: task})
 	}
@@ -564,11 +695,62 @@ func (e *Engine) runWorker() {
 			if !ok {
 				return
 			}
+
+			// If it's an operational notice task:
+			if task.isNotice {
+				if e.announcer != nil {
+					_ = e.announcer.Announce(e.ctx, task.prompt)
+				}
+				e.workerDoneCh <- firingResult{task: task}
+				continue
+			}
+
+			var replyText string
 			var err error
-			if e.runner != nil {
+			if e.textRunner != nil {
+				replyText, err = e.textRunner(e.ctx, task.sessionID, task.prompt)
+			} else if e.runner != nil {
 				err = e.runner(e.ctx, task.sessionID, task.prompt)
 			}
-			e.workerDoneCh <- firingResult{task: task, err: err}
+
+			if err != nil {
+				e.workerDoneCh <- firingResult{task: task, err: err}
+				continue
+			}
+
+			trimmedReply := strings.TrimSpace(replyText)
+			if trimmedReply == "" || (task.isHeartbeat && IsHeartbeatOK(trimmedReply)) {
+				e.workerDoneCh <- firingResult{task: task, replyText: replyText}
+				continue
+			}
+
+			// Non-empty candidate announcement: route through policy
+			decCh := make(chan announceDecision, 1)
+			e.sendCommand(cmdCheckAnnounce{
+				task: task,
+				text: replyText,
+				resp: decCh,
+			})
+
+			var decision announceDecision
+			select {
+			case decision = <-decCh:
+			case <-e.ctx.Done():
+				return
+			}
+
+			if decision.noticeText != "" && e.announcer != nil {
+				_ = e.announcer.Announce(e.ctx, decision.noticeText)
+			}
+			if decision.allowed && e.announcer != nil {
+				_ = e.announcer.Announce(e.ctx, replyText)
+			}
+
+			e.workerDoneCh <- firingResult{
+				task:             task,
+				replyText:        replyText,
+				announceDecision: &decision,
+			}
 		}
 	}
 }
@@ -651,6 +833,20 @@ func (e *Engine) processCommand(rawCmd any) {
 		e.handleGoalDue(cmd)
 	case cmdGoalRetry:
 		e.handleGoalRetry(cmd)
+	case cmdCheckAnnounce:
+		e.handleCheckAnnounce(cmd)
+	case cmdQuietCollapseDue:
+		e.handleQuietCollapseDue(cmd)
+	case cmdHeartbeatDue:
+		e.handleHeartbeatDue(cmd)
+	case cmdHeartbeatIdleTick:
+		e.handleHeartbeatIdleTick(cmd)
+	case cmdHeartbeatRetry:
+		e.handleHeartbeatRetry(cmd)
+	case cmdHeartbeatCollapseDue:
+		e.handleHeartbeatCollapseDue(cmd)
+	case cmdNoiseSnapshot:
+		e.handleNoiseSnapshot(cmd)
 	case cmdShutdown:
 		// Spec B4: loop stops its own timers and replies
 		for _, t := range e.activeTimers {
@@ -672,6 +868,23 @@ func (e *Engine) processCommand(rawCmd any) {
 			if t != nil {
 				t.Stop()
 			}
+		}
+		for _, t := range e.quietCollapseTimers {
+			if t != nil {
+				t.Stop()
+			}
+		}
+		if e.heartbeatTimer != nil {
+			e.heartbeatTimer.Stop()
+		}
+		if e.heartbeatIdleTimer != nil {
+			e.heartbeatIdleTimer.Stop()
+		}
+		if e.heartbeatRetryTimer != nil {
+			e.heartbeatRetryTimer.Stop()
+		}
+		if e.heartbeatCollapseTimer != nil {
+			e.heartbeatCollapseTimer.Stop()
 		}
 
 		// Spec D13: the loop stays alive until the cancelled worker's completion event is received
@@ -878,12 +1091,15 @@ func (e *Engine) handleRunJob(cmd cmdRunJob) {
 	}
 
 	now := e.clock.Now().UTC()
+	qw, qm := EffectiveQuiet(job, e.cfg.QuietHours)
 	task := firingTask{
-		jobID:     job.ID,
-		sessionID: job.Session,
-		prompt:    job.Prompt,
-		dueAt:     now,
-		reason:    "manual_run",
+		jobID:       job.ID,
+		sessionID:   job.Session,
+		prompt:      job.Prompt,
+		dueAt:       now,
+		reason:      "manual_run",
+		quietWindow: qw,
+		quietMode:   qm,
 	}
 
 	e.dispatchOrDefer(task)
@@ -1003,6 +1219,70 @@ func (e *Engine) handleJobDue(cmd cmdJobDue) {
 		return
 	}
 
+	qw, qm := EffectiveQuiet(job, e.cfg.QuietHours)
+	if qw != "" && IsInQuietWindow(qw, cmd.due, e.loc) && qm == "defers" {
+		// Suppressed in defers mode: reschedule to window end, collapse dues into one firing (spec D7)
+		wEnd := QuietWindowEnd(qw, cmd.due, e.loc)
+		if e.quietCollapseTimers[job.ID] == nil {
+			delay := wEnd.Sub(now)
+			if delay < 0 {
+				delay = 0
+			}
+			jobID := job.ID
+			e.quietCollapseTimers[jobID] = e.clock.AfterFunc(delay, func() {
+				e.sendCommand(cmdQuietCollapseDue{jobID: jobID})
+			})
+		}
+		// Most recent prompt wins
+		e.quietCollapses[job.ID] = quietCollapseEntry{
+			jobID:     job.ID,
+			prompt:    job.Prompt,
+			windowEnd: wEnd,
+		}
+
+		// Journal law: a suppressed due is recorded even though it collapses
+		// into a later single firing (D7).
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Status:    "deferred",
+			Reason:    "quiet_hours",
+			JobID:     job.ID,
+			JobName:   job.Name,
+			Prompt:    job.Prompt,
+			SessionID: job.Session,
+			DueAt:     cmd.due.Format(time.RFC3339),
+		})
+
+		// Advance schedule
+		res, err := e.calculateNextDue(job, cmd.due)
+		if err != nil {
+			job.Paused = true
+			job.BudgetCounters.TotalFailures++
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Status:    "failed",
+				Reason:    "schedule_recompute_failed",
+				JobID:     job.ID,
+				JobName:   job.Name,
+				Prompt:    job.Prompt,
+				SessionID: job.Session,
+				DueAt:     job.NextDue,
+			})
+		} else {
+			// If next due is at or before windowEnd, advance after windowEnd to avoid double firing
+			if !res.Due.After(wEnd) {
+				resAfter, errAfter := e.calculateNextDue(job, wEnd)
+				if errAfter == nil {
+					res = resAfter
+				}
+			}
+			job.NextDue = res.Due.Format(time.RFC3339)
+			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
+		}
+		_ = SaveJobs(e.jobsPath, e.jobs)
+		return
+	}
+
 	reason := ""
 	// Check if forward jump crossed dues while daemon ran (Spec B1, D4)
 	ps, err := ParseSchedule(job.Schedule)
@@ -1020,11 +1300,13 @@ func (e *Engine) handleJobDue(cmd cmdJobDue) {
 	}
 
 	task := firingTask{
-		jobID:     job.ID,
-		sessionID: job.Session,
-		prompt:    job.Prompt,
-		dueAt:     cmd.due,
-		reason:    reason,
+		jobID:       job.ID,
+		sessionID:   job.Session,
+		prompt:      job.Prompt,
+		dueAt:       cmd.due,
+		reason:      reason,
+		quietWindow: qw,
+		quietMode:   qm,
 	}
 
 	e.dispatchOrDefer(task)
@@ -1038,11 +1320,14 @@ func (e *Engine) handleJobRetry(cmd cmdJobRetry) {
 		return
 	}
 
+	qw, qm := EffectiveQuiet(job, e.cfg.QuietHours)
 	task := firingTask{
-		jobID:     job.ID,
-		sessionID: job.Session,
-		prompt:    job.Prompt,
-		dueAt:     cmd.originalDue,
+		jobID:       job.ID,
+		sessionID:   job.Session,
+		prompt:      job.Prompt,
+		dueAt:       cmd.originalDue,
+		quietWindow: qw,
+		quietMode:   qm,
 	}
 
 	if e.workerBusy {
@@ -1126,6 +1411,17 @@ func (e *Engine) dispatchOrDefer(task firingTask) {
 }
 
 func (e *Engine) handleWorkerDone(res firingResult) {
+	if res.task.isNotice {
+		e.workerBusy = false
+		e.currentFiring = nil
+		return
+	}
+
+	if res.task.isHeartbeat {
+		e.handleHeartbeatWorkerDone(res)
+		return
+	}
+
 	if res.task.isGoal {
 		e.handleGoalWorkerDone(res)
 		return
@@ -1187,6 +1483,25 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 					SessionID: job.Session,
 				})
 
+				// Emit matching operational notice alongside (spec D3/D7)
+				noticeText := AutoPauseNotice(job)
+				_, _ = e.journal.Append(JournalEvent{
+					Type:      "fasti_notice",
+					Kind:      "auto_pause",
+					Reason:    "notice",
+					JobID:     job.ID,
+					JobName:   job.Name,
+					Prompt:    noticeText,
+					SessionID: job.Session,
+				})
+				e.noiseState.RecordNotice("auto_pause", now)
+				_ = SaveNoiseState(e.statePath, e.noiseState)
+				e.dispatchNoticeTask(firingTask{
+					isNotice:   true,
+					noticeKind: "auto_pause",
+					prompt:     noticeText,
+				})
+
 				_ = SaveJobs(e.jobsPath, e.jobs)
 				return // Do not re-arm paused job
 			}
@@ -1210,14 +1525,18 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 		job.LastFire = now.Format(time.RFC3339)
 		job.BudgetCounters.TotalRuns++
 
+		status := "fired"
 		reason := res.task.reason
-		if reason == "" {
+		if res.announceDecision != nil && !res.announceDecision.allowed {
+			status = "silenced"
+			reason = res.announceDecision.reason
+		} else if reason == "" {
 			reason = "normal"
 		}
 
 		_, _ = e.journal.Append(JournalEvent{
 			Type:      "fasti_fired",
-			Status:    "fired",
+			Status:    status,
 			Reason:    reason,
 			JobID:     job.ID,
 			JobName:   job.Name,
@@ -2651,5 +2970,445 @@ func (e *Engine) GoalClose(ctx context.Context, goalID string) error {
 		return ctx.Err()
 	case <-e.stopCh:
 		return errors.New("engine stopped")
+	}
+}
+
+func (e *Engine) dispatchNoticeTask(task firingTask) {
+	if e.workerBusy {
+		return
+	}
+	e.workerBusy = true
+	e.currentFiring = &task
+	select {
+	case e.workerCh <- task:
+	case <-e.stopCh:
+	}
+}
+
+func (e *Engine) handleCheckAnnounce(cmd cmdCheckAnnounce) {
+	now := e.clock.Now().UTC()
+	e.noiseState.Prune(now)
+
+	// 1. Quiet hours policy check (spec D7)
+	if cmd.task.quietWindow != "" && IsInQuietWindow(cmd.task.quietWindow, now, e.loc) {
+		_ = SaveNoiseState(e.statePath, e.noiseState)
+		cmd.resp <- announceDecision{
+			allowed: false,
+			status:  "silenced",
+			reason:  "quiet_hours",
+		}
+		return
+	}
+
+	// 2. Dedup policy check (spec D7)
+	norm := NormalizeAnnouncement(cmd.text)
+	if e.noiseState.CheckDedup(norm, now) {
+		_ = SaveNoiseState(e.statePath, e.noiseState)
+		cmd.resp <- announceDecision{
+			allowed: false,
+			status:  "silenced",
+			reason:  "dedup",
+		}
+		return
+	}
+
+	// 3. Noise budget policy check (spec D7)
+	if e.noiseState.AnnounceCount >= e.cfg.MaxAnnouncePerDay {
+		triggeredDigest := e.noiseState.RecordOverflow(now)
+		_ = SaveNoiseState(e.statePath, e.noiseState)
+
+		noticeText := ""
+		if triggeredDigest {
+			noticeText = NoiseDigestNotice(5)
+			_, _ = e.journal.Append(JournalEvent{
+				Type:   "fasti_notice",
+				Kind:   "noise_digest",
+				Reason: "notice",
+				Prompt: noticeText,
+			})
+			e.noiseState.RecordNotice("noise_digest", now)
+			_ = SaveNoiseState(e.statePath, e.noiseState)
+		}
+
+		cmd.resp <- announceDecision{
+			allowed:    false,
+			status:     "silenced",
+			reason:     "noise_budget",
+			noticeText: noticeText,
+		}
+		return
+	}
+
+	// 4. Allowed
+	e.noiseState.RecordAnnouncement(norm, now)
+	_ = SaveNoiseState(e.statePath, e.noiseState)
+
+	cmd.resp <- announceDecision{
+		allowed: true,
+		status:  "fired",
+	}
+}
+
+func (e *Engine) handleQuietCollapseDue(cmd cmdQuietCollapseDue) {
+	delete(e.quietCollapseTimers, cmd.jobID)
+	entry, ok := e.quietCollapses[cmd.jobID]
+	delete(e.quietCollapses, cmd.jobID)
+	if !ok {
+		return
+	}
+
+	job := e.findJob(cmd.jobID)
+	if job == nil || !job.Enabled || job.Paused {
+		return
+	}
+
+	qw, qm := EffectiveQuiet(job, e.cfg.QuietHours)
+	task := firingTask{
+		jobID:       job.ID,
+		sessionID:   job.Session,
+		prompt:      entry.prompt,
+		dueAt:       entry.windowEnd,
+		reason:      "quiet_collapse",
+		quietWindow: qw,
+		quietMode:   qm,
+	}
+	e.dispatchOrDefer(task)
+}
+
+func (e *Engine) handleHeartbeatDue(cmd cmdHeartbeatDue) {
+	now := e.clock.Now().UTC()
+	info := ReadHeartbeatInfo(e.home)
+	if !info.Enabled {
+		e.armHeartbeatLocked()
+		return
+	}
+
+	// Verify that now is actually due under current info cadence (in case cadence was edited between wakes, spec D6/R8)
+	tl := now.In(e.loc)
+	isDue := false
+	switch info.Cadence {
+	case "hourly":
+		if tl.Minute() == 0 {
+			isDue = true
+		}
+	case "daily":
+		h, m := parseDailyAt(e.cfg.Heartbeat.DailyAt)
+		if tl.Hour() == h && tl.Minute() == m {
+			isDue = true
+		}
+	}
+
+	if !isDue {
+		e.armHeartbeatLocked()
+		return
+	}
+
+	window := info.Quiet
+	if window == "" {
+		window = e.cfg.QuietHours
+	}
+
+	if window != "" && IsInQuietWindow(window, now, e.loc) {
+		// Quiet at wake time: defers (spec D6/D7). Journal law: the heartbeat
+		// wake itself is recorded before it collapses to the window end.
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "heartbeat",
+			Status:    "skipped",
+			Reason:    "quiet_hours",
+			DueAt:     cmd.due.Format(time.RFC3339),
+			SessionID: "heartbeat",
+		})
+		wEnd := QuietWindowEnd(window, now, e.loc)
+		if e.heartbeatCollapseTimer == nil {
+			delay := wEnd.Sub(now)
+			if delay < 0 {
+				delay = 0
+			}
+			e.heartbeatCollapseTimer = e.clock.AfterFunc(delay, func() {
+				e.sendCommand(cmdHeartbeatCollapseDue{})
+			})
+			e.heartbeatCollapse = &quietCollapseEntry{
+				isHeartbeat: true,
+				prompt:      BuildHeartbeatPrompt(info.Checklist),
+				windowEnd:   wEnd,
+			}
+		} else {
+			e.heartbeatCollapse.prompt = BuildHeartbeatPrompt(info.Checklist)
+		}
+		e.armHeartbeatAfterLocked(wEnd)
+		return
+	}
+
+	task := firingTask{
+		isHeartbeat: true,
+		sessionID:   "heartbeat",
+		prompt:      BuildHeartbeatPrompt(info.Checklist),
+		dueAt:       cmd.due,
+		reason:      "normal",
+		quietWindow: window,
+		quietMode:   "defers",
+	}
+	e.dispatchHeartbeatOrDefer(task)
+	e.armHeartbeatLocked()
+}
+
+func (e *Engine) handleHeartbeatCollapseDue(cmd cmdHeartbeatCollapseDue) {
+	e.heartbeatCollapseTimer = nil
+	entry := e.heartbeatCollapse
+	e.heartbeatCollapse = nil
+	if entry == nil {
+		return
+	}
+
+	info := ReadHeartbeatInfo(e.home)
+	window := info.Quiet
+	if window == "" {
+		window = e.cfg.QuietHours
+	}
+
+	task := firingTask{
+		isHeartbeat: true,
+		sessionID:   "heartbeat",
+		prompt:      entry.prompt,
+		dueAt:       entry.windowEnd,
+		reason:      "quiet_collapse",
+		quietWindow: window,
+		quietMode:   "defers",
+	}
+	e.dispatchHeartbeatOrDefer(task)
+}
+
+func (e *Engine) handleHeartbeatIdleTick(cmd cmdHeartbeatIdleTick) {
+	e.heartbeatIdleTimer = nil
+	info := ReadHeartbeatInfo(e.home)
+	now := e.clock.Now().UTC()
+
+	if !info.Enabled {
+		if info.Cadence != "off" {
+			e.heartbeatIdleTimer = e.clock.AfterFunc(time.Hour, func() {
+				e.sendCommand(cmdHeartbeatIdleTick{})
+			})
+		}
+		return
+	}
+
+	tl := now.In(e.loc)
+	if info.Cadence == "hourly" && tl.Minute() == 0 && tl.Second() == 0 {
+		e.handleHeartbeatDue(cmdHeartbeatDue{due: now})
+		return
+	}
+
+	e.armHeartbeatLocked()
+}
+
+func (e *Engine) handleHeartbeatRetry(cmd cmdHeartbeatRetry) {
+	e.heartbeatRetryTimer = nil
+	info := ReadHeartbeatInfo(e.home)
+	if !info.Enabled {
+		return
+	}
+
+	window := info.Quiet
+	if window == "" {
+		window = e.cfg.QuietHours
+	}
+
+	task := firingTask{
+		isHeartbeat: true,
+		sessionID:   "heartbeat",
+		prompt:      BuildHeartbeatPrompt(info.Checklist),
+		dueAt:       cmd.originalDue,
+		quietWindow: window,
+		quietMode:   "defers",
+	}
+
+	if e.workerBusy {
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "heartbeat",
+			Status:    "skipped",
+			Reason:    "engine_busy",
+			DueAt:     cmd.originalDue.Format(time.RFC3339),
+			SessionID: "heartbeat",
+		})
+		e.armHeartbeatLocked()
+		return
+	}
+
+	e.workerBusy = true
+	e.currentFiring = &task
+	select {
+	case e.workerCh <- task:
+	case <-e.stopCh:
+		return
+	}
+}
+
+func (e *Engine) dispatchHeartbeatOrDefer(task firingTask) {
+	if e.workerBusy {
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "heartbeat",
+			Status:    "deferred",
+			Reason:    "engine_busy",
+			DueAt:     task.dueAt.Format(time.RFC3339),
+			SessionID: task.sessionID,
+		})
+
+		e.heartbeatRetryTimer = e.clock.AfterFunc(60*time.Second, func() {
+			e.sendCommand(cmdHeartbeatRetry{originalDue: task.dueAt})
+		})
+		return
+	}
+
+	e.workerBusy = true
+	e.currentFiring = &task
+	select {
+	case e.workerCh <- task:
+	case <-e.stopCh:
+		return
+	}
+}
+
+func (e *Engine) handleHeartbeatWorkerDone(res firingResult) {
+	e.workerBusy = false
+	e.currentFiring = nil
+	now := e.clock.Now().UTC()
+
+	if res.err != nil {
+		if errors.Is(res.err, context.Canceled) || e.ctx.Err() != nil {
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Kind:      "heartbeat",
+				Status:    "skipped",
+				Reason:    "shutdown",
+				Prompt:    res.task.prompt,
+				SessionID: "heartbeat",
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+			return
+		}
+		if isTurnInFlight(res.err) {
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Kind:      "heartbeat",
+				Status:    "skipped",
+				Reason:    "session_busy",
+				Prompt:    res.task.prompt,
+				SessionID: "heartbeat",
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+		} else {
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Kind:      "heartbeat",
+				Status:    "failed",
+				Reason:    res.err.Error(),
+				Prompt:    res.task.prompt,
+				SessionID: "heartbeat",
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+		}
+		e.armHeartbeatLocked()
+		return
+	}
+
+	if res.announceDecision != nil && !res.announceDecision.allowed {
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "heartbeat",
+			Status:    "silenced",
+			Reason:    res.announceDecision.reason,
+			Prompt:    res.task.prompt,
+			SessionID: "heartbeat",
+			DueAt:     res.task.dueAt.Format(time.RFC3339),
+			FiredAt:   now.Format(time.RFC3339),
+		})
+	} else {
+		reason := res.task.reason
+		if reason == "" {
+			reason = "normal"
+		}
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "heartbeat",
+			Status:    "fired",
+			Reason:    reason,
+			Prompt:    res.task.prompt,
+			SessionID: "heartbeat",
+			DueAt:     res.task.dueAt.Format(time.RFC3339),
+			FiredAt:   now.Format(time.RFC3339),
+		})
+	}
+
+	e.armHeartbeatLocked()
+}
+
+func (e *Engine) armHeartbeatLocked() {
+	e.armHeartbeatAfterLocked(e.clock.Now().UTC())
+}
+
+func (e *Engine) armHeartbeatAfterLocked(from time.Time) {
+	if e.heartbeatTimer != nil {
+		e.heartbeatTimer.Stop()
+		e.heartbeatTimer = nil
+	}
+	if e.heartbeatIdleTimer != nil {
+		e.heartbeatIdleTimer.Stop()
+		e.heartbeatIdleTimer = nil
+	}
+
+	info := ReadHeartbeatInfo(e.home)
+	now := e.clock.Now().UTC()
+
+	if !info.Enabled {
+		if info.Cadence != "off" {
+			e.heartbeatIdleTimer = e.clock.AfterFunc(time.Hour, func() {
+				e.sendCommand(cmdHeartbeatIdleTick{})
+			})
+		}
+		return
+	}
+
+	wakeTime, ok := CalculateNextHeartbeatWake(info, from, e.loc, e.cfg.Heartbeat.DailyAt)
+	if !ok {
+		return
+	}
+
+	delay := wakeTime.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	e.heartbeatTimer = e.clock.AfterFunc(delay, func() {
+		e.sendCommand(cmdHeartbeatDue{due: wakeTime})
+	})
+}
+
+func (e *Engine) handleNoiseSnapshot(cmd cmdNoiseSnapshot) {
+	e.noiseState.Prune(e.clock.Now().UTC())
+	cmd.resp <- e.noiseState.Snapshot(e.cfg.MaxAnnouncePerDay)
+}
+
+// NoiseSnapshot returns a read-only snapshot of current noise counters (spec D7/D8).
+func (e *Engine) NoiseSnapshot() NoiseSnapshot {
+	respCh := make(chan NoiseSnapshot, 1)
+	select {
+	case e.cmdCh <- cmdNoiseSnapshot{resp: respCh}:
+	case <-e.stopCh:
+		if e.noiseState != nil {
+			return e.noiseState.Snapshot(e.cfg.MaxAnnouncePerDay)
+		}
+		return NoiseSnapshot{}
+	}
+
+	select {
+	case snap := <-respCh:
+		return snap
+	case <-e.stopCh:
+		if e.noiseState != nil {
+			return e.noiseState.Snapshot(e.cfg.MaxAnnouncePerDay)
+		}
+		return NoiseSnapshot{}
 	}
 }
