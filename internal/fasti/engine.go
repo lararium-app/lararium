@@ -53,16 +53,25 @@ func WithLocation(loc *time.Location) EngineOption {
 	}
 }
 
+// WithSessionLog sets the session log interface used for goal high-water stamps and sequence checks (spec D10/R7, F2-4).
+func WithSessionLog(sl SessionLog) EngineOption {
+	return func(e *Engine) {
+		e.sessionLog = sl
+	}
+}
+
 // Engine implements the fasti proactivity scheduler (spec D1-D5, F1-1..F1-6).
 type Engine struct {
-	cfg    Config
-	home   string
-	clock  loop.Clock
-	runner TurnRunner
-	loc    *time.Location
+	cfg        Config
+	home       string
+	clock      loop.Clock
+	runner     TurnRunner
+	loc        *time.Location
+	sessionLog SessionLog
 
-	jobsPath string
-	journal  *Journal
+	jobsPath  string
+	goalsPath string
+	journal   *Journal
 
 	// Concurrency channels:
 	cmdCh        chan any
@@ -78,19 +87,32 @@ type Engine struct {
 	cancelCtx context.CancelFunc
 
 	// State owned strictly by the command loop goroutine:
-	jobs          []Job
-	activeTimers  map[string]loop.Timer
-	retryTimers   map[string]loop.Timer
-	workerBusy    bool
-	currentFiring *firingTask
+	jobs            []Job
+	goals           []Goal
+	activeTimers    map[string]loop.Timer
+	retryTimers     map[string]loop.Timer
+	goalTimers      map[string]loop.Timer
+	goalRetryTimers map[string]loop.Timer
+	activeStep      *activeGoalStep
+	workerBusy      bool
+	currentFiring   *firingTask
 }
 
 type firingTask struct {
 	jobID     string
+	goalID    string
+	isGoal    bool
 	sessionID string
 	prompt    string
 	dueAt     time.Time
 	reason    string
+}
+
+type activeGoalStep struct {
+	goalID      string
+	sessionID   string
+	windowStart int64
+	windowEnd   int64
 }
 
 type firingResult struct {
@@ -165,6 +187,77 @@ type (
 	cmdSync struct {
 		resp chan struct{}
 	}
+
+	cmdAddGoal struct {
+		spec GoalSpec
+		resp chan addGoalResp
+	}
+	addGoalResp struct {
+		goal Goal
+		err  error
+	}
+
+	cmdPauseGoal struct {
+		id   string
+		resp chan error
+	}
+
+	cmdResumeGoal struct {
+		id   string
+		resp chan error
+	}
+
+	cmdCancelGoal struct {
+		id   string
+		resp chan error
+	}
+
+	cmdSetGoalBudget struct {
+		id     string
+		budget int
+		resp   chan error
+	}
+
+	cmdForceCloseGoal struct {
+		id   string
+		resp chan error
+	}
+
+	cmdGetGoal struct {
+		id   string
+		resp chan getGoalResp
+	}
+	getGoalResp struct {
+		goal Goal
+		err  error
+	}
+
+	cmdListGoals struct {
+		resp chan []Goal
+	}
+
+	cmdGoalStep struct {
+		goalID        string
+		nextHint      string
+		progressProse string
+		satisfiedReq  int
+		resp          chan error
+	}
+
+	cmdGoalClose struct {
+		goalID string
+		resp   chan error
+	}
+
+	cmdGoalDue struct {
+		goalID string
+		due    time.Time
+	}
+
+	cmdGoalRetry struct {
+		goalID      string
+		originalDue time.Time
+	}
 )
 
 // New creates and initializes a new fasti Engine.
@@ -181,18 +274,21 @@ func New(cfg Config, home string, opts ...EngineOption) (*Engine, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	e := &Engine{
-		cfg:          cfg,
-		home:         home,
-		loc:          loc,
-		jobsPath:     JobsFilePath(home),
-		cmdCh:        make(chan any, 128),
-		workerCh:     make(chan firingTask, 1), // Depth 1 worker mailbox (D3)
-		workerDoneCh: make(chan firingResult, 16),
-		stopCh:       make(chan struct{}),
-		ctx:          ctx,
-		cancelCtx:    cancel,
-		activeTimers: make(map[string]loop.Timer),
-		retryTimers:  make(map[string]loop.Timer),
+		cfg:             cfg,
+		home:            home,
+		loc:             loc,
+		jobsPath:        JobsFilePath(home),
+		goalsPath:       GoalsFilePath(home),
+		cmdCh:           make(chan any, 128),
+		workerCh:        make(chan firingTask, 1), // Depth 1 worker mailbox (D3)
+		workerDoneCh:    make(chan firingResult, 16),
+		stopCh:          make(chan struct{}),
+		ctx:             ctx,
+		cancelCtx:       cancel,
+		activeTimers:    make(map[string]loop.Timer),
+		retryTimers:     make(map[string]loop.Timer),
+		goalTimers:      make(map[string]loop.Timer),
+		goalRetryTimers: make(map[string]loop.Timer),
 	}
 
 	for _, opt := range opts {
@@ -219,11 +315,19 @@ func New(cfg Config, home string, opts ...EngineOption) (*Engine, error) {
 	}
 	e.jobs = jobs
 
+	// Load goals from store (spec D10, F2-1)
+	goals, err := LoadGoals(e.goalsPath)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("load goals: %w", err)
+	}
+	e.goals = goals
+
 	return e, nil
 }
 
 func cleanAbandonedTempFiles(dir string) {
-	patterns := []string{"jobs.json-*.tmp", "events.jsonl-*.tmp"}
+	patterns := []string{"jobs.json-*.tmp", "events.jsonl-*.tmp", "goals.json-*.tmp"}
 	for _, p := range patterns {
 		matches, err := filepath.Glob(filepath.Join(dir, p))
 		if err == nil {
@@ -294,6 +398,60 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("save jobs on start: %w", err)
 	}
 
+	// Goals boot duties (spec D10, F2-6):
+	// 1. Regenerate journals from goals.json (missing or stale rendering is a cache miss, not state)
+	if err := RegenerateGoalJournals(e.home, e.goals); err != nil {
+		return fmt.Errorf("regenerate goal journals on start: %w", err)
+	}
+
+	// 2. Run stale-30d sweep (spec D10, F2-5, F2-6)
+	e.sweepStaleGoalsLocked(now)
+
+	// 3. Re-arm next_due for active goals per D7 collapse rules (due passed offline fires EXACTLY once)
+	var missedGoals []Goal
+	for i := range e.goals {
+		goal := &e.goals[i]
+		if goal.Status != "active" {
+			continue
+		}
+
+		if goal.NextDue == "" {
+			goal.NextDue = now.Format(time.RFC3339)
+			missedGoals = append(missedGoals, *goal)
+			continue
+		}
+
+		dueTime, err := time.Parse(time.RFC3339, goal.NextDue)
+		if err != nil {
+			continue
+		}
+
+		if !dueTime.After(now) {
+			if now.Sub(dueTime) > e.cfg.CatchupWindow {
+				// Past catchup_window: stale discard (D7)
+				_, _ = e.journal.Append(JournalEvent{
+					Type:      "fasti_fired",
+					Kind:      "goal",
+					Status:    "skipped",
+					Reason:    "stale_discard",
+					GoalID:    goal.ID,
+					DueAt:     goal.NextDue,
+					SessionID: goal.SessionID,
+				})
+			} else {
+				// Replay EXACTLY ONCE with slipped_while_offline (D7, V-Pb, F2-6)
+				missedGoals = append(missedGoals, *goal)
+			}
+
+			nextDue := now.Add(goal.StepAfter)
+			goal.NextDue = nextDue.Format(time.RFC3339)
+		}
+	}
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		return fmt.Errorf("save goals on start: %w", err)
+	}
+
 	// Arm future timers for all active jobs BEFORE starting runLoop (Spec B4: no map writes outside loop)
 	for i := range e.jobs {
 		job := &e.jobs[i]
@@ -301,6 +459,17 @@ func (e *Engine) Start(ctx context.Context) error {
 			dueTime, err := time.Parse(time.RFC3339, job.NextDue)
 			if err == nil {
 				e.armTimerLocked(job, dueTime, false, time.Time{})
+			}
+		}
+	}
+
+	// Arm future timers for active goals BEFORE starting runLoop
+	for i := range e.goals {
+		goal := &e.goals[i]
+		if goal.Status == "active" && goal.NextDue != "" {
+			dueTime, err := time.Parse(time.RFC3339, goal.NextDue)
+			if err == nil {
+				e.armGoalTimerLocked(goal, dueTime)
 			}
 		}
 	}
@@ -319,6 +488,21 @@ func (e *Engine) Start(ctx context.Context) error {
 			jobID:     mj.ID,
 			sessionID: mj.Session,
 			prompt:    mj.Prompt,
+			dueAt:     now,
+			reason:    "slipped_while_offline",
+		}
+		e.sendCommand(cmdDispatchTask{task: task})
+	}
+
+	// Dispatch missed offline goal firings via the command mailbox (Spec D10, F2-6)
+	for _, mg := range missedGoals {
+		prompt := BuildGoalStepPrompt(&mg)
+		task := firingTask{
+			jobID:     mg.ID,
+			goalID:    mg.ID,
+			isGoal:    true,
+			sessionID: mg.SessionID,
+			prompt:    prompt,
 			dueAt:     now,
 			reason:    "slipped_while_offline",
 		}
@@ -410,64 +594,108 @@ func (e *Engine) runLoop() {
 			e.handleWorkerDone(res)
 
 		case rawCmd := <-e.cmdCh:
-			switch cmd := rawCmd.(type) {
-			case cmdAddJob:
-				e.handleAddJob(cmd)
-			case cmdRemoveJob:
-				e.handleRemoveJob(cmd)
-			case cmdPauseJob:
-				e.handlePauseJob(cmd)
-			case cmdResumeJob:
-				e.handleResumeJob(cmd)
-			case cmdRunJob:
-				e.handleRunJob(cmd)
-			case cmdGetJob:
-				e.handleGetJob(cmd)
-			case cmdListJobs:
-				e.handleListJobs(cmd)
-			case cmdJobDue:
-				e.handleJobDue(cmd)
-			case cmdJobRetry:
-				e.handleJobRetry(cmd)
-			case cmdSync:
-				e.handleSync(cmd)
-			case cmdDispatchTask:
-				e.dispatchOrDefer(cmd.task)
-			case cmdShutdown:
-				// Spec B4: loop stops its own timers and replies
-				for _, t := range e.activeTimers {
-					if t != nil {
-						t.Stop()
-					}
-				}
-				for _, t := range e.retryTimers {
-					if t != nil {
-						t.Stop()
-					}
-				}
-
-				// Spec D13: the loop stays alive until the cancelled worker's completion event is received
-				if e.workerBusy {
-					select {
-					case res := <-e.workerDoneCh:
-						e.handleWorkerDone(res)
-					case <-time.After(10 * time.Second):
-					}
-				}
-
-				close(cmd.resp)
-				close(e.stopCh)
-				return
-			}
+			e.processCommand(rawCmd)
 		}
 	}
 }
 
+func (e *Engine) processCommand(rawCmd any) {
+	switch cmd := rawCmd.(type) {
+	case cmdAddJob:
+		e.handleAddJob(cmd)
+	case cmdRemoveJob:
+		e.handleRemoveJob(cmd)
+	case cmdPauseJob:
+		e.handlePauseJob(cmd)
+	case cmdResumeJob:
+		e.handleResumeJob(cmd)
+	case cmdRunJob:
+		e.handleRunJob(cmd)
+	case cmdGetJob:
+		e.handleGetJob(cmd)
+	case cmdListJobs:
+		e.handleListJobs(cmd)
+	case cmdJobDue:
+		e.handleJobDue(cmd)
+	case cmdJobRetry:
+		e.handleJobRetry(cmd)
+	case cmdSync:
+		e.handleSync(cmd)
+	case cmdDispatchTask:
+		if cmd.task.isGoal {
+			e.dispatchGoalTaskOrDefer(cmd.task)
+		} else {
+			e.dispatchOrDefer(cmd.task)
+		}
+	case cmdAddGoal:
+		e.handleAddGoal(cmd)
+	case cmdPauseGoal:
+		e.handlePauseGoal(cmd)
+	case cmdResumeGoal:
+		e.handleResumeGoal(cmd)
+	case cmdCancelGoal:
+		e.handleCancelGoal(cmd)
+	case cmdSetGoalBudget:
+		e.handleSetGoalBudget(cmd)
+	case cmdForceCloseGoal:
+		e.handleForceCloseGoal(cmd)
+	case cmdGetGoal:
+		e.handleGetGoal(cmd)
+	case cmdListGoals:
+		e.handleListGoals(cmd)
+	case cmdGoalStep:
+		e.handleGoalStep(cmd)
+	case cmdGoalClose:
+		e.handleGoalClose(cmd)
+	case cmdGoalDue:
+		e.handleGoalDue(cmd)
+	case cmdGoalRetry:
+		e.handleGoalRetry(cmd)
+	case cmdShutdown:
+		// Spec B4: loop stops its own timers and replies
+		for _, t := range e.activeTimers {
+			if t != nil {
+				t.Stop()
+			}
+		}
+		for _, t := range e.retryTimers {
+			if t != nil {
+				t.Stop()
+			}
+		}
+		for _, t := range e.goalTimers {
+			if t != nil {
+				t.Stop()
+			}
+		}
+		for _, t := range e.goalRetryTimers {
+			if t != nil {
+				t.Stop()
+			}
+		}
+
+		// Spec D13: the loop stays alive until the cancelled worker's completion event is received
+		if e.workerBusy {
+			select {
+			case res := <-e.workerDoneCh:
+				e.handleWorkerDone(res)
+			case <-time.After(10 * time.Second):
+			}
+		}
+
+		close(cmd.resp)
+		close(e.stopCh)
+		return
+	}
+}
+
 func (e *Engine) handleSync(cmd cmdSync) {
-	if e.workerBusy {
+	for e.workerBusy {
 		select {
 		case res := <-e.workerDoneCh:
 			e.handleWorkerDone(res)
+		case rawCmd := <-e.cmdCh:
+			e.processCommand(rawCmd)
 		case <-e.stopCh:
 			return
 		}
@@ -898,6 +1126,11 @@ func (e *Engine) dispatchOrDefer(task firingTask) {
 }
 
 func (e *Engine) handleWorkerDone(res firingResult) {
+	if res.task.isGoal {
+		e.handleGoalWorkerDone(res)
+		return
+	}
+
 	e.workerBusy = false
 	e.currentFiring = nil
 
@@ -1135,6 +1368,894 @@ func (e *Engine) findJob(id string) *Job {
 	return nil
 }
 
+func (e *Engine) findGoal(id string) *Goal {
+	for i := range e.goals {
+		if e.goals[i].ID == id {
+			return &e.goals[i]
+		}
+	}
+	return nil
+}
+
+func (e *Engine) sweepStaleGoalsLocked(now time.Time) {
+	for i := range e.goals {
+		goal := &e.goals[i]
+		if goal.Status == "stale" {
+			lastTouch := goal.UpdatedAt
+			if lastTouch == "" {
+				lastTouch = goal.CreatedAt
+			}
+			touchTime, err := time.Parse(time.RFC3339, lastTouch)
+			if err == nil && !now.Before(touchTime.Add(30*24*time.Hour)) {
+				goal.Status = "failed"
+				goal.NextDue = ""
+				goal.UpdatedAt = now.Format(time.RFC3339)
+				_ = SaveGoals(e.goalsPath, e.goals)
+				_ = SaveGoalJournal(e.home, goal)
+				_, _ = e.journal.Append(JournalEvent{
+					Type:      "goal_failed",
+					Kind:      "goal",
+					GoalID:    goal.ID,
+					SessionID: goal.SessionID,
+					Reason:    "stale_30d_untouched",
+				})
+			}
+		}
+	}
+}
+
+func (e *Engine) armGoalTimerLocked(goal *Goal, due time.Time) {
+	if t, ok := e.goalTimers[goal.ID]; ok && t != nil {
+		t.Stop()
+		delete(e.goalTimers, goal.ID)
+	}
+
+	now := e.clock.Now().UTC()
+	delay := due.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+
+	goalID := goal.ID
+	timer := e.clock.AfterFunc(delay, func() {
+		e.sendCommand(cmdGoalDue{goalID: goalID, due: due})
+	})
+	e.goalTimers[goal.ID] = timer
+}
+
+func (e *Engine) handleAddGoal(cmd cmdAddGoal) {
+	spec := cmd.spec
+	now := e.clock.Now().UTC()
+	e.sweepStaleGoalsLocked(now)
+
+	if err := ValidatePrompt(spec.Title); err != nil {
+		cmd.resp <- addGoalResp{err: fmt.Errorf("invalid title: %w", err)}
+		return
+	}
+	if len(spec.Requirements) == 0 {
+		cmd.resp <- addGoalResp{err: errors.New("goal must have at least one requirement")}
+		return
+	}
+	for i, r := range spec.Requirements {
+		if err := ValidatePrompt(r); err != nil {
+			cmd.resp <- addGoalResp{err: fmt.Errorf("invalid requirement %d: %w", i, err)}
+			return
+		}
+	}
+
+	id := strings.TrimSpace(spec.ID)
+	if id == "" {
+		id = NewJobID(now)
+	}
+
+	for _, existing := range e.goals {
+		if existing.ID == id {
+			cmd.resp <- addGoalResp{err: fmt.Errorf("goal id %q already exists", id)}
+			return
+		}
+	}
+
+	sess := strings.TrimSpace(spec.SessionID)
+	if sess == "" {
+		sess = "goal-" + id
+	}
+
+	// Refused if held by another non-terminal goal (active|paused|stale hold; done|failed release)
+	for _, existing := range e.goals {
+		if existing.SessionID == sess {
+			if existing.Status == "active" || existing.Status == "paused" || existing.Status == "stale" {
+				cmd.resp <- addGoalResp{err: fmt.Errorf("session %q is already held by non-terminal goal %q", sess, existing.ID)}
+				return
+			}
+		}
+	}
+
+	tb := spec.TurnBudget
+	if tb <= 0 {
+		tb = 25
+	}
+
+	sa := spec.StepAfter
+	if sa <= 0 {
+		sa = 15 * time.Minute
+	}
+
+	var createdSeq int64
+	if e.sessionLog != nil {
+		hw, err := e.sessionLog.HighWater(sess)
+		if err != nil {
+			cmd.resp <- addGoalResp{err: fmt.Errorf("session high-water: %w", err)}
+			return
+		}
+		createdSeq = hw
+	}
+
+	reqs := make([]Requirement, len(spec.Requirements))
+	for i, r := range spec.Requirements {
+		reqs[i] = Requirement{
+			Text:     r,
+			Done:     false,
+			Evidence: []int64{},
+		}
+	}
+
+	nowStr := now.Format(time.RFC3339)
+	goal := Goal{
+		ID:           id,
+		Title:        spec.Title,
+		Status:       "active",
+		Requirements: reqs,
+		TurnCount:    0,
+		TurnBudget:   tb,
+		StepAfter:    sa,
+		NextDue:      nowStr, // Arms immediately (due now)
+		SessionID:    sess,
+		CreatedAt:    nowStr,
+		CreatedSeq:   createdSeq,
+		UpdatedAt:    nowStr,
+	}
+
+	e.goals = append(e.goals, goal)
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		e.goals = e.goals[:len(e.goals)-1]
+		cmd.resp <- addGoalResp{err: fmt.Errorf("save goals: %w", err)}
+		return
+	}
+
+	_ = SaveGoalJournal(e.home, &goal)
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:      "goal_created",
+		Kind:      "goal",
+		GoalID:    goal.ID,
+		SessionID: goal.SessionID,
+		Prompt:    goal.Title,
+		DueAt:     goal.NextDue,
+	})
+
+	e.armGoalTimerLocked(&goal, now)
+	cmd.resp <- addGoalResp{goal: goal}
+}
+
+func (e *Engine) handlePauseGoal(cmd cmdPauseGoal) {
+	goal := e.findGoal(cmd.id)
+	if goal == nil {
+		cmd.resp <- ErrGoalNotFound
+		return
+	}
+
+	if goal.Status == "paused" {
+		// Replay idempotence: no-op success ack (spec D8, F2-3)
+		cmd.resp <- nil
+		return
+	}
+
+	goal.Status = "paused"
+	goal.NextDue = ""
+	goal.UpdatedAt = e.clock.Now().UTC().Format(time.RFC3339)
+
+	if t, ok := e.goalTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.goalTimers, cmd.id)
+	}
+	if t, ok := e.goalRetryTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.goalRetryTimers, cmd.id)
+	}
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		cmd.resp <- fmt.Errorf("save goals: %w", err)
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:      "goal_paused",
+		Kind:      "goal",
+		GoalID:    goal.ID,
+		SessionID: goal.SessionID,
+	})
+
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleResumeGoal(cmd cmdResumeGoal) {
+	goal := e.findGoal(cmd.id)
+	if goal == nil {
+		cmd.resp <- ErrGoalNotFound
+		return
+	}
+
+	if goal.Status == "active" {
+		// Replay idempotence
+		cmd.resp <- nil
+		return
+	}
+
+	// done/failed released the session hold (spec D10): reopening without an
+	// exclusivity recheck could put two active goals on one session. Terminal
+	// is terminal; paused and stale goals still re-arm normally below.
+	if goal.Status == "done" || goal.Status == "failed" {
+		cmd.resp <- fmt.Errorf("goal %q is terminal (%s); resume does not re-open terminal goals", goal.ID, goal.Status)
+		return
+	}
+
+	now := e.clock.Now().UTC()
+	goal.Status = "active"
+	goal.NextDue = now.Format(time.RFC3339)
+	goal.UpdatedAt = now.Format(time.RFC3339)
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		cmd.resp <- fmt.Errorf("save goals: %w", err)
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:      "goal_resumed",
+		Kind:      "goal",
+		GoalID:    goal.ID,
+		SessionID: goal.SessionID,
+		DueAt:     goal.NextDue,
+	})
+
+	e.armGoalTimerLocked(goal, now)
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleCancelGoal(cmd cmdCancelGoal) {
+	goal := e.findGoal(cmd.id)
+	if goal == nil {
+		cmd.resp <- ErrGoalNotFound
+		return
+	}
+
+	if goal.Status == "failed" {
+		// Replay idempotence
+		cmd.resp <- nil
+		return
+	}
+
+	goal.Status = "failed"
+	goal.NextDue = ""
+	goal.UpdatedAt = e.clock.Now().UTC().Format(time.RFC3339)
+
+	if t, ok := e.goalTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.goalTimers, cmd.id)
+	}
+	if t, ok := e.goalRetryTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.goalRetryTimers, cmd.id)
+	}
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		cmd.resp <- fmt.Errorf("save goals: %w", err)
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:      "goal_failed",
+		Kind:      "goal",
+		GoalID:    goal.ID,
+		SessionID: goal.SessionID,
+		Reason:    "cancelled",
+	})
+
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleForceCloseGoal(cmd cmdForceCloseGoal) {
+	goal := e.findGoal(cmd.id)
+	if goal == nil {
+		cmd.resp <- ErrGoalNotFound
+		return
+	}
+
+	goal.Status = "done"
+	goal.NextDue = ""
+	goal.UpdatedAt = e.clock.Now().UTC().Format(time.RFC3339)
+
+	if t, ok := e.goalTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.goalTimers, cmd.id)
+	}
+	if t, ok := e.goalRetryTimers[cmd.id]; ok && t != nil {
+		t.Stop()
+		delete(e.goalRetryTimers, cmd.id)
+	}
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		cmd.resp <- fmt.Errorf("save goals: %w", err)
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:      "goal_closed",
+		Kind:      "goal",
+		GoalID:    goal.ID,
+		SessionID: goal.SessionID,
+		Mode:      "user_force",
+	})
+
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleSetGoalBudget(cmd cmdSetGoalBudget) {
+	goal := e.findGoal(cmd.id)
+	if goal == nil {
+		cmd.resp <- ErrGoalNotFound
+		return
+	}
+
+	goal.TurnBudget = cmd.budget
+	goal.UpdatedAt = e.clock.Now().UTC().Format(time.RFC3339)
+
+	if goal.Status == "active" {
+		allDone := true
+		for _, req := range goal.Requirements {
+			if !req.Done {
+				allDone = false
+				break
+			}
+		}
+		if goal.TurnCount >= goal.TurnBudget && !allDone {
+			goal.Status = "stale"
+			goal.NextDue = ""
+			if t, ok := e.goalTimers[cmd.id]; ok && t != nil {
+				t.Stop()
+				delete(e.goalTimers, cmd.id)
+			}
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "goal_staled",
+				Kind:      "goal",
+				GoalID:    goal.ID,
+				SessionID: goal.SessionID,
+				Reason:    "budget_exhausted",
+			})
+		}
+	}
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		cmd.resp <- fmt.Errorf("save goals: %w", err)
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleGetGoal(cmd cmdGetGoal) {
+	now := e.clock.Now().UTC()
+	e.sweepStaleGoalsLocked(now)
+	goal := e.findGoal(cmd.id)
+	if goal == nil {
+		cmd.resp <- getGoalResp{err: ErrGoalNotFound}
+		return
+	}
+	cmd.resp <- getGoalResp{goal: *goal}
+}
+
+func (e *Engine) handleListGoals(cmd cmdListGoals) {
+	now := e.clock.Now().UTC()
+	e.sweepStaleGoalsLocked(now)
+	out := make([]Goal, len(e.goals))
+	copy(out, e.goals)
+	cmd.resp <- out
+}
+
+func (e *Engine) handleGoalStep(cmd cmdGoalStep) {
+	goal := e.findGoal(cmd.goalID)
+	if goal == nil {
+		cmd.resp <- ErrGoalNotFound
+		return
+	}
+
+	if goal.Status != "active" {
+		cmd.resp <- fmt.Errorf("goal %q is not active (status %s)", goal.ID, goal.Status)
+		return
+	}
+
+	if cmd.satisfiedReq < -1 || cmd.satisfiedReq >= len(goal.Requirements) {
+		cmd.resp <- fmt.Errorf("invalid satisfied requirement index %d", cmd.satisfiedReq)
+		return
+	}
+
+	// Step-window law (spec D10): evidence may only be stamped from inside the
+	// goal's own open step window. Registration (F4) makes an out-of-window call
+	// impossible by construction; this is the machine-bound defence in depth.
+	if cmd.satisfiedReq >= 0 && (e.activeStep == nil || e.activeStep.goalID != goal.ID) {
+		cmd.resp <- fmt.Errorf("no open step window for goal %q: satisfied steps must come from the step turn", goal.ID)
+		return
+	}
+
+	now := e.clock.Now().UTC()
+
+	// Determine step window start (guaranteed open when satisfiedReq >= 0 above)
+	var windowStart int64
+	if e.activeStep != nil && e.activeStep.goalID == goal.ID {
+		windowStart = e.activeStep.windowStart
+	}
+
+	callHW := windowStart
+	if e.sessionLog != nil {
+		hw, err := e.sessionLog.HighWater(goal.SessionID)
+		if err != nil {
+			cmd.resp <- fmt.Errorf("read high water: %w", err)
+			return
+		}
+		callHW = hw
+	}
+
+	if cmd.satisfiedReq >= 0 {
+		req := &goal.Requirements[cmd.satisfiedReq]
+		req.Done = true
+
+		// Attach evidence seqs window_start+1..HighWater(session)
+		existingMap := make(map[int64]bool)
+		for _, s := range req.Evidence {
+			existingMap[s] = true
+		}
+		for s := windowStart + 1; s <= callHW; s++ {
+			if !existingMap[s] {
+				req.Evidence = append(req.Evidence, s)
+				existingMap[s] = true
+			}
+		}
+	}
+
+	escapedProse := EscapeTagOpenings(cmd.progressProse)
+	escapedHint := EscapeTagOpenings(cmd.nextHint)
+
+	goal.ProgressProse = escapedProse
+	goal.NextHint = escapedHint
+	goal.UpdatedAt = now.Format(time.RFC3339)
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		cmd.resp <- fmt.Errorf("save goals: %w", err)
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:      "goal_stepped",
+		Kind:      "goal",
+		GoalID:    goal.ID,
+		SessionID: goal.SessionID,
+		Prompt:    escapedProse,
+		Details: map[string]any{
+			"satisfied": cmd.satisfiedReq,
+			"next_hint": escapedHint,
+		},
+	})
+
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleGoalClose(cmd cmdGoalClose) {
+	goal := e.findGoal(cmd.goalID)
+	if goal == nil {
+		cmd.resp <- ErrGoalNotFound
+		return
+	}
+
+	if goal.Status != "active" {
+		cmd.resp <- fmt.Errorf("goal %q is not active (status %s)", goal.ID, goal.Status)
+		return
+	}
+
+	// Agent path: closes ONLY when every requirement is done with non-empty evidence,
+	// and every evidence seq passes HasSeq and post-dates created_seq (F2-4).
+	var allSeqs []int64
+	valid := len(goal.Requirements) > 0
+	for _, req := range goal.Requirements {
+		if !req.Done || len(req.Evidence) == 0 {
+			valid = false
+			break
+		}
+		for _, seq := range req.Evidence {
+			if seq <= goal.CreatedSeq {
+				valid = false
+				break
+			}
+			if e.sessionLog != nil {
+				has, err := e.sessionLog.HasSeq(goal.SessionID, seq)
+				if err != nil || !has {
+					valid = false
+					break
+				}
+			}
+			allSeqs = append(allSeqs, seq)
+		}
+		if !valid {
+			break
+		}
+	}
+
+	if !valid {
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "goal_close_refused",
+			Kind:      "goal",
+			GoalID:    goal.ID,
+			SessionID: goal.SessionID,
+			Reason:    "evidence",
+		})
+		cmd.resp <- ErrGoalClosedRefused
+		return
+	}
+
+	now := e.clock.Now().UTC()
+	goal.Status = "done"
+	goal.NextDue = ""
+	goal.UpdatedAt = now.Format(time.RFC3339)
+
+	if t, ok := e.goalTimers[cmd.goalID]; ok && t != nil {
+		t.Stop()
+		delete(e.goalTimers, cmd.goalID)
+	}
+	if t, ok := e.goalRetryTimers[cmd.goalID]; ok && t != nil {
+		t.Stop()
+		delete(e.goalRetryTimers, cmd.goalID)
+	}
+
+	if err := SaveGoals(e.goalsPath, e.goals); err != nil {
+		cmd.resp <- fmt.Errorf("save goals: %w", err)
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+
+	_, _ = e.journal.Append(JournalEvent{
+		Type:         "goal_closed",
+		Kind:         "goal",
+		GoalID:       goal.ID,
+		SessionID:    goal.SessionID,
+		Mode:         "agent",
+		EvidenceSeqs: allSeqs,
+		Details:      map[string]any{"evidence_seqs": allSeqs},
+	})
+
+	cmd.resp <- nil
+}
+
+func (e *Engine) handleGoalDue(cmd cmdGoalDue) {
+	delete(e.goalTimers, cmd.goalID)
+
+	now := e.clock.Now().UTC()
+	e.sweepStaleGoalsLocked(now)
+
+	goal := e.findGoal(cmd.goalID)
+	if goal == nil || goal.Status != "active" {
+		return
+	}
+
+	// Forward steps / downtime collapse past catchup_window
+	if now.Sub(cmd.due) > e.cfg.CatchupWindow {
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "goal",
+			Status:    "skipped",
+			Reason:    "stale_discard",
+			GoalID:    goal.ID,
+			SessionID: goal.SessionID,
+			DueAt:     cmd.due.Format(time.RFC3339),
+		})
+
+		nextDue := now.Add(goal.StepAfter)
+		goal.NextDue = nextDue.Format(time.RFC3339)
+		e.armGoalTimerLocked(goal, nextDue)
+		_ = SaveGoals(e.goalsPath, e.goals)
+		_ = SaveGoalJournal(e.home, goal)
+		return
+	}
+
+	// Check if budget is already exhausted
+	allDone := true
+	for _, req := range goal.Requirements {
+		if !req.Done {
+			allDone = false
+			break
+		}
+	}
+	if goal.TurnCount >= goal.TurnBudget && !allDone {
+		goal.Status = "stale"
+		goal.NextDue = ""
+		goal.UpdatedAt = now.Format(time.RFC3339)
+		_ = SaveGoals(e.goalsPath, e.goals)
+		_ = SaveGoalJournal(e.home, goal)
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "goal_staled",
+			Kind:      "goal",
+			GoalID:    goal.ID,
+			SessionID: goal.SessionID,
+			Reason:    "budget_exhausted",
+		})
+		return
+	}
+
+	reason := ""
+	if now.Sub(cmd.due) >= goal.StepAfter {
+		reason = "slipped_while_offline"
+	}
+
+	prompt := BuildGoalStepPrompt(goal)
+	task := firingTask{
+		jobID:     goal.ID,
+		goalID:    goal.ID,
+		isGoal:    true,
+		sessionID: goal.SessionID,
+		prompt:    prompt,
+		dueAt:     cmd.due,
+		reason:    reason,
+	}
+
+	e.dispatchGoalTaskOrDefer(task)
+}
+
+func (e *Engine) handleGoalRetry(cmd cmdGoalRetry) {
+	delete(e.goalRetryTimers, cmd.goalID)
+
+	goal := e.findGoal(cmd.goalID)
+	if goal == nil || goal.Status != "active" {
+		return
+	}
+
+	prompt := BuildGoalStepPrompt(goal)
+	task := firingTask{
+		jobID:     goal.ID,
+		goalID:    goal.ID,
+		isGoal:    true,
+		sessionID: goal.SessionID,
+		prompt:    prompt,
+		dueAt:     cmd.originalDue,
+	}
+
+	if e.workerBusy {
+		// Second contention: defer to next scheduled due time without incrementing skips (spec D3)
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "goal",
+			Status:    "skipped",
+			Reason:    "engine_busy",
+			GoalID:    goal.ID,
+			DueAt:     cmd.originalDue.Format(time.RFC3339),
+			SessionID: goal.SessionID,
+		})
+
+		nextDue := e.clock.Now().UTC().Add(goal.StepAfter)
+		goal.NextDue = nextDue.Format(time.RFC3339)
+		e.armGoalTimerLocked(goal, nextDue)
+		_ = SaveGoals(e.goalsPath, e.goals)
+		_ = SaveGoalJournal(e.home, goal)
+		return
+	}
+
+	e.workerBusy = true
+	e.currentFiring = &task
+
+	var windowStart int64
+	if e.sessionLog != nil {
+		hw, err := e.sessionLog.HighWater(task.sessionID)
+		if err == nil {
+			windowStart = hw
+		}
+	}
+	e.activeStep = &activeGoalStep{
+		goalID:      task.goalID,
+		sessionID:   task.sessionID,
+		windowStart: windowStart,
+	}
+
+	select {
+	case e.workerCh <- task:
+	case <-e.stopCh:
+		return
+	}
+}
+
+func (e *Engine) dispatchGoalTaskOrDefer(task firingTask) {
+	if e.workerBusy {
+		// Gate contention detected AT DISPATCH by command loop (spec D3/R3, F2-5)
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "goal",
+			Status:    "deferred",
+			Reason:    "engine_busy",
+			GoalID:    task.goalID,
+			DueAt:     task.dueAt.Format(time.RFC3339),
+			SessionID: task.sessionID,
+		})
+
+		// Arm retry on loop timers at +60s (spec D3, F2-5)
+		retryTimer := e.clock.AfterFunc(60*time.Second, func() {
+			e.sendCommand(cmdGoalRetry{goalID: task.goalID, originalDue: task.dueAt})
+		})
+		e.goalRetryTimers[task.goalID] = retryTimer
+		return
+	}
+
+	e.workerBusy = true
+	e.currentFiring = &task
+
+	var windowStart int64
+	if e.sessionLog != nil {
+		hw, err := e.sessionLog.HighWater(task.sessionID)
+		if err == nil {
+			windowStart = hw
+		}
+	}
+	e.activeStep = &activeGoalStep{
+		goalID:      task.goalID,
+		sessionID:   task.sessionID,
+		windowStart: windowStart,
+	}
+
+	select {
+	case e.workerCh <- task:
+	case <-e.stopCh:
+		return
+	}
+}
+
+func (e *Engine) handleGoalWorkerDone(res firingResult) {
+	e.workerBusy = false
+	e.currentFiring = nil
+
+	if e.activeStep != nil && e.sessionLog != nil {
+		hw, _ := e.sessionLog.HighWater(res.task.sessionID)
+		e.activeStep.windowEnd = hw
+	}
+
+	goal := e.findGoal(res.task.goalID)
+	if goal == nil {
+		e.activeStep = nil
+		return
+	}
+
+	now := e.clock.Now().UTC()
+	e.sweepStaleGoalsLocked(now)
+
+	if res.err != nil {
+		if errors.Is(res.err, context.Canceled) || e.ctx.Err() != nil {
+			// Spec D13: worker cancelled mid-turn during shutdown
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Kind:      "goal",
+				Status:    "skipped",
+				Reason:    "shutdown",
+				GoalID:    goal.ID,
+				Prompt:    res.task.prompt,
+				SessionID: res.task.sessionID,
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+			e.activeStep = nil
+			return
+		}
+
+		if isTurnInFlight(res.err) {
+			// Session busy: record skip event (spec D3/R3, F2-5)
+			// Reschedules without charging budget!
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "fasti_fired",
+				Kind:      "goal",
+				Status:    "skipped",
+				Reason:    "session_busy",
+				GoalID:    goal.ID,
+				Prompt:    res.task.prompt,
+				SessionID: res.task.sessionID,
+				DueAt:     res.task.dueAt.Format(time.RFC3339),
+			})
+
+			// Reschedule without charging budget (+60s retry timer)
+			retryTimer := e.clock.AfterFunc(60*time.Second, func() {
+				e.sendCommand(cmdGoalDue{goalID: goal.ID, due: e.clock.Now().UTC()})
+			})
+			e.goalRetryTimers[goal.ID] = retryTimer
+			nextDue := now.Add(60 * time.Second)
+			goal.NextDue = nextDue.Format(time.RFC3339)
+			_ = SaveGoals(e.goalsPath, e.goals)
+			_ = SaveGoalJournal(e.home, goal)
+			e.activeStep = nil
+			return
+		}
+
+		// Non-concurrency error
+		goal.TurnCount++
+		goal.UpdatedAt = now.Format(time.RFC3339)
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "goal",
+			Status:    "failed",
+			Reason:    res.err.Error(),
+			GoalID:    goal.ID,
+			Prompt:    res.task.prompt,
+			SessionID: res.task.sessionID,
+			DueAt:     res.task.dueAt.Format(time.RFC3339),
+		})
+	} else {
+		// Firing successful: turn actually ran
+		goal.TurnCount++
+		goal.UpdatedAt = now.Format(time.RFC3339)
+
+		reason := res.task.reason
+		if reason == "" {
+			reason = "normal"
+		}
+
+		_, _ = e.journal.Append(JournalEvent{
+			Type:      "fasti_fired",
+			Kind:      "goal",
+			Status:    "fired",
+			Reason:    reason,
+			GoalID:    goal.ID,
+			Prompt:    res.task.prompt,
+			SessionID: res.task.sessionID,
+			FiredAt:   now.Format(time.RFC3339),
+		})
+	}
+
+	e.activeStep = nil
+
+	// Check if status still active
+	if goal.Status == "active" {
+		allDone := true
+		for _, req := range goal.Requirements {
+			if !req.Done {
+				allDone = false
+				break
+			}
+		}
+
+		// When turn_count reaches turn_budget WITHOUT all requirements done: status stale, event goal_staled exactly once (F2-5)
+		if goal.TurnCount >= goal.TurnBudget && !allDone {
+			goal.Status = "stale"
+			goal.NextDue = ""
+			goal.UpdatedAt = now.Format(time.RFC3339)
+			_ = SaveGoals(e.goalsPath, e.goals)
+			_ = SaveGoalJournal(e.home, goal)
+			_, _ = e.journal.Append(JournalEvent{
+				Type:      "goal_staled",
+				Kind:      "goal",
+				GoalID:    goal.ID,
+				SessionID: goal.SessionID,
+				Reason:    "budget_exhausted",
+			})
+			return
+		}
+
+		// On a completed step with status still active: arm next step step_after later (F2-5)
+		nextDue := now.Add(goal.StepAfter)
+		goal.NextDue = nextDue.Format(time.RFC3339)
+		goal.UpdatedAt = now.Format(time.RFC3339)
+		_ = SaveGoals(e.goalsPath, e.goals)
+		_ = SaveGoalJournal(e.home, goal)
+		e.armGoalTimerLocked(goal, nextDue)
+	} else {
+		_ = SaveGoals(e.goalsPath, e.goals)
+		_ = SaveGoalJournal(e.home, goal)
+	}
+}
+
 // isTurnInFlight checks if err represents a turn-in-flight conflict.
 // F5 must propagate the ErrTurnInFlight sentinel; string matching is belt-and-braces only (Spec m13).
 func isTurnInFlight(err error) bool {
@@ -1314,5 +2435,221 @@ func (e *Engine) ListJobs(ctx context.Context) ([]Job, error) {
 		return nil, ctx.Err()
 	case <-e.stopCh:
 		return nil, errors.New("engine stopped")
+	}
+}
+
+// AddGoal registers and persists a new goal (spec D10, F2-3).
+func (e *Engine) AddGoal(ctx context.Context, spec GoalSpec) (Goal, error) {
+	respCh := make(chan addGoalResp, 1)
+	select {
+	case e.cmdCh <- cmdAddGoal{spec: spec, resp: respCh}:
+	case <-ctx.Done():
+		return Goal{}, ctx.Err()
+	case <-e.stopCh:
+		return Goal{}, errors.New("engine stopped")
+	}
+
+	select {
+	case res := <-respCh:
+		return res.goal, res.err
+	case <-ctx.Done():
+		return Goal{}, ctx.Err()
+	case <-e.stopCh:
+		return Goal{}, errors.New("engine stopped")
+	}
+}
+
+// PauseGoal pauses a goal, freezing turn_count and dropping next_due (spec D10, F2-3).
+func (e *Engine) PauseGoal(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdPauseGoal{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// ResumeGoal unpauses a goal, arming its next step immediately (spec D10, F2-3).
+func (e *Engine) ResumeGoal(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdResumeGoal{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// CancelGoal marks a goal failed and releases its held session (spec D10, F2-3).
+func (e *Engine) CancelGoal(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdCancelGoal{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// SetGoalBudget declaratively sets the turn budget for a goal (spec D10, F2-3).
+func (e *Engine) SetGoalBudget(ctx context.Context, id string, budget int) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdSetGoalBudget{id: id, budget: budget, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// ForceCloseGoal force-closes a goal with user authority regardless of evidence (spec D10, F2-3).
+func (e *Engine) ForceCloseGoal(ctx context.Context, id string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdForceCloseGoal{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// GetGoal retrieves a goal by its ID (spec D10, F2-3).
+func (e *Engine) GetGoal(ctx context.Context, id string) (Goal, error) {
+	respCh := make(chan getGoalResp, 1)
+	select {
+	case e.cmdCh <- cmdGetGoal{id: id, resp: respCh}:
+	case <-ctx.Done():
+		return Goal{}, ctx.Err()
+	case <-e.stopCh:
+		return Goal{}, errors.New("engine stopped")
+	}
+
+	select {
+	case res := <-respCh:
+		return res.goal, res.err
+	case <-ctx.Done():
+		return Goal{}, ctx.Err()
+	case <-e.stopCh:
+		return Goal{}, errors.New("engine stopped")
+	}
+}
+
+// ListGoals returns a snapshot of all registered goals (spec D10, F2-3).
+func (e *Engine) ListGoals(ctx context.Context) ([]Goal, error) {
+	respCh := make(chan []Goal, 1)
+	select {
+	case e.cmdCh <- cmdListGoals{resp: respCh}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.stopCh:
+		return nil, errors.New("engine stopped")
+	}
+
+	select {
+	case goals := <-respCh:
+		return goals, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.stopCh:
+		return nil, errors.New("engine stopped")
+	}
+}
+
+// GoalStep records progress, next hint, and evidence for a satisfied requirement during a step turn (spec D10, F2-4).
+func (e *Engine) GoalStep(ctx context.Context, goalID string, nextHint, progressProse string, satisfiedReq int) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdGoalStep{
+		goalID:        goalID,
+		nextHint:      nextHint,
+		progressProse: progressProse,
+		satisfiedReq:  satisfiedReq,
+		resp:          respCh,
+	}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+}
+
+// GoalClose closes a goal from within an agent turn, verifying that all requirements are met with valid evidence (spec D10, F2-4).
+func (e *Engine) GoalClose(ctx context.Context, goalID string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdGoalClose{goalID: goalID, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
 	}
 }
