@@ -101,6 +101,9 @@ type Deps struct {
 	// scrubbed of the bot token (N4); nil uses stderr.
 	Log *log.Logger
 
+	// AnnounceFallback is invoked when nuntius is disabled or absent (D8 fallback).
+	AnnounceFallback func(ctx context.Context, text string) error
+
 	now   func() time.Time
 	sleep func(ctx context.Context, d time.Duration) error
 }
@@ -211,6 +214,7 @@ type Bridge struct {
 	flood   *FloodControl
 	inboxMu sync.Mutex
 	inbox   *Inbox
+	stateMu sync.Mutex
 	state   *StateFile
 	pair    *PairStore
 	muter   *Muter
@@ -230,6 +234,9 @@ type Bridge struct {
 
 	startedMu sync.Mutex
 	started   bool // hub presence probe reads this (A1)
+
+	announceFallbackMu sync.RWMutex
+	announceFallback   func(ctx context.Context, text string) error
 
 	turnTimeout time.Duration
 
@@ -284,19 +291,20 @@ func New(deps Deps) (*Bridge, error) {
 	}
 
 	b := &Bridge{
-		deps:   deps,
-		cfg:    cfg,
-		flood:  NewFloodControl(deps.now, deps.sleep),
-		inbox:  inbox,
-		state:  sf,
-		pair:   ps,
-		muter:  NewMuter(cfg.PairFailWindow, cfg.PairMute, 5, deps.now),
-		pairRL: NewLimiter(*cfg.PairReplyGap, deps.now),
-		privRL: NewLimiter(nonOwnerGap, deps.now),
-		log:    lg,
-		cards:  map[string]*card{},
-		queues: map[string]*turnQueue{},
-		stop:   make(chan struct{}),
+		deps:             deps,
+		cfg:              cfg,
+		announceFallback: deps.AnnounceFallback,
+		flood:            NewFloodControl(deps.now, deps.sleep),
+		inbox:            inbox,
+		state:            sf,
+		pair:             ps,
+		muter:            NewMuter(cfg.PairFailWindow, cfg.PairMute, 5, deps.now),
+		pairRL:           NewLimiter(*cfg.PairReplyGap, deps.now),
+		privRL:           NewLimiter(nonOwnerGap, deps.now),
+		log:              lg,
+		cards:            map[string]*card{},
+		queues:           map[string]*turnQueue{},
+		stop:             make(chan struct{}),
 	}
 	b.tg = &gated{T: deps.TG, fc: b.flood}
 	return b, nil
@@ -932,6 +940,8 @@ func (b *Bridge) resolveSession(id string) string {
 // setActiveSession persists the pointer (atomic replace + fsync at
 // switch time; replay re-applies switches idempotently, §5).
 func (b *Bridge) setActiveSession(id string) error {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
 	st, err := b.state.Load()
 	if err != nil {
 		st = State{}
@@ -943,17 +953,62 @@ func (b *Bridge) setActiveSession(id string) error {
 // rememberOwnerChat persists the chat pairing bound (replay routing
 // and shutdown notices need it; v1 has exactly one chat).
 func (b *Bridge) rememberOwnerChat(chatID string) {
+	if chatID == "" {
+		return
+	}
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
 	st, err := b.state.Load()
 	if err != nil {
 		st = State{}
 	}
-	if st.OwnerChat == chatID {
-		return
+	changed := false
+	if st.OwnerChat != chatID {
+		st.OwnerChat = chatID
+		changed = true
 	}
-	st.OwnerChat = chatID
-	if err := b.state.Save(st); err != nil {
-		b.log.Printf("nuntius: owner chat persist failed: %v", err)
+	var found bool
+	for _, c := range st.OwnerChats {
+		if c == chatID {
+			found = true
+			break
+		}
 	}
+	if !found {
+		st.OwnerChats = append(st.OwnerChats, chatID)
+		changed = true
+	}
+	if changed {
+		if err := b.state.Save(st); err != nil {
+			b.log.Printf("nuntius: owner chat persist failed: %v", err)
+		}
+	}
+}
+
+// ownerChats returns the deduplicated recorded owner chats in order.
+func (b *Bridge) ownerChats() []string {
+	if b == nil || b.state == nil {
+		return nil
+	}
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	st, err := b.state.Load()
+	if err != nil {
+		return nil
+	}
+	var chats []string
+	seen := make(map[string]bool)
+	for _, c := range st.OwnerChats {
+		if c != "" && !seen[c] {
+			seen[c] = true
+			chats = append(chats, c)
+		}
+	}
+	if st.OwnerChat != "" && !seen[st.OwnerChat] {
+		seen[st.OwnerChat] = true
+		chats = append(chats, st.OwnerChat)
+	}
+	return chats
 }
 
 // replyText is a plain bucket-gated send; errors are logged, never
