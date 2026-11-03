@@ -147,7 +147,9 @@ fall-back overlap fire once (monotonic next-due, never re-derive from wall clock
 alone). The same DST rule binds every wall-clock field in the subsystem —
 heartbeat `daily_at` and all `HH:MM-HH:MM` quiet windows (baseline and §1.5):
 a start inside a spring-forward gap fires at gap end; a window whose span
-collapses in the gap is inert that night. Clock-jump law: because next-due is
+collapses in the gap is inert that night; a window END inside the gap ends at
+gap end, and deferred firings rescheduled to that endpoint dispatch at gap end
+(never discarded as `dst_gap`). Clock-jump law: because next-due is
 monotonic, a backward NTP step cannot re-arm a due time already fired
 (`last_fire` is the floor), and a forward step treats crossed dues under D7's
 downtime collapse — never a per-due replay storm. `every:` is bounded
@@ -222,7 +224,11 @@ job. **Downtime collapse** (the general catch-up law, V-Pb's count rule): firing
 whose due passed while the daemon was down collapse, per job, to EXACTLY ONE
 replay of the most-recent due prompt (`reason:"slipped_while_offline"`) — an
 `every:30m` job after a 20-hour outage replays once, not forty times; dues older
-than `catchup_window` discard instead. Announce fan-out is the **worker's**
+than `catchup_window` discard instead. **Boot precedence**: if boot lands inside an
+active quiet window and the job defers, the downtime replay waits for the
+quiet-window end, where offline dues and quiet-window dues collapse into the ONE
+end firing with `reason:"quiet_collapse"` (downtime never bypasses quiet hours).
+Announce fan-out is the **worker's**
 (D3): `Bridge.Announce` runs after the firing's turn returns and before the
 worker takes the next, so a stalled Telegram send or 429 pause never blocks the
 command loop or `hearthd job list`. A 9-hour weeknight therefore collapses, never floods. Noise budget: per UTC day,
@@ -282,9 +288,13 @@ new|list|pause|resume|cancel|close`. Every store mutation
 flows through the command loop's channel — the CLI never writes jobs.json
 (single-writer, D5), and the loop services commands while the worker runs turns
 (D3), so a 5-minute turn never blocks `hearthd job list`. Replay idempotence:
-`pause|resume|remove|edit|close|cancel` are idempotent by id (a replayed command
-after a client timeout is a no-op ack), per id×verb in `state.json`; `add`/`new`
-ack the new ULID so a client can reconcile before retrying. `wakes.json` holds
+lifecycle verbs (`pause|resume|remove|close|cancel`) are idempotent **against
+current state** (pausing an already-paused job = no-op success ack) — never a
+presence-key, which would break legit toggle cycles; `edit` is apply-declarative
+target state (replaying the same edit twice lands the same state) and network
+retries dedup by payload hash (SHA-256 of the request body, last 64 seen per
+id in `state.json`); `add`/`new` ack the new ULID so a client can reconcile
+before retrying. `wakes.json` holds
 one-shot `schedule_wake` entries ONLY — job/goal next-dues live in the fasti
 stores and replay from there (same `slipped_while_offline` reason string), so
 fasti never shares `MaxPendingWakes=50` and a schedule edit touches one store.
@@ -328,7 +338,8 @@ N turns] [--step-after dur]` — `turn_budget` defaults **25**, `step_after` 15m
 — session defaults to `goal-<id>` and MUST be dedicated: `--session S` is refused
 (`ERR`) if S is held by another goal or by a user-facing session, because a shared
 session lets an ordinary chat turn mint goal evidence outside any step window and
-makes two goals sharing S unresolvable; `created_at`/`created_seq` (the
+makes two goals sharing S unresolvable; a session is "held" only while its goal is
+non-terminal (`active|paused|stale`) — `done`/`failed` releases it; `created_at`/`created_seq` (the
 session log high-water at creation) are stamped by fasti; one goal, one durable
 log. `hearthd goal list` prints id/status/turn_count/budget/next-step;
 `hearthd goal pause|resume|cancel <id>` set status (`failed` on cancel). Each goal
@@ -412,13 +423,16 @@ no cross-process flock needed; fasti takes NO lock while firing — the firing w
 calls RunHeadlessTurn holding no fasti mutex, and the command loop never calls it
 at all (D3), keeping AUDIT-LOCKS law true by construction).
 
-**D12 — shutdown law: exit without losing an ack.** On SIGTERM: (1) the command
-loop stops arming timers and answers `ERR shutting_down` to new mutations —
-ack-then-progress means an ack'd command may never be lost, so the loop first
-drains its command channel (every accepted mutation commits), then (2) the worker
-is cancelled; cancel mid-turn is store-safe (step/journal writes happen only
-AFTER a turn returns), and an in-flight firing ends `fasti_fired{status:"skipped",
-reason:"shutdown"}` — replay at next boot follows D7's downtime collapse.
+**D13 — shutdown law: exit without losing an ack.** On SIGTERM: the command loop
+stops arming timers and answers `ERR shutting_down` to new mutations, while
+worker cancellation and command-channel drainage run CONCURRENTLY under a **10s
+shutdown deadline**. Ack-then-progress means an ack'd command may never be lost,
+so the loop stays alive until the channel is drained AND the cancelled worker's
+completion event is received — only the loop persists
+`fasti_fired{status:"skipped", reason:"shutdown"}` (the worker writes no stores).
+Cancel mid-turn is store-safe (step/journal writes happen only AFTER a turn
+returns); anything still pending at the deadline is abandoned — replay at next
+boot follows D7's downtime collapse.
 
 ## Requirements
 
@@ -572,3 +586,12 @@ reason:"shutdown"}` — replay at next boot follows D7's downtime collapse.
   to daily_at/quiet endpoints (rM3/rM6); new shutdown law D12 (rM4); replay
   idempotence for by-id verbs + ULID acks (rM5); announce fan-out on the worker
   (rM7); user-tier add defaults enabled (rM8); `every:` bounded 1m..1yr (rM9).
+- v1 Rev-7 (2026-11-02): G1 round-6 — 12/12 second-opinion fixes verified FIXED;
+  fresh hunt found **1 blocking, 4 minor, all folded**: the Rev-6 idempotence key
+  `id×verb` bricked every second edit/pause → lifecycle verbs idempotent against
+  CURRENT STATE, `edit` declarative + payload-hash retry dedup (r6B1); duplicate
+  D12 numbering (my own fold) → shutdown law renumbered **D13** with 10s deadline,
+  concurrent drain/cancel, loop-only persistence (r6m4); dedicated-session hold
+  now releases at `done|failed` (r6m3); boot precedence — downtime replay defers
+  to quiet-window end, single `quiet_collapse` firing (r6m5); DST rule covers a
+  quiet-window END inside a spring-forward gap (r6m6).
