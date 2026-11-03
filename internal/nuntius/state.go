@@ -21,6 +21,8 @@ type State struct {
 	// OwnerChat is the Telegram chat the owner paired from (§2: replay
 	// routing and shutdown notices need it; v1 has exactly one chat).
 	OwnerChat string `json:"owner_chat,omitempty"`
+	// OwnerChats records the paired owner chats for fan-out (D7).
+	OwnerChats []string `json:"owner_chats,omitempty"`
 }
 
 // StateFile owns state.json (0600, atomic replace, fsync — §2).
