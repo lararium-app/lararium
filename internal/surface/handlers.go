@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/lararium-app/lararium/internal/fasti"
 )
 
 // SessionInfo is the wire shape of one session in GET /v1/sessions
@@ -48,6 +50,7 @@ type Server struct {
 	Store    *TokenStore
 	Sessions SessionSource
 	Hub      TurnHub
+	Fasti    *fasti.Engine
 	// OnShutdown is called on shutdown signals before Hub.Shutdown()
 	// (NUNTIUS-SPEC §2: bridge stops before hub drops pending approvals).
 	OnShutdown func()

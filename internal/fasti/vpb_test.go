@@ -299,8 +299,10 @@ func TestAddJob_CreatedByValidation(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// 1. Rejected created_by values (Spec D5 / M9)
-	badValues := []string{"user:web", "admin", "system", "other"}
+	// 1. Rejected created_by values (Spec D5 / M9). Note per D5 the
+	// user:<surface> and model:<session> forms are LEGAL (adoption law D9);
+	// only free-form or doubly-colonized values are refused.
+	badValues := []string{"admin", "system", "other", "user:", "model:", "user:a:b", ":x"}
 	for _, val := range badValues {
 		_, err := eng.AddJob(context.Background(), Job{
 			Schedule:  Schedule{Kind: "interval", Every: "1h"},
@@ -312,8 +314,9 @@ func TestAddJob_CreatedByValidation(t *testing.T) {
 		}
 	}
 
-	// 2. Allowed created_by values: "", "user", "model"
-	goodValues := []string{"", "user", "model"}
+	// 2. Allowed created_by values: "", "user", "model", "user:<surface>",
+	// "model:<session>" (spec D5 row law).
+	goodValues := []string{"", "user", "model", "user:web", "user:rest", "model:sess-42"}
 	for _, val := range goodValues {
 		j, err := eng.AddJob(context.Background(), Job{
 			Schedule:  Schedule{Kind: "interval", Every: "1h"},

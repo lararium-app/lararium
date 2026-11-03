@@ -100,13 +100,20 @@ func (j *Job) Validate() error {
 		return fmt.Errorf("invalid schedule: %w", err)
 	}
 	switch j.CreatedBy {
-	case "", "user", "model":
-		if j.CreatedBy == "" {
-			j.CreatedBy = "user"
-		}
+	case "":
+		j.CreatedBy = "user"
+	case "user", "model":
 	default:
-		// Spec D5 / brief item F1-2: created_by must be in {"", "user", "model"}
-		return fmt.Errorf("invalid created_by %q: must be 'user' or 'model'", j.CreatedBy)
+		// Spec D5 law: created_by ∈ {"user", "user:<surface>" (adopted, D9),
+		// "model:<session>"} — the prefixed forms are legal; anything else
+		// is not. (F1 shipped a strict enum; D5 is the law.)
+		if surface, ok := strings.CutPrefix(j.CreatedBy, "user:"); ok && surface != "" && !strings.ContainsRune(surface, ':') {
+			break
+		}
+		if session, ok := strings.CutPrefix(j.CreatedBy, "model:"); ok && session != "" && !strings.ContainsRune(session, ':') {
+			break
+		}
+		return fmt.Errorf("invalid created_by %q: want user, model, user:<surface>, or model:<session>", j.CreatedBy)
 	}
 	if strings.TrimSpace(j.Session) == "" {
 		j.Session = "cron-" + j.ID
