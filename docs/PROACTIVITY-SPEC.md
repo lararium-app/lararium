@@ -153,7 +153,8 @@ mode}` — window `"HH:MM-HH:MM"` local, inclusive start, exclusive end, may spa
 midnight; mode `defers` (no firing during window; firings collapse per D7) or
 `announce_only` (firings run, announcements suppressed); default
 `announce_only`), enabled, created_by,
-last_fire, next_due, consecutive_skips}`. `created_by ∈ {"user","model:<session>"}`.
+last_fire, next_due, consecutive_skips}`.
+`created_by ∈ {"user", "user:<surface>" (adopted, D9), "model:<session>"}`.
 User-created jobs arrive via CLI/surface (D8). A MODEL-created job goes through a
 `fasti_job` tool — registered unconditionally alongside `schedule_wake` (the
 precedent for daemon-registered loop tools, schedule.go:426); the tool only ever
@@ -249,11 +250,17 @@ client, no resume). CLI over the
 existing `hearthd.sock` line protocol (socket.go:103-137): mutations as
 `FASTI {"verb":"add",...payload}` — ONE JSON line inside the 4096-byte cap (the
 1000-rune prompt limit keeps every legal job inside it; over-cap payloads refuse
-with `ERR payload_too_large`); `FASTI {"verb":"add|list|pause|resume|remove|run",
-"entity":"job|goal", …}` — the entity field is what tells `hearthd job list` from
-`hearthd goal list` on the wire — streams one JSON row per line until
-EOF (rows fit the cap by the same limit); ack-then-progress law unchanged: `hearthd
-job add|list|pause|resume|remove|run`, `hearthd goal ...`. Every store mutation
+with `ERR payload_too_large`); `FASTI {"verb":"add|list|pause|resume|remove|run|edit|close|cancel",
+"entity":"job|goal", …}` (entity×verb matrix: `edit`/`close`/`cancel` apply where
+D9/D10 define them; `close` = user_force transition to `done`, `remove` deletes) —
+the entity field is what tells `hearthd job list` from
+`hearthd goal list` on the wire — streams one JSON **summary** row per line until
+EOF (job rows `{id, name, schedule, enabled, next_due}`; goal rows
+`{id, status, turn_count, turn_budget, next_due}` — projections, never full
+evidence arrays, so rows always fit the 4096-byte cap); ack-then-progress law
+unchanged: `hearthd
+job add|list|pause|resume|remove|run|edit`, `hearthd goal
+new|list|pause|resume|cancel|close`. Every store mutation
 flows through the command loop's channel — the CLI never writes jobs.json
 (single-writer, D5), and the loop services commands while the worker runs turns
 (D3), so a 5-minute turn never blocks `hearthd job list`.
@@ -267,7 +274,7 @@ is what makes them trusted input. Goal checkpoint prose (D10) is model-authored 
 therefore re-injected ONLY inside a data-tier frame, mirroring the MEMORY-DERIVED
 split (PENATUS-SPEC §1.4): the frame is fixed daemon text, checkpoint prose is
 escaped (tag-openings collapsed) before it enters the prompt. A cron prompt is
-immutable while enabled (edit = disable → edit → re-approve if created_by=model) so
+immutable while enabled (edit = disable → edit [adopting per below] → re-enable) so
 'what runs at 3am' is always auditable to what a human approved. **Adoption law**:
 a prompt edit through the user tier (CLI or REST PATCH) rewrites `created_by` to
 `user:<surface>` — the human authored the *new* text, so the card requirement is
@@ -280,7 +287,8 @@ running text came from.
 (markdown, human-readable per principle 2 — the file layer is the product's memory):
 frontmatter `{id, title, status: active|paused|done|failed|stale, requirements:
 [{text, done, evidence: [seq...]}], turn_count, turn_budget, step_after (duration,
-default 15m), session_id, next_hint, created_at, created_seq}`.
+default 15m), next_due (RFC3339 — absent only in terminal states), session_id,
+next_hint, created_at, created_seq}`.
 Lifecycle: `hearthd goal new "<title>" [--session S] --requirement "<r>" [--budget
 N turns] [--step-after dur]` — `turn_budget` defaults **25**, `step_after` 15m
 — session defaults to `goal-<id>`, `created_at`/`created_seq` (the
@@ -288,7 +296,7 @@ session log high-water at creation) are stamped by fasti; one goal, one durable
 log. `hearthd goal list` prints id/status/turn_count/budget/next-step;
 `hearthd goal pause|resume|cancel <id>` set status (`failed` on cancel). Each goal
 step is one headless turn (D2, channel `goal`) whose prompt = journal rendering +
-the legal citation window `(created_seq, now]` + "advance the goal by one concrete
+"advance the goal by one concrete
 step". The model reports through two tools,
 registered alongside `schedule_wake` (the precedent for daemon-registered loop
 tools, schedule.go:426):
@@ -311,6 +319,10 @@ status `done`, and the closing turn's announcement always says
 `hearthd goal close <id>` (user tier) closes regardless of evidence, audit
 `goal_closed{mode:"user_force"}` — user-tier authority is absolute over its own
 goals (SURFACE D5 doctrine); the mode field is how the difference stays visible.
+**Arming law** (who starts the chain): creation of an active goal and
+`resume`/`PATCH status:active` arm its next step immediately (due `now`);
+`pause` disarms (next_due dropped, `turn_count` frozen); turn completion arms the
+NEXT step (see stepping chain). Nothing else schedules goal steps.
 Stepping chain: a step completing with status still `active`
 schedules the NEXT step `step_after` later (D3 law applies — a busy session defers
 the chain, it does not burn a step); `turn_count` increments ONLY when a step
@@ -484,3 +496,12 @@ at all (D3), keeping AUDIT-LOCKS law true by construction).
   job|goal (r3m1); goal PATCH accepts `failed` = cancel (r3m2); only
   turn-completion schedules the next step (r3m3); `turn_budget` default 25
   documented at CLI (r3m4).
+- v1 Rev-4 (2026-11-02): G1 round-4 amendments (all 8 round-3 fixes verified
+  FIXED; 3 blocking, 4 minor, all folded): **arming law** — goal creation and
+  resume arm the next step, pause disarms (chain was unstartable, r4B1);
+  `next_due` added to goal schema (restart law implementable, r4B2); socket
+  verb set completed (`edit|close|cancel`) + full CLI verb lists (r4B3);
+  `created_by` enum admits `user:<surface>` (r4m4); D9 vestigial re-approve
+  parenthetical rewritten to the adoption path (r4m5); stale model-citation
+  line removed from the step prompt (r4m6); socket `list` streams projected
+  summary rows so 4096-byte framing holds as evidence grows (r4m7).
