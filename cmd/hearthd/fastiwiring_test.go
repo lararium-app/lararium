@@ -18,6 +18,8 @@ import (
 	"github.com/lararium-app/lararium/internal/fasti"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
+	"github.com/lararium-app/lararium/internal/penatus"
+	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
@@ -1232,5 +1234,184 @@ func TestF4c_HandleApproval_RejectsFastiTurnCardScopePath(t *testing.T) {
 	}
 	if job.Enabled {
 		t.Fatalf("job should still be disabled after rejected HandleApproval calls: %+v", job)
+	}
+}
+
+// D9 / V-Ph wiring: full daemon-boot test verifying create-time secret-needle
+// validation across model fasti_job tool turns, user REST POST /v1/fasti/jobs,
+// and user CLI/socket FASTI add, even when SetSecrets runs after startFasti.
+func TestFastiWiringSecretNeedlesRefusal(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC))
+
+	const liveSecret = "sk-live-secret-needle-987654" //nolint:gosec // G101: fixture value, not a credential
+	tools := buildTools(home)
+
+	sp := &scriptedStepProvider{
+		name: "d9-fake",
+		steps: []func(step int) (*router.Completion, error){
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "d9-fake",
+					ToolCalls: []router.ToolCall{
+						{
+							ID:       "call_fasti_leak",
+							Name:     "fasti_job",
+							ArgsJSON: `{"name":"leak-job","schedule":"every 30m","prompt":"poll endpoint with Bearer ` + liveSecret + `"}`,
+						},
+					},
+				}, nil
+			},
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "d9-fake",
+					Text:  "Proposal refused due to inline secret.",
+				}, nil
+			},
+		},
+	}
+
+	hub, ap := setupHubOnHome(t, home, sp, tools, 5*time.Second)
+	ap.SetClock(clk)
+
+	// Wire startFasti BEFORE hub.SetSecrets, mirroring main.go boot order
+	// (mustWireFasti at main.go:631, startCustosAndDevices at main.go:655).
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, hub, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+
+	// Install secret needles after startFasti.
+	hub.SetSecrets(func() []string { return []string{liveSecret} })
+
+	// 1. Model fasti_job call during a live turn with secret in prompt ->
+	// tool_result reports refusal with ${vault:NAME} pointer, no row persisted, no card raised.
+	if err := hub.RunHeadlessTurn(context.Background(), "s_d9", "create the polling job", "api", 0, nil); err != nil {
+		t.Fatalf("RunHeadlessTurn: %v", err)
+	}
+
+	sessLog, err := penatus.OpenLog(hub.SessionDir("s_d9"))
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	var foundToolResult bool
+	for _, ev := range sessLog.Live() {
+		if ev.T != "tool_result" {
+			continue
+		}
+		var tr struct {
+			CallID string `json:"call_id"`
+			OK     bool   `json:"ok"`
+			Text   string `json:"text"`
+		}
+		raw, mErr := ev.MarshalJSON()
+		if mErr != nil {
+			t.Fatalf("MarshalJSON: %v", mErr)
+		}
+		if uErr := json.Unmarshal(raw, &tr); uErr != nil {
+			t.Fatalf("Unmarshal tool_result: %v", uErr)
+		}
+		if tr.CallID == "call_fasti_leak" {
+			foundToolResult = true
+			if tr.OK {
+				t.Fatalf("expected tool_result ok=false on secret needle refusal, got ok=true (text=%q)", tr.Text)
+			}
+			if !strings.Contains(tr.Text, "${vault:NAME}") {
+				t.Fatalf("tool_result text = %q, want ${vault:NAME} pointer", tr.Text)
+			}
+			if strings.Contains(tr.Text, liveSecret) {
+				t.Fatalf("tool_result leaked secret literal: %q", tr.Text)
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatal("missing tool_result for call_fasti_leak in session log")
+	}
+	if calls := ap.RegisterCustosNamedCalls(); calls != 0 {
+		t.Fatalf("RegisterCustosNamedCalls = %d, want 0 on refused proposal", calls)
+	}
+
+	jobs, err := fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil {
+		t.Fatalf("LoadJobs: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("jobs.json after refused model proposal = %+v, want empty", jobs)
+	}
+
+	// 2. User REST POST /v1/fasti/jobs with live secret -> 400 with ${vault:NAME}, no row persisted.
+	store, err := surface.OpenTokenStore(filepath.Join(home, "tokens.json"))
+	if err != nil {
+		t.Fatalf("OpenTokenStore: %v", err)
+	}
+	rawTok, err := store.Create("d9-rest")
+	if err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	srv := &surface.Server{
+		Cfg:   surface.ServeConfig{Listen: "127.0.0.1:0"},
+		Store: store,
+		Hub:   hub,
+		Fasti: eng,
+	}
+	ts := httptest.NewServer(surface.NewServer(srv))
+	defer ts.Close()
+
+	restBody := `{"name":"rest-leak","schedule":{"kind":"interval","every":"15m"},"prompt":"curl -H Authorization:` + liveSecret + `"}`
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/fasti/jobs", strings.NewReader(restBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+rawTok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&errResp)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /v1/fasti/jobs with secret status = %d, want 400 (err=%q)", resp.StatusCode, errResp.Error)
+	}
+	if !strings.Contains(errResp.Error, "${vault:NAME}") {
+		t.Fatalf("POST /v1/fasti/jobs error = %q, want ${vault:NAME} pointer", errResp.Error)
+	}
+
+	// 3. User CLI/socket FASTI add with live secret -> ERR mentioning ${vault:NAME}, no row persisted.
+	sockPath := filepath.Join(home, "hearthd.sock")
+	sock, err := srv.ServeSocket(sockPath, func() error { return nil })
+	if err != nil {
+		t.Fatalf("ServeSocket: %v", err)
+	}
+	defer sock.Close()
+
+	cliPayload := `{"verb":"add","entity":"job","name":"cli-leak","schedule":{"kind":"interval","every":"15m"},"prompt":"use ` + liveSecret + ` in cli"}`
+	_, sockErr := surface.FastiMutationViaSocket(sockPath, []byte(cliPayload))
+	if sockErr == nil || !strings.Contains(sockErr.Error(), "${vault:NAME}") {
+		t.Fatalf("socket FASTI add with secret err = %v, want error mentioning ${vault:NAME}", sockErr)
+	}
+
+	jobs, err = fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil {
+		t.Fatalf("LoadJobs after REST/CLI refusals: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("jobs.json after REST/CLI refusals = %+v, want empty", jobs)
+	}
+
+	// 4. Prompt referencing ${vault:NAME} succeeds on CLI/socket.
+	okPayload := `{"verb":"add","entity":"job","name":"cli-clean","schedule":{"kind":"interval","every":"15m"},"prompt":"use ${vault:API_KEY} safely"}`
+	if _, err := surface.FastiMutationViaSocket(sockPath, []byte(okPayload)); err != nil {
+		t.Fatalf("socket FASTI add with ${vault:API_KEY} failed: %v", err)
+	}
+	jobs, err = fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("LoadJobs after valid add = %+v (err=%v), want 1 job", jobs, err)
 	}
 }
