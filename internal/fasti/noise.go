@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+var stateFileMu sync.Mutex
 
 // NormalizeAnnouncement normalizes announcement text per spec D7:
 // whitespace-collapsed, case-folded, and truncated to the first 200 runes.
@@ -41,6 +44,7 @@ type NoiseState struct {
 	OverflowDayStreak []string               `json:"overflow_day_streak"`
 	DedupWindow       []DedupEntry           `json:"dedup_window"`
 	Notices           map[string]NoticeStats `json:"notices"`
+	EditDedup         map[string][]string    `json:"edit_dedup,omitempty"`
 }
 
 // NoiseSnapshot is the exported read-only view for the future /v1/fasti/state surface (spec D7/D8).
@@ -164,6 +168,33 @@ func (s *NoiseState) Snapshot(maxPerDay int) NoiseSnapshot {
 	}
 }
 
+// CheckEditDedup reports whether the payload SHA-256 hash has already been seen for the target ID (spec D8).
+func (s *NoiseState) CheckEditDedup(id, hash string) bool {
+	if s.EditDedup == nil {
+		return false
+	}
+	hashes := s.EditDedup[id]
+	for _, h := range hashes {
+		if h == hash {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordEditDedup records a payload SHA-256 hash for the target ID, capped at the last 64 seen per ID (spec D8).
+func (s *NoiseState) RecordEditDedup(id, hash string) {
+	if s.EditDedup == nil {
+		s.EditDedup = make(map[string][]string)
+	}
+	hashes := s.EditDedup[id]
+	hashes = append(hashes, hash)
+	if len(hashes) > 64 {
+		hashes = hashes[len(hashes)-64:]
+	}
+	s.EditDedup[id] = hashes
+}
+
 // NoiseStateFilePath returns the standard path to state.json under the daemon home directory.
 func NoiseStateFilePath(home string) string {
 	return filepath.Join(home, "fasti", "state.json")
@@ -171,6 +202,9 @@ func NoiseStateFilePath(home string) string {
 
 // LoadNoiseState reads and parses state.json from disk, or initializes default state if absent.
 func LoadNoiseState(path string, now time.Time) (*NoiseState, error) {
+	stateFileMu.Lock()
+	defer stateFileMu.Unlock()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -180,6 +214,7 @@ func LoadNoiseState(path string, now time.Time) (*NoiseState, error) {
 				OverflowDayStreak: []string{},
 				DedupWindow:       []DedupEntry{},
 				Notices:           make(map[string]NoticeStats),
+				EditDedup:         make(map[string][]string),
 			}
 			return s, nil
 		}
@@ -193,12 +228,23 @@ func LoadNoiseState(path string, now time.Time) (*NoiseState, error) {
 	if s.Notices == nil {
 		s.Notices = make(map[string]NoticeStats)
 	}
+	if s.EditDedup == nil {
+		s.EditDedup = make(map[string][]string)
+	}
+	for id, hashes := range s.EditDedup {
+		if len(hashes) > 64 {
+			s.EditDedup[id] = hashes[len(hashes)-64:]
+		}
+	}
 	s.Prune(now)
 	return &s, nil
 }
 
 // SaveNoiseState atomically writes noise state to disk under 0600 mode using the writeSyncTempNamed pattern.
 func SaveNoiseState(path string, state *NoiseState) error {
+	stateFileMu.Lock()
+	defer stateFileMu.Unlock()
+
 	dir := filepath.Dir(path)
 	filename := filepath.Base(path)
 	data, err := json.MarshalIndent(state, "", "  ")
