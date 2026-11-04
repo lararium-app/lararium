@@ -25,6 +25,7 @@ func buildTools(home string, sched ...*loop.Scheduler) []loop.Tool {
 	}
 	return []loop.Tool{
 		loop.ScheduleWakeTool(wakeSched),
+		fastiJobTool(home),
 		{
 			Spec: router.ToolSpec{
 				Name:        "remember",
