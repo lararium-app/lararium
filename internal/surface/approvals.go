@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lararium-app/lararium/internal/loop"
 )
 
 const (
@@ -55,7 +57,7 @@ type approval struct {
 	name        string
 	argsSummary string
 	dest        string // custody destination (host[:port]); separate from review text
-	timer       *time.Timer
+	timer       loop.Timer
 	reason      string
 	source      string
 	via         string
@@ -71,6 +73,10 @@ type approval struct {
 // StaleVerdictHook is invoked when an Allow verdict arrives for an already settled/dead approval.
 type StaleVerdictHook func(id, sessionID, cred, cell, reason string)
 
+// FastiVerdictHook is invoked when a pending approval settles via ResolveScopeVia
+// or resolveTimeout. timedOut is true iff settled by the approval expiration timer.
+type FastiVerdictHook func(id string, allow, timedOut bool, source, via string)
+
 // ApprovalHub tracks pending tool approvals across sessions: one
 // pending approval per (session, id), resolved by the HTTP approver or
 // the Telegram bridge, auto-denied on timeout, or denied when no live
@@ -81,9 +87,11 @@ type ApprovalHub struct {
 	bySession                map[string]map[string]*approval
 	timeout                  time.Duration
 	bridgeTimeout            time.Duration
+	clock                    loop.Clock
 	fanout                   ApprovalFanout
 	bridgeLive               func() bool
 	staleVerdictHook         StaleVerdictHook
+	fastiVerdictHook         FastiVerdictHook
 	obsMu                    sync.Mutex
 	observers                map[int64]func(*CustosCard, *CustosGone)
 	obsSeq                   int64
@@ -97,6 +105,35 @@ func (h *ApprovalHub) SetConnectorTrustHook(hook func(toolName string) error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.connectorTrustHook = hook
+}
+
+// SetFastiVerdictHook registers a callback invoked after an approval card settles
+// (allow, deny, or timeout) on the ResolveFromVia / resolveTimeout chain (PROACTIVITY-SPEC D5).
+func (h *ApprovalHub) SetFastiVerdictHook(hook FastiVerdictHook) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fastiVerdictHook = hook
+}
+
+// SetClock installs a deterministic clock for approval timers (used by tests).
+func (h *ApprovalHub) SetClock(c loop.Clock) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clock = c
+}
+
+func (h *ApprovalHub) nowLocked() time.Time {
+	if h.clock != nil {
+		return h.clock.Now()
+	}
+	return time.Now()
+}
+
+func (h *ApprovalHub) afterFuncLocked(d time.Duration, f func()) loop.Timer {
+	if h.clock != nil {
+		return h.clock.AfterFunc(d, f)
+	}
+	return time.AfterFunc(d, f)
 }
 
 // SubscribeCustos registers an observer for turn-approval card lifecycle
@@ -154,9 +191,9 @@ func hubGoneState(state string) string {
 // cell/cred/dest deliberately empty (turn-scoped, no custody lane).
 // Worker-lane cards are excluded — the door registry serves them.
 func (h *ApprovalHub) PendingTurnCards() []CustosCard {
-	now := time.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	now := h.nowLocked()
 	var out []CustosCard
 	for _, session := range h.bySession {
 		for _, ap := range session {
@@ -249,6 +286,14 @@ func (h *ApprovalHub) RegisterCustos(cell, cred, dest, argsSummary string, timeo
 	return h.registerCustosNamed(cell, cred, cred, dest, argsSummary, timeout, onEvent)
 }
 
+// RegisterCustosNamed registers a custody-style approval card with an explicit
+// title/tool label (PROACTIVITY-SPEC D5). Passing empty cell and cred routes
+// the card onto the custody card stream and approval fanout using the hub's
+// default timeout when timeout <= 0.
+func (h *ApprovalHub) RegisterCustosNamed(cell, cred, name, dest, argsSummary string, timeout time.Duration, onEvent func(approvalID string)) (id string, decision <-chan bool) {
+	return h.registerCustosNamed(cell, cred, name, dest, argsSummary, timeout, onEvent)
+}
+
 // registerCustosNamed is the RegisterCustos body with the card's tool/name
 // label split from cred. RegisterCustos passes name == cred (unchanged
 // behaviour); the connector-lifecycle gate (connectors_crud.go) passes an
@@ -278,7 +323,7 @@ func (h *ApprovalHub) registerCustosNamed(cell, cred, name, dest, argsSummary st
 	if h.bridgeLive != nil && h.bridgeLive() {
 		ap.channels |= ChannelTelegram
 	}
-	ap.createdAt = time.Now()
+	ap.createdAt = h.nowLocked()
 	if timeout <= 0 {
 		timeout = h.timeout
 	}
@@ -289,7 +334,7 @@ func (h *ApprovalHub) registerCustosNamed(cell, cred, name, dest, argsSummary st
 	h.bySession[cell][id] = ap
 	h.pruneTerminalLocked(cell)
 
-	ap.timer = time.AfterFunc(timeout, func() { h.resolveTimeout(id) })
+	ap.timer = h.afterFuncLocked(timeout, func() { h.resolveTimeout(id) })
 	h.mu.Unlock()
 
 	if onEvent != nil {
@@ -367,7 +412,7 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 		argsSummary: argsSummary,
 		webLive:     channels&ChannelWeb != 0,
 	}
-	ap.createdAt = time.Now()
+	ap.createdAt = h.nowLocked()
 	if h.bySession[sessionID] == nil {
 		h.bySession[sessionID] = make(map[string]*approval)
 	}
@@ -388,7 +433,7 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 		timeout = h.timeout
 	}
 	ap.expiresAt = ap.createdAt.Add(timeout)
-	ap.timer = time.AfterFunc(timeout, func() { h.resolveTimeout(id) })
+	ap.timer = h.afterFuncLocked(timeout, func() { h.resolveTimeout(id) })
 	h.mu.Unlock()
 
 	onEvent(id)
@@ -403,7 +448,7 @@ func (h *ApprovalHub) fanPending(id, sessionID, name, argsSummary string) {
 	ap, ok := h.findLocked(id)
 	var card *CustosCard
 	if ok && ap.cred == "" && ap.cell == "" {
-		c := ap.turnCard(time.Now())
+		c := ap.turnCard(h.nowLocked())
 		card = &c
 	}
 	h.mu.Unlock()
@@ -483,7 +528,11 @@ func (h *ApprovalHub) resolveTimeout(id string) {
 		return
 	}
 	sid := ap.sessionID
+	fastiHook := h.fastiVerdictHook
 	h.mu.Unlock()
+	if fastiHook != nil {
+		fastiHook(id, false, true, "timer", "timeout")
+	}
 	h.fanTerminal(id, sid, "timed_out", reason, "timer")
 }
 
@@ -633,8 +682,8 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 		if err != nil {
 			ap.state, ap.reason, ap.source, ap.via = "pending", prevReason, prevSource, ""
 			if prevTimer != nil {
-				if d := time.Until(ap.expiresAt); d > 0 {
-					ap.timer = time.AfterFunc(d, func() { h.resolveTimeout(id) })
+				if d := ap.expiresAt.Sub(h.nowLocked()); d > 0 {
+					ap.timer = h.afterFuncLocked(d, func() { h.resolveTimeout(id) })
 				} else {
 					ap.timer = nil
 				}
@@ -655,7 +704,11 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 		return h.lateResolveLocked(id, sessionID, via, ap, allow)
 	}
 	ap.via = via
+	fastiHook := h.fastiVerdictHook
 	h.mu.Unlock()
+	if fastiHook != nil {
+		fastiHook(id, allow, false, source, via)
+	}
 	h.fanTerminalVia(id, sessionID, state, reason, source, via)
 	return 200, nil
 }

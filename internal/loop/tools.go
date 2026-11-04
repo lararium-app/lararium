@@ -130,4 +130,26 @@ func orNone(s string) string {
 	return s
 }
 
+type sessionIDCtxKey struct{}
+
+// WithSessionID attaches an explicit session ID to ctx for tool invocations.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, sessionIDCtxKey{}, sessionID)
+}
+
+// SessionIDFromContext extracts the calling session ID from ctx, falling back
+// to the active Session's log directory basename or "main".
+func SessionIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(sessionIDCtxKey{}).(string); ok && id != "" {
+		return id
+	}
+	if s := sessionFromContext(ctx); s != nil && s.Log != nil {
+		base := filepath.Base(filepath.Clean(s.Log.Dir()))
+		if base != "" && base != "." && base != "/" {
+			return base
+		}
+	}
+	return "main"
+}
+
 var _ = json.Marshal // used by session.go helpers via same package
