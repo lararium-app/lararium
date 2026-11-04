@@ -38,7 +38,7 @@ already carry.
   fail-closed networking, hard resource caps. The threat model assumes prompt
   injection *succeeds*; the cage makes misbehavior physically expensive.
 
-## Status: beta (v1.0.0-beta4)
+## Status: beta (v1.0.0-beta7)
 
 > [!WARNING]
 > Lararium is in **public beta**. File formats are frozen per-component; wire
@@ -62,10 +62,16 @@ already carry.
   [android-client releases](https://github.com/lararium-app/android-client/releases/latest).
 - **MCP connectors** — any [Model Context Protocol](https://modelcontextprotocol.io)
   server becomes policy-gated tools. See [configuration](#connecting-an-mcp-server) below.
+- **Proactivity** (`fasti`) — scheduled jobs (cron expressions or plain intervals),
+  goals that checkpoint and keep running for days, and a heartbeat wake that walks
+  your `HEARTBEAT.md` checklist. Quiet hours and a noise budget keep it a servant,
+  not a spammer. Manage with `hearthd job` / `hearthd goal` — or let the model
+  propose a job, which waits on an approval card before anything ever runs.
 
 **Machinery underneath**
 
-- **Custody vault** (`custosd`) — OAuth credentials sealed at rest, policy gate
+- **Custody vault** (`custosd`) — OAuth credentials sealed at rest and never handed
+  to the model: real values resolve at the egress boundary, after policy. Policy gate
   (auto / ask / deny), Gmail connector, append-only audit chain.
 - **Approval fan-out** — one card renders live on web, Telegram, and the
   Android app; answering from any surface settles it everywhere.
