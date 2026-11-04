@@ -1,6 +1,7 @@
 package fasti
 
 import (
+	"context"
 	"sync"
 )
 
@@ -9,6 +10,30 @@ type Event struct {
 	Kind string `json:"kind"` // "job", "goal", "heartbeat"
 	Op   string `json:"op"`   // "upsert", "delete"
 	Row  any    `json:"row"`  // full row
+}
+
+// HeartbeatState holds the serializable heartbeat frontmatter state for SSE upserts (spec D6/D8).
+type HeartbeatState struct {
+	Enabled bool   `json:"enabled"`
+	Cadence string `json:"cadence"`
+	Quiet   string `json:"quiet"`
+}
+
+type taskKindKey struct{}
+
+// WithTaskKind attaches the firing task's source-channel kind ("cron", "goal", "heartbeat")
+// to ctx for the turn runner adapter (spec D2).
+func WithTaskKind(ctx context.Context, kind string) context.Context {
+	return context.WithValue(ctx, taskKindKey{}, kind)
+}
+
+// TaskKindFromContext returns the firing task's source-channel kind from ctx,
+// defaulting to "cron" when unset (spec D2).
+func TaskKindFromContext(ctx context.Context) string {
+	if k, ok := ctx.Value(taskKindKey{}).(string); ok && k != "" {
+		return k
+	}
+	return "cron"
 }
 
 type hubSubscriber struct {

@@ -132,6 +132,7 @@ type Engine struct {
 	heartbeatRetryTimer    loop.Timer
 	heartbeatCollapseTimer loop.Timer
 	heartbeatCollapse      *quietCollapseEntry
+	lastHeartbeat          *HeartbeatState
 	activeStep             *activeGoalStep
 	workerBusy             bool
 	currentFiring          *firingTask
@@ -150,6 +151,16 @@ type firingTask struct {
 	reason      string
 	quietWindow string
 	quietMode   string
+}
+
+func (t firingTask) kind() string {
+	if t.isHeartbeat {
+		return "heartbeat"
+	}
+	if t.isGoal {
+		return "goal"
+	}
+	return "cron"
 }
 
 type quietCollapseEntry struct {
@@ -443,6 +454,13 @@ func New(cfg Config, home string, opts ...EngineOption) (*Engine, error) {
 	}
 	e.noiseState = noiseState
 
+	hb := ReadHeartbeatInfo(home)
+	e.lastHeartbeat = &HeartbeatState{
+		Enabled: hb.Enabled,
+		Cadence: hb.Cadence,
+		Quiet:   hb.Quiet,
+	}
+
 	return e, nil
 }
 
@@ -613,7 +631,7 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	// Start worker goroutine
 	e.workerWg.Add(1)
-	go e.runWorker()
+	go e.runWorker() //nolint:contextcheck // worker uses engine-scoped lifecycle ctx (e.ctx)
 
 	// Start command loop goroutine
 	e.loopWg.Add(1)
@@ -716,12 +734,13 @@ func (e *Engine) runWorker() {
 				continue
 			}
 
+			turnCtx := WithTaskKind(e.ctx, task.kind())
 			var replyText string
 			var err error
 			if e.textRunner != nil {
-				replyText, err = e.textRunner(e.ctx, task.sessionID, task.prompt)
+				replyText, err = e.textRunner(turnCtx, task.sessionID, task.prompt)
 			} else if e.runner != nil {
-				err = e.runner(e.ctx, task.sessionID, task.prompt)
+				err = e.runner(turnCtx, task.sessionID, task.prompt)
 			}
 
 			if err != nil {
@@ -1317,7 +1336,7 @@ func (e *Engine) handleJobDue(cmd cmdJobDue) {
 			job.NextDue = res.Due.Format(time.RFC3339)
 			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
 		}
-		_ = SaveJobs(e.jobsPath, e.jobs)
+		e.saveAndPublishJobLocked(job)
 		return
 	}
 
@@ -1355,7 +1374,7 @@ func (e *Engine) handleJobDue(cmd cmdJobDue) {
 			job.NextDue = res.Due.Format(time.RFC3339)
 			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
 		}
-		_ = SaveJobs(e.jobsPath, e.jobs)
+		e.saveAndPublishJobLocked(job)
 		return
 	}
 
@@ -1419,7 +1438,7 @@ func (e *Engine) handleJobDue(cmd cmdJobDue) {
 			job.NextDue = res.Due.Format(time.RFC3339)
 			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
 		}
-		_ = SaveJobs(e.jobsPath, e.jobs)
+		e.saveAndPublishJobLocked(job)
 		return
 	}
 
@@ -1501,7 +1520,7 @@ func (e *Engine) handleJobRetry(cmd cmdJobRetry) {
 			job.NextDue = res.Due.Format(time.RFC3339)
 			e.armTimerLocked(job, res.Due, res.IsDstGap, res.SkippedDue)
 		}
-		_ = SaveJobs(e.jobsPath, e.jobs)
+		e.saveAndPublishJobLocked(job)
 		return
 	}
 
@@ -1521,7 +1540,7 @@ func (e *Engine) dispatchOrDefer(task firingTask) {
 		// Gate contention detected AT DISPATCH by command loop (spec D3/R3)
 		if job != nil {
 			job.BudgetCounters.TotalDefers++
-			_ = SaveJobs(e.jobsPath, e.jobs)
+			e.saveAndPublishJobLocked(job)
 		}
 
 		_, _ = e.journal.Append(JournalEvent{
@@ -1642,7 +1661,7 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 					prompt:     noticeText,
 				})
 
-				_ = SaveJobs(e.jobsPath, e.jobs)
+				e.saveAndPublishJobLocked(job)
 				return // Do not re-arm paused job
 			}
 		} else {
@@ -1732,7 +1751,7 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 		e.armTimerLocked(job, nextRes.Due, nextRes.IsDstGap, nextRes.SkippedDue)
 	}
 
-	_ = SaveJobs(e.jobsPath, e.jobs)
+	e.saveAndPublishJobLocked(job)
 }
 
 func (e *Engine) armTimerLocked(job *Job, due time.Time, isGap bool, skippedDue time.Time) {
@@ -1836,6 +1855,40 @@ func (e *Engine) findGoal(id string) *Goal {
 	return nil
 }
 
+func (e *Engine) saveAndPublishJobLocked(job *Job) {
+	_ = SaveJobs(e.jobsPath, e.jobs)
+	if job != nil {
+		e.Publish(Event{Kind: "job", Op: "upsert", Row: *job})
+	}
+}
+
+func (e *Engine) saveAndPublishGoalLocked(goal *Goal) {
+	_ = SaveGoals(e.goalsPath, e.goals)
+	e.saveJournalAndPublishGoalLocked(goal)
+}
+
+func (e *Engine) saveJournalAndPublishGoalLocked(goal *Goal) {
+	if goal == nil {
+		return
+	}
+	_ = SaveGoalJournal(e.home, goal)
+	e.Publish(Event{Kind: "goal", Op: "upsert", Row: *goal})
+}
+
+func (e *Engine) readAndPublishHeartbeatLocked() HeartbeatInfo {
+	info := ReadHeartbeatInfo(e.home)
+	cur := HeartbeatState{
+		Enabled: info.Enabled,
+		Cadence: info.Cadence,
+		Quiet:   info.Quiet,
+	}
+	if e.lastHeartbeat == nil || *e.lastHeartbeat != cur {
+		e.lastHeartbeat = &cur
+		e.Publish(Event{Kind: "heartbeat", Op: "upsert", Row: cur})
+	}
+	return info
+}
+
 func (e *Engine) sweepStaleGoalsLocked(now time.Time) {
 	for i := range e.goals {
 		goal := &e.goals[i]
@@ -1849,8 +1902,7 @@ func (e *Engine) sweepStaleGoalsLocked(now time.Time) {
 				goal.Status = "failed"
 				goal.NextDue = ""
 				goal.UpdatedAt = now.Format(time.RFC3339)
-				_ = SaveGoals(e.goalsPath, e.goals)
-				_ = SaveGoalJournal(e.home, goal)
+				e.saveAndPublishGoalLocked(goal)
 				_, _ = e.journal.Append(JournalEvent{
 					Type:      "goal_failed",
 					Kind:      "goal",
@@ -2026,7 +2078,7 @@ func (e *Engine) handlePauseGoal(cmd cmdPauseGoal) {
 		cmd.resp <- fmt.Errorf("save goals: %w", err)
 		return
 	}
-	_ = SaveGoalJournal(e.home, goal)
+	e.saveJournalAndPublishGoalLocked(goal)
 
 	_, _ = e.journal.Append(JournalEvent{
 		Type:      "goal_paused",
@@ -2068,7 +2120,7 @@ func (e *Engine) handleResumeGoal(cmd cmdResumeGoal) {
 		cmd.resp <- fmt.Errorf("save goals: %w", err)
 		return
 	}
-	_ = SaveGoalJournal(e.home, goal)
+	e.saveJournalAndPublishGoalLocked(goal)
 
 	_, _ = e.journal.Append(JournalEvent{
 		Type:      "goal_resumed",
@@ -2112,7 +2164,7 @@ func (e *Engine) handleCancelGoal(cmd cmdCancelGoal) {
 		cmd.resp <- fmt.Errorf("save goals: %w", err)
 		return
 	}
-	_ = SaveGoalJournal(e.home, goal)
+	e.saveJournalAndPublishGoalLocked(goal)
 
 	_, _ = e.journal.Append(JournalEvent{
 		Type:      "goal_failed",
@@ -2149,7 +2201,7 @@ func (e *Engine) handleForceCloseGoal(cmd cmdForceCloseGoal) {
 		cmd.resp <- fmt.Errorf("save goals: %w", err)
 		return
 	}
-	_ = SaveGoalJournal(e.home, goal)
+	e.saveJournalAndPublishGoalLocked(goal)
 
 	_, _ = e.journal.Append(JournalEvent{
 		Type:      "goal_closed",
@@ -2201,7 +2253,7 @@ func (e *Engine) handleSetGoalBudget(cmd cmdSetGoalBudget) {
 		cmd.resp <- fmt.Errorf("save goals: %w", err)
 		return
 	}
-	_ = SaveGoalJournal(e.home, goal)
+	e.saveJournalAndPublishGoalLocked(goal)
 	cmd.resp <- nil
 }
 
@@ -2295,7 +2347,7 @@ func (e *Engine) handleGoalStep(cmd cmdGoalStep) {
 		cmd.resp <- fmt.Errorf("save goals: %w", err)
 		return
 	}
-	_ = SaveGoalJournal(e.home, goal)
+	e.saveJournalAndPublishGoalLocked(goal)
 
 	_, _ = e.journal.Append(JournalEvent{
 		Type:      "goal_stepped",
@@ -2382,7 +2434,7 @@ func (e *Engine) handleGoalClose(cmd cmdGoalClose) {
 		cmd.resp <- fmt.Errorf("save goals: %w", err)
 		return
 	}
-	_ = SaveGoalJournal(e.home, goal)
+	e.saveJournalAndPublishGoalLocked(goal)
 
 	_, _ = e.journal.Append(JournalEvent{
 		Type:         "goal_closed",
@@ -2423,8 +2475,7 @@ func (e *Engine) handleGoalDue(cmd cmdGoalDue) {
 		nextDue := now.Add(goal.StepAfter)
 		goal.NextDue = nextDue.Format(time.RFC3339)
 		e.armGoalTimerLocked(goal, nextDue)
-		_ = SaveGoals(e.goalsPath, e.goals)
-		_ = SaveGoalJournal(e.home, goal)
+		e.saveAndPublishGoalLocked(goal)
 		return
 	}
 
@@ -2440,8 +2491,7 @@ func (e *Engine) handleGoalDue(cmd cmdGoalDue) {
 		goal.Status = "stale"
 		goal.NextDue = ""
 		goal.UpdatedAt = now.Format(time.RFC3339)
-		_ = SaveGoals(e.goalsPath, e.goals)
-		_ = SaveGoalJournal(e.home, goal)
+		e.saveAndPublishGoalLocked(goal)
 		_, _ = e.journal.Append(JournalEvent{
 			Type:      "goal_staled",
 			Kind:      "goal",
@@ -2504,8 +2554,7 @@ func (e *Engine) handleGoalRetry(cmd cmdGoalRetry) {
 		nextDue := e.clock.Now().UTC().Add(goal.StepAfter)
 		goal.NextDue = nextDue.Format(time.RFC3339)
 		e.armGoalTimerLocked(goal, nextDue)
-		_ = SaveGoals(e.goalsPath, e.goals)
-		_ = SaveGoalJournal(e.home, goal)
+		e.saveAndPublishGoalLocked(goal)
 		return
 	}
 
@@ -2632,8 +2681,7 @@ func (e *Engine) handleGoalWorkerDone(res firingResult) {
 			e.goalRetryTimers[goal.ID] = retryTimer
 			nextDue := now.Add(60 * time.Second)
 			goal.NextDue = nextDue.Format(time.RFC3339)
-			_ = SaveGoals(e.goalsPath, e.goals)
-			_ = SaveGoalJournal(e.home, goal)
+			e.saveAndPublishGoalLocked(goal)
 			e.activeStep = nil
 			return
 		}
@@ -2690,8 +2738,7 @@ func (e *Engine) handleGoalWorkerDone(res firingResult) {
 			goal.Status = "stale"
 			goal.NextDue = ""
 			goal.UpdatedAt = now.Format(time.RFC3339)
-			_ = SaveGoals(e.goalsPath, e.goals)
-			_ = SaveGoalJournal(e.home, goal)
+			e.saveAndPublishGoalLocked(goal)
 			_, _ = e.journal.Append(JournalEvent{
 				Type:      "goal_staled",
 				Kind:      "goal",
@@ -2706,12 +2753,10 @@ func (e *Engine) handleGoalWorkerDone(res firingResult) {
 		nextDue := now.Add(goal.StepAfter)
 		goal.NextDue = nextDue.Format(time.RFC3339)
 		goal.UpdatedAt = now.Format(time.RFC3339)
-		_ = SaveGoals(e.goalsPath, e.goals)
-		_ = SaveGoalJournal(e.home, goal)
+		e.saveAndPublishGoalLocked(goal)
 		e.armGoalTimerLocked(goal, nextDue)
 	} else {
-		_ = SaveGoals(e.goalsPath, e.goals)
-		_ = SaveGoalJournal(e.home, goal)
+		e.saveAndPublishGoalLocked(goal)
 	}
 }
 
@@ -3242,7 +3287,7 @@ func (e *Engine) handleQuietCollapseDue(cmd cmdQuietCollapseDue) {
 
 func (e *Engine) handleHeartbeatDue(cmd cmdHeartbeatDue) {
 	now := e.clock.Now().UTC()
-	info := ReadHeartbeatInfo(e.home)
+	info := e.readAndPublishHeartbeatLocked()
 	if !info.Enabled {
 		e.armHeartbeatLocked()
 		return
@@ -3326,7 +3371,7 @@ func (e *Engine) handleHeartbeatCollapseDue(cmd cmdHeartbeatCollapseDue) {
 		return
 	}
 
-	info := ReadHeartbeatInfo(e.home)
+	info := e.readAndPublishHeartbeatLocked()
 	window := info.Quiet
 	if window == "" {
 		window = e.cfg.QuietHours
@@ -3346,7 +3391,7 @@ func (e *Engine) handleHeartbeatCollapseDue(cmd cmdHeartbeatCollapseDue) {
 
 func (e *Engine) handleHeartbeatIdleTick(cmd cmdHeartbeatIdleTick) {
 	e.heartbeatIdleTimer = nil
-	info := ReadHeartbeatInfo(e.home)
+	info := e.readAndPublishHeartbeatLocked()
 	now := e.clock.Now().UTC()
 
 	if !info.Enabled {
@@ -3369,7 +3414,7 @@ func (e *Engine) handleHeartbeatIdleTick(cmd cmdHeartbeatIdleTick) {
 
 func (e *Engine) handleHeartbeatRetry(cmd cmdHeartbeatRetry) {
 	e.heartbeatRetryTimer = nil
-	info := ReadHeartbeatInfo(e.home)
+	info := e.readAndPublishHeartbeatLocked()
 	if !info.Enabled {
 		return
 	}
@@ -3524,7 +3569,7 @@ func (e *Engine) armHeartbeatAfterLocked(from time.Time) {
 		e.heartbeatIdleTimer = nil
 	}
 
-	info := ReadHeartbeatInfo(e.home)
+	info := e.readAndPublishHeartbeatLocked()
 	now := e.clock.Now().UTC()
 
 	if !info.Enabled {
