@@ -80,3 +80,94 @@ export interface KeyRow {
   status: string;
   sha256_8?: string;
 }
+
+export interface FastiHeartbeatState {
+  enabled: boolean;
+  cadence: string;
+  quiet: string;
+}
+
+export interface FastiSchedule {
+  kind: "cron" | "interval";
+  expr?: string;
+  every?: string;
+}
+
+export interface FastiQuietOverride {
+  window: string;
+  mode: "defers" | "announce_only";
+}
+
+export interface FastiBudgetCounters {
+  total_runs?: number;
+  total_skips?: number;
+  total_defers?: number;
+  total_failures?: number;
+}
+
+export interface FastiJob {
+  id: string;
+  name?: string;
+  schedule: FastiSchedule;
+  prompt: string;
+  session?: string;
+  announce?: string;
+  quiet?: FastiQuietOverride;
+  enabled: boolean;
+  paused: boolean;
+  created_by: string;
+  last_fire?: string;
+  next_due?: string;
+  consecutive_skips: number;
+  budget_counters?: FastiBudgetCounters;
+}
+
+export interface FastiRequirement {
+  text: string;
+  done: boolean;
+  evidence?: number[];
+}
+
+export interface FastiGoal {
+  id: string;
+  title: string;
+  status: "active" | "paused" | "done" | "failed" | "stale";
+  requirements: FastiRequirement[];
+  turn_count: number;
+  turn_budget: number;
+  next_due?: string;
+  session_id: string;
+  next_hint?: string;
+  progress_prose?: string;
+  created_at: string;
+  created_seq?: number;
+  updated_at?: string;
+}
+
+export interface FastiNoticeStats {
+  count: number;
+  last_time: string;
+}
+
+export interface FastiNoiseSnapshot {
+  current_day: string;
+  announce_count: number;
+  max_announce_per_day: number;
+  overflow_day_streak: string[];
+  dedup_window_count: number;
+  notices?: Record<string, FastiNoticeStats>;
+}
+
+export interface FastiStateResponse {
+  jobs: FastiJob[];
+  goals: FastiGoal[];
+  heartbeat: FastiHeartbeatState;
+  noise: FastiNoiseSnapshot;
+}
+
+export interface FastiEvent {
+  kind: "job" | "goal" | "heartbeat";
+  op: "upsert" | "delete";
+  row: any;
+}
+

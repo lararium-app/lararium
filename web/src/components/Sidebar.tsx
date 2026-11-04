@@ -5,13 +5,13 @@ import { Session } from "../types/hearthd";
 interface SidebarProps {
   sessions: Session[];
   currentSessionId: string | null;
-  activeView: "chat" | "doors" | "cells" | "memory";
+  activeView: "chat" | "doors" | "cells" | "memory" | "proactivity";
   statusText: string;
   statusType: "ok" | "warn" | "err";
   showPreviewPanels: boolean;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
-  onSelectView: (view: "chat" | "doors" | "cells" | "memory") => void;
+  onSelectView: (view: "chat" | "doors" | "cells" | "memory" | "proactivity") => void;
   onOpenKeys: () => void;
   onToggleTheme: () => void;
   isOpenMobile: boolean;
@@ -252,6 +252,33 @@ export function Sidebar({
           >
             <Shield className="w-4 h-4" />
             <span>Doors</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onSelectView("proactivity");
+              onCloseMobile();
+            }}
+            className={`w-full flex items-center gap-2 h-10 rounded-lg px-2 text-sm transition-colors ${
+              activeView === "proactivity"
+                ? "bg-[var(--ember-dim)] text-ink border-l-2 border-ember font-medium"
+                : "text-ink2 hover:bg-panel2 border-l-2 border-transparent"
+            }`}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="w-4 h-4 shrink-0"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            <span>Proactivity</span>
           </button>
           {showPreviewPanels && (
             <>
