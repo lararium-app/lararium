@@ -262,6 +262,11 @@ func (v *Vault) CheckFileLaw() error {
 		"policy.json":       true,
 		"connectors.json":   true,
 		"custos.lock":       true,
+		// Device registry written by hearthd per DEVICE-RAILS-SPEC D3
+		// (<hearth>/custos/devices.json, 0600) — a later amendment to the
+		// §C2 inventory; without it a home with paired devices fails
+		// custosd startup (dogfood crash found 2026-11-04).
+		"devices.json": true,
 		"ctl.sock":          true,
 		"ctl.token":         true,
 		"doors.sock":        true,
