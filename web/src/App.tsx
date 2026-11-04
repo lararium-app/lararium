@@ -6,6 +6,7 @@ import { ChatWindow } from "./components/ChatWindow";
 import { DoorsPanel } from "./components/DoorsPanel";
 import { CellMonitor } from "./components/CellMonitor";
 import { MemoryViewer } from "./components/MemoryViewer";
+import { ProactivityPanel } from "./components/ProactivityPanel";
 import { KeysDrawer } from "./components/KeysDrawer";
 import { ThemePopover } from "./components/ThemePopover";
 import { useHearthStream } from "./hooks/useHearthStream";
@@ -15,7 +16,7 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [events, setEvents] = useState<SurfaceEvent[]>([]);
-  const [activeView, setActiveView] = useState<"chat" | "doors" | "cells" | "memory">("chat");
+  const [activeView, setActiveView] = useState<"chat" | "doors" | "cells" | "memory" | "proactivity">("chat");
   const [statusText, setStatusText] = useState("hearth online");
   const [statusType, setStatusType] = useState<"ok" | "warn" | "err">("ok");
 
@@ -433,7 +434,9 @@ export function App() {
               ? "Door policy"
               : activeView === "cells"
               ? "Cells & Sandbox Monitor"
-              : "Memory & Session Log Inspector"
+              : activeView === "memory"
+              ? "Memory & Session Log Inspector"
+              : "Proactivity"
           }
           modelPin={activeView === "chat" ? currentSession?.model_pin : undefined}
           onToggleMobileNav={() => setMobileNavOpen(!mobileNavOpen)}
@@ -463,6 +466,8 @@ export function App() {
           {activeView === "cells" && <CellMonitor />}
 
           {activeView === "memory" && <MemoryViewer />}
+
+          {activeView === "proactivity" && <ProactivityPanel token={token} />}
 
           <ThemePopover isOpen={themeOpen} onClose={() => setThemeOpen(false)} />
         </main>
