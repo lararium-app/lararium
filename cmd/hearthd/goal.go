@@ -55,7 +55,7 @@ func goalNewCmd(cfgPath string, args []string) {
 	fs.Var(&objectives, "objective", "goal objective / requirement (repeatable)")
 	var requirements stringSliceFlag
 	fs.Var(&requirements, "requirement", "goal requirement (repeatable)")
-	turnsFlag := fs.Int("turns", 20, "turn budget (default 20, cap 100)")
+	turnsFlag := fs.Int("turns", 0, "turn budget (default 25)")
 	budgetFlag := fs.Int("budget", 0, "turn budget alias")
 	sessionFlag := fs.String("session", "", "dedicated session ID (default goal-<id>)")
 	stepAfterFlag := fs.String("step-after", "", "step cadence (default 15m)")
@@ -89,11 +89,12 @@ func goalNewCmd(cfgPath string, args []string) {
 	if *budgetFlag > 0 {
 		turns = *budgetFlag
 	}
-	if turns > 100 {
-		turns = 100
-	}
-	if turns <= 0 {
-		turns = 20
+	// D10: default 25, no cap — omit the field when unset so the engine
+	// applies the spec'd default; never clamp the user's number.
+	if turns < 0 {
+		fmt.Fprintln(os.Stderr, "turn budget must be positive")
+		exitFunc(2)
+		return
 	}
 
 	req := map[string]any{
@@ -101,7 +102,9 @@ func goalNewCmd(cfgPath string, args []string) {
 		"entity":       "goal",
 		"title":        title,
 		"requirements": reqs,
-		"turn_budget":  turns,
+	}
+	if turns > 0 {
+		req["turn_budget"] = turns
 	}
 	if *sessionFlag != "" {
 		req["session"] = *sessionFlag

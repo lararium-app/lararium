@@ -56,7 +56,7 @@ func printJobUsage() {
        hearthd job resume <id>
        hearthd job remove <id>
        hearthd job run <id>
-       hearthd job edit <id> [--name <name>] [--every <dur> | --schedule <json>] [--prompt <text>] [--enabled]`)
+       hearthd job edit <id> [--every <dur> | --schedule <json>] [--prompt <text>] [--enable | --disable | --enabled true|false]`)
 }
 
 func jobCmd(cfgPath string, args []string) {
@@ -289,13 +289,10 @@ func jobLifecycleCmd(cfgPath, op string, args []string) {
 func jobEditCmd(cfgPath string, args []string) {
 	args = reorderFlags(args)
 	fs := flag.NewFlagSet("job edit", flag.ContinueOnError)
-	nameFlag := fs.String("name", "", "job name")
 	everyFlag := fs.String("every", "", "interval shorthand (e.g. 30m)")
 	scheduleFlag := fs.String("schedule", "", "full schedule JSON")
 	promptFlag := fs.String("prompt", "", "task prompt")
 	userPromptFlag := fs.String("user-prompt", "", "task prompt alias")
-	channelFlag := fs.String("channel", "", "announcement destination channel")
-	announceFlag := fs.String("announce", "", "announcement destination channel")
 	enabledFlag := fs.String("enabled", "", "enable or disable job (true/false)")
 	disableFlag := fs.Bool("disable", false, "disable job")
 	enableFlag := fs.Bool("enable", false, "enable job")
@@ -325,16 +322,6 @@ func jobEditCmd(cfgPath string, args []string) {
 	}
 	if prompt != "" {
 		req["prompt"] = prompt
-	}
-	if *nameFlag != "" {
-		req["name"] = *nameFlag
-	}
-	channel := *channelFlag
-	if channel == "" {
-		channel = *announceFlag
-	}
-	if channel != "" {
-		req["announce"] = channel
 	}
 
 	if *everyFlag != "" {

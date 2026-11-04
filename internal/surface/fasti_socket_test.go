@@ -334,6 +334,18 @@ func TestSocket_ErrorsAndGating(t *testing.T) {
 			req:     `FASTI {"verb":"pause","entity":"goal","id":"g_nonexistent0000000000000"}`,
 			wantErr: "ERR not_found g_nonexistent0000000000000",
 		},
+		{
+			// D8: edit covers prompt/schedule/enabled only — the surface
+			// must reject, never silently ack a field that never lands.
+			name:    "edit rejects name",
+			req:     `FASTI {"verb":"edit","entity":"job","id":"j_nonexistent0000000000000","name":"sneaky"}`,
+			wantErr: "ERR edit supports prompt, schedule, and enabled only",
+		},
+		{
+			name:    "edit rejects announce",
+			req:     `FASTI {"verb":"edit","entity":"job","id":"j_nonexistent0000000000000","announce":"telegram:1"}`,
+			wantErr: "ERR edit supports prompt, schedule, and enabled only",
+		},
 	}
 
 	for _, tc := range tests {
@@ -362,6 +374,51 @@ func TestSocket_ErrorsAndGating(t *testing.T) {
 			t.Fatalf("got %q, want ERR payload_too_large", resp)
 		}
 	})
+}
+
+// TestSocket_GoalBudgetFollowsSpec pins D10: turn_budget defaults to 25 and
+// is never clamped by the surface. The engine owns the default; an unset or
+// large budget must land as 25 / 150, not an invented 20 / 100.
+func TestSocket_GoalBudgetFollowsSpec(t *testing.T) {
+	env := setupSocketTestEnv(t, true)
+
+	goalID := func(t *testing.T, req string) string {
+		t.Helper()
+		resp := sendSocketLine(t, env.sockPath, req)
+		if !strings.HasPrefix(resp, "OK") {
+			t.Fatalf("goal new failed: %s", resp)
+		}
+		var ack struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(resp, "OK ")), &ack); err != nil {
+			t.Fatalf("parse ack: %v", err)
+		}
+		return ack.ID
+	}
+
+	unset := goalID(t, `FASTI {"verb":"new","entity":"goal","requirements":["req d1"]}`)
+	g, err := env.eng.GetGoal(context.Background(), unset)
+	if err != nil {
+		t.Fatalf("GetGoal: %v", err)
+	}
+	if g.TurnBudget != 25 {
+		t.Fatalf("unset turn_budget = %d, want spec default 25", g.TurnBudget)
+	}
+
+	over := goalID(t, `FASTI {"verb":"new","entity":"goal","requirements":["req d2"],"turn_budget":150}`)
+	g, err = env.eng.GetGoal(context.Background(), over)
+	if err != nil {
+		t.Fatalf("GetGoal: %v", err)
+	}
+	if g.TurnBudget != 150 {
+		t.Fatalf("turn_budget 150 = %d, want 150 (no surface clamp)", g.TurnBudget)
+	}
+
+	resp := sendSocketLine(t, env.sockPath, `FASTI {"verb":"new","entity":"goal","requirements":["req d3"],"turn_budget":-5}`)
+	if !strings.HasPrefix(resp, "ERR turn_budget must be positive") {
+		t.Fatalf("got %q, want ERR turn_budget must be positive", resp)
+	}
 }
 
 func TestSocket_LifecycleIdempotence(t *testing.T) {

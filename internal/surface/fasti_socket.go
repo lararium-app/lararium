@@ -224,6 +224,15 @@ func (s *Server) handleFastiJobEdit(conn net.Conn, req fastiSocketReq, payloadHa
 		return
 	}
 	ctx := context.Background()
+
+	// D8 edit covers prompt/schedule/enabled only. Silently ignoring other
+	// fields would ack a change that never lands; name and announce are set
+	// at add time and are immutable on the socket edit path.
+	if req.Name != "" || req.Announce != "" {
+		fmt.Fprint(conn, "ERR edit supports prompt, schedule, and enabled only (name/announce are set at add)\n")
+		return
+	}
+
 	replayed, err := s.Fasti.CheckEditDedup(ctx, req.ID, payloadHash)
 	if err != nil {
 		fmt.Fprintf(conn, "ERR %s\n", err)
@@ -337,11 +346,12 @@ func (s *Server) handleFastiGoalNew(conn net.Conn, req fastiSocketReq) {
 	if turns == 0 {
 		turns = req.Budget
 	}
-	if turns <= 0 {
-		turns = 20
-	}
-	if turns > 100 {
-		turns = 100
+	// D10: turn_budget defaults to 25 and has no cap. The engine owns that
+	// default (non-positive turns fall through to it); the surface must not
+	// invent its own default or clamp, or the spec'd default never applies.
+	if turns < 0 {
+		fmt.Fprint(conn, "ERR turn_budget must be positive\n")
+		return
 	}
 	stepAfter := 15 * time.Minute
 	if strings.TrimSpace(req.StepAfter) != "" {
