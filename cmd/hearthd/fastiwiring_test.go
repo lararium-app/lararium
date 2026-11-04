@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1413,5 +1414,696 @@ func TestFastiWiringSecretNeedlesRefusal(t *testing.T) {
 	jobs, err = fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("LoadJobs after valid add = %+v (err=%v), want 1 job", jobs, err)
+	}
+}
+
+type auditToolResultRow struct {
+	CallID       string          `json:"call_id"`
+	OK           bool            `json:"ok"`
+	ResultDigest string          `json:"result_digest"`
+	Text         string          `json:"text"`
+	Approval     json.RawMessage `json:"approval"`
+}
+
+func readSessionToolResultAudit(t *testing.T, sessDir, wantCallID string) (auditToolResultRow, string) {
+	t.Helper()
+	sessLog, err := penatus.OpenLog(sessDir)
+	if err != nil {
+		t.Fatalf("OpenLog(%s): %v", sessDir, err)
+	}
+	var (
+		gotRow     auditToolResultRow
+		foundTR    bool
+		srcChannel string
+	)
+	for _, ev := range sessLog.Live() {
+		raw, mErr := ev.MarshalJSON()
+		if mErr != nil {
+			t.Fatalf("MarshalJSON: %v", mErr)
+		}
+		if ev.T == "msg" {
+			var m struct {
+				Role string `json:"role"`
+				Src  struct {
+					Channel string `json:"channel"`
+				} `json:"src"`
+			}
+			if json.Unmarshal(raw, &m) == nil && m.Role == "user" {
+				srcChannel = m.Src.Channel
+			}
+		}
+		if ev.T == "tool_result" {
+			var tr auditToolResultRow
+			if uErr := json.Unmarshal(raw, &tr); uErr != nil {
+				t.Fatalf("Unmarshal tool_result: %v", uErr)
+			}
+			if tr.CallID == wantCallID {
+				gotRow = tr
+				foundTR = true
+			}
+		}
+	}
+	if !foundTR {
+		t.Fatalf("tool_result for %s not found in %s", wantCallID, sessDir)
+	}
+	return gotRow, srcChannel
+}
+
+// assertSkipStep pins one step of the session-busy skip law: steps 1-4 count
+// skips silently with the job still enabled, step 5 self-pauses (enabled stays
+// true) and emits exactly the operational auto-pause notice.
+func assertSkipStep(t *testing.T, ann *spyAnnouncer, j fasti.Job, step int) {
+	t.Helper()
+	if j.ConsecutiveSkips != step {
+		t.Fatalf("step %d: ConsecutiveSkips = %d, want %d", step, j.ConsecutiveSkips, step)
+	}
+	if step < 5 {
+		if j.Paused {
+			t.Fatalf("step %d: job prematurely paused", step)
+		}
+		select {
+		case msg := <-ann.ch:
+			t.Fatalf("step %d: unexpected notice before 5th skip: %q", step, msg)
+		default:
+		}
+		return
+	}
+	if !j.Paused || !j.Enabled {
+		t.Fatalf("step 5: job state = (Paused=%v, Enabled=%v), want (true, true)", j.Paused, j.Enabled)
+	}
+	select {
+	case notice := <-ann.ch:
+		if !strings.Contains(notice, "paused after 5 consecutive skips") {
+			t.Fatalf("step 5 notice = %q, want auto-pause notice", notice)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("step 5: expected operational auto-pause notice on 5th skip")
+	}
+}
+
+// V-Pc (door law): cron firing executes a real turn through the hub; an approval
+// card raised mid-turn settles from the surface and completes the firing; tool calls
+// see the same audit object shape as an api-channel turn; a session-busy firing
+// sequence through the hub skips 4 times with no notice and self-pauses + notices on the 5th.
+func TestFastiVPc_DoorLawEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC))
+	tools := buildTools(home)
+
+	busyTurnStarted := make(chan struct{})
+	unblockBusyTurn := make(chan struct{})
+
+	sp := &scriptedStepProvider{
+		name: "vpc-fake",
+		steps: []func(step int) (*router.Completion, error){
+			// Steps 1-2: cron firing turn on s_cron raises untrusted tool "forget" approval card mid-turn.
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "vpc-fake",
+					ToolCalls: []router.ToolCall{
+						{
+							ID:       "call_cron_forget",
+							Name:     "forget",
+							ArgsJSON: `{"text":"obsolete cron note"}`,
+						},
+					},
+				}, nil
+			},
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "vpc-fake",
+					Text:  "cron turn completed after approval",
+				}, nil
+			},
+			// Steps 3-4: api-channel turn on s_api raises the same untrusted tool "forget" approval card.
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "vpc-fake",
+					ToolCalls: []router.ToolCall{
+						{
+							ID:       "call_api_forget",
+							Name:     "forget",
+							ArgsJSON: `{"text":"obsolete api note"}`,
+						},
+					},
+				}, nil
+			},
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "vpc-fake",
+					Text:  "api turn completed after approval",
+				}, nil
+			},
+			// Step 5: in-flight turn holding s_busy while 5 cron firings collide with it.
+			func(_ int) (*router.Completion, error) {
+				close(busyTurnStarted)
+				<-unblockBusyTurn
+				return &router.Completion{
+					Model: "vpc-fake",
+					Text:  "busy holder finished",
+				}, nil
+			},
+		},
+	}
+
+	hub, ap := setupHubOnHome(t, home, sp, tools, 5*time.Second)
+	ap.SetClock(clk)
+	ap.SetBridgeLive(func() bool { return true })
+
+	pendingCards := make(chan surface.CustosCard, 8)
+	cancelSub := ap.SubscribeCustos(func(card *surface.CustosCard, _ *surface.CustosGone) {
+		if card != nil {
+			pendingCards <- *card
+		}
+	})
+	defer cancelSub()
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, holder, stopFasti, err := startFasti(context.Background(), cfg, home, hub, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+
+	ann := newSpyAnnouncer()
+	holder.Set(ann)
+
+	// 1. Add cron job firing every 5m into s_cron.
+	cronJob, err := eng.AddJob(context.Background(), fasti.Job{
+		ID:       "job-vpc-cron",
+		Name:     "vpc-cron-approval",
+		Schedule: fasti.Schedule{Kind: "cron", Expr: "*/5 * * * *"},
+		Prompt:   "prune obsolete notes",
+		Session:  "s_cron",
+	})
+	if err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	// Trigger firing at 10:05:00Z; wait for mid-turn approval card and settle via surface HandleApproval.
+	clk.Advance(5 * time.Minute)
+
+	var cronCard surface.CustosCard
+	select {
+	case cronCard = <-pendingCards:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for mid-turn approval card from cron firing")
+	}
+	if cronCard.Tool != "forget" {
+		t.Fatalf("cron approval card tool = %q, want forget", cronCard.Tool)
+	}
+
+	reqCronApprove := httptest.NewRequest(http.MethodPost, "/v1/sessions/s_cron/approvals/"+cronCard.ID, strings.NewReader(`{"decision":"allow"}`))
+	wCronApprove := httptest.NewRecorder()
+	hub.HandleApproval(wCronApprove, reqCronApprove, "s_cron", cronCard.ID)
+	if wCronApprove.Code != http.StatusOK {
+		t.Fatalf("HandleApproval for cron turn = %d %s, want 200", wCronApprove.Code, wCronApprove.Body.String())
+	}
+
+	if err := eng.Sync(context.Background()); err != nil {
+		t.Fatalf("eng.Sync: %v", err)
+	}
+	select {
+	case gotAnn := <-ann.ch:
+		if gotAnn != "cron turn completed after approval" {
+			t.Fatalf("cron announced text = %q, want %q", gotAnn, "cron turn completed after approval")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cron completion announcement")
+	}
+
+	if err := eng.PauseJob(context.Background(), cronJob.ID); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+
+	// 2. Execute an api-channel turn with the same tool approval flow to compare audit objects.
+	apiDone := make(chan error, 1)
+	go func() {
+		apiDone <- hub.RunHeadlessTurn(context.Background(), "s_api", "prune obsolete api notes", "api", 0, nil)
+	}()
+
+	var apiCard surface.CustosCard
+	select {
+	case apiCard = <-pendingCards:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for approval card from api turn")
+	}
+	reqAPIApprove := httptest.NewRequest(http.MethodPost, "/v1/sessions/s_api/approvals/"+apiCard.ID, strings.NewReader(`{"decision":"allow"}`))
+	wAPIApprove := httptest.NewRecorder()
+	hub.HandleApproval(wAPIApprove, reqAPIApprove, "s_api", apiCard.ID)
+	if wAPIApprove.Code != http.StatusOK {
+		t.Fatalf("HandleApproval for api turn = %d %s, want 200", wAPIApprove.Code, wAPIApprove.Body.String())
+	}
+	if err := <-apiDone; err != nil {
+		t.Fatalf("api turn failed: %v", err)
+	}
+
+	cronTR, cronChan := readSessionToolResultAudit(t, hub.SessionDir("s_cron"), "call_cron_forget")
+	apiTR, apiChan := readSessionToolResultAudit(t, hub.SessionDir("s_api"), "call_api_forget")
+	if cronChan != "cron" {
+		t.Fatalf("cron turn user msg src.channel = %q, want cron", cronChan)
+	}
+	if apiChan != "api" {
+		t.Fatalf("api turn user msg src.channel = %q, want api", apiChan)
+	}
+	if !cronTR.OK || !apiTR.OK || cronTR.ResultDigest == "" || apiTR.ResultDigest == "" {
+		t.Fatalf("tool_result rows incomplete: cron=%+v api=%+v", cronTR, apiTR)
+	}
+	if string(cronTR.Approval) != string(apiTR.Approval) {
+		t.Fatalf("cron approval audit object %s != api approval audit object %s", cronTR.Approval, apiTR.Approval)
+	}
+	var approvalAudit struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+		Source   string `json:"source"`
+	}
+	if err := json.Unmarshal(cronTR.Approval, &approvalAudit); err != nil {
+		t.Fatalf("unmarshal approval audit: %v", err)
+	}
+	if approvalAudit.Decision != "allowed" || approvalAudit.Reason != "ok" || approvalAudit.Source != "web" {
+		t.Fatalf("unexpected approval audit fields: %+v", approvalAudit)
+	}
+
+	// 3. Through-the-hub session-busy firing sequence: 4 skips with no notice, 5th skip self-pauses + notices.
+	busyTurnDone := make(chan error, 1)
+	go func() {
+		busyTurnDone <- hub.RunHeadlessTurn(context.Background(), "s_busy", "long running turn", "api", 0, nil)
+	}()
+	select {
+	case <-busyTurnStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for s_busy turn to start")
+	}
+
+	busyJob, err := eng.AddJob(context.Background(), fasti.Job{
+		ID:       "job-vpc-busy",
+		Name:     "vpc-busy-seq",
+		Schedule: fasti.Schedule{Kind: "interval", Every: "5m"},
+		Prompt:   "attempt turn on busy session",
+		Session:  "s_busy",
+	})
+	if err != nil {
+		t.Fatalf("AddJob busy: %v", err)
+	}
+
+	for step := 1; step <= 5; step++ {
+		clk.Advance(5 * time.Minute)
+		if err := eng.Sync(context.Background()); err != nil {
+			t.Fatalf("eng.Sync step %d: %v", step, err)
+		}
+		j, gErr := eng.GetJob(context.Background(), busyJob.ID)
+		if gErr != nil {
+			t.Fatalf("GetJob step %d: %v", step, gErr)
+		}
+		assertSkipStep(t, ann, j, step)
+	}
+
+	close(unblockBusyTurn)
+	if err := <-busyTurnDone; err != nil {
+		t.Fatalf("busy holder turn err: %v", err)
+	}
+}
+
+// V-Pf (proposal-card log-clean law): after a full model-proposal cycle
+// (propose -> card -> deny), card prompt text never appears in daemon log output.
+func TestFastiVPf_ProposalCardLogClean(t *testing.T) {
+	var logBuf safeBuffer
+	origLogOut := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(origLogOut) })
+
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC))
+	tools := buildTools(home)
+
+	const cardPromptNeedle = "VPF-CARD-PROMPT-LOG-NEEDLE-994411"
+	sp := &scriptedStepProvider{
+		name: "vpf-fake",
+		steps: []func(step int) (*router.Completion, error){
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "vpf-fake",
+					ToolCalls: []router.ToolCall{
+						{
+							ID:       "call_fasti_propose",
+							Name:     "fasti_job",
+							ArgsJSON: `{"name":"log-clean-check","schedule":"every 20m","prompt":"` + cardPromptNeedle + `"}`,
+						},
+					},
+				}, nil
+			},
+			func(_ int) (*router.Completion, error) {
+				return &router.Completion{
+					Model: "vpf-fake",
+					Text:  "Proposed recurring job for approval.",
+				}, nil
+			},
+		},
+	}
+
+	hub, ap := setupHubOnHome(t, home, sp, tools, 5*time.Second)
+	ap.SetClock(clk)
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, hub, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+
+	store, err := surface.OpenTokenStore(filepath.Join(home, "tokens.json"))
+	if err != nil {
+		t.Fatalf("OpenTokenStore: %v", err)
+	}
+	rawTok, err := store.Create("vpf-client")
+	if err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	srv := &surface.Server{
+		Cfg:   surface.ServeConfig{Listen: "127.0.0.1:0"},
+		Store: store,
+		Hub:   hub,
+		Fasti: eng,
+	}
+	srv.SetApprovalHub(ap)
+	ts := httptest.NewServer(surface.NewServer(srv))
+	defer ts.Close()
+
+	// 1. Model proposes job via fasti_job during a turn.
+	if err := hub.RunHeadlessTurn(context.Background(), "s_vpf", "propose the job", "api", 0, nil); err != nil {
+		t.Fatalf("RunHeadlessTurn: %v", err)
+	}
+
+	jobs, err := fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("LoadJobs after propose = %+v, err=%v", jobs, err)
+	}
+	jobID := jobs[0].ID
+
+	bridge := getFastiBridge(home)
+	bridge.mu.Lock()
+	var cardID string
+	for cid, jid := range bridge.cardToJob {
+		if jid == jobID {
+			cardID = cid
+			break
+		}
+	}
+	bridge.mu.Unlock()
+	if cardID == "" {
+		t.Fatal("expected pending cardID in fastiProposalBridge")
+	}
+
+	title, ok := ap.NameOf(cardID)
+	if !ok || !strings.Contains(title, cardPromptNeedle) {
+		t.Fatalf("card title = %q (ok=%v), want needle %q", title, ok, cardPromptNeedle)
+	}
+
+	// 2. Settle card with deny via the custody card endpoint, plus a duplicate resolve that logs to stdlog.
+	for attempt := 1; attempt <= 2; attempt++ {
+		req, reqErr := http.NewRequest(http.MethodPost, ts.URL+"/v1/custos/cards/"+cardID+"/resolve", strings.NewReader(`{"verdict":"deny"}`))
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		req.Header.Set("Authorization", "Bearer "+rawTok)
+		resp, doErr := http.DefaultClient.Do(req)
+		if doErr != nil {
+			t.Fatal(doErr)
+		}
+		resp.Body.Close()
+		if attempt == 1 && resp.StatusCode != http.StatusOK {
+			t.Fatalf("card deny status = %d, want 200", resp.StatusCode)
+		}
+		if attempt == 2 && resp.StatusCode != http.StatusConflict {
+			t.Fatalf("second card deny status = %d, want 409", resp.StatusCode)
+		}
+	}
+
+	jobsAfter, err := fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil {
+		t.Fatalf("LoadJobs after deny: %v", err)
+	}
+	if len(jobsAfter) != 0 {
+		t.Fatalf("expected denied job row removed, got %+v", jobsAfter)
+	}
+
+	events, err := eng.Journal().Events()
+	if err != nil {
+		t.Fatalf("Journal.Events: %v", err)
+	}
+	assertHasJournalEvent(t, events, "fasti_job_removed", jobID, "deny")
+	for _, ev := range events {
+		rawEv, evErr := json.Marshal(ev)
+		if evErr != nil {
+			t.Fatalf("marshal journal event: %v", evErr)
+		}
+		if strings.Contains(string(rawEv), cardPromptNeedle) {
+			t.Fatalf("fasti journal leaked card prompt needle: %s", rawEv)
+		}
+	}
+
+	// 3. Assert card prompt text never appears in daemon log output.
+	daemonLogs := logBuf.String()
+	if strings.Contains(daemonLogs, cardPromptNeedle) {
+		t.Fatalf("daemon log output leaked card prompt text %q:\n%s", cardPromptNeedle, daemonLogs)
+	}
+}
+
+type msgCapturingProvider struct {
+	mu       sync.Mutex
+	seenMsgs [][]router.Message
+	reply    string
+}
+
+func (p *msgCapturingProvider) Name() string { return "vph-capture" }
+func (p *msgCapturingProvider) Capabilities(_ context.Context) (router.Caps, error) {
+	return router.Caps{SupportsTools: true, ContextLength: 100000, Source: "fake"}, nil
+}
+
+func (p *msgCapturingProvider) Complete(_ context.Context, msgs []router.Message, _ router.Options) (*router.Completion, error) {
+	p.mu.Lock()
+	cp := append([]router.Message(nil), msgs...)
+	p.seenMsgs = append(p.seenMsgs, cp)
+	p.mu.Unlock()
+	return &router.Completion{Model: "vph-capture", Text: p.reply}, nil
+}
+
+func (p *msgCapturingProvider) StreamComplete(ctx context.Context, msgs []router.Message, opts router.Options, _ string, onDelta router.StreamHandler) (*router.Completion, error) {
+	comp, err := p.Complete(ctx, msgs, opts)
+	if err != nil {
+		return nil, err
+	}
+	if comp.Text != "" && onDelta != nil {
+		_ = onDelta(comp.Text)
+	}
+	return comp, nil
+}
+
+// V-Ph (literal passthrough law): a job prompt containing ${vault:MYTHING} fires
+// through the hub with that text UNRESOLVED (no substitution anywhere in fire path).
+func TestFastiVPh_LiteralVaultRefPassthrough(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC))
+	tools := buildTools(home)
+
+	prov := &msgCapturingProvider{reply: "checked literal reference"}
+	hub, ap := setupHubOnHome(t, home, prov, tools, 5*time.Second)
+	ap.SetClock(clk)
+	hub.SetSecrets(func() []string { return []string{"super-secret-value-for-mything"} })
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, hub, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+
+	const literalPrompt = "verify endpoint using ${vault:MYTHING} without resolving"
+	job, err := eng.AddJob(context.Background(), fasti.Job{
+		ID:       "job-vph-literal",
+		Name:     "vph-literal",
+		Schedule: fasti.Schedule{Kind: "interval", Every: "5m"},
+		Prompt:   literalPrompt,
+		Session:  "s_vph_fire",
+	})
+	if err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	if job.Prompt != literalPrompt {
+		t.Fatalf("stored job.Prompt = %q, want %q", job.Prompt, literalPrompt)
+	}
+
+	clk.Advance(5 * time.Minute)
+	if err := eng.Sync(context.Background()); err != nil {
+		t.Fatalf("eng.Sync: %v", err)
+	}
+
+	prov.mu.Lock()
+	seen := prov.seenMsgs
+	prov.mu.Unlock()
+	if len(seen) != 1 {
+		t.Fatalf("provider turn calls = %d, want 1", len(seen))
+	}
+
+	var foundUserPrompt bool
+	for _, m := range seen[0] {
+		if m.Role == router.RoleUser && m.Content == literalPrompt {
+			foundUserPrompt = true
+		}
+		if strings.Contains(m.Content, "super-secret-value-for-mything") {
+			t.Fatalf("vault value was substituted into message: %q", m.Content)
+		}
+	}
+	if !foundUserPrompt {
+		t.Fatalf("provider messages %+v did not contain unresolved user prompt %q", seen[0], literalPrompt)
+	}
+
+	sessLog, err := penatus.OpenLog(hub.SessionDir("s_vph_fire"))
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	var loggedLiteral bool
+	for _, ev := range sessLog.Live() {
+		if ev.T != "msg" {
+			continue
+		}
+		raw, _ := ev.MarshalJSON()
+		var m struct {
+			Role string `json:"role"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &m) == nil && m.Role == "user" && m.Text == literalPrompt {
+			loggedLiteral = true
+		}
+	}
+	if !loggedLiteral {
+		t.Fatalf("session log did not persist literal ${vault:MYTHING} prompt")
+	}
+}
+
+// Vi (boot-defaults law): daemon boots with a lararium.yaml containing NO fasti block
+// -> D11 defaults live (engine disabled by default; when enabled with no sub-keys,
+// live engine carries exact D7/D11 budget/quiet/heartbeat/catchup defaults; wakes path works).
+func TestFastiVi_BootDefaultsNoFastiBlock(t *testing.T) {
+	home := t.TempDir()
+	cfgPath := filepath.Join(home, "lararium.yaml")
+	noFastiYAML := `hearth:
+  home: ` + home + `
+models:
+  default: [local/m]
+providers:
+  - name: local
+    base_url: http://127.0.0.1:8080/v1
+`
+	if err := os.WriteFile(cfgPath, []byte(noFastiYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig without fasti block: %v", err)
+	}
+
+	// Assert exact D7/D11 table defaults on decoded config.
+	if cfg.Fasti.Enabled != false {
+		t.Fatalf("cfg.Fasti.Enabled = %v, want false (D11 default)", cfg.Fasti.Enabled)
+	}
+	if cfg.Fasti.LocalTimezone != "" {
+		t.Fatalf("cfg.Fasti.LocalTimezone = %q, want empty (system zone)", cfg.Fasti.LocalTimezone)
+	}
+	if cfg.Fasti.QuietHours != "" {
+		t.Fatalf("cfg.Fasti.QuietHours = %q, want empty (no baseline)", cfg.Fasti.QuietHours)
+	}
+	if cfg.Fasti.Heartbeat.DailyAt != "07:30" {
+		t.Fatalf("cfg.Fasti.Heartbeat.DailyAt = %q, want 07:30", cfg.Fasti.Heartbeat.DailyAt)
+	}
+	if cfg.Fasti.MaxAnnouncePerDay != 8 {
+		t.Fatalf("cfg.Fasti.MaxAnnouncePerDay = %d, want 8", cfg.Fasti.MaxAnnouncePerDay)
+	}
+	if cfg.Fasti.CatchupWindow != 24*time.Hour {
+		t.Fatalf("cfg.Fasti.CatchupWindow = %v, want 24h", cfg.Fasti.CatchupWindow)
+	}
+
+	// Boot daemon wiring with the no-fasti config: engine stays off, /v1/health is 200,
+	// /v1/fasti/state is 503 fasti_disabled (additive routes), and attachWakes still fires.
+	clk := loop.NewFakeClock(time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC))
+	door := newSpyTurnDoor("wake ok")
+	store, err := surface.OpenTokenStore(filepath.Join(home, "tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawTok, err := store.Create("vi-boot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &surface.Server{
+		Cfg:   surface.ServeConfig{Listen: "127.0.0.1:0"},
+		Store: store,
+	}
+	holder, stopFasti := mustWireFasti(context.Background(), cfg.Fasti, home, srv, door)
+	if stopFasti != nil {
+		defer stopFasti()
+	}
+	if srv.Fasti != nil || holder != nil {
+		t.Fatalf("expected nil Fasti engine when booting without fasti block, got Fasti=%v holder=%v", srv.Fasti, holder)
+	}
+
+	// Verify existing wake path (schedule_wake / wakes.json) still works when fasti is disabled by default.
+	sched, err := loop.NewScheduler(home, nil, loop.WithClock(clk), loop.WithTurnFunc(func(ctx context.Context, sessionID, prompt string) error {
+		return door.RunHeadlessTurn(ctx, sessionID, prompt, "heartbeat", 0, nil)
+	}))
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	sched.Start(context.Background())
+	defer sched.Stop()
+	if _, err := sched.Schedule(context.Background(), "main", 10, "vi wake check"); err != nil {
+		t.Fatalf("sched.Schedule: %v", err)
+	}
+	clk.Advance(10 * time.Second)
+	wakeCall := door.waitCall(t)
+	if wakeCall.channel != "heartbeat" || wakeCall.sessionID != "main" || wakeCall.text != "vi wake check" {
+		t.Fatalf("wake call = %+v, want channel=heartbeat sessionID=main text='vi wake check'", wakeCall)
+	}
+
+	// Verify live engine boot with only enabled:true inherits all D7/D11 defaults on /v1/fasti/state.
+	optInCfg := cfg.Fasti
+	optInCfg.Enabled = true
+	eng, _, stopOptIn, err := startFasti(context.Background(), optInCfg, home, door, clk)
+	if err != nil {
+		t.Fatalf("startFasti(opt-in defaults): %v", err)
+	}
+	defer stopOptIn()
+	srv.Fasti = eng
+
+	ts := httptest.NewServer(surface.NewServer(srv))
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/fasti/state", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+rawTok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state surface.FastiStateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		resp.Body.Close()
+		t.Fatalf("decode /v1/fasti/state: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/fasti/state status = %d, want 200", resp.StatusCode)
+	}
+	if state.Noise.MaxAnnouncePerDay != 8 || state.Noise.AnnounceCount != 0 {
+		t.Fatalf("live Noise defaults = %+v, want MaxAnnouncePerDay=8 AnnounceCount=0", state.Noise)
+	}
+	if state.Heartbeat.Enabled || state.Heartbeat.Quiet != "" {
+		t.Fatalf("live Heartbeat defaults (missing HEARTBEAT.md) = %+v, want Enabled=false Quiet=''", state.Heartbeat)
 	}
 }
