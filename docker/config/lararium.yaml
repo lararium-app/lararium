@@ -47,3 +47,15 @@ providers:
 # - name: anthropic             # OpenAI-compatible endpoint
 #   base_url: https://api.anthropic.com/v1
 #   api_key_env: ANTHROPIC_API_KEY
+
+# --- Proactivity (fasti): scheduled jobs, multi-day goals, and the daily
+# --- heartbeat. Off until you switch it on. Quiet hours take "HH:MM-HH:MM";
+# --- jobs inside them wait unless marked urgent. Full law: docs/PROACTIVITY-SPEC.md.
+# fasti:
+#   enabled: true
+#   local_timezone: America/New_York   # schedules follow your wall clock
+#   quiet_hours: "22:00-07:00"         # "" disables the baseline
+#   heartbeat:
+#     daily_at: "07:30"                # walks HEARTBEAT.md in the hearth home
+#   max_announce_per_day: 8            # noise budget across all jobs
+#   catchup_window: 24h                # missed runs coalesce into one

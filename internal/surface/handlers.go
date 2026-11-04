@@ -143,7 +143,7 @@ func (s *Server) deviceAutoApprove() bool {
 type BackupFunc func(outAbs string, noConfig bool, progress func(string)) error
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"1.0.0-beta3"}`)
+	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"1.0.0-beta7"}`)
 }
 
 func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {
