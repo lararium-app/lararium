@@ -814,3 +814,423 @@ func TestFastiShutdownMidTurn(t *testing.T) {
 		t.Fatal("timed out waiting for stopFasti() to return")
 	}
 }
+
+func findFastiJobTool(t *testing.T, tools []loop.Tool) loop.Tool {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Spec.Name == "fasti_job" {
+			return tool
+		}
+	}
+	t.Fatal("tool \"fasti_job\" not found in buildTools registry")
+	return loop.Tool{}
+}
+
+// F4c (1): Tool registration present for a session even when fasti disabled;
+// call while disabled => tool error string, nothing written.
+func TestF4c_FastiJobTool_DisabledRegistrationAndError(t *testing.T) {
+	home := t.TempDir()
+	tools := buildTools(home)
+	fj := findFastiJobTool(t, tools)
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = false
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, nil, nil)
+	if err != nil || eng != nil || stopFasti != nil {
+		t.Fatalf("startFasti disabled = (eng=%v, stopNonNil=%v, err=%v), want all nil", eng, stopFasti != nil, err)
+	}
+
+	ctx := loop.WithSessionID(context.Background(), "s_disabled")
+	_, callErr := fj.Run(ctx, `{"name":"t","schedule":"every 10m","prompt":"ping"}`)
+	if callErr == nil || !strings.Contains(callErr.Error(), "fasti is disabled") {
+		t.Fatalf("fasti_job while disabled err = %v, want 'fasti is disabled'", callErr)
+	}
+
+	jobsPath := filepath.Join(home, "fasti", "jobs.json")
+	if _, statErr := os.Stat(jobsPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("jobs.json should not be written when fasti is disabled (err=%v)", statErr)
+	}
+}
+
+// F4c (2): Happy proposal: tool call => jobs.json has enabled:false model:<sid> row
+// + fasti_job_created audit + one registerCustosNamed call whose title contains the schedule and prompt.
+func TestF4c_FastiJobTool_HappyProposal(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC))
+	ap := surface.NewApprovalHub(5 * time.Minute)
+	ap.SetClock(clk)
+
+	tools := buildTools(home)
+	fj := findFastiJobTool(t, tools)
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, nil, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+	getFastiBridge(home).setApprovalHub(ap)
+
+	ctx := loop.WithSessionID(context.Background(), "s_proposer")
+	out, err := fj.Run(ctx, `{
+		"name": "morning-brief",
+		"schedule": "every 30m",
+		"prompt": "Summarize overnight alerts",
+		"session": "new",
+		"announce": "telegram",
+		"quiet": {"window": "22:00-07:00", "mode": "defers"}
+	}`)
+	if err != nil {
+		t.Fatalf("fasti_job Run: %v", err)
+	}
+
+	var ack struct {
+		ID     string `json:"id"`
+		CardID string `json:"card_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(out), &ack); err != nil {
+		t.Fatalf("unmarshal ack %q: %v", out, err)
+	}
+	if ack.ID == "" || ack.CardID == "" || ack.Status != "pending approval" {
+		t.Fatalf("ack = %+v, want non-empty id/card_id and status 'pending approval'", ack)
+	}
+
+	jobs, err := fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil {
+		t.Fatalf("LoadJobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want 1", len(jobs))
+	}
+	row := jobs[0]
+	if row.ID != ack.ID || row.Enabled || row.Paused {
+		t.Fatalf("row = %+v, want ID=%s Enabled=false Paused=false", row, ack.ID)
+	}
+	if row.CreatedBy != "model:s_proposer" {
+		t.Fatalf("CreatedBy = %q, want model:s_proposer", row.CreatedBy)
+	}
+	if row.Session != "cron-"+ack.ID {
+		t.Fatalf("Session = %q, want cron-%s", row.Session, ack.ID)
+	}
+	if row.NextDue != "" {
+		t.Fatalf("NextDue = %q, want empty before approval", row.NextDue)
+	}
+
+	events, err := eng.Journal().Events()
+	if err != nil {
+		t.Fatalf("Journal.Events: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "fasti_job_created" {
+		t.Fatalf("events = %+v, want single fasti_job_created", events)
+	}
+	ev := events[0]
+	if ev.ID != ack.ID || ev.Name != "morning-brief" || ev.CreatedBy != "model:s_proposer" || ev.Schedule == nil || ev.Schedule.Every != "30m" {
+		t.Fatalf("created audit event missing required D5 fields: %+v", ev)
+	}
+	if ev.Prompt != "" {
+		t.Fatalf("audit event must not contain raw card/prompt text, got %q", ev.Prompt)
+	}
+
+	if calls := ap.RegisterCustosNamedCalls(); calls != 1 {
+		t.Fatalf("RegisterCustosNamedCalls = %d, want 1", calls)
+	}
+	title, ok := ap.NameOf(ack.CardID)
+	if !ok {
+		t.Fatalf("card %s not found on ApprovalHub", ack.CardID)
+	}
+	if !strings.Contains(title, "every 30m") || !strings.Contains(title, "Summarize overnight alerts") {
+		t.Fatalf("card title %q must contain schedule and prompt", title)
+	}
+}
+
+// F4c (3): Allow via ResolveFromVia => row enabled:true + fasti_job_enabled + SSE job upsert arrives;
+// deny => row gone + fasti_job_removed; timeout via FakeClock on the approval timer => row gone + fasti_job_timeout.
+func TestF4c_FastiJobTool_VerdictAllowDenyTimeout(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC))
+	const cardTimeout = 2 * time.Minute
+	ap := surface.NewApprovalHub(cardTimeout)
+	ap.SetClock(clk)
+
+	tools := buildTools(home)
+	fj := findFastiJobTool(t, tools)
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, nil, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+	getFastiBridge(home).setApprovalHub(ap)
+
+	sseCh, unsub := eng.Subscribe()
+	defer unsub()
+
+	propose := func(name string) (string, string) {
+		t.Helper()
+		ctx := loop.WithSessionID(context.Background(), "s_verdict")
+		out, runErr := fj.Run(ctx, `{"name":"`+name+`","schedule":"every 15m","prompt":"check `+name+`"}`)
+		if runErr != nil {
+			t.Fatalf("propose %s: %v", name, runErr)
+		}
+		var ack struct {
+			ID     string `json:"id"`
+			CardID string `json:"card_id"`
+		}
+		if uErr := json.Unmarshal([]byte(out), &ack); uErr != nil {
+			t.Fatalf("unmarshal ack: %v", uErr)
+		}
+		return ack.ID, ack.CardID
+	}
+
+	// 1. Allow via ResolveFromVia
+	allowJobID, allowCardID := propose("job-allow")
+	if code := ap.ResolveFromVia("", allowCardID, true, "surface", "web"); code != http.StatusOK {
+		t.Fatalf("ResolveFromVia allow = %d, want 200", code)
+	}
+
+	jobs, err := fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("LoadJobs after allow = %+v, err=%v", jobs, err)
+	}
+	if !jobs[0].Enabled || jobs[0].NextDue == "" {
+		t.Fatalf("job after allow = %+v, want Enabled=true and non-empty NextDue", jobs[0])
+	}
+
+	select {
+	case ev := <-sseCh:
+		jobRow, ok := ev.Row.(fasti.Job)
+		if ev.Kind != "job" || ev.Op != "upsert" || !ok || jobRow.ID != allowJobID || !jobRow.Enabled {
+			t.Fatalf("unexpected SSE event on allow: %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE job upsert after allow")
+	}
+
+	// 2. Deny via ResolveFromVia
+	clk.Advance(1 * time.Second)
+	denyJobID, denyCardID := propose("job-deny")
+	if code := ap.ResolveFromVia("", denyCardID, false, "surface", "web"); code != http.StatusOK {
+		t.Fatalf("ResolveFromVia deny = %d, want 200", code)
+	}
+
+	jobs, err = fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil {
+		t.Fatalf("LoadJobs after deny: %v", err)
+	}
+	for _, j := range jobs {
+		if j.ID == denyJobID {
+			t.Fatalf("denied job %s still present in jobs.json", denyJobID)
+		}
+	}
+
+	// 3. Timeout via FakeClock on the approval timer
+	clk.Advance(1 * time.Second)
+	timeoutJobID, _ := propose("job-timeout")
+	clk.Advance(cardTimeout)
+
+	jobs, err = fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil {
+		t.Fatalf("LoadJobs after timeout: %v", err)
+	}
+	for _, j := range jobs {
+		if j.ID == timeoutJobID {
+			t.Fatalf("timed-out job %s still present in jobs.json", timeoutJobID)
+		}
+	}
+
+	events, err := eng.Journal().Events()
+	if err != nil {
+		t.Fatalf("Journal.Events: %v", err)
+	}
+	assertHasJournalEvent(t, events, "fasti_job_enabled", allowJobID, "web")
+	assertHasJournalEvent(t, events, "fasti_job_removed", denyJobID, "deny")
+	assertHasJournalEvent(t, events, "fasti_job_timeout", timeoutJobID, "timeout")
+}
+
+func assertHasJournalEvent(t *testing.T, events []fasti.JournalEvent, wantType, wantID, wantVia string) {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Type == wantType && ev.ID == wantID {
+			if wantVia != "" && ev.Via != wantVia {
+				t.Fatalf("event %s for %s Via = %q, want %q", wantType, wantID, ev.Via, wantVia)
+			}
+			if ev.CreatedBy == "" || ev.Schedule == nil || ev.Name == "" {
+				t.Fatalf("event %s for %s missing required audit fields: %+v", wantType, wantID, ev)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing journal event type=%q id=%q in %+v", wantType, wantID, events)
+}
+
+// F4c (4): Boot sweep: persist a proposed row, restart engine with no card =>
+// row removed + fasti_job_timeout; a user disabled row survives untouched.
+func TestF4c_BootSweep_RemovesUnsettledModelProposalOnly(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC))
+	jobsPath := filepath.Join(home, "fasti", "jobs.json")
+
+	seed := []fasti.Job{
+		{
+			ID:        "job_model_pending",
+			Name:      "unsettled-proposal",
+			Schedule:  fasti.Schedule{Kind: "interval", Every: "20m"},
+			Prompt:    "proposed before crash",
+			Session:   "cron-job_model_pending",
+			Enabled:   false,
+			Paused:    false,
+			CreatedBy: "model:s_crash",
+		},
+		{
+			ID:        "job_user_disabled",
+			Name:      "user-disabled",
+			Schedule:  fasti.Schedule{Kind: "interval", Every: "30m"},
+			Prompt:    "user created disabled job",
+			Session:   "main",
+			Enabled:   false,
+			Paused:    false,
+			CreatedBy: "user:cli",
+		},
+	}
+	if err := fasti.SaveJobs(jobsPath, seed); err != nil {
+		t.Fatalf("SaveJobs seed: %v", err)
+	}
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, nil, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+
+	jobs, err := fasti.LoadJobs(jobsPath)
+	if err != nil {
+		t.Fatalf("LoadJobs after boot sweep: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != "job_user_disabled" {
+		t.Fatalf("jobs after boot sweep = %+v, want only [job_user_disabled]", jobs)
+	}
+
+	events, err := eng.Journal().Events()
+	if err != nil {
+		t.Fatalf("Journal.Events: %v", err)
+	}
+	assertHasJournalEvent(t, events, "fasti_job_timeout", "job_model_pending", "timeout")
+}
+
+// F4c (5): Card-reg-failure rollback path => row removed + fasti_job_removed, no residue in jobs.json.
+func TestF4c_FastiJobTool_CardRegFailureRollback(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC))
+
+	tools := buildTools(home)
+	fj := findFastiJobTool(t, tools)
+
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, nil, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+
+	bridge := getFastiBridge(home)
+	var persistedDuringReg int
+	bridge.setCardRegistrar(func(_, _, _ string) (string, error) {
+		rows, loadErr := fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+		if loadErr != nil {
+			t.Fatalf("LoadJobs inside card registrar: %v", loadErr)
+		}
+		persistedDuringReg = len(rows)
+		return "", errors.New("simulated card registration failure")
+	})
+	defer bridge.setCardRegistrar(nil)
+
+	ctx := loop.WithSessionID(context.Background(), "s_rollback")
+	_, callErr := fj.Run(ctx, `{"name":"rollback-job","schedule":"every 10m","prompt":"do work"}`)
+	if callErr == nil || !strings.Contains(callErr.Error(), "simulated card registration failure") {
+		t.Fatalf("fasti_job err = %v, want simulated card registration failure", callErr)
+	}
+	if persistedDuringReg != 1 {
+		t.Fatalf("persistedDuringReg = %d, want 1 (row must persist BEFORE card registers)", persistedDuringReg)
+	}
+
+	jobs, err := fasti.LoadJobs(filepath.Join(home, "fasti", "jobs.json"))
+	if err != nil {
+		t.Fatalf("LoadJobs after rollback: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("jobs.json has residue after rollback: %+v", jobs)
+	}
+
+	events, err := eng.Journal().Events()
+	if err != nil {
+		t.Fatalf("Journal.Events: %v", err)
+	}
+	if len(events) != 2 || events[0].Type != "fasti_job_created" || events[1].Type != "fasti_job_removed" {
+		t.Fatalf("events after rollback = %+v, want [fasti_job_created, fasti_job_removed]", events)
+	}
+}
+
+// F4c (6): HandleApproval still rejects fasti cards trying the turn-card scope path (guard test).
+func TestF4c_HandleApproval_RejectsFastiTurnCardScopePath(t *testing.T) {
+	home := t.TempDir()
+	clk := loop.NewFakeClock(time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC))
+
+	ap := surface.NewApprovalHub(5 * time.Minute)
+	ap.SetClock(clk)
+	tools := buildTools(home)
+	fj := findFastiJobTool(t, tools)
+
+	hub := surface.NewHub(surface.ServeConfig{}, home, 256, 80, tools, nil, ap)
+	cfg := fasti.DefaultConfig()
+	cfg.Enabled = true
+	eng, _, stopFasti, err := startFasti(context.Background(), cfg, home, hub, clk, fasti.WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("startFasti: %v", err)
+	}
+	defer stopFasti()
+
+	ctx := loop.WithSessionID(context.Background(), "s_guard")
+	out, err := fj.Run(ctx, `{"name":"guard-job","schedule":"every 20m","prompt":"guard check"}`)
+	if err != nil {
+		t.Fatalf("fasti_job Run: %v", err)
+	}
+	var ack struct {
+		ID     string `json:"id"`
+		CardID string `json:"card_id"`
+	}
+	if err := json.Unmarshal([]byte(out), &ack); err != nil {
+		t.Fatalf("unmarshal ack: %v", err)
+	}
+
+	// Attempt 1: turn-card approval endpoint with scope="fasti" -> 400 invalid scope (turns.go:784-787).
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/sessions/s_guard/approvals/"+ack.CardID, strings.NewReader(`{"decision":"allow","scope":"fasti"}`))
+	w1 := httptest.NewRecorder()
+	hub.HandleApproval(w1, req1, "s_guard", ack.CardID)
+	if w1.Code != http.StatusBadRequest || !strings.Contains(w1.Body.String(), "invalid scope") {
+		t.Fatalf("HandleApproval(scope=fasti) = %d %s, want 400 invalid scope", w1.Code, w1.Body.String())
+	}
+
+	// Attempt 2: turn-card approval endpoint with no scope -> 404 (custody card is not session-turn-scoped).
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/sessions/s_guard/approvals/"+ack.CardID, strings.NewReader(`{"decision":"allow"}`))
+	w2 := httptest.NewRecorder()
+	hub.HandleApproval(w2, req2, "s_guard", ack.CardID)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("HandleApproval(no scope) = %d %s, want 404", w2.Code, w2.Body.String())
+	}
+
+	// Verify job is still disabled and unsettled.
+	job, err := eng.GetJob(context.Background(), ack.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Enabled {
+		t.Fatalf("job should still be disabled after rejected HandleApproval calls: %+v", job)
+	}
+}

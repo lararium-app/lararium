@@ -16,16 +16,21 @@ import (
 // JournalEvent represents a single event in the fasti run journal (spec F1-4, D3, D4, D7, D12).
 type JournalEvent struct {
 	Seq          int64          `json:"seq"`
-	Type         string         `json:"type"`               // e.g. "fasti_fired", "fasti_job_created", "fasti_job_paused"
-	Timestamp    string         `json:"timestamp"`          // RFC3339 timestamp
-	JobID        string         `json:"job_id,omitempty"`   // target job ID
-	JobName      string         `json:"job_name,omitempty"` // target job name
-	GoalID       string         `json:"goal_id,omitempty"`  // target goal ID
-	Kind         string         `json:"kind,omitempty"`     // event kind: "job", "goal", etc.
-	Status       string         `json:"status,omitempty"`   // "fired", "skipped", "deferred", "silenced"
-	Reason       string         `json:"reason,omitempty"`   // "session_busy", "engine_busy", "dst_gap", "slipped_while_offline", "quiet_collapse", "stale_discard", "shutdown"
-	Mode         string         `json:"mode,omitempty"`     // "agent", "user_force", etc.
-	Prompt       string         `json:"prompt,omitempty"`   // prompt text or summary
+	Type         string         `json:"type"`                 // e.g. "fasti_fired", "fasti_job_created", "fasti_job_paused"
+	Timestamp    string         `json:"timestamp"`            // RFC3339 timestamp
+	ID           string         `json:"id,omitempty"`         // job ID (spec D5 audit vocabulary)
+	JobID        string         `json:"job_id,omitempty"`     // target job ID
+	Name         string         `json:"name,omitempty"`       // job name (spec D5 audit vocabulary)
+	JobName      string         `json:"job_name,omitempty"`   // target job name
+	Schedule     *Schedule      `json:"schedule,omitempty"`   // job schedule (spec D5 audit vocabulary)
+	CreatedBy    string         `json:"created_by,omitempty"` // job authorship (spec D5/D9 audit vocabulary)
+	Via          string         `json:"via,omitempty"`        // settling via for card outcomes (spec D5/V-Pf)
+	GoalID       string         `json:"goal_id,omitempty"`    // target goal ID
+	Kind         string         `json:"kind,omitempty"`       // event kind: "job", "goal", etc.
+	Status       string         `json:"status,omitempty"`     // "fired", "skipped", "deferred", "silenced"
+	Reason       string         `json:"reason,omitempty"`     // "session_busy", "engine_busy", "dst_gap", "slipped_while_offline", "quiet_collapse", "stale_discard", "shutdown"
+	Mode         string         `json:"mode,omitempty"`       // "agent", "user_force", etc.
+	Prompt       string         `json:"prompt,omitempty"`     // prompt text or summary
 	SessionID    string         `json:"session_id,omitempty"`
 	DueAt        string         `json:"due_at,omitempty"`
 	FiredAt      string         `json:"fired_at,omitempty"`
