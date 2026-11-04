@@ -267,12 +267,12 @@ func (v *Vault) CheckFileLaw() error {
 		// §C2 inventory; without it a home with paired devices fails
 		// custosd startup (dogfood crash found 2026-11-04).
 		"devices.json": true,
-		"ctl.sock":          true,
-		"ctl.token":         true,
-		"doors.sock":        true,
-		"door.token":        true,
-		"audit":             true,
-		"snapshots":         true,
+		"ctl.sock":     true,
+		"ctl.token":    true,
+		"doors.sock":   true,
+		"door.token":   true,
+		"audit":        true,
+		"snapshots":    true,
 	}
 
 	for _, e := range entries {
