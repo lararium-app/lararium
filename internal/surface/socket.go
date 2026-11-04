@@ -111,6 +111,10 @@ func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
 		return
 	}
 	if !strings.HasSuffix(line, "\n") {
+		if strings.HasPrefix(line, "FASTI ") || strings.HasPrefix(line, "FASTI") {
+			_, _ = fmt.Fprint(conn, "ERR payload_too_large\n")
+			return
+		}
 		_, _ = fmt.Fprint(conn, "ERR line too long\n")
 		return
 	}
@@ -128,6 +132,8 @@ func (s *Server) handleSocketConn(conn net.Conn, reload func() error) {
 		fmt.Fprint(conn, "OK\n")
 	case strings.HasPrefix(cmd, "backup ") || cmd == "backup":
 		s.handleBackupSocket(conn, cmd)
+	case cmd == "FASTI" || strings.HasPrefix(cmd, "FASTI ") || strings.HasPrefix(cmd, "FASTI\t") || strings.HasPrefix(cmd, "FASTI{"):
+		s.handleFastiSocket(conn, cmd)
 	default:
 		fmt.Fprint(conn, "ERR unknown command\n")
 	}

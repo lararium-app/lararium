@@ -33,17 +33,20 @@ func (s *Server) fastiEventsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Subscribe BEFORE the headers go out (issue #233): the client returns
+	// from Do() the instant the response header is flushed, so anything it
+	// mutates next would publish into a stream nobody has subscribed to yet.
+	eventCh, unsubscribe := s.Fasti.Subscribe()
+	defer unsubscribe()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher.Flush()
 
-	// 1. Replay initial bootstrap snapshot
+	// Replay the bootstrap snapshot; events that fired between subscribe and
+	// replay are buffered in eventCh and replayed as idempotent row updates.
 	s.replayFastiBootstrap(w, flusher, r)
-
-	// 2. Subscribe to subsequent engine events
-	eventCh, unsubscribe := s.Fasti.Subscribe()
-	defer unsubscribe()
 
 	ticker := time.NewTicker(fastiPingInterval)
 	defer ticker.Stop()

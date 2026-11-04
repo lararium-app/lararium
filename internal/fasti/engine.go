@@ -355,6 +355,18 @@ type (
 	cmdNoiseSnapshot struct {
 		resp chan NoiseSnapshot
 	}
+
+	cmdCheckEditDedup struct {
+		id   string
+		hash string
+		resp chan bool
+	}
+
+	cmdRecordEditDedup struct {
+		id   string
+		hash string
+		resp chan error
+	}
 )
 
 // New creates and initializes a new fasti Engine.
@@ -873,6 +885,10 @@ func (e *Engine) processExtendedCommand(rawCmd any) {
 		e.handleHeartbeatCollapseDue(cmd)
 	case cmdNoiseSnapshot:
 		e.handleNoiseSnapshot(cmd)
+	case cmdCheckEditDedup:
+		e.handleCheckEditDedup(cmd)
+	case cmdRecordEditDedup:
+		e.handleRecordEditDedup(cmd)
 	}
 }
 
@@ -3559,5 +3575,63 @@ func (e *Engine) NoiseSnapshot() NoiseSnapshot {
 			return e.noiseState.Snapshot(e.cfg.MaxAnnouncePerDay)
 		}
 		return NoiseSnapshot{}
+	}
+}
+
+func (e *Engine) handleCheckEditDedup(cmd cmdCheckEditDedup) {
+	if e.noiseState == nil {
+		cmd.resp <- false
+		return
+	}
+	cmd.resp <- e.noiseState.CheckEditDedup(cmd.id, cmd.hash)
+}
+
+func (e *Engine) handleRecordEditDedup(cmd cmdRecordEditDedup) {
+	if e.noiseState != nil {
+		e.noiseState.RecordEditDedup(cmd.id, cmd.hash)
+		_ = SaveNoiseState(e.statePath, e.noiseState)
+	}
+	cmd.resp <- nil
+}
+
+// CheckEditDedup reports whether a payload hash has already been applied to target ID (spec D8).
+func (e *Engine) CheckEditDedup(ctx context.Context, id, hash string) (bool, error) {
+	respCh := make(chan bool, 1)
+	select {
+	case e.cmdCh <- cmdCheckEditDedup{id: id, hash: hash, resp: respCh}:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-e.stopCh:
+		return false, errors.New("engine stopped")
+	}
+
+	select {
+	case replayed := <-respCh:
+		return replayed, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-e.stopCh:
+		return false, errors.New("engine stopped")
+	}
+}
+
+// RecordEditDedup records a payload hash for a successfully applied edit to target ID (spec D8).
+func (e *Engine) RecordEditDedup(ctx context.Context, id, hash string) error {
+	respCh := make(chan error, 1)
+	select {
+	case e.cmdCh <- cmdRecordEditDedup{id: id, hash: hash, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopCh:
+		return errors.New("engine stopped")
 	}
 }

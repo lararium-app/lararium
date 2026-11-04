@@ -46,11 +46,10 @@ func (s *Server) connectorEventsHandler(w http.ResponseWriter, r *http.Request) 
 		writeJSONBody(w, http.StatusInternalServerError, `{"error":"streaming unsupported"}`)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher.Flush()
-
+	// Build the stream state and register both poke sources BEFORE any
+	// header is flushed (issue #233): the client returns from Do() as soon
+	// as headers arrive, and a mutation POSTed in that window would either
+	// miss the subscription or be swallowed by the silent prime below.
 	events := make(chan connectorRailEvent, 64)
 	overflowCh := make(chan struct{})
 	var overflowOnce sync.Once
@@ -67,6 +66,10 @@ func (s *Server) connectorEventsHandler(w http.ResponseWriter, r *http.Request) 
 	// primed with the current inventory so the stream starts silent.
 	var mu sync.Mutex
 	last := map[string][]byte{}
+	// NOTE: prime must not hold mu across subscription — diff() runs on
+	// poke callbacks (which may fire synchronously from the subscribe).
+	// Safe as ordered because clients cannot mutate before the header
+	// flush below (issue #233 analysis).
 	for _, row := range s.connectorRows() {
 		if b, err := rowJSON(row); err == nil {
 			last[row.Name] = b
@@ -105,6 +108,14 @@ func (s *Server) connectorEventsHandler(w http.ResponseWriter, r *http.Request) 
 	defer cancelLocal()
 	cancelDoor := door.SubscribeConnectors(diff)
 	defer cancelDoor()
+
+	// Subscriptions live: now the client may see the stream and start
+	// mutating. Anything earlier is either in the primed `last` baseline or
+	// impossible (the client was still blocked in Do()).
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher.Flush()
 
 	ticker := time.NewTicker(custosHeartbeatInterval)
 	defer ticker.Stop()

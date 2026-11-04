@@ -215,7 +215,7 @@ func main() {
 	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml")
 	modelFlag := flag.String("model", "", "override: model ref for this run")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  setup\n  token create <label> [--expires-in <duration>] | revoke [--by-label] <id-prefix-or-label> | list\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
+		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  setup\n  token create <label> [--expires-in <duration>] | revoke [--by-label] <id-prefix-or-label> | list\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n  job add|list|pause|resume|remove|run|edit\n  goal new|list|pause|resume|cancel|close\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
 		flag.PrintDefaults()
 	}
 
@@ -279,6 +279,20 @@ func main() {
 				return
 			}
 			restoreCmd(*cfgPath, args[1:])
+			return
+		case "job":
+			if hasHelpFlag(args[1:]) {
+				jobHelp(args[1:])
+				return
+			}
+			jobCmd(*cfgPath, args[1:])
+			return
+		case "goal":
+			if hasHelpFlag(args[1:]) {
+				goalHelp(args[1:])
+				return
+			}
+			goalCmd(*cfgPath, args[1:])
 			return
 		default:
 			if hasHelpFlag(args) {
@@ -809,6 +823,68 @@ func backupHelp(args []string) {
 
 func restoreHelp() {
 	printRestoreUsage()
+	os.Exit(0)
+}
+
+func jobHelp(args []string) {
+	if hasSubverb(args, "add") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd job add [--name <name>] (--every <dur> | --schedule <json>) [--prompt <text>] [--channel <dest>]")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "list") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd job list [--json]")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "pause") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd job pause <id>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "resume") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd job resume <id>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "remove") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd job remove <id>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "run") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd job run <id>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "edit") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd job edit <id> [--name <name>] [--every <dur> | --schedule <json>] [--prompt <text>] [--enabled]")
+		os.Exit(0)
+	}
+	printJobUsage()
+	os.Exit(0)
+}
+
+func goalHelp(args []string) {
+	if hasSubverb(args, "new") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd goal new [<title>] --objective <req> [--turns <n>] [--session <s>] [--step-after <dur>]")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "list") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd goal list [--json]")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "pause") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd goal pause <id>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "resume") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd goal resume <id>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "cancel") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd goal cancel <id>")
+		os.Exit(0)
+	}
+	if hasSubverb(args, "close") {
+		fmt.Fprintln(os.Stderr, "usage: hearthd goal close <id>")
+		os.Exit(0)
+	}
+	printGoalUsage()
 	os.Exit(0)
 }
 
