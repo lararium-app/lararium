@@ -484,6 +484,9 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	now := e.clock.Now().UTC()
 
+	// Boot sweep (spec D5 terminal-state law): remove unsettled model-proposed rows whose cards disappeared on restart.
+	e.sweepUnsettledProposalsLocked()
+
 	// Process offline replay per V-Pb and D7 downtime collapse
 	var missedJobs []Job
 	for i := range e.jobs {
@@ -908,6 +911,10 @@ func (e *Engine) processExtendedCommand(rawCmd any) {
 		e.handleCheckEditDedup(cmd)
 	case cmdRecordEditDedup:
 		e.handleRecordEditDedup(cmd)
+	case cmdProposeJob:
+		e.handleProposeJob(cmd)
+	case cmdSettleProposal:
+		e.handleSettleProposal(cmd)
 	}
 }
 

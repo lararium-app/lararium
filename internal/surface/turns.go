@@ -114,6 +114,21 @@ func (h *Hub) AuditApprovalFor(sessionID, approval string) (json.RawMessage, boo
 	return auditApprovalFor(h.ap, sessionID, approval, "telegram")
 }
 
+// ApprovalHub returns the underlying ApprovalHub wired to this turn hub.
+func (h *Hub) ApprovalHub() *ApprovalHub {
+	if h == nil {
+		return nil
+	}
+	return h.ap
+}
+
+// SetFastiVerdictHook registers the fasti proposal verdict hook on the hub's ApprovalHub.
+func (h *Hub) SetFastiVerdictHook(hook FastiVerdictHook) {
+	if h != nil && h.ap != nil {
+		h.ap.SetFastiVerdictHook(hook)
+	}
+}
+
 // NewHub builds the turn hub. hearthHome is the persona root; session
 // logs live under <hearthHome>/sessions/<id> exactly where repl.go puts
 // them, so REPL and API see the same logs.
