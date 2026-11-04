@@ -20,6 +20,7 @@ import (
 
 	"github.com/lararium-app/lararium/internal/backup"
 	"github.com/lararium-app/lararium/internal/custos"
+	"github.com/lararium-app/lararium/internal/fasti"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/router"
@@ -42,6 +43,8 @@ type Config struct {
 	Backup BackupConfig `yaml:"backup"`
 	// Devices configures device rails (DEVICE-RAILS-SPEC).
 	Devices DevicesConfig `yaml:"devices"`
+	// Fasti configures the proactivity scheduler (PROACTIVITY-SPEC §3).
+	Fasti fasti.Config `yaml:"fasti"`
 }
 
 type DevicesConfig struct {
@@ -95,10 +98,15 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	var c Config
+	c := Config{
+		Fasti: fasti.DefaultConfig(),
+	}
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if err := c.Fasti.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	if c.Devices.AutoApprove == nil {
@@ -618,42 +626,38 @@ func serve(cfgPath string) {
 		Providers: kp.ProviderInfos,
 		Reload:    reloadKeys,
 	})
+	attachBackup(srv, cfg, home, cfgPath, hub)
 
-	srv.BackupCheck = func() error {
-		if len(cfg.Backup.EncryptTo) == 0 {
-			return errors.New("no recipients configured")
-		}
-		return nil
-	}
-	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
-		if len(cfg.Backup.EncryptTo) == 0 {
-			return errors.New("no recipients configured")
-		}
-		recipients, err := backup.ParseRecipients(cfg.Backup.EncryptTo)
-		if err != nil {
-			return fmt.Errorf("invalid recipient in backup.encrypt_to: %w", err)
-		}
-		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.SingleWriterLock, progress, recipients...)
-	}
+	fastiAnnouncer, stopFasti := mustWireFasti(context.Background(), cfg.Fasti, home, srv, hub)
 
 	// Control socket (KEYS-SPEC K6): CLI writes, then pings here.
 	sock, err := srv.ServeSocket(filepath.Join(home, "hearthd.sock"), reloadKeys)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if stopFasti != nil {
+			stopFasti()
+		}
 		os.Exit(1)
 	}
 
 	bridge, stopNuntius, err := startNuntius(context.Background(), cfg, home, hub, sessions, ap)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if stopFasti != nil {
+			stopFasti()
+		}
 		sock.Close()
 		os.Exit(1)
 	}
+	fastiAnnouncer.Set(bridge)
 	// Custody door client: nil stop (and nothing started) unless both
 	// custos.doors_sock and custos.door_token are set.
 	stopDoor := startCustosAndDevices(context.Background(), cfg.Custos, home, bridge, srv, hub)
 	stopBridge := func() {
 		sched.Stop()
+		if stopFasti != nil {
+			stopFasti()
+		}
 		if stopDoor != nil {
 			stopDoor()
 		}
@@ -674,6 +678,25 @@ func serve(cfgPath string) {
 	}
 	sock.Close()
 	stopBridge()
+}
+
+func attachBackup(srv *surface.Server, cfg *Config, home, cfgPath string, hub *surface.Hub) {
+	srv.BackupCheck = func() error {
+		if len(cfg.Backup.EncryptTo) == 0 {
+			return errors.New("no recipients configured")
+		}
+		return nil
+	}
+	srv.Backup = func(outAbs string, noConfig bool, progress func(string)) error {
+		if len(cfg.Backup.EncryptTo) == 0 {
+			return errors.New("no recipients configured")
+		}
+		recipients, err := backup.ParseRecipients(cfg.Backup.EncryptTo)
+		if err != nil {
+			return fmt.Errorf("invalid recipient in backup.encrypt_to: %w", err)
+		}
+		return backup.CreateFromDaemon(home, cfgPath, outAbs, noConfig, hub.SingleWriterLock, progress, recipients...)
+	}
 }
 
 func hasHelpFlag(args []string) bool {
