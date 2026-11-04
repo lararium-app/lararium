@@ -97,6 +97,10 @@ func (e *Engine) handleProposeJob(cmd cmdProposeJob) {
 		cmd.resp <- addJobResp{err: err}
 		return
 	}
+	if err := e.validatePromptSecrets(job.Prompt); err != nil {
+		cmd.resp <- addJobResp{err: err}
+		return
+	}
 	if _, err := e.calculateNextDue(&job, now); err != nil {
 		cmd.resp <- addJobResp{err: fmt.Errorf("calculate initial next due: %w", err)}
 		return
