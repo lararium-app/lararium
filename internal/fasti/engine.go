@@ -26,6 +26,11 @@ var ErrJobNotFound = errors.New("job not found")
 // off the schedule and freely editable).
 var ErrPromptWhileEnabled = errors.New("cannot update prompt while job is enabled")
 
+// ErrSecretInPrompt refuses job prompts containing literal secret needles (spec D9).
+var ErrSecretInPrompt = errors.New("prompt contains a literal secret; reference credentials via ${vault:NAME} instead")
+
+const minSecretNeedleLen = 8
+
 // TurnRunner runs a headless turn for sessionID with prompt.
 // Implementations return ErrTurnInFlight if a turn is already running for sessionID
 // (such as Hub.RunHeadlessTurn in internal/surface/turns.go:491).
@@ -88,16 +93,25 @@ func WithSessionLog(sl SessionLog) EngineOption {
 	}
 }
 
+// WithSecretNeedles sets the lazy secret-needle source used to refuse literal
+// vault values in job prompts at create time (spec D9). Nil is permissive.
+func WithSecretNeedles(f func() []string) EngineOption {
+	return func(e *Engine) {
+		e.secretNeedles = f
+	}
+}
+
 // Engine implements the fasti proactivity scheduler (spec D1-D5, F1-1..F1-6).
 type Engine struct {
-	cfg        Config
-	home       string
-	clock      loop.Clock
-	runner     TurnRunner
-	textRunner TextTurnRunner
-	announcer  Announcer
-	loc        *time.Location
-	sessionLog SessionLog
+	cfg           Config
+	home          string
+	clock         loop.Clock
+	runner        TurnRunner
+	textRunner    TextTurnRunner
+	announcer     Announcer
+	loc           *time.Location
+	sessionLog    SessionLog
+	secretNeedles func() []string
 
 	jobsPath  string
 	goalsPath string
@@ -994,6 +1008,21 @@ func (e *Engine) handleSync(cmd cmdSync) {
 	cmd.resp <- struct{}{}
 }
 
+func (e *Engine) validatePromptSecrets(prompt string) error {
+	if e.secretNeedles == nil {
+		return nil
+	}
+	for _, needle := range e.secretNeedles() {
+		if len(needle) < minSecretNeedleLen {
+			continue
+		}
+		if strings.Contains(prompt, needle) {
+			return ErrSecretInPrompt
+		}
+	}
+	return nil
+}
+
 func (e *Engine) handleAddJob(cmd cmdAddJob) {
 	job := cmd.job
 	now := e.clock.Now().UTC()
@@ -1002,6 +1031,10 @@ func (e *Engine) handleAddJob(cmd cmdAddJob) {
 		job.ID = NewJobID(now)
 	}
 	if err := job.Validate(); err != nil {
+		cmd.resp <- addJobResp{err: err}
+		return
+	}
+	if err := e.validatePromptSecrets(job.Prompt); err != nil {
 		cmd.resp <- addJobResp{err: err}
 		return
 	}
@@ -1188,6 +1221,10 @@ func (e *Engine) handleEditJob(cmd cmdEditJob) {
 	if cmd.prompt != nil {
 		if job.Enabled && !job.Paused {
 			cmd.resp <- editJobResp{err: ErrPromptWhileEnabled}
+			return
+		}
+		if err := e.validatePromptSecrets(*cmd.prompt); err != nil {
+			cmd.resp <- editJobResp{err: err}
 			return
 		}
 		job.Prompt = *cmd.prompt

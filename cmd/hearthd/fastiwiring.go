@@ -33,6 +33,12 @@ type approvalHubProvider interface {
 	ApprovalHub() *surface.ApprovalHub
 }
 
+// secretNeedlesProvider is implemented by *surface.Hub so startFasti can wire
+// the lazy secret-needle source into the fasti engine (spec D9).
+type secretNeedlesProvider interface {
+	SecretNeedles() func() []string
+}
+
 type fastiCardRegistrar func(title, dest, argsSummary string) (string, error)
 
 type fastiProposalBridge struct {
@@ -443,11 +449,16 @@ func startFasti(
 		clk = fastiRealClock{}
 	}
 	holder := newFastiAnnouncerHolder()
+	var secretNeedles func() []string
+	if sp, ok := door.(secretNeedlesProvider); ok && sp != nil {
+		secretNeedles = sp.SecretNeedles()
+	}
 	opts := []fasti.EngineOption{
 		fasti.WithClock(clk),
 		fasti.WithRunner(newFastiRunner(door)),
 		fasti.WithTextRunner(newFastiTextRunner(door)),
 		fasti.WithAnnouncer(holder),
+		fasti.WithSecretNeedles(secretNeedles),
 	}
 	opts = append(opts, extraOpts...)
 

@@ -104,6 +104,16 @@ func (h *Hub) secretsFn() func() []string {
 	}
 }
 
+// SecretNeedles returns the lazy redaction-needle closure (PROACTIVITY-SPEC D9,
+// CREDHANDLE-SPEC R3): it resolves SetSecrets lazily at call time, returning nil
+// when unset or after SetSecrets(nil).
+func (h *Hub) SecretNeedles() func() []string {
+	if h == nil {
+		return nil
+	}
+	return h.secretsFn()
+}
+
 // Approvals returns the hub's approval coordinator (NUNTIUS-SPEC §7.1).
 func (h *Hub) Approvals() *ApprovalHub { return h.ap }
 
