@@ -94,7 +94,7 @@ func jobAddCmd(cfgPath string, args []string) {
 	fs := flag.NewFlagSet("job add", flag.ContinueOnError)
 	nameFlag := fs.String("name", "", "job name")
 	everyFlag := fs.String("every", "", "interval shorthand (e.g. 30m)")
-	scheduleFlag := fs.String("schedule", "", "full schedule JSON")
+	scheduleFlag := fs.String("schedule", "", `schedule JSON: {"kind":"cron","expr":"..."}, {"cron":"..."}, {"every":"30m"}, or "M H DOM MON DOW"`)
 	promptFlag := fs.String("prompt", "", "task prompt")
 	userPromptFlag := fs.String("user-prompt", "", "task prompt alias")
 	channelFlag := fs.String("channel", "", "announcement destination channel")
@@ -137,11 +137,13 @@ func jobAddCmd(cfgPath string, args []string) {
 	case *everyFlag != "":
 		sched = fasti.Schedule{Kind: "interval", Every: *everyFlag}
 	case *scheduleFlag != "":
-		if err := json.Unmarshal([]byte(*scheduleFlag), &sched); err != nil {
-			fmt.Fprintf(os.Stderr, "invalid schedule JSON: %v\n", err)
+		parsed, err := fasti.ParseScheduleFlag(*scheduleFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid schedule: %v\n", err)
 			exitFunc(2)
 			return
 		}
+		sched = parsed
 	default:
 		fmt.Fprintln(os.Stderr, "schedule is required: specify --every <dur> or --schedule <json>")
 		exitFunc(2)
@@ -290,7 +292,7 @@ func jobEditCmd(cfgPath string, args []string) {
 	args = reorderFlags(args)
 	fs := flag.NewFlagSet("job edit", flag.ContinueOnError)
 	everyFlag := fs.String("every", "", "interval shorthand (e.g. 30m)")
-	scheduleFlag := fs.String("schedule", "", "full schedule JSON")
+	scheduleFlag := fs.String("schedule", "", `schedule JSON: {"kind":"cron","expr":"..."}, {"cron":"..."}, {"every":"30m"}, or "M H DOM MON DOW"`)
 	promptFlag := fs.String("prompt", "", "task prompt")
 	userPromptFlag := fs.String("user-prompt", "", "task prompt alias")
 	enabledFlag := fs.String("enabled", "", "enable or disable job (true/false)")
@@ -327,9 +329,9 @@ func jobEditCmd(cfgPath string, args []string) {
 	if *everyFlag != "" {
 		req["schedule"] = fasti.Schedule{Kind: "interval", Every: *everyFlag}
 	} else if *scheduleFlag != "" {
-		var s fasti.Schedule
-		if err := json.Unmarshal([]byte(*scheduleFlag), &s); err != nil {
-			fmt.Fprintf(os.Stderr, "invalid schedule JSON: %v\n", err)
+		s, err := fasti.ParseScheduleFlag(*scheduleFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid schedule: %v\n", err)
 			exitFunc(2)
 			return
 		}
