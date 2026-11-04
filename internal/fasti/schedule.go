@@ -1,6 +1,7 @@
 package fasti
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -19,6 +20,52 @@ type Schedule struct {
 	Kind  string `json:"kind"`            // "cron" or "interval"
 	Expr  string `json:"expr,omitempty"`  // 5-field cron expression: M H DOM MON DOW
 	Every string `json:"every,omitempty"` // interval string, e.g. "30m"
+}
+
+// ParseScheduleFlag parses the CLI --schedule value.
+//
+// Canonical shape per spec D4/D5 is {"kind":"cron"|"interval","expr"/"every":...}.
+// SPEC-SILENCE: also accepts the shapes operators instinctively type —
+// {"cron": "<expr>"}, {"expr": "<expr>"}, {"every": "<dur>"},
+// {"interval": "<dur>"}, and a bare 5-field cron string ("35 7 * * *").
+// Found in dogfood 2026-11-04: {"cron":...} errored with "schedule kind must
+// be cron or interval" from the surface route.
+func ParseScheduleFlag(raw string) (Schedule, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return Schedule{}, errors.New("schedule is empty")
+	}
+	if !strings.HasPrefix(raw, "{") {
+		if len(strings.Fields(raw)) == 5 {
+			return Schedule{Kind: "cron", Expr: raw}, nil
+		}
+		return Schedule{}, fmt.Errorf("schedule must be JSON or a 5-field cron expression, got %q", raw)
+	}
+	var s Schedule
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return Schedule{}, err
+	}
+	if s.Kind == "cron" || s.Kind == "interval" {
+		return s, nil
+	}
+	// Tolerant shorthands: {"cron": ...} / {"expr": ...} / {"every": ...} / {"interval": ...}.
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return Schedule{}, err
+	}
+	if v, ok := m["cron"]; ok && v != "" {
+		return Schedule{Kind: "cron", Expr: v}, nil
+	}
+	if v, ok := m["expr"]; ok && v != "" && m["every"] == "" && m["interval"] == "" {
+		return Schedule{Kind: "cron", Expr: v}, nil
+	}
+	if v, ok := m["every"]; ok && v != "" {
+		return Schedule{Kind: "interval", Every: v}, nil
+	}
+	if v, ok := m["interval"]; ok && v != "" {
+		return Schedule{Kind: "interval", Every: v}, nil
+	}
+	return Schedule{}, errors.New(`schedule kind must be "cron" or "interval" (or shorthand {"cron":...}/{"every":...})`)
 }
 
 // NextDueResult contains the computed next due instant and whether it fell in a DST gap.
