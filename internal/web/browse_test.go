@@ -15,12 +15,14 @@ import (
 
 func skipWithoutChrome(t *testing.T) string {
 	t.Helper()
+	// Browser tests are opt-in via LARARIUM_CHROME (house convention):
+	// CI runners ship a Chrome whose auto-detection would turn every
+	// shared runner into a browser farm — the headless instances starve
+	// timing-sensitive suites (V7) that run alongside this package.
+	// Dev boxes set the variable explicitly; nothing else changes.
 	chrome := strings.TrimSpace(os.Getenv("LARARIUM_CHROME"))
 	if chrome == "" {
-		chrome = DetectChrome()
-	}
-	if chrome == "" {
-		t.Skip("skipping browser-dependent test; no chrome binary found (LARARIUM_CHROME not set)")
+		t.Skip("skipping browser-dependent test; LARARIUM_CHROME not set")
 	}
 	return chrome
 }
