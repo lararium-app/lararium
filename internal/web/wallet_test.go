@@ -449,7 +449,7 @@ func TestWallet_Store_DeleteInterleave(t *testing.T) {
 	w := NewWallet(home, nil)
 	origin := "ups.com"
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		staging := filepath.Join(t.TempDir(), fmt.Sprintf("stg-%d", i))
 		_ = os.MkdirAll(staging, 0o700)
 		_ = os.WriteFile(filepath.Join(staging, "run.txt"), []byte(fmt.Sprintf("run-%d", i)), 0o600)
@@ -500,7 +500,7 @@ func TestWallet_Store_ConcurrentDifferentOrigins(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numWorkers)
 
-	for i := 0; i < numWorkers; i++ {
+	for i := range numWorkers {
 		idx := i
 		origin := fmt.Sprintf("https://worker-%d.example.com", idx)
 		go func() {
@@ -517,7 +517,7 @@ func TestWallet_Store_ConcurrentDifferentOrigins(t *testing.T) {
 			}
 
 			// Parallel Has calls
-			for j := 0; j < 5; j++ {
+			for range 5 {
 				if !w.Has(origin) {
 					t.Errorf("worker %d Has(%q) = false", idx, origin)
 				}

@@ -41,7 +41,7 @@ func newFakeRunner(profileDir string) *fakeRunner {
 		profileDir: profileDir,
 		display:    ":99",
 		vncPort:    5900,
-		password:   "ephemeral123",
+		password:   "fake123",
 	}
 }
 
@@ -132,10 +132,10 @@ func TestSigninManager_HappyPath(t *testing.T) {
 	}
 
 	runner := newFakeRunner(stagingDir)
-	mgr := NewManager(w, runner)
+	mgr := NewSigninManager(w, runner)
 
-	if mgr.State() != StateIdle {
-		t.Fatalf("expected initial StateIdle, got %s", mgr.State())
+	if mgr.State() != SigninIdle {
+		t.Fatalf("expected initial SigninIdle, got %s", mgr.State())
 	}
 
 	info, err := mgr.Start(context.Background(), origin)
@@ -145,11 +145,11 @@ func TestSigninManager_HappyPath(t *testing.T) {
 	if info.Port != 5900 {
 		t.Fatalf("info.Port = %d, want 5900", info.Port)
 	}
-	if info.Password != "ephemeral123" {
-		t.Fatalf("info.Password = %q, want ephemeral123", info.Password)
+	if info.Password != "fake123" {
+		t.Fatalf("info.Password = %q, want fake123", info.Password)
 	}
-	if mgr.State() != StateLive {
-		t.Fatalf("state after Start = %s, want StateLive", mgr.State())
+	if mgr.State() != SigninLive {
+		t.Fatalf("state after Start = %s, want SigninLive", mgr.State())
 	}
 
 	// Complete seals profile and tears down
@@ -157,8 +157,8 @@ func TestSigninManager_HappyPath(t *testing.T) {
 		t.Fatalf("Complete failed: %v", err)
 	}
 
-	if mgr.State() != StateDone {
-		t.Fatalf("state after Complete = %s, want StateDone", mgr.State())
+	if mgr.State() != SigninDone {
+		t.Fatalf("state after Complete = %s, want SigninDone", mgr.State())
 	}
 
 	// Staging dir should be cleaned up
@@ -203,21 +203,21 @@ func TestSigninManager_TimeoutPath(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(stagingDir, "data.txt"), []byte("temporary"), 0o600)
 
 	runner := newFakeRunner(stagingDir)
-	mgr := NewManager(w, runner, WithTimeout(30*time.Millisecond))
+	mgr := NewSigninManager(w, runner, WithTimeout(30*time.Millisecond))
 
 	_, err := mgr.Start(context.Background(), origin)
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	if mgr.State() != StateLive {
-		t.Fatalf("expected StateLive, got %s", mgr.State())
+	if mgr.State() != SigninLive {
+		t.Fatalf("expected SigninLive, got %s", mgr.State())
 	}
 
 	// Wait for timeout to trigger
 	deadline := time.Now().Add(500 * time.Millisecond)
 	timedOut := false
 	for time.Now().Before(deadline) {
-		if mgr.State() == StateTimeout {
+		if mgr.State() == SigninTimeout {
 			timedOut = true
 			break
 		}
@@ -225,7 +225,7 @@ func TestSigninManager_TimeoutPath(t *testing.T) {
 	}
 
 	if !timedOut {
-		t.Fatalf("timed out waiting for manager to transition to StateTimeout, current: %s", mgr.State())
+		t.Fatalf("timed out waiting for manager to transition to SigninTimeout, current: %s", mgr.State())
 	}
 
 	// Staging dir must be removed on timeout
@@ -255,7 +255,7 @@ func TestSigninManager_CancelPath(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(stagingDir, "token.txt"), []byte("cancel-me"), 0o600)
 
 	runner := newFakeRunner(stagingDir)
-	mgr := NewManager(w, runner)
+	mgr := NewSigninManager(w, runner)
 
 	_, err := mgr.Start(context.Background(), origin)
 	if err != nil {
@@ -266,8 +266,8 @@ func TestSigninManager_CancelPath(t *testing.T) {
 		t.Fatalf("Cancel failed: %v", err)
 	}
 
-	if mgr.State() != StateCanceled {
-		t.Fatalf("state after Cancel = %s, want StateCanceled", mgr.State())
+	if mgr.State() != SigninCanceled {
+		t.Fatalf("state after Cancel = %s, want SigninCanceled", mgr.State())
 	}
 
 	// Staging dir must be removed on cancel
@@ -292,20 +292,20 @@ func TestSigninManager_BusyError(t *testing.T) {
 
 	stagingDir := filepath.Join(t.TempDir(), "staging-busy")
 	runner := newFakeRunner(stagingDir)
-	mgr := NewManager(w, runner)
+	mgr := NewSigninManager(w, runner)
 
 	_, err := mgr.Start(context.Background(), "https://first.example.com")
 	if err != nil {
 		t.Fatalf("first Start failed: %v", err)
 	}
 
-	// Second Start while manager is Live must return ErrBusy
+	// Second Start while manager is Live must return ErrSigninBusy
 	_, err2 := mgr.Start(context.Background(), "https://second.example.com")
 	if err2 == nil {
 		t.Fatal("expected second Start to fail with busy error, got nil")
 	}
-	if !errors.Is(err2, ErrBusy) {
-		t.Fatalf("expected errors.Is(err, ErrBusy), got: %v", err2)
+	if !errors.Is(err2, ErrSigninBusy) {
+		t.Fatalf("expected errors.Is(err, ErrSigninBusy), got: %v", err2)
 	}
 
 	// Cancel and cleanup
@@ -320,14 +320,14 @@ func TestSigninManager_IllegalTransitions(t *testing.T) {
 
 	stagingDir := filepath.Join(t.TempDir(), "staging-illegal")
 	runner := newFakeRunner(stagingDir)
-	mgr := NewManager(w, runner)
+	mgr := NewSigninManager(w, runner)
 
 	// 1. From Idle: Complete and Cancel are illegal
-	if err := mgr.Complete(); err == nil || !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("Complete from Idle want ErrIllegalTransition, got %v", err)
+	if err := mgr.Complete(); err == nil || !errors.Is(err, ErrSigninIllegalTransition) {
+		t.Fatalf("Complete from Idle want ErrSigninIllegalTransition, got %v", err)
 	}
-	if err := mgr.Cancel(); err == nil || !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("Cancel from Idle want ErrIllegalTransition, got %v", err)
+	if err := mgr.Cancel(); err == nil || !errors.Is(err, ErrSigninIllegalTransition) {
+		t.Fatalf("Cancel from Idle want ErrSigninIllegalTransition, got %v", err)
 	}
 
 	// Start -> Live
@@ -336,8 +336,8 @@ func TestSigninManager_IllegalTransitions(t *testing.T) {
 	}
 
 	// 2. From Live: second Start is illegal
-	if _, err := mgr.Start(context.Background(), "https://test.com"); err == nil || !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("second Start want ErrIllegalTransition, got %v", err)
+	if _, err := mgr.Start(context.Background(), "https://test.com"); err == nil || !errors.Is(err, ErrSigninIllegalTransition) {
+		t.Fatalf("second Start want ErrSigninIllegalTransition, got %v", err)
 	}
 
 	// Complete -> Done
@@ -346,14 +346,14 @@ func TestSigninManager_IllegalTransitions(t *testing.T) {
 	}
 
 	// 3. From Done: Start, Complete, Cancel are all illegal
-	if _, err := mgr.Start(context.Background(), "https://test.com"); err == nil || !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("Start from Done want ErrIllegalTransition, got %v", err)
+	if _, err := mgr.Start(context.Background(), "https://test.com"); err == nil || !errors.Is(err, ErrSigninIllegalTransition) {
+		t.Fatalf("Start from Done want ErrSigninIllegalTransition, got %v", err)
 	}
-	if err := mgr.Complete(); err == nil || !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("Complete from Done want ErrIllegalTransition, got %v", err)
+	if err := mgr.Complete(); err == nil || !errors.Is(err, ErrSigninIllegalTransition) {
+		t.Fatalf("Complete from Done want ErrSigninIllegalTransition, got %v", err)
 	}
-	if err := mgr.Cancel(); err == nil || !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("Cancel from Done want ErrIllegalTransition, got %v", err)
+	if err := mgr.Cancel(); err == nil || !errors.Is(err, ErrSigninIllegalTransition) {
+		t.Fatalf("Cancel from Done want ErrSigninIllegalTransition, got %v", err)
 	}
 }
 
@@ -365,15 +365,15 @@ func TestSigninManager_FailureTeardownRanOnce_MidStartVNC(t *testing.T) {
 	runner := newFakeRunner(stagingDir)
 	runner.startX11VNCErr = errors.New("cannot bind vnc port")
 
-	mgr := NewManager(w, runner)
+	mgr := NewSigninManager(w, runner)
 
 	_, err := mgr.Start(context.Background(), "https://failure.example.com")
 	if err == nil {
 		t.Fatal("expected Start to fail when x11vnc fails, got nil")
 	}
 
-	if mgr.State() != StateFailed {
-		t.Fatalf("state after failure = %s, want StateFailed", mgr.State())
+	if mgr.State() != SigninFailed {
+		t.Fatalf("state after failure = %s, want SigninFailed", mgr.State())
 	}
 
 	// Teardown must tear down what was started (Xvfb) exactly once
@@ -409,15 +409,15 @@ func TestSigninManager_FailureTeardownRanOnce_MidStartChromium(t *testing.T) {
 	runner := newFakeRunner(stagingDir)
 	runner.startChromiumErr = errors.New("chromium failed to launch")
 
-	mgr := NewManager(w, runner)
+	mgr := NewSigninManager(w, runner)
 
 	_, err := mgr.Start(context.Background(), "https://failure.example.com")
 	if err == nil {
 		t.Fatal("expected Start to fail when chromium fails, got nil")
 	}
 
-	if mgr.State() != StateFailed {
-		t.Fatalf("state after failure = %s, want StateFailed", mgr.State())
+	if mgr.State() != SigninFailed {
+		t.Fatalf("state after failure = %s, want SigninFailed", mgr.State())
 	}
 
 	// Xvfb and VNC were started, so both must be stopped
@@ -488,13 +488,13 @@ func TestSigninManager_ConcurrentCallsSafe(t *testing.T) {
 
 	stagingDir := filepath.Join(t.TempDir(), "staging-concurrent")
 	runner := newFakeRunner(stagingDir)
-	mgr := NewManager(w, runner)
+	mgr := NewSigninManager(w, runner)
 
 	var wg sync.WaitGroup
 	const routines = 15
 
-	// Concurrently attempt Start, State, Cancel
-	for i := 0; i < routines; i++ {
+	// Concurrently attempt Start, SigninState, Cancel
+	for i := range routines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -523,7 +523,7 @@ func TestRealRunner_Helpers(t *testing.T) {
 		t.Fatalf("expected profileDir under %s, got %s", filepath.Join(home, "signin-staging"), pDir)
 	}
 
-	disp, err := findFreeDisplay()
+	disp, err := findFreeDisplay(context.Background())
 	if err != nil {
 		t.Fatalf("findFreeDisplay failed: %v", err)
 	}
@@ -531,7 +531,7 @@ func TestRealRunner_Helpers(t *testing.T) {
 		t.Fatalf("expected display to start with ':', got %s", disp)
 	}
 
-	port, err := findFreePort()
+	port, err := findFreePort(context.Background())
 	if err != nil {
 		t.Fatalf("findFreePort failed: %v", err)
 	}
