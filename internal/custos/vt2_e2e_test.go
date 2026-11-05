@@ -854,7 +854,15 @@ func TestVT2d(t *testing.T) {
 
 	// PATCH deny-listing "beta".
 	patchJSON := lcConfig(t, "vt2d", nil, map[string]any{"tool_denylist": []string{"beta"}})
-	patchBody, patchCode := w.patchJSON("/v1/mcp/connectors/vt2d", patchJSON)
+	var patchBody string
+	var patchCode int
+	for attempt := 0; attempt < 50; attempt++ {
+		patchBody, patchCode = w.patchJSON("/v1/mcp/connectors/vt2d", patchJSON)
+		if patchCode != http.StatusConflict || !strings.Contains(patchBody, "pending_add") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if patchCode != http.StatusAccepted {
 		t.Fatalf("PATCH = %d: %s", patchCode, patchBody)
 	}
@@ -1317,7 +1325,14 @@ func TestVT2i(t *testing.T) {
 	if _, err := fmt.Fprint(conn, "MCP-REFRESH vt2i\n"); err != nil {
 		t.Fatal(err)
 	}
-	refreshReply := readLine()
+	var refreshReply string
+	for {
+		line := readLine()
+		if strings.HasPrefix(line, "OK") || strings.HasPrefix(line, "ERR") {
+			refreshReply = line
+			break
+		}
+	}
 	if !strings.HasPrefix(refreshReply, "OK") {
 		t.Fatalf("MCP-REFRESH reply = %q", refreshReply)
 	}

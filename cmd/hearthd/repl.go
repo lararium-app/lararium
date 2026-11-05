@@ -89,7 +89,7 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init scheduler: %w", err)
 	}
-	tools := buildTools(cfg.Hearth.Home, sched)
+	tools := buildTools(cfg.Hearth.Home, sched, cfg.Web)
 	// CREDHANDLE-SPEC R3: the REPL reaches the vault the same way serve does.
 	var secrets func() []string
 	if v := openCustosVault(cfg.Hearth.Home, cfg.Custos); v != nil {
