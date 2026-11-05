@@ -102,6 +102,18 @@ func TestDetectBotWall(t *testing.T) {
 			body:       []byte("Just a moment... verifying"),
 			want:       true,
 		},
+		{
+			name:       "0 status with generic 'access denied' text is NOT blocked",
+			statusCode: 0,
+			body:       []byte("<html><body>Tutorial: servers sometimes reply Access Denied and Attention Required errors.</body></html>"),
+			want:       false,
+		},
+		{
+			name:       "0 status with sorry first line is NOT blocked",
+			statusCode: 0,
+			body:       []byte("SORRY we could not process your order"),
+			want:       false,
+		},
 
 		// Negative test cases (NOT-blocked pages)
 		{

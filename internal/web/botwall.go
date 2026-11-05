@@ -21,6 +21,17 @@ var challengePhrases = [][]byte{
 	[]byte("px-captcha"),
 }
 
+// unambiguousChallengePhrases appear almost exclusively on interstitial
+// challenge pages. When the HTTP status is unknown (0 — e.g. Chrome's
+// navigation timing unavailable), only these may trigger detection, so that
+// ordinary content merely mentioning "access denied" cannot false-positive.
+var unambiguousChallengePhrases = [][]byte{
+	[]byte("just a moment"),
+	[]byte("checking for viruses"),
+	[]byte("are you a human"),
+	[]byte("px-captcha"),
+}
+
 // DetectBotWall returns true if the HTTP status and response body indicate
 // an automated-access challenge or block page.
 //
@@ -28,8 +39,10 @@ var challengePhrases = [][]byte{
 //  1. HTTP 403 or 503 with body matching (case-insensitive) any of:
 //     "just a moment", "checking for viruses", "attention required",
 //     "access denied", "are you a human", "px-captcha".
+//     When statusCode is 0 (status unknown) only the unambiguous
+//     challenge phrases count.
 //  2. HTTP 500 or 403 body containing "Reference #" (case-insensitive).
-//  3. eBay-style "SORRY" first line.
+//  3. eBay-style "SORRY" first line (on 403/500/503 only).
 func DetectBotWall(statusCode int, body []byte) bool {
 	head := body
 	if len(head) > botWallHeadBytes {
@@ -37,9 +50,13 @@ func DetectBotWall(statusCode int, body []byte) bool {
 	}
 	lowerHead := bytes.ToLower(head)
 
-	// 1. HTTP 403 or 503 with challenge phrases
+	// 1. HTTP 403 or 503 with challenge phrases; status 0 with unambiguous ones only.
+	phrases := challengePhrases
+	if statusCode == 0 {
+		phrases = unambiguousChallengePhrases
+	}
 	if statusCode == http.StatusForbidden || statusCode == http.StatusServiceUnavailable || statusCode == 0 {
-		for _, phrase := range challengePhrases {
+		for _, phrase := range phrases {
 			if bytes.Contains(lowerHead, phrase) {
 				return true
 			}
@@ -47,14 +64,14 @@ func DetectBotWall(statusCode int, body []byte) bool {
 	}
 
 	// 2. HTTP 500 or 403 body containing "Reference #"
-	if statusCode == http.StatusInternalServerError || statusCode == http.StatusForbidden || statusCode == 0 {
+	if statusCode == http.StatusInternalServerError || statusCode == http.StatusForbidden {
 		if bytes.Contains(lowerHead, []byte("reference #")) {
 			return true
 		}
 	}
 
 	// 3. eBay-style "SORRY" first line
-	if statusCode == http.StatusForbidden || statusCode == http.StatusServiceUnavailable || statusCode == http.StatusInternalServerError || statusCode == 0 {
+	if statusCode == http.StatusForbidden || statusCode == http.StatusServiceUnavailable || statusCode == http.StatusInternalServerError {
 		trimmed := bytes.TrimSpace(head)
 		if len(trimmed) > 0 {
 			firstLine := trimmed
@@ -69,11 +86,6 @@ func DetectBotWall(statusCode int, body []byte) bool {
 	}
 
 	return false
-}
-
-// IsBotWall is an alias for DetectBotWall.
-func IsBotWall(statusCode int, body []byte) bool {
-	return DetectBotWall(statusCode, body)
 }
 
 // FormatBlocked formats a blocked result starting with BlockedPrefix
