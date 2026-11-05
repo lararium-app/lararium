@@ -120,6 +120,21 @@ func (b *Browser) SetAllowedTestHosts(hosts ...string) {
 	b.allowedTestHosts = hosts
 }
 
+// normalizeTestHost maps a configured test host to a bare lowercase
+// hostname. Tests configure these as httptest server URLs (scheme and
+// port included); everything else matches hostnames. Never configured
+// outside tests.
+func normalizeTestHost(h string) string {
+	s := strings.TrimSpace(h)
+	if u, err := url.Parse(s); err == nil && u.Hostname() != "" {
+		return strings.ToLower(u.Hostname())
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	return strings.ToLower(s)
+}
+
 // Browse executes navigation, optional acts, and extraction.
 func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) (string, error) {
 	if !b.mu.TryLock() {
@@ -128,10 +143,16 @@ func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) 
 	defer b.mu.Unlock()
 
 	var allowedHost string
-	for _, h := range b.allowedTestHosts {
-		if strings.Contains(rawURL, h) {
-			allowedHost = h
-			break
+	reqHost := ""
+	if u, err := url.Parse(rawURL); err == nil {
+		reqHost = strings.ToLower(u.Hostname())
+	}
+	if reqHost != "" {
+		for _, h := range b.allowedTestHosts {
+			if normalizeTestHost(h) == reqHost {
+				allowedHost = reqHost
+				break
+			}
 		}
 	}
 
