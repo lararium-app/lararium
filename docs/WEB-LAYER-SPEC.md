@@ -62,7 +62,24 @@ observations → decide → card). No separate watcher engine.
 3. **"Every day at 7, tell me if the HOA portal posts anything new."**
    → schedule → `web_browse` in portal profile → diff → card only on change.
 
-## 5. Security & boundaries
+## 5. Managing the wallet (Connectors page + proactive sign-in)
+
+PO decisions (2026-11-05), baked into scope:
+
+- **Every saved session is a first-class row on the Connectors page** —
+  "Signed in: ups.com · policy: always-ask · signed in 3 days ago ·
+  last used for 'order status'". Tapping a row: change act policy, view the
+  activity log for that site, or **Sign out** (wipes the stored profile
+  immediately; a later ask just re-raises the sign-in card). Sessions are
+  visible and revocable by design — a wallet with no "log out" button is a
+  hostage situation.
+- **Proactive sign-in is a first-class action, not just an agent prompt.**
+  The Connectors page has **"+ Sign me in to a site"**: paste (or speak) a
+  URL, complete the sign-in window, done — no agent task required. Later,
+  any request that touches that origin silently reuses it. Voice path too:
+  "sign me into Netflix" raises the same guided window.
+
+## 6. Security & boundaries
 
 - **Per-origin isolation.** Sessions never shared across origins; no
   cross-site navigation with a session (agent stays on-origin, else card).
@@ -80,7 +97,7 @@ observations → decide → card). No separate watcher engine.
   as a browser extension acting for its user. Read-heavy by default; acts
   gated; no scraping at scale; respect robots meta for scheduled jobs.
 
-## 6. Where the browser runs
+## 7. Where the browser runs
 
 - **Default: the daemon host** (headless Chromium, ARM64 fine, ~400–600 MB
   RSS per profile; single-board-class hardware is adequate for 1 concurrent
@@ -90,18 +107,21 @@ observations → decide → card). No separate watcher engine.
   Same session-wallet sync rules: wallet lives on the daemon, node gets a
   ephemeral copy for the task. (Phase 3+, design noted, not built first.)
 
-## 7. Phasing
+## 8. Phasing
 
 - **P1 — hands, no logins (small).** `web_fetch` + headless `web_browse`
   for public pages; answer-with-link in chat. Proves the loop end-to-end.
 - **P2 — the wallet (the unlock).** Sign-in card → guided window → encrypted
-  per-origin profiles → silent reuse + expiry re-prompt. Act-approval gate.
+  per-origin profiles → silent reuse + expiry re-prompt. Act-approval gate
+  (with the sign-in-time policy choice). Includes Connectors-page wallet
+  rows (policy edit, activity log, Sign out) and proactive
+  "+ Sign me in to a site" (page + voice).
 - **P3 — scheduled web tasks.** Watch/status via fasti + diff; the "every
   morning" class of asks.
 - **P4 — convenience.** "Use my browser's login" (cookie import from the
   user's own browser profile / extension), browser nodes, allowlist UI.
 
-## 8. What we deliberately do NOT build
+## 9. What we deliberately do NOT build
 
 - A crawler, a scraper framework, or bulk extraction of any kind.
 - Password capture, autofill of credentials, or 2FA-code interception.
@@ -109,7 +129,7 @@ observations → decide → card). No separate watcher engine.
 - Per-service bespoke integrations where a browser session suffices —
   the API catalog stays tiny on purpose (clean-API services only).
 
-## 9. PO decisions (2026-11-05)
+## 10. PO decisions (2026-11-05)
 
 1. **Act-gate = sign-in-time choice.** When the sign-in card completes, the
    user picks the site's policy: "always ask before acts" (default) or
