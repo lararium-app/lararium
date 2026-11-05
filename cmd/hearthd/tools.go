@@ -13,17 +13,30 @@ import (
 	"github.com/lararium-app/lararium/internal/memindex"
 	"github.com/lararium-app/lararium/internal/penatus"
 	"github.com/lararium-app/lararium/internal/router"
+	"github.com/lararium-app/lararium/internal/web"
 )
 
 // buildTools returns the v1 tool registry. home is the persona root.
-func buildTools(home string, sched ...*loop.Scheduler) []loop.Tool {
+func buildTools(home string, args ...any) []loop.Tool {
 	var wakeSched *loop.Scheduler
-	if len(sched) > 0 && sched[0] != nil {
-		wakeSched = sched[0]
-	} else {
+	webCfg := web.DefaultConfig()
+
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case *loop.Scheduler:
+			wakeSched = v
+		case web.Config:
+			webCfg = v
+		case *web.Config:
+			if v != nil {
+				webCfg = *v
+			}
+		}
+	}
+	if wakeSched == nil {
 		wakeSched, _ = loop.NewScheduler(home, nil)
 	}
-	return []loop.Tool{
+	tools := []loop.Tool{
 		loop.ScheduleWakeTool(wakeSched),
 		fastiJobTool(home),
 		{
@@ -154,6 +167,10 @@ func buildTools(home string, sched ...*loop.Scheduler) []loop.Tool {
 			},
 		},
 	}
+	if webCfg.Enabled {
+		tools = append(tools, web.FetchTool(webCfg), web.BrowseTool(home, webCfg))
+	}
+	return tools
 }
 
 // memoryPath is MEMORY.md under home (same file the system prompt injects).
