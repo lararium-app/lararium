@@ -73,6 +73,10 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 		s.dispatchMCPConnectors(w, r)
 		return
 	}
+	if r.URL.Path == "/v1/web/sessions" || strings.HasPrefix(r.URL.Path, "/v1/web/sessions/") {
+		s.dispatchWebSessions(w, r)
+		return
+	}
 	if r.URL.Path == "/v1/policy/rules" || strings.HasPrefix(r.URL.Path, "/v1/policy/rules/") {
 		if s.dispatchPolicy(w, r) {
 			return
