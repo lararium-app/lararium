@@ -633,6 +633,7 @@ func serve(cfgPath string) {
 		Providers: kp.ProviderInfos,
 		Reload:    reloadKeys,
 	})
+	srv.SetWebHome(home)
 	attachBackup(srv, cfg, home, cfgPath, hub)
 
 	fastiAnnouncer, stopFasti := mustWireFasti(context.Background(), cfg.Fasti, home, srv, hub)

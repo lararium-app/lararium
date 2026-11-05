@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/lararium-app/lararium/internal/fasti"
+	"github.com/lararium-app/lararium/internal/web"
 )
 
 // SessionInfo is the wire shape of one session in GET /v1/sessions
@@ -103,6 +104,39 @@ type Server struct {
 	devicePokeMu    sync.RWMutex
 	devicePokes     map[int64]func()
 	devicePokeSeq   int64
+
+	webMu       sync.RWMutex
+	webWallet   *web.Wallet
+	webIndex    *web.WalletIndex
+	webActivity *web.ActivityLogger
+	webHome     string
+}
+
+// SetWebWallet attaches the session wallet, index, and activity logger to the Server.
+func (s *Server) SetWebWallet(w *web.Wallet, idx *web.WalletIndex, act *web.ActivityLogger) {
+	s.webMu.Lock()
+	defer s.webMu.Unlock()
+	s.webWallet = w
+	s.webIndex = idx
+	s.webActivity = act
+}
+
+// SetWebHome sets the base directory for lazily creating web wallet dependencies.
+func (s *Server) SetWebHome(home string) {
+	s.webMu.Lock()
+	defer s.webMu.Unlock()
+	s.webHome = home
+}
+
+func (s *Server) getWebDeps() (*web.Wallet, *web.WalletIndex, *web.ActivityLogger) {
+	s.webMu.Lock()
+	defer s.webMu.Unlock()
+	if s.webIndex == nil && s.webHome != "" {
+		s.webWallet = web.NewWallet(s.webHome, nil)
+		s.webIndex = web.NewWalletIndex(s.webHome)
+		s.webActivity = web.NewActivityLogger(s.webHome)
+	}
+	return s.webWallet, s.webIndex, s.webActivity
 }
 
 // SetDeviceDoor attaches the device control plane.
