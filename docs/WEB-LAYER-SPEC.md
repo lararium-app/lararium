@@ -109,11 +109,14 @@ observations → decide → card). No separate watcher engine.
 - Per-service bespoke integrations where a browser session suffices —
   the API catalog stays tiny on purpose (clean-API services only).
 
-## 9. Open questions for PO
+## 9. PO decisions (2026-11-05)
 
-1. Act-gate default: **every act asks** (safer, P2 default) vs. per-site
-   "always allow reads, ask acts" preference set at sign-in time?
-2. P1 scope check: ship fetch+browse for public web as its own beta first,
-   or hold until the wallet (P2) makes it feel complete?
-3. First proof site for the wallet: pick one PO's realest login-wall site
-   (email? carrier portal? HOA?) to develop against — not GitHub-toy.
+1. **Act-gate = sign-in-time choice.** When the sign-in card completes, the
+   user picks the site's policy: "always ask before acts" (default) or
+   "acts allowed once per site per day". Policy is stored with the wallet
+   entry, shown in a future Connectors UI, and enforced daemon-side.
+2. **P1 ships as its own beta.** Public fetch+browse goes out standalone to
+   prove the loop and gather feedback before the wallet lands.
+3. **First wallet build-target: a carrier/utility account page** (PO's real
+   usage). Chosen deliberately: real auth walls, real session expiry,
+   nothing toy — if it works there, it works.
