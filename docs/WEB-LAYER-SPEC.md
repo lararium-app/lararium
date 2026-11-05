@@ -140,3 +140,10 @@ PO decisions (2026-11-05), baked into scope:
 3. **First wallet build-target: a carrier/utility account page** (PO's real
    usage). Chosen deliberately: real auth walls, real session expiry,
    nothing toy — if it works there, it works.
+4. **Guided sign-in window = daemon-hosted, streamed over the tailnet**
+   (PO 2026-11-05). Headless Chromium on Xvfb on the daemon host; the user
+   drives it through a noVNC page served on a tailnet-only port, completing
+   sign-in in their own hand from the phone's browser. The window is torn
+   down on completion, cancel, or timeout; nothing persists except the
+   sealed session wallet entry. Browser nodes (§7) remain the P4 escalation
+   path for bot-wall sites.
