@@ -1320,3 +1320,157 @@ func TestHub_SetupFailureTerminal(t *testing.T) {
 		t.Fatal("session should not be in flight after setup failure")
 	}
 }
+
+func TestHub_HandleMessage_EmptyTextValidation(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantTurn   bool
+	}{
+		{
+			name:       "missing text key",
+			body:       `{}`,
+			wantStatus: http.StatusBadRequest,
+			wantTurn:   false,
+		},
+		{
+			name:       "text empty string",
+			body:       `{"text":""}`,
+			wantStatus: http.StatusBadRequest,
+			wantTurn:   false,
+		},
+		{
+			name:       "text whitespace only",
+			body:       `{"text":"   \t\n"}`,
+			wantStatus: http.StatusBadRequest,
+			wantTurn:   false,
+		},
+		{
+			name:       "valid text",
+			body:       `{"text":"hello"}`,
+			wantStatus: http.StatusOK,
+			wantTurn:   true,
+		},
+		{
+			name:       "valid text with extra keys",
+			body:       `{"text":"hello with extra","client_id":"123"}`,
+			wantStatus: http.StatusOK,
+			wantTurn:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var turnCalls atomic.Int32
+			sp := &stubProvider{
+				name: "stub",
+				caps: router.Caps{SupportsTools: false, ContextLength: 100000, Source: "stub"},
+				replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+					turnCalls.Add(1)
+					return &router.Completion{Text: "all good reply", Model: "stub"}, nil
+				},
+			}
+
+			hub := setupHub(t, sp)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			hub.HandleMessage(w, req, "main")
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+
+			if !tc.wantTurn {
+				if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+					t.Errorf("Content-Type = %q, want application/json", ct)
+				}
+				var errResp map[string]string
+				if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+					t.Fatalf("unmarshal error response: %v", err)
+				}
+				if errResp["error"] == "" {
+					t.Errorf("expected non-empty error field in response body: %s", w.Body.String())
+				}
+
+				if calls := turnCalls.Load(); calls != 0 {
+					t.Fatalf("turn ran %d times, want 0", calls)
+				}
+
+				log, err := penatus.OpenLog(hub.SessionDir("main"))
+				if err != nil {
+					t.Fatalf("OpenLog: %v", err)
+				}
+				events := log.Live()
+				if len(events) != 1 {
+					t.Fatalf("session log events count = %d, want 1", len(events))
+				}
+				for _, ev := range events {
+					if ev.T != "msg" {
+						continue
+					}
+					var f struct {
+						Role string `json:"role"`
+					}
+					b, err := ev.MarshalJSON()
+					if err != nil {
+						t.Fatalf("MarshalJSON: %v", err)
+					}
+					if err := json.Unmarshal(b, &f); err != nil {
+						t.Fatalf("Unmarshal: %v", err)
+					}
+					if f.Role == "user" {
+						t.Fatalf("unexpected user message event found in session log: %s", string(b))
+					}
+				}
+			} else {
+				if calls := turnCalls.Load(); calls != 1 {
+					t.Fatalf("turn ran %d times, want 1", calls)
+				}
+
+				frames := parseSSEFrames(w.Body.String())
+				if len(frames) == 0 {
+					t.Fatal("expected SSE frames, got none")
+				}
+				lastFrame := frames[len(frames)-1]
+				if lastFrame["event"] != "turn_done" {
+					t.Fatalf("terminal SSE event = %v, want 'turn_done'", lastFrame["event"])
+				}
+
+				log, err := penatus.OpenLog(hub.SessionDir("main"))
+				if err != nil {
+					t.Fatalf("OpenLog: %v", err)
+				}
+				var userFound bool
+				for _, ev := range log.Live() {
+					if ev.T != "msg" {
+						continue
+					}
+					var f struct {
+						Role string `json:"role"`
+					}
+					b, err := ev.MarshalJSON()
+					if err != nil {
+						t.Fatalf("MarshalJSON: %v", err)
+					}
+					if err := json.Unmarshal(b, &f); err != nil {
+						t.Fatalf("Unmarshal: %v", err)
+					}
+					if f.Role == "user" {
+						userFound = true
+					}
+				}
+				if !userFound {
+					t.Fatal("user message event not found in session log after successful turn")
+				}
+			}
+
+			if hub.InFlight("main") {
+				t.Fatal("session should not be in flight after HandleMessage finishes")
+			}
+		})
+	}
+}

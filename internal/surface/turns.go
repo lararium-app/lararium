@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/lararium-app/lararium/internal/keystore"
 	"github.com/lararium-app/lararium/internal/loop"
@@ -451,6 +452,10 @@ func (h *Hub) HandleMessage(w http.ResponseWriter, r *http.Request, sessionID st
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONBody(w, http.StatusBadRequest, `{"error":"invalid request body"}`)
+		return
+	}
+	if strings.TrimFunc(req.Text, unicode.IsSpace) == "" {
+		writeJSONBody(w, http.StatusBadRequest, `{"error":"empty message text"}`)
 		return
 	}
 
