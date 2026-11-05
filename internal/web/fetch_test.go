@@ -227,3 +227,80 @@ func TestWebFetch_RedirectHopLimit(t *testing.T) {
 		t.Fatalf("expected 'done', got: %s", res)
 	}
 }
+
+func TestWebFetch_DefaultHeaders(t *testing.T) {
+	var receivedHeaders http.Header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("ok"))
+	}))
+	defer ts.Close()
+
+	host := ts.Listener.Addr().String()
+	cfg := DefaultConfig()
+
+	_, err := Fetch(context.Background(), ts.URL, cfg, WithAllowedTestHost(host))
+	if err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+
+	expectedHeaders := map[string]string{
+		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+		"Accept-Language":           "en-US,en;q=0.9",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-Dest":            "document",
+		"Sec-Fetch-Site":            "none",
+		"Sec-Fetch-User":            "?1",
+		"Upgrade-Insecure-Requests": "1",
+	}
+
+	for k, want := range expectedHeaders {
+		got := receivedHeaders.Get(k)
+		if got != want {
+			t.Errorf("header %q = %q, want %q", k, got, want)
+		}
+	}
+
+	// Also verify caller override
+	t.Run("CallerOverride", func(t *testing.T) {
+		_, err := Fetch(context.Background(), ts.URL, cfg,
+			WithAllowedTestHost(host),
+			WithHeader("User-Agent", "CustomBot/2.0"),
+		)
+		if err != nil {
+			t.Fatalf("Fetch failed: %v", err)
+		}
+		if got := receivedHeaders.Get("User-Agent"); got != "CustomBot/2.0" {
+			t.Errorf("overridden User-Agent = %q, want CustomBot/2.0", got)
+		}
+	})
+}
+
+func TestWebFetch_CloudflareBotWallBlocked(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Just a moment... Enable JavaScript and cookies to continue</body></html>`))
+	}))
+	defer ts.Close()
+
+	host := ts.Listener.Addr().String()
+	cfg := DefaultConfig()
+
+	res, err := Fetch(context.Background(), ts.URL, cfg, WithAllowedTestHost(host))
+	if err != nil {
+		t.Fatalf("expected nil error on bot-wall block page, got: %v", err)
+	}
+
+	if !strings.HasPrefix(res, "[blocked]") {
+		t.Fatalf("expected result to start with '[blocked]', got:\n%s", res)
+	}
+	if !strings.HasPrefix(res, "[blocked] This site refused automated access.") {
+		t.Fatalf("expected result to start with '[blocked] This site refused automated access.', got:\n%s", res)
+	}
+	if !strings.Contains(res, "Just a moment...") {
+		t.Fatalf("expected result to include body snippet, got:\n%s", res)
+	}
+}
