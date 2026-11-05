@@ -17,6 +17,7 @@ import (
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/penatus"
 	"github.com/lararium-app/lararium/internal/router"
+	"github.com/lararium-app/lararium/internal/web"
 )
 
 // ErrTurnInFlight is returned when a turn is already running for the
@@ -652,6 +653,10 @@ func (h *Hub) executeTurn(
 
 	// engineCtx is intentionally not r.Context(): the turn persists after
 	// client disconnect (spec §5 P3), bounded by turn_timeout only.
+	// The web layer's act gate resolves its approver from ctx so gated
+	// acts surface the same approval cards this machinery raises for
+	// untrusted tools.
+	engineCtx = web.ContextWithApprover(engineCtx, approver)
 	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.currentTools(), approver)
 	if err != nil {
 		if reason, ok := router.ProviderErrorReason(err); ok {

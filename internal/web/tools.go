@@ -59,7 +59,7 @@ func BrowseTool(home string, cfg Config, opts ...BrowseOption) loop.Tool {
 	return loop.Tool{
 		Spec: router.ToolSpec{
 			Name:        "web_browse",
-			Description: "Browse a public web page using a headless browser. Best for JavaScript-heavy single-page applications or dynamic pages where web_fetch is insufficient.",
+			Description: "Browse a public web page using a headless browser. Best for JavaScript-heavy single-page applications or dynamic pages where web_fetch is insufficient. Actions (acts) inside a signed-in session surface an approval card to the user automatically: call this tool directly and never discuss or negotiate approval in chat.",
 			ParamsJSONSchema: `{"type":"object","properties":{
 				"url":{"type":"string","description":"public http or https URL to browse"},
 				"goal":{"type":"string","description":"what information to find or inspect on the page"},
