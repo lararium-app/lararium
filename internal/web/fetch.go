@@ -17,7 +17,7 @@ import (
 
 const (
 	// BrowserUserAgent is a standard browser user agent string.
-	BrowserUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 	// FetchTimeout is the maximum request duration for web_fetch.
 	FetchTimeout = 15 * time.Second
 )
@@ -28,6 +28,7 @@ type FetchOption func(*fetchOptions)
 type fetchOptions struct {
 	resolver        Resolver
 	allowedTestHost string
+	header          http.Header
 }
 
 // WithResolver sets a custom DNS resolver.
@@ -41,6 +42,28 @@ func WithResolver(r Resolver) FetchOption {
 func WithAllowedTestHost(h string) FetchOption {
 	return func(o *fetchOptions) {
 		o.allowedTestHost = h
+	}
+}
+
+// WithHeader sets or overrides an HTTP header for Fetch.
+func WithHeader(key, value string) FetchOption {
+	return func(o *fetchOptions) {
+		if o.header == nil {
+			o.header = make(http.Header)
+		}
+		o.header.Set(key, value)
+	}
+}
+
+// WithHeaders sets or overrides multiple HTTP headers for Fetch.
+func WithHeaders(h http.Header) FetchOption {
+	return func(o *fetchOptions) {
+		if o.header == nil {
+			o.header = make(http.Header)
+		}
+		for k, vv := range h {
+			o.header[k] = vv
+		}
 	}
 }
 
@@ -90,8 +113,24 @@ func Fetch(ctx context.Context, rawURL string, cfg Config, opts ...FetchOption) 
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", BrowserUserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,application/json,*/*;q=0.8")
+	defaults := [][2]string{
+		{"User-Agent", BrowserUserAgent},
+		{"Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"},
+		{"Accept-Language", "en-US,en;q=0.9"},
+		{"Sec-Fetch-Mode", "navigate"},
+		{"Sec-Fetch-Dest", "document"},
+		{"Sec-Fetch-Site", "none"},
+		{"Sec-Fetch-User", "?1"},
+		{"Upgrade-Insecure-Requests", "1"},
+	}
+	for _, kv := range defaults {
+		req.Header.Set(kv[0], kv[1])
+	}
+	if opt.header != nil {
+		for k, vv := range opt.header {
+			req.Header[k] = vv
+		}
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -107,6 +146,10 @@ func Fetch(ctx context.Context, rawURL string, cfg Config, opts ...FetchOption) 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxRead))
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if DetectBotWall(resp.StatusCode, bodyBytes) {
+		return FormatBlocked(bodyBytes), nil
 	}
 
 	finalURL := resp.Request.URL.String()

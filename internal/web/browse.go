@@ -135,6 +135,43 @@ func normalizeTestHost(h string) string {
 	return strings.ToLower(s)
 }
 
+func (b *Browser) matchAllowedTestHost(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil && u.Hostname() != "" {
+		reqHost := strings.ToLower(u.Hostname())
+		for _, h := range b.allowedTestHosts {
+			if normalizeTestHost(h) == reqHost {
+				return reqHost
+			}
+		}
+	}
+	return ""
+}
+
+func buildExecAllocatorOptions(chromePath, userDataDir, allowedHost string) []chromedp.ExecAllocatorOption {
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(chromePath),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("no-default-browser-check", true),
+		chromedp.Flag("window-size", "1280,900"),
+		chromedp.Flag("lang", "en-US"),
+		chromedp.Flag("accept-lang", "en-US"),
+		chromedp.Flag("user-agent", BrowserUserAgent),
+	)
+
+	if userDataDir != "" {
+		opts = append(opts, chromedp.UserDataDir(userDataDir))
+	}
+
+	if allowedHost == "" {
+		opts = append(opts, chromedp.Flag("host-resolver-rules", "MAP 0.0.0.0/8 ~NOTFOUND, MAP 10.0.0.0/8 ~NOTFOUND, MAP 100.64.0.0/10 ~NOTFOUND, MAP 127.0.0.0/8 ~NOTFOUND, MAP 169.254.0.0/16 ~NOTFOUND, MAP 172.16.0.0/12 ~NOTFOUND, MAP 192.168.0.0/16 ~NOTFOUND, MAP 198.18.0.0/15 ~NOTFOUND, MAP ::1 ~NOTFOUND, MAP fc00::/7 ~NOTFOUND, MAP fe80::/10 ~NOTFOUND, MAP 2002::/16 ~NOTFOUND, MAP 2001::/32 ~NOTFOUND"))
+	}
+	return opts
+}
+
 // Browse executes navigation, optional acts, and extraction.
 func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) (string, error) {
 	if !b.mu.TryLock() {
@@ -142,19 +179,7 @@ func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) 
 	}
 	defer b.mu.Unlock()
 
-	var allowedHost string
-	reqHost := ""
-	if u, err := url.Parse(rawURL); err == nil {
-		reqHost = strings.ToLower(u.Hostname())
-	}
-	if reqHost != "" {
-		for _, h := range b.allowedTestHosts {
-			if normalizeTestHost(h) == reqHost {
-				allowedHost = reqHost
-				break
-			}
-		}
-	}
+	allowedHost := b.matchAllowedTestHost(rawURL)
 
 	parsed, _, err := ValidateURLWithResolver(ctx, rawURL, net.DefaultResolver, allowedHost)
 	if err != nil {
@@ -197,20 +222,7 @@ func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) 
 		timeoutSec = DefaultBrowseTimeoutS
 	}
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.ExecPath(chromePath),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-	)
-
-	if userDataDir != "" {
-		opts = append(opts, chromedp.UserDataDir(userDataDir))
-	}
-
-	if allowedHost == "" {
-		opts = append(opts, chromedp.Flag("host-resolver-rules", "MAP 0.0.0.0/8 ~NOTFOUND, MAP 10.0.0.0/8 ~NOTFOUND, MAP 100.64.0.0/10 ~NOTFOUND, MAP 127.0.0.0/8 ~NOTFOUND, MAP 169.254.0.0/16 ~NOTFOUND, MAP 172.16.0.0/12 ~NOTFOUND, MAP 192.168.0.0/16 ~NOTFOUND, MAP 198.18.0.0/15 ~NOTFOUND, MAP ::1 ~NOTFOUND, MAP fc00::/7 ~NOTFOUND, MAP fe80::/10 ~NOTFOUND, MAP 2002::/16 ~NOTFOUND, MAP 2001::/32 ~NOTFOUND"))
-	}
+	opts := buildExecAllocatorOptions(chromePath, userDataDir, allowedHost)
 
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, opts...)
 	defer cancelAlloc()
@@ -265,6 +277,22 @@ func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) 
 		}
 	}
 
+	// Bot-wall check: refuse automated interaction if the page is a challenge/block wall
+	if b.isBotWall(timeoutCtx) {
+		obs, finalURLStr, screenshotRel := b.extractPage(timeoutCtx, parsed, origin)
+		now := time.Now().UTC().Format(time.RFC3339)
+		_ = b.activity.Append(ActivityRecord{
+			TS:            now,
+			Origin:        origin,
+			URL:           finalURLStr,
+			Kind:          KindRead,
+			Verdict:       VerdictBlocked,
+			ScreenshotRef: screenshotRel,
+		})
+		_ = b.index.Touch(origin, goal)
+		return obs, nil
+	}
+
 	// 4. Execute acts sequentially
 	if len(acts) > 0 {
 		actObs, actBlocked, actErr := b.executeActs(timeoutCtx, sessionActive, origin, parsed, acts)
@@ -293,17 +321,29 @@ func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) 
 			ScreenshotRef: screenshotRel,
 		})
 	}
+	verdict := VerdictOK
+	if strings.HasPrefix(obs, BlockedPrefix) {
+		verdict = VerdictBlocked
+	}
 	_ = b.activity.Append(ActivityRecord{
 		TS:            now,
 		Origin:        origin,
 		URL:           finalURLStr,
 		Kind:          KindRead,
-		Verdict:       VerdictOK,
+		Verdict:       verdict,
 		ScreenshotRef: screenshotRel,
 	})
 	_ = b.index.Touch(origin, goal)
 
 	return obs, nil
+}
+
+func (b *Browser) isBotWall(ctx context.Context) bool {
+	navStatus, _ := chromedp.Run(ctx, chromedp.Evaluate[int64]("(() => { const nav = performance.getEntriesByType('navigation')[0]; return nav ? (nav.responseStatus || 0) : 0; })()"))
+	visibleText, _ := chromedp.Run(ctx, chromedp.Evaluate[string]("document.body ? document.body.innerText : ''"))
+	html, _ := chromedp.Run(ctx, chromedp.Evaluate[string]("document.documentElement ? document.documentElement.outerHTML : ''"))
+	statusCode := int(navStatus)
+	return DetectBotWall(statusCode, []byte(html)) || DetectBotWall(statusCode, []byte(visibleText))
 }
 
 func (b *Browser) extractPage(timeoutCtx context.Context, parsed *url.URL, origin string) (string, string, string) {
@@ -330,7 +370,6 @@ func (b *Browser) extractPage(timeoutCtx context.Context, parsed *url.URL, origi
 		}
 	}
 
-	hasPasswordInput, _ := chromedp.Run(timeoutCtx, chromedp.Evaluate[bool]("document.querySelector('input[type=\"password\"]') !== null"))
 	finalURLStr := parsed.String()
 	finalLoc, _ := chromedp.Run(timeoutCtx, chromedp.Location())
 	if finalLoc != "" {
@@ -340,6 +379,20 @@ func (b *Browser) extractPage(timeoutCtx context.Context, parsed *url.URL, origi
 	if finalParsed == nil {
 		finalParsed = parsed
 	}
+
+	// Bot-wall detection
+	navStatus, _ := chromedp.Run(timeoutCtx, chromedp.Evaluate[int64]("(() => { const nav = performance.getEntriesByType('navigation')[0]; return nav ? (nav.responseStatus || 0) : 0; })()"))
+	html, _ := chromedp.Run(timeoutCtx, chromedp.Evaluate[string]("document.documentElement ? document.documentElement.outerHTML : ''"))
+	statusCode := int(navStatus)
+	if DetectBotWall(statusCode, []byte(html)) || DetectBotWall(statusCode, []byte(visibleText)) {
+		bodyForSnippet := visibleText
+		if strings.TrimSpace(bodyForSnippet) == "" {
+			bodyForSnippet = html
+		}
+		return FormatBlocked([]byte(bodyForSnippet)), finalURLStr, screenshotRel
+	}
+
+	hasPasswordInput, _ := chromedp.Run(timeoutCtx, chromedp.Evaluate[bool]("document.querySelector('input[type=\"password\"]') !== null"))
 
 	isLoginWall := hasPasswordInput || loginPathRe.MatchString(finalParsed.Path)
 
