@@ -627,3 +627,71 @@ func TestBrowse_NoMarkerOnReadPage(t *testing.T) {
 		t.Fatalf("expected no login-wall marker on public read page, got: %s", res)
 	}
 }
+
+func TestWebBrowse_BotWallBlocked(t *testing.T) {
+	chrome := skipWithoutChrome(t)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Just a moment... Enable JavaScript and cookies to continue</body></html>`))
+	}))
+	defer ts.Close()
+
+	cfg := Config{
+		Enabled:        true,
+		BrowseTimeoutS: 15,
+		MaxTextBytes:   50000,
+		ChromePath:     chrome,
+	}
+
+	dataDir := t.TempDir()
+	browser := NewBrowser(dataDir, cfg, WithAllowedTestHosts(ts.URL))
+
+	res, err := browser.Browse(context.Background(), ts.URL, "read page")
+	if err != nil {
+		t.Fatalf("browse failed: %v", err)
+	}
+	if !strings.HasPrefix(res, "[blocked] This site refused automated access.") {
+		t.Fatalf("expected result to start with '[blocked] This site refused automated access.', got: %s", res)
+	}
+	if !strings.Contains(res, "Just a moment...") {
+		t.Fatalf("expected result to include body snippet, got: %s", res)
+	}
+}
+
+func TestWebBrowse_StealthFlags(t *testing.T) {
+	chrome := skipWithoutChrome(t)
+
+	var receivedUA string
+	var receivedAcceptLang string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedUA = r.Header.Get("User-Agent")
+		receivedAcceptLang = r.Header.Get("Accept-Language")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<!DOCTYPE html><html><head><title>Stealth Test</title></head><body>Loaded</body></html>`))
+	}))
+	defer ts.Close()
+
+	cfg := Config{
+		Enabled:        true,
+		BrowseTimeoutS: 15,
+		MaxTextBytes:   50000,
+		ChromePath:     chrome,
+	}
+
+	dataDir := t.TempDir()
+	browser := NewBrowser(dataDir, cfg, WithAllowedTestHosts(ts.URL))
+
+	_, err := browser.Browse(context.Background(), ts.URL, "test flags")
+	if err != nil {
+		t.Fatalf("browse failed: %v", err)
+	}
+
+	if receivedUA != BrowserUserAgent {
+		t.Errorf("User-Agent = %q, want %q", receivedUA, BrowserUserAgent)
+	}
+	if !strings.Contains(receivedAcceptLang, "en-US") {
+		t.Errorf("Accept-Language = %q, want it to contain en-US", receivedAcceptLang)
+	}
+}
