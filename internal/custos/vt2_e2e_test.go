@@ -856,7 +856,7 @@ func TestVT2d(t *testing.T) {
 	patchJSON := lcConfig(t, "vt2d", nil, map[string]any{"tool_denylist": []string{"beta"}})
 	var patchBody string
 	var patchCode int
-	for attempt := 0; attempt < 50; attempt++ {
+	for range 50 {
 		patchBody, patchCode = w.patchJSON("/v1/mcp/connectors/vt2d", patchJSON)
 		if patchCode != http.StatusConflict || !strings.Contains(patchBody, "pending_add") {
 			break
