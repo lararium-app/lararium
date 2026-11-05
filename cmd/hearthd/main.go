@@ -25,6 +25,7 @@ import (
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/router"
 	"github.com/lararium-app/lararium/internal/surface"
+	internalweb "github.com/lararium-app/lararium/internal/web"
 	"github.com/lararium-app/lararium/web"
 )
 
@@ -45,6 +46,8 @@ type Config struct {
 	Devices DevicesConfig `yaml:"devices"`
 	// Fasti configures the proactivity scheduler (PROACTIVITY-SPEC §3).
 	Fasti fasti.Config `yaml:"fasti"`
+	// Web configures the web fetch and browse tools (WEB-LAYER-SPEC).
+	Web internalweb.Config `yaml:"web"`
 }
 
 type DevicesConfig struct {
@@ -100,6 +103,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	c := Config{
 		Fasti: fasti.DefaultConfig(),
+		Web:   internalweb.DefaultConfig(),
 	}
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
@@ -107,6 +111,9 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	if err := c.Fasti.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if err := c.Web.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	if c.Devices.AutoApprove == nil {
@@ -595,7 +602,7 @@ func serve(cfgPath string) {
 	sched := mustScheduler(home)
 
 	// Build tools
-	tools := buildTools(home, sched)
+	tools := buildTools(home, sched, cfg.Web)
 
 	// System prompt (validated by Hub per-session)
 	requireSystemPrompt(home)

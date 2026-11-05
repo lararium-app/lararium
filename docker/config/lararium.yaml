@@ -59,3 +59,11 @@ providers:
 #     daily_at: "07:30"                # walks HEARTBEAT.md in the hearth home
 #   max_announce_per_day: 8            # noise budget across all jobs
 #   catchup_window: 24h                # missed runs coalesce into one
+
+# --- Web layer (fetch and browse public pages). Enabled by default.
+# --- Full law: docs/WEB-LAYER-SPEC.md.
+# web:
+#   enabled: true                      # false disables web_fetch and web_browse
+#   browse_timeout_s: 30               # browser navigation timeout
+#   max_text_bytes: 200000             # max extracted text bytes
+#   # chrome_path: /usr/bin/chromium   # auto-detects $LARARIUM_CHROME, then chromium/chrome on PATH

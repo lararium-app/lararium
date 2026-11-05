@@ -145,10 +145,36 @@ defense that rejects unknown `Host` headers with `403`):
 serve:
   listen: "0.0.0.0:7717"
   allowed_hosts: ["localhost", "127.0.0.1", "[::1]", "100.x.y.z"]
+
+web:
+  enabled: true             # default true; false disables web tools
+  browse_timeout_s: 30      # default 30; browser navigation timeout in seconds
+  max_text_bytes: 200000    # default 200000; extracted response text cap in bytes
+  # chrome_path: /usr/bin/chromium  # optional: $LARARIUM_CHROME, then chromium/chrome on PATH
 ```
 
 Restart, then open `http://<host-ip>:7717/#<token>`. TLS is your reverse
 proxy's job.
+
+### Letting Lararium read the web
+
+In P1 ("hands, no logins"), the agent gains two tools to inspect the public web:
+
+- `web_fetch(url)` — static HTTP/HTTPS GET returning page title, clean text/markdown, and same-origin links. Fast and lightweight for static pages, documentation, and APIs.
+- `web_browse(url, goal)` — drives a headless Chromium instance to render dynamic, JavaScript-heavy pages, extracting visible text, title, same-origin links, and an optional screenshot under `web/shots/`.
+
+**What it can do in P1:**
+- Read public web pages and APIs.
+- Extract markdown content and follow same-origin navigational links.
+- Capture page screenshots for agent context.
+
+**What it cannot do yet:**
+- Logins and saved credentials come in P2 (the encrypted session wallet).
+- Read-only primitives only: no form submissions, clicking buttons, posting data, or running arbitrary JavaScript.
+
+**Security:** Private-network URLs (loopback, RFC 1918, link-local, cloud metadata `169.254.169.254`, and multicast) are **always blocked** by an always-on SSRF guard with dial-time validated IP pinning to eliminate DNS-rebinding attacks.
+
+See [docs/WEB-LAYER-SPEC.md](docs/WEB-LAYER-SPEC.md) for the full contract and roadmap.
 
 ## Platforms
 
@@ -231,6 +257,7 @@ Signal, voice I/O, and `custosd` in the Docker quick start are not built yet.
 | [MCP-SPEC.md](docs/MCP-SPEC.md) | MCP connector contract and fingerprint binding |
 | [MCP-SERVER-RECIPE.md](docs/MCP-SERVER-RECIPE.md) | Step-by-step: add an MCP server |
 | [NUNTIUS-SPEC.md](docs/NUNTIUS-SPEC.md) | Telegram bridge protocol |
+| [WEB-LAYER-SPEC.md](docs/WEB-LAYER-SPEC.md) | Web layer and browser automation roadmap |
 | [UPGRADE.md](docs/UPGRADE.md) | One-command upgrade and rollback procedures |
 
 ## Contributing
