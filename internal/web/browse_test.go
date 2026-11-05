@@ -11,7 +11,7 @@ import (
 
 func TestWebBrowse_ArgValidation(t *testing.T) {
 	cfg := DefaultConfig()
-	tool := WebBrowseTool(t.TempDir(), cfg)
+	tool := BrowseTool(t.TempDir(), cfg)
 
 	tests := []struct {
 		name     string

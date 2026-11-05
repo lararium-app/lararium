@@ -1,7 +1,6 @@
 package web
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -147,10 +146,7 @@ web:
 }
 
 func TestConfig_DetectChromeEnv(t *testing.T) {
-	orig := os.Getenv("LARARIUM_CHROME")
-	defer os.Setenv("LARARIUM_CHROME", orig)
-
-	os.Setenv("LARARIUM_CHROME", "/custom/test/chrome")
+	t.Setenv("LARARIUM_CHROME", "/custom/test/chrome")
 	if p := DetectChrome(); p != "/custom/test/chrome" {
 		t.Errorf("DetectChrome() = %q, want /custom/test/chrome", p)
 	}

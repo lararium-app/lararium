@@ -182,6 +182,7 @@ func Fetch(ctx context.Context, rawURL string, cfg Config, opts ...FetchOption) 
 
 type netDefaultResolverAdapter struct{}
 
+// LookupIP resolves host via the standard library's default resolver.
 func (netDefaultResolverAdapter) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
 	return net.DefaultResolver.LookupIP(ctx, network, host)
 }

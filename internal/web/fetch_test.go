@@ -13,6 +13,7 @@ func TestWebFetch_ExtractionAgainstFixtures(t *testing.T) {
 		switch r.URL.Path {
 		case "/article":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			//nolint:gosec // static test fixture; no user input reaches the response
 			w.Write([]byte(`<!DOCTYPE html>
 <html>
 <head>
@@ -50,7 +51,7 @@ func TestWebFetch_ExtractionAgainstFixtures(t *testing.T) {
 			// 1000 repetitions of text to exceed standard caps
 			var sb strings.Builder
 			sb.WriteString("<html><head><title>Large Page</title></head><body>")
-			for i := 0; i < 1000; i++ {
+			for range 1000 {
 				sb.WriteString("<p>Paragraph content number </p>\n")
 			}
 			sb.WriteString("</body></html>")
@@ -189,8 +190,7 @@ func TestWebFetch_ExtractionAgainstFixtures(t *testing.T) {
 }
 
 func TestWebFetch_RedirectHopLimit(t *testing.T) {
-	var hopServer *httptest.Server
-	hopServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hopServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/r0":
 			http.Redirect(w, r, "/r1", http.StatusFound)

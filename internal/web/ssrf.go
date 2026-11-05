@@ -92,8 +92,8 @@ func IsBlockedIP(ip net.IP) bool {
 }
 
 // ValidateURL validates that a URL is http/https and does not target private or blocked IPs.
-func ValidateURL(rawURL string) (*url.URL, []net.IP, error) {
-	return ValidateURLWithResolver(context.Background(), rawURL, net.DefaultResolver, "")
+func ValidateURL(ctx context.Context, rawURL string) (*url.URL, []net.IP, error) {
+	return ValidateURLWithResolver(ctx, rawURL, net.DefaultResolver, "")
 }
 
 // ValidateURLWithResolver validates that a URL is http/https and its host resolves to safe IPs.

@@ -1,3 +1,6 @@
+// Package web provides SSRF-safe web access for the rails agent:
+// a static fetcher and a read-only headless browser, per
+// docs/WEB-LAYER-SPEC.md.
 package web
 
 import (
@@ -44,7 +47,7 @@ func (b *Browser) Browse(ctx context.Context, rawURL, _ string) (string, error) 
 	}
 	defer b.mu.Unlock()
 
-	parsed, _, err := ValidateURL(rawURL)
+	parsed, _, err := ValidateURL(ctx, rawURL)
 	if err != nil {
 		return "", err
 	}

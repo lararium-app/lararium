@@ -38,7 +38,7 @@ func DefaultConfig() Config {
 // DetectChrome detects a Chromium/Chrome binary from:
 // 1. $LARARIUM_CHROME
 // 2. chromium on PATH
-// 3. chrome on PATH
+// 3. chrome on PATH.
 func DetectChrome() string {
 	if p := strings.TrimSpace(os.Getenv("LARARIUM_CHROME")); p != "" {
 		return p

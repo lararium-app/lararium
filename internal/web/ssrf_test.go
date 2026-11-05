@@ -43,7 +43,7 @@ func TestSSRFGuard_BlockedIPsAndHostnames(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := ValidateURL(tc.rawURL)
+			_, _, err := ValidateURL(t.Context(), tc.rawURL)
 			if err == nil {
 				t.Fatalf("ValidateURL(%q) succeeded, want error containing %q", tc.rawURL, tc.wantErr)
 			}

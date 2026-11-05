@@ -168,7 +168,7 @@ func buildTools(home string, args ...any) []loop.Tool {
 		},
 	}
 	if webCfg.Enabled {
-		tools = append(tools, web.WebFetchTool(webCfg), web.WebBrowseTool(home, webCfg))
+		tools = append(tools, web.FetchTool(webCfg), web.BrowseTool(home, webCfg))
 	}
 	return tools
 }

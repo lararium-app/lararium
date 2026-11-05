@@ -11,8 +11,8 @@ import (
 	"github.com/lararium-app/lararium/internal/router"
 )
 
-// WebFetchTool returns the rails agent loop tool for fetching static web pages.
-func WebFetchTool(cfg Config) loop.Tool {
+// FetchTool returns the rails agent loop tool for fetching static web pages.
+func FetchTool(cfg Config) loop.Tool {
 	return loop.Tool{
 		Spec: router.ToolSpec{
 			Name:        "web_fetch",
@@ -38,8 +38,8 @@ func WebFetchTool(cfg Config) loop.Tool {
 	}
 }
 
-// WebBrowseTool returns the rails agent loop tool for driving headless Chromium.
-func WebBrowseTool(home string, cfg Config) loop.Tool {
+// BrowseTool returns the rails agent loop tool for driving headless Chromium.
+func BrowseTool(home string, cfg Config) loop.Tool {
 	browser := NewBrowser(home, cfg)
 	return loop.Tool{
 		Spec: router.ToolSpec{
