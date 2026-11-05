@@ -155,6 +155,79 @@ func (w *Wallet) Delete(origin string) error {
 	return nil
 }
 
+// Store tars, seals, and writes the profileDir to an encrypted session file for origin.
+// Overwriting an existing origin replaces it atomically with 0600 permissions.
+func (w *Wallet) Store(origin string, profileDir string) error {
+	originKey, err := OriginKey(origin)
+	if err != nil {
+		return fmt.Errorf("invalid origin: %w", err)
+	}
+
+	fi, err := os.Stat(profileDir)
+	if err != nil {
+		return fmt.Errorf("stat profile dir: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("profile path %q is not a directory", profileDir)
+	}
+
+	tarData, err := tarProfile(profileDir)
+	if err != nil {
+		return fmt.Errorf("tar profile: %w", err)
+	}
+
+	w.mu.Lock()
+	key, err := getOrGenerateWalletKey(w.ks)
+	w.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	sealed, err := sealProfile(key, tarData)
+	if err != nil {
+		return fmt.Errorf("seal session data: %w", err)
+	}
+
+	sessionsDir := filepath.Join(w.home, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+		return fmt.Errorf("create sessions dir: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(sessionsDir, ".tmp-"+originKey+"-*.lrws")
+	if err != nil {
+		return fmt.Errorf("create temp session file: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmpFile.Chmod(0o600); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("chmod temp session file: %w", err)
+	}
+	if _, err := tmpFile.Write(sealed); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write temp session file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("sync temp session file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp session file: %w", err)
+	}
+
+	lrwsPath := filepath.Join(sessionsDir, originKey+".lrws")
+	if err := os.Rename(tmpName, lrwsPath); err != nil {
+		return fmt.Errorf("rename temp session file: %w", err)
+	}
+	tmpName = ""
+	return nil
+}
+
 // Load unpacks the encrypted session for origin into an active directory, locking it.
 // It returns the active directory path and a release function.
 // When released, the active directory is re-tarred, sealed, written atomically,
@@ -413,9 +486,13 @@ func tarProfile(srcDir string) ([]byte, error) {
 			if err != nil {
 				return err
 			}
-			defer f.Close()
-			if _, err := io.Copy(tw, f); err != nil {
-				return err
+			_, copyErr := io.Copy(tw, f)
+			closeErr := f.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
 			}
 		}
 		return nil
