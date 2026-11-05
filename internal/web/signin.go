@@ -18,24 +18,25 @@ import (
 	"time"
 )
 
-// State represents the lifecycle state of a guided sign-in window session.
-type State string
+// SigninState represents the lifecycle state of a guided sign-in window session.
+type SigninState string
 
+// Lifecycle states of a guided sign-in window.
 const (
-	StateIdle     State = "Idle"
-	StateOpening  State = "Opening"
-	StateLive     State = "Live"
-	StateSealing  State = "Sealing"
-	StateDone     State = "Done"
-	StateFailed   State = "Failed"
-	StateTimeout  State = "Timeout"
-	StateCanceled State = "Canceled"
+	SigninIdle     SigninState = "Idle"
+	SigninOpening  SigninState = "Opening"
+	SigninLive     SigninState = "Live"
+	SigninSealing  SigninState = "Sealing"
+	SigninDone     SigninState = "Done"
+	SigninFailed   SigninState = "Failed"
+	SigninTimeout  SigninState = "Timeout"
+	SigninCanceled SigninState = "Canceled"
 )
 
 // Sentinel errors for sign-in window operations.
 var (
-	ErrBusy              = errors.New("signin manager is busy")
-	ErrIllegalTransition = errors.New("illegal state transition")
+	ErrSigninBusy              = errors.New("signin manager is busy")
+	ErrSigninIllegalTransition = errors.New("illegal state transition")
 )
 
 // ErrPrereqMissing indicates a required system binary is not found on PATH.
@@ -79,8 +80,8 @@ func CheckPrereqBinary(bin string) error {
 	return nil
 }
 
-// ViewInfo holds connection details for the user to view/interact with the sign-in window.
-type ViewInfo struct {
+// SigninViewInfo holds connection details for the user to view/interact with the sign-in window.
+type SigninViewInfo struct {
 	Port     int    `json:"port"`
 	Password string `json:"password"`
 }
@@ -100,16 +101,16 @@ type WindowRunner interface {
 	ProfileDir() string
 }
 
-// Manager owns the guided sign-in window lifecycle for one origin.
-type Manager struct {
+// SigninManager owns the guided sign-in window lifecycle for one origin.
+type SigninManager struct {
 	mu      sync.Mutex
 	wallet  *Wallet
 	runner  WindowRunner
 	timeout time.Duration
 
-	state  State
+	state  SigninState
 	origin string
-	info   ViewInfo
+	info   SigninViewInfo
 	timer  *time.Timer
 
 	xvfbStarted     bool
@@ -119,29 +120,29 @@ type Manager struct {
 	teardownOnce sync.Once
 }
 
-// ManagerOption configures a Manager.
-type ManagerOption func(*Manager)
+// SigninManagerOption configures a SigninManager.
+type SigninManagerOption func(*SigninManager)
 
 // WithTimeout sets a custom session timeout duration.
-func WithTimeout(d time.Duration) ManagerOption {
-	return func(m *Manager) {
+func WithTimeout(d time.Duration) SigninManagerOption {
+	return func(m *SigninManager) {
 		if d > 0 {
 			m.timeout = d
 		}
 	}
 }
 
-// NewManager creates a new sign-in window manager.
+// NewSigninManager creates a new sign-in window manager.
 // If runner is nil and wallet is non-nil, NewRealRunner is used.
-func NewManager(wallet *Wallet, runner WindowRunner, opts ...ManagerOption) *Manager {
+func NewSigninManager(wallet *Wallet, runner WindowRunner, opts ...SigninManagerOption) *SigninManager {
 	if runner == nil && wallet != nil {
 		runner = NewRealRunner(wallet.Home())
 	}
-	m := &Manager{
+	m := &SigninManager{
 		wallet:  wallet,
 		runner:  runner,
 		timeout: 10 * time.Minute,
-		state:   StateIdle,
+		state:   SigninIdle,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -150,35 +151,35 @@ func NewManager(wallet *Wallet, runner WindowRunner, opts ...ManagerOption) *Man
 }
 
 // State returns the current lifecycle state of the manager.
-func (m *Manager) State() State {
+func (m *SigninManager) State() SigninState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.state
 }
 
-var legalTransitions = map[State]map[State]bool{
-	StateIdle: {
-		StateOpening: true,
+var legalTransitions = map[SigninState]map[SigninState]bool{
+	SigninIdle: {
+		SigninOpening: true,
 	},
-	StateOpening: {
-		StateLive:     true,
-		StateFailed:   true,
-		StateCanceled: true,
-		StateTimeout:  true,
+	SigninOpening: {
+		SigninLive:     true,
+		SigninFailed:   true,
+		SigninCanceled: true,
+		SigninTimeout:  true,
 	},
-	StateLive: {
-		StateSealing:  true,
-		StateCanceled: true,
-		StateTimeout:  true,
-		StateFailed:   true,
+	SigninLive: {
+		SigninSealing:  true,
+		SigninCanceled: true,
+		SigninTimeout:  true,
+		SigninFailed:   true,
 	},
-	StateSealing: {
-		StateDone:   true,
-		StateFailed: true,
+	SigninSealing: {
+		SigninDone:   true,
+		SigninFailed: true,
 	},
 }
 
-func (m *Manager) canTransitionLocked(to State) bool {
+func (m *SigninManager) canTransitionLocked(to SigninState) bool {
 	targets, ok := legalTransitions[m.state]
 	if !ok {
 		return false
@@ -186,41 +187,41 @@ func (m *Manager) canTransitionLocked(to State) bool {
 	return targets[to]
 }
 
-func (m *Manager) transitionLocked(to State) error {
+func (m *SigninManager) transitionLocked(to SigninState) error {
 	if !m.canTransitionLocked(to) {
-		return fmt.Errorf("%w: cannot transition from %s to %s", ErrIllegalTransition, m.state, to)
+		return fmt.Errorf("%w: cannot transition from %s to %s", ErrSigninIllegalTransition, m.state, to)
 	}
 	m.state = to
 	return nil
 }
 
 // Start launches the sign-in window and returns connection info for viewing.
-// A second Start call on a non-Idle manager returns ErrBusy.
-func (m *Manager) Start(ctx context.Context, origin string) (ViewInfo, error) {
+// A second Start call on a non-Idle manager returns ErrSigninBusy.
+func (m *SigninManager) Start(ctx context.Context, origin string) (SigninViewInfo, error) {
 	if _, err := OriginKey(origin); err != nil {
-		return ViewInfo{}, fmt.Errorf("invalid origin: %w", err)
+		return SigninViewInfo{}, fmt.Errorf("invalid origin: %w", err)
 	}
 
 	m.mu.Lock()
-	if m.state != StateIdle {
+	if m.state != SigninIdle {
 		st := m.state
 		m.mu.Unlock()
-		return ViewInfo{}, fmt.Errorf("%w: cannot start window in state %s: %w", ErrIllegalTransition, st, ErrBusy)
+		return SigninViewInfo{}, fmt.Errorf("%w: cannot start window in state %s: %w", ErrSigninIllegalTransition, st, ErrSigninBusy)
 	}
 
-	if err := m.transitionLocked(StateOpening); err != nil {
+	if err := m.transitionLocked(SigninOpening); err != nil {
 		m.mu.Unlock()
-		return ViewInfo{}, err
+		return SigninViewInfo{}, err
 	}
 	m.origin = origin
 	m.mu.Unlock()
 
-	cleanupOnFail := func(err error) (ViewInfo, error) {
+	cleanupOnFail := func(err error) (SigninViewInfo, error) {
 		m.mu.Lock()
-		_ = m.transitionLocked(StateFailed)
+		_ = m.transitionLocked(SigninFailed)
 		m.teardownLocked(false)
 		m.mu.Unlock()
-		return ViewInfo{}, err
+		return SigninViewInfo{}, err
 	}
 
 	if m.runner == nil {
@@ -278,20 +279,20 @@ func (m *Manager) Start(ctx context.Context, origin string) (ViewInfo, error) {
 	m.chromiumStarted = true
 
 	// Check if canceled or state changed while opening
-	if m.state != StateOpening {
+	if m.state != SigninOpening {
 		st := m.state
 		m.teardownLocked(false)
 		m.mu.Unlock()
-		return ViewInfo{}, fmt.Errorf("window %s during start", strings.ToLower(string(st)))
+		return SigninViewInfo{}, fmt.Errorf("window %s during start", strings.ToLower(string(st)))
 	}
 
-	if err := m.transitionLocked(StateLive); err != nil {
+	if err := m.transitionLocked(SigninLive); err != nil {
 		m.teardownLocked(false)
 		m.mu.Unlock()
-		return ViewInfo{}, err
+		return SigninViewInfo{}, err
 	}
 
-	m.info = ViewInfo{
+	m.info = SigninViewInfo{
 		Port:     port,
 		Password: password,
 	}
@@ -308,32 +309,32 @@ func (m *Manager) Start(ctx context.Context, origin string) (ViewInfo, error) {
 	return info, nil
 }
 
-func (m *Manager) handleTimeout() {
+func (m *SigninManager) handleTimeout() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.state != StateOpening && m.state != StateLive {
+	if m.state != SigninOpening && m.state != SigninLive {
 		return
 	}
-	_ = m.transitionLocked(StateTimeout)
+	_ = m.transitionLocked(SigninTimeout)
 	m.teardownLocked(false)
 }
 
 // Cancel terminates the sign-in session and cleans up resources without saving.
-func (m *Manager) Cancel() error {
+func (m *SigninManager) Cancel() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.state != StateOpening && m.state != StateLive {
+	if m.state != SigninOpening && m.state != SigninLive {
 		st := m.state
-		return fmt.Errorf("%w: cannot cancel in state %s", ErrIllegalTransition, st)
+		return fmt.Errorf("%w: cannot cancel in state %s", ErrSigninIllegalTransition, st)
 	}
 
 	if m.timer != nil {
 		m.timer.Stop()
 	}
 
-	if err := m.transitionLocked(StateCanceled); err != nil {
+	if err := m.transitionLocked(SigninCanceled); err != nil {
 		return err
 	}
 
@@ -342,20 +343,20 @@ func (m *Manager) Cancel() error {
 }
 
 // Complete seals the staged profile directory into the wallet and tears down the window.
-func (m *Manager) Complete() error {
+func (m *SigninManager) Complete() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.state != StateLive {
+	if m.state != SigninLive {
 		st := m.state
-		return fmt.Errorf("%w: cannot complete in state %s", ErrIllegalTransition, st)
+		return fmt.Errorf("%w: cannot complete in state %s", ErrSigninIllegalTransition, st)
 	}
 
 	if m.timer != nil {
 		m.timer.Stop()
 	}
 
-	if err := m.transitionLocked(StateSealing); err != nil {
+	if err := m.transitionLocked(SigninSealing); err != nil {
 		return err
 	}
 
@@ -368,23 +369,23 @@ func (m *Manager) Complete() error {
 
 	if wallet == nil {
 		_ = os.RemoveAll(stagingDir)
-		_ = m.transitionLocked(StateFailed)
+		_ = m.transitionLocked(SigninFailed)
 		return errors.New("no wallet configured for manager")
 	}
 
 	if err := wallet.Store(origin, stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		_ = m.transitionLocked(StateFailed)
+		_ = m.transitionLocked(SigninFailed)
 		return fmt.Errorf("seal wallet: %w", err)
 	}
 
 	// Staging dir is now sealed into the wallet; clean it up
 	_ = os.RemoveAll(stagingDir)
 
-	return m.transitionLocked(StateDone)
+	return m.transitionLocked(SigninDone)
 }
 
-func (m *Manager) teardownLocked(isSealing bool) {
+func (m *SigninManager) teardownLocked(isSealing bool) {
 	m.teardownOnce.Do(func() {
 		startedChromium := m.chromiumStarted
 		startedVNC := m.vncStarted
@@ -420,7 +421,10 @@ func (m *Manager) teardownLocked(isSealing bool) {
 	})
 }
 
-// RealRunner implements WindowRunner using real system binaries via exec.Command.
+// RealRunner implements WindowRunner using real system binaries.
+// Processes are spawned with context.WithoutCancel: their lifetime belongs to
+// the sign-in session, never to whichever request happened to open the window.
+// Teardown is guaranteed by the SigninManager state machine on every exit path.
 type RealRunner struct {
 	mu sync.Mutex
 
@@ -430,9 +434,10 @@ type RealRunner struct {
 	xvfbCmd     *exec.Cmd
 	xvfbDisplay string
 
-	vncCmd  *exec.Cmd
-	vncPort int
-	vncPwd  string
+	vncCmd     *exec.Cmd
+	vncPort    int
+	vncPwd     string
+	vncPwdFile string
 
 	chromiumCmd *exec.Cmd
 }
@@ -467,12 +472,12 @@ func (r *RealRunner) StartXvfb(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	display, err := findFreeDisplay()
+	display, err := findFreeDisplay(context.WithoutCancel(ctx))
 	if err != nil {
 		return "", fmt.Errorf("find free display: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "Xvfb", display, "-screen", "0", "1280x900x24", "-nolisten", "tcp")
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), "Xvfb", display, "-screen", "0", "1280x900x24", "-nolisten", "tcp")
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
@@ -493,7 +498,7 @@ func (r *RealRunner) StartXvfb(ctx context.Context) (string, error) {
 			break
 		}
 		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return "", fmt.Errorf("Xvfb exited prematurely: %v", cmd.ProcessState)
+			return "", fmt.Errorf("xvfb exited prematurely: %v", cmd.ProcessState)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -547,7 +552,7 @@ func (r *RealRunner) StartX11VNC(ctx context.Context, display string) (int, stri
 		return 0, "", err
 	}
 
-	port, err := findFreePort()
+	port, err := findFreePort(context.WithoutCancel(ctx))
 	if err != nil {
 		return 0, "", fmt.Errorf("find free port: %w", err)
 	}
@@ -558,11 +563,20 @@ func (r *RealRunner) StartX11VNC(ctx context.Context, display string) (int, stri
 	}
 	pwd := hex.EncodeToString(pwdBytes)
 
-	cmd := exec.CommandContext(ctx, "x11vnc",
+	// Password goes through a 0600 file, never the command line (ps-visible).
+	stagingRoot := filepath.Dir(r.profileDir)
+	if err := os.MkdirAll(stagingRoot, 0o700); err != nil {
+		return 0, "", fmt.Errorf("create staging root: %w", err)
+	}
+	pwdFile := filepath.Join(stagingRoot, ".vnc-"+hex.EncodeToString(pwdBytes[:4])+".pwd")
+	if err := os.WriteFile(pwdFile, []byte(pwd+"\n"), 0o600); err != nil {
+		return 0, "", fmt.Errorf("write vnc passwd file: %w", err)
+	}
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), "x11vnc",
 		"-display", display,
 		"-localhost",
 		"-rfbport", strconv.Itoa(port),
-		"-passwd", pwd,
+		"-passwdfile", pwdFile,
 		"-forever",
 		"-shared",
 	)
@@ -570,18 +584,22 @@ func (r *RealRunner) StartX11VNC(ctx context.Context, display string) (int, stri
 	cmd.Stderr = io.Discard
 
 	if err := cmd.Start(); err != nil {
+		_ = os.Remove(pwdFile)
 		return 0, "", fmt.Errorf("start x11vnc: %w", err)
 	}
 
 	r.vncCmd = cmd
 	r.vncPort = port
 	r.vncPwd = pwd
+	r.vncPwdFile = pwdFile
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	deadline := time.Now().Add(3 * time.Second)
 	started := false
+	dialer := net.Dialer{Timeout: 50 * time.Millisecond}
+	dialCtx := context.WithoutCancel(ctx)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		conn, err := dialer.DialContext(dialCtx, "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
 			started = true
@@ -625,6 +643,10 @@ func (r *RealRunner) StopX11VNC() error {
 	r.vncCmd = nil
 	r.vncPort = 0
 	r.vncPwd = ""
+	if r.vncPwdFile != "" {
+		_ = os.Remove(r.vncPwdFile)
+		r.vncPwdFile = ""
+	}
 	return nil
 }
 
@@ -651,7 +673,7 @@ func (r *RealRunner) StartChromium(ctx context.Context, display, profileDir, tar
 		targetURL,
 	}
 
-	cmd := exec.CommandContext(ctx, "chromium", args...)
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), "chromium", args...)
 	cmd.Env = append(os.Environ(), "DISPLAY="+display)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
@@ -690,7 +712,7 @@ func (r *RealRunner) StopChromium() error {
 	return nil
 }
 
-func findFreeDisplay() (string, error) {
+func findFreeDisplay(ctx context.Context) (string, error) {
 	for disp := 99; disp < 1000; disp++ {
 		sock := fmt.Sprintf("/tmp/.X11-unix/X%d", disp)
 		if _, err := os.Stat(sock); err == nil {
@@ -700,7 +722,8 @@ func findFreeDisplay() (string, error) {
 		if _, err := os.Stat(lock); err == nil {
 			continue
 		}
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", 6000+disp))
+		lc := net.ListenConfig{}
+		ln, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", 6000+disp))
 		if err != nil {
 			continue
 		}
@@ -710,11 +733,16 @@ func findFreeDisplay() (string, error) {
 	return "", errors.New("no free display >= :99 found")
 }
 
-func findFreePort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func findFreePort(ctx context.Context) (int, error) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
 	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port, nil
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("free port: unexpected address type %T", ln.Addr())
+	}
+	return tcpAddr.Port, nil
 }
