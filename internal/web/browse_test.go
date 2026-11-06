@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -693,5 +694,364 @@ func TestWebBrowse_StealthFlags(t *testing.T) {
 	}
 	if !strings.Contains(receivedAcceptLang, "en-US") {
 		t.Errorf("Accept-Language = %q, want it to contain en-US", receivedAcceptLang)
+	}
+}
+
+func TestWebBrowse_WriteThrough_DirtyDetection(t *testing.T) {
+	origFP := profileFingerprint
+	defer func() { profileFingerprint = origFP }()
+
+	home := t.TempDir()
+	w := NewWallet(home, nil)
+	origin := "carrier.example.com"
+
+	// Seed session in wallet
+	stagingDir := filepath.Join(t.TempDir(), "seed-profile")
+	_ = os.MkdirAll(filepath.Join(stagingDir, "Default"), 0o700)
+	_ = os.WriteFile(filepath.Join(stagingDir, "Default", "Cookies"), []byte("seed-cookie"), 0o600)
+	if err := w.Store(origin, stagingDir); err != nil {
+		t.Fatalf("seed Store: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	browser := NewBrowser(home, cfg, WithWallet(w))
+
+	// Setup seam to detect dirty change: fp1 on load, fp2 on release
+	calls := 0
+	profileFingerprint = func(dir string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "fp-seed", nil
+		}
+		// Simulate browser modifying the cookie DB before release
+		_ = os.WriteFile(filepath.Join(dir, "Default", "Cookies"), []byte("updated-cookie-db"), 0o600)
+		return "fp-updated", nil
+	}
+
+	sessionActive, releaseFunc, activeDir, err := browser.prepareSession(origin)
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if !sessionActive {
+		t.Fatalf("expected sessionActive=true")
+	}
+	if releaseFunc == nil {
+		t.Fatalf("expected non-nil releaseFunc")
+	}
+
+	// Release without browse error -> should write through to wallet before wiping activeDir
+	releaseFunc(nil)
+
+	// Verify activeDir was removed on release
+	if _, err := os.Stat(activeDir); !os.IsNotExist(err) {
+		t.Fatalf("activeDir should be wiped after release, got err: %v", err)
+	}
+
+	// Verify the wallet now contains the updated cookie DB (Store was called before rel)
+	checkDir, checkRel, err := w.Load(origin)
+	if err != nil {
+		t.Fatalf("Load after write-through: %v", err)
+	}
+	defer func() { _ = checkRel() }()
+
+	updatedData, err := os.ReadFile(filepath.Join(checkDir, "Default", "Cookies"))
+	if err != nil {
+		t.Fatalf("read updated cookie DB: %v", err)
+	}
+	if string(updatedData) != "updated-cookie-db" {
+		t.Errorf("cookie DB data = %q, want %q", string(updatedData), "updated-cookie-db")
+	}
+}
+
+func TestWebBrowse_WriteThrough_UnchangedNoStore(t *testing.T) {
+	origFP := profileFingerprint
+	defer func() { profileFingerprint = origFP }()
+
+	home := t.TempDir()
+	w := NewWallet(home, nil)
+	origin := "carrier.example.com"
+
+	stagingDir := filepath.Join(t.TempDir(), "seed-profile")
+	_ = os.MkdirAll(filepath.Join(stagingDir, "Default"), 0o700)
+	_ = os.WriteFile(filepath.Join(stagingDir, "Default", "Cookies"), []byte("seed-cookie"), 0o600)
+	if err := w.Store(origin, stagingDir); err != nil {
+		t.Fatalf("seed Store: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	browser := NewBrowser(home, cfg, WithWallet(w))
+
+	// Return identical fingerprint on both calls
+	profileFingerprint = func(dir string) (string, error) {
+		return "fp-identical", nil
+	}
+
+	sessionActive, releaseFunc, _, err := browser.prepareSession(origin)
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if !sessionActive {
+		t.Fatalf("expected sessionActive=true")
+	}
+
+	// Release without browse error
+	releaseFunc(nil)
+
+	// Verify wallet still has original seed cookie
+	checkDir, checkRel, err := w.Load(origin)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer func() { _ = checkRel() }()
+
+	data, err := os.ReadFile(filepath.Join(checkDir, "Default", "Cookies"))
+	if err != nil {
+		t.Fatalf("read cookie DB: %v", err)
+	}
+	if string(data) != "seed-cookie" {
+		t.Errorf("cookie DB data = %q, want %q", string(data), "seed-cookie")
+	}
+}
+
+func TestWebBrowse_WriteThrough_BrowseErrorNoStore(t *testing.T) {
+	origFP := profileFingerprint
+	defer func() { profileFingerprint = origFP }()
+
+	home := t.TempDir()
+	w := NewWallet(home, nil)
+	origin := "carrier.example.com"
+
+	stagingDir := filepath.Join(t.TempDir(), "seed-profile")
+	_ = os.MkdirAll(filepath.Join(stagingDir, "Default"), 0o700)
+	_ = os.WriteFile(filepath.Join(stagingDir, "Default", "Cookies"), []byte("original-cookie"), 0o600)
+	if err := w.Store(origin, stagingDir); err != nil {
+		t.Fatalf("seed Store: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	browser := NewBrowser(home, cfg, WithWallet(w))
+
+	calls := 0
+	profileFingerprint = func(dir string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "fp1", nil
+		}
+		_ = os.WriteFile(filepath.Join(dir, "Default", "Cookies"), []byte("error-attempt-cookie"), 0o600)
+		return "fp2", nil
+	}
+
+	sessionActive, releaseFunc, _, err := browser.prepareSession(origin)
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if !sessionActive {
+		t.Fatalf("expected sessionActive=true")
+	}
+
+	// Release WITH browse error -> must NOT store to wallet
+	releaseFunc(errors.New("navigation failed: context deadline exceeded"))
+
+	// Verify wallet was NOT overwritten with error-attempt-cookie
+	checkDir, checkRel, err := w.Load(origin)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer func() { _ = checkRel() }()
+
+	data, err := os.ReadFile(filepath.Join(checkDir, "Default", "Cookies"))
+	if err != nil {
+		t.Fatalf("read cookie DB: %v", err)
+	}
+	if string(data) != "original-cookie" {
+		t.Errorf("cookie DB data = %q, want original-cookie (must not store on error)", string(data))
+	}
+}
+
+func TestWebBrowse_WriteThrough_AnonymousNoStore(t *testing.T) {
+	home := t.TempDir()
+	w := NewWallet(home, nil)
+	cfg := DefaultConfig()
+	browser := NewBrowser(home, cfg, WithWallet(w))
+
+	sessionActive, releaseFunc, userDataDir, err := browser.prepareSession("anonymous.example.com")
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if sessionActive {
+		t.Errorf("expected sessionActive=false for anonymous origin")
+	}
+	if releaseFunc != nil {
+		t.Errorf("expected nil releaseFunc for anonymous origin")
+	}
+	if userDataDir != "" {
+		t.Errorf("expected empty userDataDir for anonymous origin")
+	}
+}
+
+func TestProfileFingerprint_Default(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. Missing cookie DB -> returns ("", nil)
+	fp, err := defaultProfileFingerprint(dir)
+	if err != nil {
+		t.Fatalf("unexpected error for missing cookie DB: %v", err)
+	}
+	if fp != "" {
+		t.Errorf("expected empty fingerprint for missing file, got: %q", fp)
+	}
+
+	// 2. Present cookie DB -> returns sha256 hex
+	cookiePath := filepath.Join(dir, "Default", "Cookies")
+	_ = os.MkdirAll(filepath.Dir(cookiePath), 0o700)
+	cookieData := []byte("sqlite-format-cookie-data")
+	if err := os.WriteFile(cookiePath, cookieData, 0o600); err != nil {
+		t.Fatalf("write cookie: %v", err)
+	}
+
+	fp, err = defaultProfileFingerprint(dir)
+	if err != nil {
+		t.Fatalf("unexpected error for present cookie DB: %v", err)
+	}
+	if len(fp) != 64 {
+		t.Errorf("expected 64-char sha256 hex string, got %q (len %d)", fp, len(fp))
+	}
+
+	// 3. Changed cookie DB -> returns different sha256 hex
+	if err := os.WriteFile(cookiePath, []byte("sqlite-format-cookie-data-changed"), 0o600); err != nil {
+		t.Fatalf("write changed cookie: %v", err)
+	}
+	fp2, err := defaultProfileFingerprint(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fp2 == fp {
+		t.Errorf("fingerprint did not change when file contents changed")
+	}
+}
+
+func TestBrowse_LoginWall_MarksStaleWithWallet(t *testing.T) {
+	chrome := skipWithoutChrome(t)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>Sign In</title></head>
+<body>
+<h1>Please Sign In</h1>
+<form action="/login" method="POST">
+  <input type="text" name="user">
+  <input type="password" name="pass">
+  <button type="submit">Sign In</button>
+</form>
+</body>
+</html>`))
+	}))
+	defer ts.Close()
+
+	home := t.TempDir()
+	u, _ := url.Parse(ts.URL)
+	origin := u.Hostname()
+
+	w := NewWallet(home, nil)
+	// Seed a session file for this origin
+	activeDir, release, err := w.Load(origin)
+	if err != nil {
+		t.Fatalf("seed Load failed: %v", err)
+	}
+	_ = os.WriteFile(filepath.Join(activeDir, "dummy_profile_marker"), []byte("active"), 0o600)
+	if err := release(); err != nil {
+		t.Fatalf("seed release failed: %v", err)
+	}
+
+	cfg := Config{
+		Enabled:        true,
+		BrowseTimeoutS: 15,
+		MaxTextBytes:   DefaultMaxTextBytes,
+		ChromePath:     chrome,
+	}
+
+	browser := NewBrowser(home, cfg, WithAllowedTestHosts(ts.URL), WithWallet(w))
+
+	res, err := browser.Browse(context.Background(), ts.URL, "read page")
+	if err != nil {
+		t.Fatalf("browse failed: %v", err)
+	}
+
+	// 1. Guidance line appended to tool result
+	expectedGuidance := fmt.Sprintf("The saved session for %s appears expired — suggest calling session_login %s to refresh it (an approval card reaches the owner).", origin, origin)
+	if !strings.Contains(res, expectedGuidance) {
+		t.Errorf("expected guidance %q in result, got: %s", expectedGuidance, res)
+	}
+
+	// 2. MarkStale was called on the index
+	entry, ok := browser.Index().Get(origin)
+	if !ok {
+		t.Fatalf("expected origin in index")
+	}
+	if !entry.Stale {
+		t.Errorf("expected index entry to be marked Stale=true")
+	}
+}
+
+func TestWebBrowse_WriteThrough_RealBrowser(t *testing.T) {
+	chrome := skipWithoutChrome(t)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: test fixture cookie
+			Name:     "test_cookie",
+			Value:    "logged_in_value",
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<!DOCTYPE html><html><head><title>Cookie Page</title></head><body>Cookie set</body></html>`))
+	}))
+	defer ts.Close()
+
+	home := t.TempDir()
+	u, _ := url.Parse(ts.URL)
+	origin := u.Hostname()
+
+	w := NewWallet(home, nil)
+	// Seed a session file for this origin
+	activeDir, release, err := w.Load(origin)
+	if err != nil {
+		t.Fatalf("seed Load failed: %v", err)
+	}
+	_ = os.WriteFile(filepath.Join(activeDir, "dummy_profile_marker"), []byte("active"), 0o600)
+	if err := release(); err != nil {
+		t.Fatalf("seed release failed: %v", err)
+	}
+
+	cfg := Config{
+		Enabled:        true,
+		BrowseTimeoutS: 15,
+		MaxTextBytes:   DefaultMaxTextBytes,
+		ChromePath:     chrome,
+	}
+
+	browser := NewBrowser(home, cfg, WithAllowedTestHosts(ts.URL), WithWallet(w))
+
+	res, err := browser.Browse(context.Background(), ts.URL, "view page")
+	if err != nil {
+		t.Fatalf("browse failed: %v", err)
+	}
+	if !strings.Contains(res, "Cookie set") {
+		t.Fatalf("unexpected output: %s", res)
+	}
+
+	// Verify the session in wallet has the Cookies file written through
+	checkDir, checkRel, err := w.Load(origin)
+	if err != nil {
+		t.Fatalf("Load after real browse: %v", err)
+	}
+	defer func() { _ = checkRel() }()
+
+	cookieFile := filepath.Join(checkDir, "Default", "Cookies")
+	if _, err := os.Stat(cookieFile); err != nil {
+		t.Fatalf("expected Default/Cookies to be written through to wallet, got err: %v", err)
 	}
 }

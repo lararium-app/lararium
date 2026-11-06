@@ -6,6 +6,7 @@ package web
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -30,7 +31,23 @@ const (
 	ErrBrowserBusy = "browser is busy, try again in a moment"
 )
 
-var loginPathRe = regexp.MustCompile(`(?i)(?:^|/)(?:login|signin|sign-in|log-in)(?:/|$)`)
+var (
+	loginPathRe        = regexp.MustCompile(`(?i)(?:^|/)(?:login|signin|sign-in|log-in)(?:/|$)`)
+	profileFingerprint = defaultProfileFingerprint
+)
+
+func defaultProfileFingerprint(profileDir string) (string, error) {
+	cookiePath := filepath.Join(profileDir, "Default", "Cookies")
+	data, err := os.ReadFile(cookiePath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:]), nil
+}
 
 // Act is one browser action (click, fill, submit) requested alongside a browse goal.
 type Act struct {
@@ -173,7 +190,7 @@ func buildExecAllocatorOptions(chromePath, userDataDir, allowedHost string) []ch
 }
 
 // Browse executes navigation, optional acts, and extraction.
-func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) (string, error) {
+func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) (obs string, retErr error) {
 	if !b.mu.TryLock() {
 		return ErrBrowserBusy, nil
 	}
@@ -203,7 +220,9 @@ func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) 
 		return "", err
 	}
 	if releaseFunc != nil {
-		defer releaseFunc()
+		defer func() {
+			releaseFunc(retErr)
+		}()
 	}
 
 	chromePath := b.cfg.ChromePath
@@ -407,7 +426,14 @@ func (b *Browser) extractPage(timeoutCtx context.Context, parsed *url.URL, origi
 
 	var sb strings.Builder
 	if isLoginWall {
-		fmt.Fprintf(&sb, "[login-wall origin=%s] Propose sign-in to the user rather than retry.\n\n", origin)
+		fmt.Fprintf(&sb, "[login-wall origin=%s] Propose sign-in to the user rather than retry.\n", origin)
+		if b.wallet != nil && b.wallet.Has(origin) {
+			if b.index != nil {
+				_ = b.index.MarkStale(origin)
+			}
+			fmt.Fprintf(&sb, "The saved session for %s appears expired — suggest calling session_login %s to refresh it (an approval card reaches the owner).\n", origin, origin)
+		}
+		fmt.Fprintln(&sb)
 	}
 	if title != "" {
 		fmt.Fprintf(&sb, "Title: %s\n", title)
@@ -428,13 +454,27 @@ func (b *Browser) extractPage(timeoutCtx context.Context, parsed *url.URL, origi
 	return sb.String(), finalURLStr, screenshotRel
 }
 
-func (b *Browser) prepareSession(origin string) (bool, func(), string, error) {
+func (b *Browser) prepareSession(origin string) (bool, func(browseErr error), string, error) {
 	if b.wallet != nil && b.wallet.Has(origin) {
 		activeDir, rel, err := b.wallet.Load(origin)
 		if err != nil {
 			return false, nil, "", fmt.Errorf("load session wallet: %w", err)
 		}
-		release := func() {
+		loadFP, _ := profileFingerprint(activeDir)
+		release := func(browseErr error) {
+			// Finding from reading wallet.Load (internal/web/wallet.go ~L236):
+			// rel() wipes activeDir on teardown via defer os.RemoveAll(activeDir).
+			// Therefore, any Store write-through of updated profile cookies MUST occur
+			// strictly BEFORE rel() is called, while activeDir is still intact on disk.
+			if browseErr == nil {
+				runFP, err := profileFingerprint(activeDir)
+				if err == nil && runFP != loadFP {
+					// Cookie DB changed: write through to wallet before rel() wipes activeDir.
+					// A Store failure must not fail the browse: swallow it because
+					// the browse observation was already successfully produced and delivered.
+					_ = b.wallet.Store(origin, activeDir)
+				}
+			}
 			_ = rel()
 		}
 		return true, release, activeDir, nil
