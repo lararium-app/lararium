@@ -67,6 +67,7 @@ type Browser struct {
 	activity         *ActivityLogger
 	approver         loop.Approver
 	allowedTestHosts []string
+	isolationWarn    sync.Once
 }
 
 // BrowseOption configures a Browser instance.
@@ -241,7 +242,19 @@ func (b *Browser) Browse(ctx context.Context, rawURL, goal string, acts ...Act) 
 		timeoutSec = DefaultBrowseTimeoutS
 	}
 
-	opts := buildExecAllocatorOptions(chromePath, userDataDir, allowedHost)
+	launchPath, cleanupLaunch, err := b.launcherPath(chromePath, userDataDir)
+	if err != nil {
+		_ = b.activity.Append(ActivityRecord{
+			Origin:  origin,
+			URL:     rawURL,
+			Kind:    KindRead,
+			Verdict: VerdictBlocked,
+		})
+		return "", err
+	}
+	defer cleanupLaunch()
+
+	opts := buildExecAllocatorOptions(launchPath, userDataDir, allowedHost)
 
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, opts...)
 	defer cancelAlloc()

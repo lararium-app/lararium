@@ -148,3 +148,54 @@ PO decisions (2026-11-05), baked into scope:
    down on completion, cancel, or timeout; nothing persists except the
    sealed session wallet entry. Browser nodes (§7) remain the P4 escalation
    path for bot-wall sites.
+
+## Process isolation (bubblewrap)
+
+*Added 2026-11-06 (issue #264).*
+
+Chromium used to run as the daemon user with `--no-sandbox`, the same user
+that owns the hearth state (keystore, wallet, tokens). Chromium's own sandbox
+cannot nest, so the daemon now wraps every Chromium launch in an outer
+[bubblewrap](https://github.com/containers/bubblewrap) namespace.
+
+**Knob.** `web.isolate: true|false`, default **true** (absent = true).
+
+```yaml
+web:
+  enabled: true
+  isolate: true   # false = legacy, no process isolation (one WARN line at browser start)
+```
+
+**Mechanism.** chromedp v0.22 has no exec-wrapper option, so each launch
+generates a POSIX `sh` shim (mode 0755, in a fresh 0700 temp dir, removed when
+the launch ends). It `exec`s `bwrap` with the fixed profile below and
+forwards `"$@"` (chromedp's CDP flags) to the real browser, set via
+`chromedp.ExecPath`. All existing Chromium flags, including `no-sandbox`,
+are unchanged. The guided sign-in window wraps its argv the same way.
+
+**Profile.**
+
+```
+--die-with-parent
+--unshare-user --unshare-uts --unshare-ipc --unshare-pid
+--ro-bind / /
+--dev /dev --proc /proc
+--tmpfs <HOME>                  # hides ~/.config, ~/.ssh and other dotfiles
+--tmpfs <daemon state root>     # skipped when inside HOME; covers /data in Docker
+--tmpfs /tmp
+--bind <userDataDir> <userDataDir>   # the ONE writable subtree: the browser profile
+-- <chrome> "$@"
+```
+
+The sign-in window additionally gets `--ro-bind-try /tmp/.X11-unix` so the
+headed window can reach Xvfb.
+
+**Network stays shared** (no `--unshare-net`): browsing must work. The
+`host-resolver-rules` private-range floor remains the SSRF law, unchanged.
+
+**Failure modes.** With `isolate: true` and no `bwrap` on `PATH`, the browser
+refuses to start with `browser isolation unavailable: install bubblewrap or
+set web.isolate=false`; the tool returns an error, the activity log records
+the blocked read, and nothing runs unsandboxed. The Docker image ships
+`bubblewrap`; hosts must install it. User namespaces must be permitted
+(unprivileged userns or a seccomp profile that allows `unshare`/`clone`).
