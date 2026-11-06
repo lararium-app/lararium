@@ -1,6 +1,6 @@
 # ASSISTANT-PHASE-SPEC — model routing, multi-bot personas, and call intelligence
 
-Status: **DRAFT-v1 (unreviewed)** — v1 incorporates PO decisions of 2026-11-06: full per-bot isolation (§4.1), no phone-app replacement (§5.2), experimental opt-in gate for all telephony stages (§6.6).
+Status: **DRAFT-v2 (round-1 reviewed)** — v1 carries the PO decisions of 2026-11-06 (full per-bot isolation §4.1; no phone-app replacement §5.2; experimental opt-in gate for all telephony stages §6.6). v2 applies Hermes hostile-review round 1 (2026-11-06): hearth state and file law for `bots/` (§4.5), capability defaults and status freshness (§2.1), offline validation pin (§2.2), screening determinism and timing budget (§5.1), mode-aware disclosure selection (§6.1), reserved slug and rule precedence (§4.3, §4.4), latency-overrun posture (§7.2), and slice-coverage fixes (§9). PROPOSED resolutions on open questions are marked as such pending PO ratification. Implementation track: post-1.0.0 feature phase; no effect on the RC freeze window.
 
 Companions:
 - `SURFACE-SPEC.md` (HTTP/SSE wire protocol, session CRUD, approval routes, `model_pin`)
@@ -170,6 +170,12 @@ Returns an inventory of model refs configured on the server, their operational s
   - `no_key`: Remote provider lacking credential in both `keys.json` and environment, triggering the K6 local-fail rule (`internal/router/openai.go:20-21`).
   - `offline`: Provider unreachable or returning transport/connection errors.
 
+#### Capability Defaults and Status Freshness (normative)
+
+- `GET /v1/models` MUST NOT issue outbound probes while serving: `status` and `capabilities` are read from the cached probe record (`caps.json`), refreshed in the background on a TTL (60 s) and immediately on demand via a §3.3 probe. `online` therefore means *credential present and last cached probe succeeded*.
+- **Unprobed models** (listed in `ProviderConf` but absent from `caps.json`) take conservative defaults: `thinking: false`, `vision: false` — image and audio inputs are refused for them at turn entry with an explicit notice, never silently dropped. `tools` and `streaming` are assumed `true`, since the OpenAI wire contract (`internal/router/openai.go:48-85`) already requires both and unsupported targets surface as turn-time `ChainError`.
+- Rationale: default-allowing capabilities invites a text-only model to claim it saw an image it was never given. Honest fail-closed beats silent confabulation, and a §3.3 probe upgrades the row as soon as the operator wants it live.
+
 ### 2.2 Model Pinning Semantics
 
 Model pinning overrides default server chains for specific scopes:
@@ -177,7 +183,7 @@ Model pinning overrides default server chains for specific scopes:
 1. **Per-Conversation Pinning:**
    - Already declared on disk: `SessionHeader.ModelPin *string` (`internal/penatus/session.go:102`).
    - Session creation accepts `model_pin`: `POST /v1/sessions` with `{"title": "...", "model_pin": "<provider>/<model>"}` (`docs/SURFACE-SPEC.md §4`).
-   - Pin validation: `hearthd` checks that `providerOf(model_pin)` exists in `ProviderConf` (`cmd/hearthd/main.go:86-96`). If unknown or in `no_key` status, creation rejects with `400 invalid_model_pin`.
+   - Pin validation: `hearthd` checks that `providerOf(model_pin)` exists in `ProviderConf` (`cmd/hearthd/main.go:86-96`). If unknown or in `no_key` status, creation rejects with `400 invalid_model_pin`. Validation MUST be offline: `ProviderConf` lookup and key presence (`keys.json`/env) only — no live network probe is ever issued inside a `POST`/`PATCH` path. Reachability surfaces through §2.1 `status` and turn-time `ChainError`.
 2. **Per-Bot Pinning:**
    - A bot entity defines a default `model_ref` (e.g. `"bot_coder"` pins `"local/qwen2.5-coder-7b"`). Conversations created under that bot inherit the bot's pin unless explicitly overridden at session creation.
 3. **Server Chains as Fallback Defaults:**
@@ -203,7 +209,7 @@ Passing `"model_pin": null` clears the pin, returning the session to server defa
   1. **Concurrency Gate:** If a turn is currently in-flight on the session, `PATCH` returns `409 turn_in_flight` (enforcing `ErrTurnInFlight`, `internal/surface/turns.go:24`). The model cannot be switched mid-generation.
   2. **Transcript Preservation:** Historical events in `events.jsonl` are immutable. Prior assistant turns retain their original generation metadata; history is never rewritten.
   3. **Persona Stability:** Core system prompts assembled from `SOUL.md`, `IDENTITY.md`, and `USER.md` (`internal/loop/prompt.go:58-65`) remain identical.
-  4. **Context Window Recalculation & Proactive Compaction:** The context consumption is immediately evaluated against the target model's `context_window`. If the live token count exceeds `CompactionTriggerPct` (`cmd/hearthd/main.go:74,129-131`) of the *target* model's window, `hearthd` triggers an immediate compaction turn via `Models.Compact` before accepting the next user turn.
+  4. **Context Window Recalculation & Proactive Compaction:** The context consumption is immediately evaluated against the target model's `context_window`. If the live token count exceeds `CompactionTriggerPct` (`cmd/hearthd/main.go:74,129-131`) of the *target* model's window, `hearthd` triggers a compaction turn via `Models.Compact` before accepting that turn. Proposed resolution of Open Q6: **deferred** — the recalculation executes on the first user turn under the new model; the `PATCH` itself never blocks on a compaction generation, keeping model switching cheap and reversible.
   5. **Reasoning/Thinking Configuration:** If switching to a provider/model supporting reasoning chains, provider-level `Think` parameters (`internal/router/openai.go:31-33`) are applied to subsequent turns.
 
 ---
@@ -300,7 +306,7 @@ $$\text{Bot} = \langle \text{Persona}, \text{ModelRef}, \text{RailScope}, \text{
 ### 4.3 Lifecycle & REST API
 
 #### `POST /v1/bots` (PROPOSED)
-Creates a new bot. Enforces slug ID `^[a-z0-9][a-z0-9_-]{0,31}$`. Scaffolds persona markdown files on disk with mode `0700`.
+Creates a new bot. Enforces slug ID `^[a-z0-9][a-z0-9_-]{0,31}$`. The slug `main` is reserved for the household bot and rejected with `422 slug_reserved`. Scaffolds persona markdown files on disk with mode `0700`.
 
 #### `GET /v1/bots` (PROPOSED)
 Returns a list of all active bots, their assigned model targets, allowed rail scopes, and running session counts.
@@ -323,6 +329,17 @@ The host running `hearthd` pairs to a single physical phone client via `DeviceDo
    - Pattern: `bot:<bot_id>/<device_id>/dialer_call -> ask`
    - Pattern: `bot:assistant_main/<device_id>/calendar_list -> auto`
    A card-minted "always" rule granted to one bot does not grant authorization to other bots.
+   Matching is longest-prefix-wins: `bot:<bot_id>/<device_id>/verb` is more specific than a
+   global `<device_id>/verb` and takes precedence; ties resolve to the more restrictive verdict
+   (`deny` beats `ask`, `ask` beats `auto`).
+
+### 4.5 State and File Law (binding)
+
+`bots/` is new state at the hearth root. Precedent is instructive: beta8 crash-looped `custosd` on upgrade because `devices.json` appeared in the state root before the C2 inventory knew about it. Before S-BOT-1 ships:
+
+1. **C2 strict inventory:** `bots/` (recursive) is added to the `CUSTOS-SPEC` state-root inventory in the same release that first creates the directory; an upgraded home MUST NOT restart-loop on `unexpected file in state root`.
+2. **PENATUS bundle law:** `bots/` participates in whole-hearth backup capture and restore (`backup/1` bundle). BK coverage: a bundle containing multiple bots restores byte-identical, and persona budgets survive the round trip.
+3. **Legacy layout compatibility (no migration):** the `main` bot keeps owning today's root layout exactly — `<hearth>/sessions/`, `<hearth>/fasti/jobs.json`, goals included. Non-main bots live under `<hearth>/bots/<bot_id>/`. `fasti` job rows gain an optional `bot_id` field; rows without it belong to `main`, so existing homes read unchanged.
 
 ---
 
@@ -383,6 +400,7 @@ flowchart TD
      - `reason`: e.g. `"Known contact (Alice)"`, `"Suspected robo-caller (prefix match)"`
   5. [ANDROID] Platform screening response applied.
   6. If silenced or rejected, an informational decision card is created via `ApprovalHub` (`internal/surface/approvals.go:42-44`), notifying user across surfaces.
+- **Verdict determinism and timing (normative):** the screening verdict MUST be computed deterministically — contact lookup, call-log lookup, and prefix/rule matching only. The model loop MUST NOT be invoked inside the screening path; the platform `CallScreeningService` runs under a strict system time budget and cannot wait on inference. The client caps the hearth round-trip at 750 ms. On timeout or unreachable hearth the client falls back per Open Q1 (proposed): a local contacts-cache match allows, anything else rings normally — fail open. Silence and reject dispositions never apply offline; the screening event is queued locally and synced into `calllog` on reconnect.
 
 ### 5.2 Stage B — Default Dialer Role & In-Call Control
 
@@ -402,8 +420,9 @@ flowchart TD
 - **Prerequisite:** Pre-approved auto-answer policy rule (Section 6.4).
 - **Pipeline Execution:**
   1. **Call Acquisition:** Default dialer accepts call via Telecom APIs.
-  2. **Mandatory Bot Disclosure:** The bot immediately plays the non-negotiable legal disclosure:
-     > *"Hello, this is an automated AI assistant answering for [Owner Name]. This call is recorded and transcribed. Please state who is calling and how I can help."*
+  2. **Mandatory Bot Disclosure:** The bot immediately plays the canned disclosure fixed by §6.1, selected by the §6.5 raw-audio retention state:
+     > Retention off (default): *"Hello, this is an automated AI assistant answering for [Owner Name]. This call is transcribed. Please state who is calling and how I can help."*
+     > Retention on (`telephony.record_raw_audio: true`): *"Hello, this is an automated AI assistant answering for [Owner Name]. This call is recorded and transcribed. Please state who is calling and how I can help."*
   3. **Conversational Loop:**
      $$\text{Caller Audio} \xrightarrow{\text{telecom rx}} \text{Streaming STT} \xrightarrow{\text{text delta}} \text{Hearth LLM} \xrightarrow{\text{token delta}} \text{Streaming TTS} \xrightarrow{\text{telecom tx}} \text{Caller Audio}$$
   4. **Caller Qualification & Message Capture:**
@@ -439,7 +458,7 @@ flowchart TD
 This section is normative and binding. Implementations departing from these rules are spec violations.
 
 ### 6.1 Non-Configurable Bot Disclosure
-The automated answering service (Stage C) MUST speak the AI disclosure and transcription warning prior to accepting or processing any caller input. This announcement cannot be disabled, shortened, bypassed, or silenced via configuration, prompt engineering, or policy override.
+The automated answering service (Stage C) MUST speak the AI disclosure and transcription warning prior to accepting or processing any caller input. The wording is fixed by §5.3 step 2 and selected by the §6.5 raw-audio retention state: the retention-off variant says **transcribed**; the retention-on variant says **recorded and transcribed**. The disclosure never asserts recording that does not happen. The selected announcement cannot be disabled, shortened, bypassed, or edited via configuration, prompt engineering, or policy override.
 
 ### 6.2 Jurisdictional Consent for Call Recording
 Telephony recording and live transcription are subject to varying wiretap laws (one-party vs. all-party / two-party consent jurisdictions, including US state laws, EU GDPR Article 6, and ePrivacy regulations).
@@ -502,17 +521,18 @@ xychart-beta
    - [ANDROID] Telecom audio output halts immediately; residual audio playback buffer is flushed.
    - Hearth cancels the active turn context (`POST /v1/sessions/{id}/cancel`, `docs/SURFACE-SPEC.md:166`).
    - Pipeline transitions immediately to listening state for caller's interruption.
+3. **Overrun Degradation Posture:** If perceived turn latency exceeds the 1500 ms budget on two consecutive turns, the bot acknowledges once ("I'm running a little slowly — let me take a message instead.") and switches to message-take mode for the remainder of the call; the bidirectional loop stops. Silent robotic lag is a doctrine-(a) product failure, not a tolerated steady state.
 
 ---
 
 ## 8. Open Questions for the Product Owner
 
-1. **Offline Stage A Screening:** Should Stage A screening fall back entirely to local device heuristics (contacts whitelist) when the phone is disconnected from the hearth, or should all calls ring through when offline?
+1. **Offline Stage A Screening:** Should Stage A screening fall back entirely to local device heuristics (contacts whitelist) when the phone is disconnected from the hearth, or should all calls ring through when offline? — **PROPOSED (round 1, pending PO):** local fail-open — cached contacts match rings through as known contact, everything else rings normally; the client never silences offline, and events queue for sync on reconnect. Rationale (§5.1): the bot may never silently hide a call the user did not explicitly opt out of.
 2. **Cross-Bot Memory Scope:** — **ANSWERED (PO 2026-11-06):** Each bot gets its own soul, memory, and namespace. Full isolation per §4.1 item 6; no shared household memory.
-3. **Robocall Transcript Retention:** Should confirmed robocall transcripts be recorded into `RailCallLog` (`<hearth>/devices/<id>/calllog.json`) as evidence, or discarded immediately to prevent log bloat?
-4. **Barge-in Transcript Handling:** When a caller interrupts the bot mid-sentence, should the bot's aborted utterance be logged to `events.jsonl` as a partial message or dropped from the session transcript?
+3. **Robocall Transcript Retention:** Should confirmed robocall transcripts be recorded into `RailCallLog` (`<hearth>/devices/<id>/calllog.json`) as evidence, or discarded immediately to prevent log bloat? — **PROPOSED (round 1, pending PO):** record, under the existing retention law (30-day TTL / 200-entry atomic prune already caps growth); the evidence feeds prefix-list rule improvement.
+4. **Barge-in Transcript Handling:** When a caller interrupts the bot mid-sentence, should the bot's aborted utterance be logged to `events.jsonl` as a partial message or dropped from the session transcript? — **PROPOSED (round 1, pending PO):** log as a partial message flagged `"interrupted": true`. Transcript law is append-only; silently dropping breaks the record of what was actually spoken.
 5. **Dialer UI Integration:** — **ANSWERED (PO 2026-11-06):** Lararium does not replace the system phone app. All telephony stages are opt-in settings labeled experimental/testing; in-call UI is an overlay only (§5.2, §6.6).
-6. **Model Switch Compaction Timing:** When switching models mid-conversation (`PATCH /v1/sessions/{id}`), should context compaction be executed synchronously during the PATCH call or deferred until the first user message under the new model?
+6. **Model Switch Compaction Timing:** When switching models mid-conversation (`PATCH /v1/sessions/{id}`), should context compaction be executed synchronously during the PATCH call or deferred until the first user message under the new model? — **PROPOSED (round 1, pending PO):** deferred; see §2.3 rule 4. Switching stays cheap and reversible, and compaction tokens are only spent if the session is actually used under the new model.
 
 ---
 
@@ -527,8 +547,9 @@ Implementation is partitioned into ordered slices. The first slice delivers wire
 | **S-BOT-1** | Multi-bot schema, persona directories, namespace isolation, and dynamic rail tool scoping. | `lararium` | **L** | `S-MOD-1` |
 | **S-CALL-A** | Stage A Call Screening: [ANDROID] `CallScreeningService` metadata handler + hearth screening decision cards. | `lararium`, `android-client` | **M** | `DEVICE-RAILS-SPEC` |
 | **S-CALL-B** | Stage B Default Dialer role: [ANDROID] Telecom in-call service, live transcript streaming over SSE. | `lararium`, `android-client` | **L** | `S-CALL-A` |
-| **S-CALL-C** | Stage C Bot Answering: mandatory disclosure line, bidirectional STT-LLM-TTS loop, qualification, and human takeover card. | `lararium`, `android-client` | **L** | `S-CALL-B`, `S-BOT-1` |
+| **S-CALL-C** | Stage C Bot Answering: mandatory disclosure line, bidirectional STT-LLM-TTS loop, barge-in cancellation and full-duplex audio handling (§7.2), qualification, and human takeover card. | `lararium`, `android-client` | **L** | `S-CALL-B`, `S-BOT-1` |
 | **S-CALL-D** | Stage D Live Call Assist: real-time dual-track transcription, contextual card popping, and post-call fasti job ingestion. | `lararium`, `android-client` | **M** | `S-CALL-C`, `PROACTIVITY-SPEC` |
+| **S-ASSIST-1** | [ANDROID] Platform Assistant role registration: assist-interaction lifecycle handling routed to the chat surface with session context (power-button entry). Non-telephony; both flavors. | `android-client` | **M** | None |
 
 ---
 
