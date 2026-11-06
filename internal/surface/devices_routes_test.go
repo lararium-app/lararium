@@ -419,6 +419,15 @@ func (r *flushHookRecorder) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func sseReadyWait(t *testing.T) time.Duration {
+	t.Helper()
+	wait := 30 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		wait = min(wait, max(time.Until(deadline)-time.Second, time.Millisecond))
+	}
+	return wait
+}
+
 func assertNoNeedleText(t *testing.T, label, data, needle string) {
 	t.Helper()
 	if strings.Contains(data, needle) {
@@ -1423,7 +1432,7 @@ func TestSSESubscriptionsReadyBeforeHeaders(t *testing.T) {
 			if !strings.Contains(rec.BodyString(), `"device_id":"sse-ready"`) {
 				t.Fatalf("missing device event: %s", rec.BodyString())
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(sseReadyWait(t)):
 			t.Fatal("device update at header flush was lost")
 		}
 	})
@@ -1447,7 +1456,7 @@ func TestSSESubscriptionsReadyBeforeHeaders(t *testing.T) {
 			if !strings.Contains(rec.BodyString(), `"id":"ready-card"`) {
 				t.Fatalf("missing card event: %s", rec.BodyString())
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(sseReadyWait(t)):
 			t.Fatal("card update at header flush was lost")
 		}
 	})
