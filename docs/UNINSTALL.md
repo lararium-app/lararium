@@ -13,6 +13,9 @@ therefore two commands and, optionally, a key decision.
 | `<config dir>/personas/` | `hearthd setup` | Your persona template files. Plain markdown; copy anywhere. |
 | `~/.lararium/` (hearth home, or `$HEARTH_HOME` / `hearth.home` in config) | `hearthd serve` | All state: sessions, Penatus memory files, audit chain, door store (tokens, MCP grants), Nuntius pairings. |
 | `<hearth home>/custos/` | `custosd` / `custos` | The credential vault (sealed at rest) and the `ctl.sock` control socket. |
+| `<hearth home>/fasti/` (`state.json`, `jobs.json`, `events.jsonl`, `goals.json`) | `hearthd serve` | Proactivity engine state; removing it cancels schedules and clears goal tracking. |
+| `<hearth home>/sessions/cron-*/` | `hearthd serve` | Scheduled-turn sessions and audit logs; removing them destroys automated run histories. |
+| `<hearth home>/nuntius/` (`owners.json`, `state.json`, `inbox.jsonl`) | `hearthd serve` | Telegram bridge state; removing it drops bot pairings and resets the poll cursor. |
 | `hearth-<timestamp>.lararium-backup` | `hearthd backup` | Portable backup bundles, wherever you told them to land. |
 | Docker image + named volumes | `docker run` / compose | `ghcr.io/lararium-app/hearthd` plus the two volumes you mounted (config + hearth). |
 
@@ -46,8 +49,10 @@ Compose users: `docker compose down -v` in the directory with
   `<hearth home>/custos/`; deleting the directory destroys the local copy,
   but the credential itself stays valid upstream until you revoke it at the
   provider (Google account → Security → Third-party access).
-- **Telegram (nuntius)**: revoke the bot token at @BotFather if you want the
-  bridge dead everywhere, not just on this machine.
+- **Telegram (nuntius)**: deleting `<hearth home>/nuntius/` destroys the
+  pairing allowlist (`owners.json`), leaving bot pairings dead. Revoke the
+  bot token at @BotFather if you want the bridge dead everywhere, not just
+  on this machine.
 - **API keys** live only in your environment or secrets manager; Lararium
   never copies them to disk.
 
