@@ -328,6 +328,31 @@ func (idx *WalletIndex) MarkStale(origin string) error {
 	return idx.writeLocked(m)
 }
 
+// MarkFresh clears the Stale flag after a successful guided sign-in seals
+// a working session. A missing entry is a no-op: there is nothing to disarm.
+func (idx *WalletIndex) MarkFresh(origin string) error {
+	key, err := OriginKey(origin)
+	if err != nil {
+		return fmt.Errorf("invalid origin: %w", err)
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	m, err := idx.readLocked()
+	if err != nil {
+		return err
+	}
+
+	entry, ok := m[key]
+	if !ok || !entry.Stale {
+		return nil
+	}
+	entry.Stale = false
+	m[key] = entry
+	return idx.writeLocked(m)
+}
+
 // StampReRaise records the date string for the last expiry re-raise.
 func (idx *WalletIndex) StampReRaise(origin, date string) error {
 	key, err := OriginKey(origin)

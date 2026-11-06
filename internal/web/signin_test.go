@@ -643,3 +643,49 @@ func TestSignin_PreMintedTokenReuseAndClear(t *testing.T) {
 		t.Errorf("Start info ViewURL = %q, want the pre-minted token", info.ViewURL)
 	}
 }
+
+func TestSigninManager_CompleteDisarmsStaleEntry(t *testing.T) {
+	home := t.TempDir()
+	w := NewWallet(home, nil)
+	origin := "https://carrier.example.com"
+
+	// A login-wall browse leaves the origin saved-but-stale.
+	seedDir := filepath.Join(t.TempDir(), "stale-profile")
+	if err := os.MkdirAll(seedDir, 0o700); err != nil {
+		t.Fatalf("mkdir seedDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seedDir, "token.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	if err := w.Store(origin, seedDir); err != nil {
+		t.Fatalf("wallet.Store seed: %v", err)
+	}
+	idx := NewWalletIndex(home)
+	if err := idx.MarkStale(origin); err != nil {
+		t.Fatalf("MarkStale: %v", err)
+	}
+
+	// Owner approves a refresh; the new profile seals via Complete.
+	runnerDir := filepath.Join(t.TempDir(), "refresh-profile")
+	if err := os.MkdirAll(runnerDir, 0o700); err != nil {
+		t.Fatalf("mkdir runnerDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runnerDir, "token.txt"), []byte("fresh"), 0o600); err != nil {
+		t.Fatalf("write fresh: %v", err)
+	}
+	mgr := NewSigninManager(w, newFakeRunner(runnerDir))
+	if _, err := mgr.Start(context.Background(), origin); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := mgr.Complete(); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	entry, ok := idx.Get(origin)
+	if !ok {
+		t.Fatal("index entry vanished after Complete")
+	}
+	if entry.Stale {
+		t.Error("Stale survived a successful re-seal; Complete must disarm the re-raise")
+	}
+}

@@ -148,3 +148,37 @@ func TestWalletIndex_MarkStale_InvalidOrigin(t *testing.T) {
 		t.Errorf("expected error for empty origin")
 	}
 }
+
+func TestWalletIndex_MarkFresh(t *testing.T) {
+	home := t.TempDir()
+	idx := NewWalletIndex(home)
+	origin := "https://carrier.example.com"
+
+	// No entry yet: MarkFresh is a no-op and must NOT create one.
+	if err := idx.MarkFresh(origin); err != nil {
+		t.Fatalf("MarkFresh on missing entry: %v", err)
+	}
+	if _, ok := idx.Get(origin); ok {
+		t.Fatal("MarkFresh created an index entry as a side effect")
+	}
+
+	// Stale -> fresh round-trip...
+	if err := idx.MarkStale(origin); err != nil {
+		t.Fatalf("MarkStale: %v", err)
+	}
+	if err := idx.MarkFresh(origin); err != nil {
+		t.Fatalf("MarkFresh: %v", err)
+	}
+	entry, ok := idx.Get(origin)
+	if !ok {
+		t.Fatal("entry vanished")
+	}
+	if entry.Stale {
+		t.Error("Stale = true after MarkFresh, want false")
+	}
+
+	// ...and the cleared flag persisted to disk (fresh reader sees it).
+	if re, ok := NewWalletIndex(home).Get(origin); !ok || re.Stale {
+		t.Errorf("reloaded entry = %+v (ok=%v), want present with Stale=false", re, ok)
+	}
+}

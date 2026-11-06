@@ -121,6 +121,32 @@ func loginDenialGuidance(gate string) string {
 	return b.String()
 }
 
+// sessionPresenceGuidance decides what happens when a saved session already
+// exists for the origin: a fresh session short-circuits the call, a stale
+// (login-wall-marked) one proceeds to the card flow unless the day's re-raise
+// has already been posted. A non-empty first return is the tool result to
+// hand back as-is; the bool reports whether the origin is marked stale.
+func sessionPresenceGuidance(idx *WalletIndex, wallet *Wallet, originKey, host string, force bool) (string, bool) {
+	if wallet == nil || !wallet.Has(originKey) {
+		return "", false
+	}
+	var entry WalletEntry
+	if idx != nil {
+		entry, _ = idx.Get(originKey)
+	}
+	isStale := entry.Stale
+	if force {
+		return "", isStale
+	}
+	if !isStale {
+		return fmt.Sprintf("an existing saved session is present for %s; pass force: true to re-do sign-in", host), false
+	}
+	if entry.ReRaiseDate == time.Now().UTC().Format("2006-01-02") {
+		return fmt.Sprintf("a refresh sign-in for %s was raised earlier today; approve it or pass force:true", host), isStale
+	}
+	return "", isStale
+}
+
 // SessionLoginTool returns the rails agent loop tool for guided browser sign-in sessions.
 func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 	tc := &LoginToolConfig{}
@@ -201,27 +227,9 @@ func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 			}
 
 			// 2. Saved session, stale expiry check, and rate limiting
-			var isStale bool
-			if wallet != nil && wallet.Has(originKey) {
-				var entry WalletEntry
-				if idx != nil {
-					entry, _ = idx.Get(originKey)
-				}
-				if entry.Stale {
-					isStale = true
-				}
-				if !a.Force {
-					if !isStale {
-						return fmt.Sprintf("an existing saved session is present for %s; pass force: true to re-do sign-in", host), nil
-					}
-					today := time.Now().UTC().Format("2006-01-02")
-					if entry.ReRaiseDate == today {
-						return fmt.Sprintf("a refresh sign-in for %s was raised earlier today; approve it or pass force:true", host), nil
-					}
-					if idx != nil {
-						_ = idx.StampReRaise(originKey, today)
-					}
-				}
+			guidance, isStale := sessionPresenceGuidance(idx, wallet, originKey, host, a.Force)
+			if guidance != "" {
+				return guidance, nil
 			}
 
 			// 3. If the window core prereqs are missing (CheckPrereqs -> ErrPrereqMissing) -> return an honest tool result naming the missing binary.
@@ -285,6 +293,11 @@ func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 			summary := "Open sign-in window"
 			if u := mgr.ViewURL(); u != "" {
 				summary = "Open sign-in window. After you approve, open this link to enter the credentials: " + u
+			}
+			// The day's re-raise quota is consumed only when a card truly
+			// goes out — a prereq or window refusal must not burn it.
+			if isStale && idx != nil {
+				_ = idx.StampReRaise(originKey, time.Now().UTC().Format("2006-01-02"))
 			}
 			ok, approvalID := approver(cardTitle, summary)
 			if !ok {

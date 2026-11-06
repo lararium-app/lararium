@@ -614,6 +614,12 @@ func (m *SigninManager) Complete() error {
 		return fmt.Errorf("seal wallet: %w", err)
 	}
 
+	// A fresh seal means the session works again: disarm the expiry
+	// re-raise so the next session_login short-circuits on saved session.
+	if h := wallet.Home(); h != "" {
+		_ = NewWalletIndex(h).MarkFresh(origin)
+	}
+
 	// Staging dir is now sealed into the wallet; clean it up
 	_ = os.RemoveAll(stagingDir)
 
