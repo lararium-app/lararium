@@ -478,7 +478,7 @@ cadence: hourly
 	}
 }
 
-func readSSEEvent(t *testing.T, ch <-chan fasti.Event, match func(fasti.Event) bool) fasti.Event {
+func readSSEEvent(t *testing.T, ch <-chan fasti.Event, match func(fasti.Event) bool) {
 	t.Helper()
 	timer := time.NewTimer(fastiTestWait(t))
 	defer timer.Stop()
@@ -489,7 +489,7 @@ func readSSEEvent(t *testing.T, ch <-chan fasti.Event, match func(fasti.Event) b
 				t.Fatal("SSE event channel closed unexpectedly")
 			}
 			if match(ev) {
-				return ev
+				return
 			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for matching SSE event")
@@ -612,7 +612,7 @@ quiet: "22:00-06:00"
 	sseCh := connectFastiSSE(t, home, eng)
 
 	// Wait for bootstrap heartbeat event so we know the SSE stream is connected.
-	_ = readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
+	readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
 		return ev.Kind == "heartbeat" && ev.Op == "upsert"
 	})
 
@@ -621,7 +621,7 @@ quiet: "22:00-06:00"
 	_ = door.waitCall(t)
 
 	var gotJob fasti.Job
-	_ = readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
+	readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
 		j, ok := decodeEventRow[fasti.Job](ev, "job")
 		if ok && j.ID == seededJob.ID && j.LastFire != "" && j.BudgetCounters.TotalRuns == 1 {
 			gotJob = j
@@ -655,7 +655,7 @@ quiet: "22:00-06:00"
 
 	// Wait for loop-side SSE event reflecting TurnCount == 1 (goal turn advance).
 	var gotGoal1 fasti.Goal
-	_ = readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
+	readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
 		g, ok := decodeEventRow[fasti.Goal](ev, "goal")
 		if ok && g.ID == "sse-goal-1" && g.TurnCount == 1 && g.Status == "active" {
 			gotGoal1 = g
@@ -677,7 +677,7 @@ quiet: "22:00-06:00"
 	clk.Advance(10 * time.Minute) // 10:15:00Z
 	_ = door.waitCall(t)
 
-	_ = readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
+	readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
 		g, ok := decodeEventRow[fasti.Goal](ev, "goal")
 		return ok && g.ID == "sse-goal-1" && g.TurnCount == 2 && g.Status == "stale"
 	})
@@ -695,7 +695,7 @@ quiet: "23:00-05:00"
 	}
 	clk.Advance(45 * time.Minute) // 11:00:00Z (hourly wake timer fires and re-parses HEARTBEAT.md)
 
-	_ = readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
+	readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
 		hb, ok := decodeEventRow[fasti.HeartbeatState](ev, "heartbeat")
 		return ok && hb.Enabled && hb.Cadence == "daily" && hb.Quiet == "23:00-05:00"
 	})
@@ -714,7 +714,7 @@ quiet: "23:00-05:00"
 			t.Fatal(err)
 		}
 	}
-	_ = readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
+	readSSEEvent(t, sseCh, func(ev fasti.Event) bool {
 		j, ok := decodeEventRow[fasti.Job](ev, "job")
 		return ok && j.ID == seededJob.ID && j.Paused && j.ConsecutiveSkips >= 5
 	})
