@@ -51,8 +51,6 @@ func (s *Server) devicesEventsHandler(w http.ResponseWriter, r *http.Request, fi
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	flusher.Flush()
-
 	events := make(chan deviceRailEvent, 64)
 	overflowCh := make(chan struct{})
 	var overflowOnce sync.Once
@@ -106,6 +104,9 @@ func (s *Server) devicesEventsHandler(w http.ResponseWriter, r *http.Request, fi
 
 	cancelLocal := s.registerDevicePoke(diff)
 	defer cancelLocal()
+	// Reconcile changes between the initial snapshot and subscription.
+	diff()
+	flusher.Flush()
 
 	ticker := time.NewTicker(custosHeartbeatInterval)
 	defer ticker.Stop()

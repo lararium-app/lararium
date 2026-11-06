@@ -397,8 +397,6 @@ func (s *Server) custosEventsHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONBody(w, http.StatusInternalServerError, `{"error":"streaming unsupported"}`)
 		return
 	}
-	flusher.Flush()
-
 	events := make(chan CustosEvent, 64)
 	overflowCh := make(chan struct{})
 	var overflowOnce sync.Once
@@ -428,6 +426,8 @@ func (s *Server) custosEventsHandler(w http.ResponseWriter, r *http.Request) {
 		cancelHub := hub.SubscribeCustos(push)
 		defer cancelHub()
 	}
+
+	flusher.Flush()
 
 	ticker := time.NewTicker(custosHeartbeatInterval)
 	defer ticker.Stop()
