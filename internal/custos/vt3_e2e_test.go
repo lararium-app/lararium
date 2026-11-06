@@ -1464,8 +1464,11 @@ func TestVT3d(t *testing.T) {
 	w := newVT3World(t)
 	phone := w.newPhone(t)
 
-	// Inject 50ms grace window via the merged exported test hooks
-	w.devDoor.SetGracePeriod(50 * time.Millisecond)
+	// Inject a short grace window via the merged exported test hooks.
+	// 500ms (was 50ms): short-circuits the grace timer while leaving enough
+	// headroom that the post-close "still online" assert cannot lose a race
+	// to a scheduler stall on loaded CI runners (lararium#261).
+	w.devDoor.SetGracePeriod(500 * time.Millisecond)
 
 	phone.Pair(t, "pixel-d")
 	rails := []surface.DeclaredRail{
@@ -1483,9 +1486,11 @@ func TestVT3d(t *testing.T) {
 
 	// Connect stream
 	phone.OpenStream(t)
-	if !w.devDoor.IsOnline("pixel-d") {
-		t.Fatalf("device expected online after OpenStream")
-	}
+	// Online-marking is async behind the stream attach; wait for it instead of
+	// asserting instantly (loaded runners lost this race, lararium#261).
+	waitFor(t, "device online after OpenStream", func() bool {
+		return w.devDoor.IsOnline("pixel-d")
+	})
 
 	// 1. Close stream
 	phone.CloseStream()
