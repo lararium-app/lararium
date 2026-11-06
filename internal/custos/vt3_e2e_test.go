@@ -617,7 +617,7 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.streamCancel = cancel
-	p.streamDone = make(chan struct{})
+	p.streamDone = nil
 	p.streamEvents = make(chan vt3SSEEvent, 64)
 	p.streamErrs = make(chan error, 1)
 
@@ -639,6 +639,7 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 		t.Fatalf("GET stream status = %d", resp.StatusCode)
 	}
 
+	p.streamDone = make(chan struct{})
 	go func() {
 		defer close(p.streamDone)
 		defer resp.Body.Close()
