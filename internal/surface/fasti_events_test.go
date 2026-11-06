@@ -115,10 +115,21 @@ bootstrapLoop:
 func TestVPhSurface_SSE_SlowClientDisconnect(t *testing.T) {
 	env := setupFastiEnv(t, true)
 
-	ts := httptest.NewServer(env.h)
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		env.h.ServeHTTP(&slowFastiWriter{ResponseWriter: w, blocked: blocked, release: release}, r)
+	}))
 	defer ts.Close()
+	defer unblock()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	wait := 30 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		wait = min(wait, max(time.Until(deadline)-time.Second, time.Millisecond))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/fasti/events", nil)
@@ -137,8 +148,12 @@ func TestVPhSurface_SSE_SlowClientDisconnect(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	// Wait briefly for connection to establish and subscribe
-	time.Sleep(50 * time.Millisecond)
+	// Hold the handler in its bootstrap flush so it cannot drain its subscription.
+	select {
+	case <-blocked:
+	case <-ctx.Done():
+		t.Fatalf("bootstrap flush did not start: %v", ctx.Err())
+	}
 
 	// Publish >64 events directly to the engine hub without reading from the client
 	// This overflows the 64-slot buffer and must trigger disconnection
@@ -155,6 +170,7 @@ func TestVPhSurface_SSE_SlowClientDisconnect(t *testing.T) {
 	if time.Since(start) > 500*time.Millisecond {
 		t.Fatalf("publisher was blocked: took %v", time.Since(start))
 	}
+	unblock()
 
 	// Verify the connection closes because slow client was disconnected
 	done := make(chan struct{})
@@ -172,11 +188,25 @@ func TestVPhSurface_SSE_SlowClientDisconnect(t *testing.T) {
 	select {
 	case <-done:
 		// Client disconnected as expected
-	case <-time.After(5 * time.Second):
-		// ARM runners need 5s for this drain (issue #233 family: SSE
-		// read-side deadlines at 3s flake on ubuntu-24.04-arm).
-		t.Fatalf("slow client was not disconnected within deadline")
+	case <-ctx.Done():
+		t.Fatalf("slow client was not disconnected within deadline: %v", ctx.Err())
 	}
+}
+
+type slowFastiWriter struct {
+	http.ResponseWriter
+	blocked chan<- struct{}
+	release <-chan struct{}
+	flushes int
+}
+
+func (w *slowFastiWriter) Flush() {
+	w.flushes++
+	if w.flushes == 2 {
+		close(w.blocked)
+		<-w.release
+	}
+	w.ResponseWriter.(http.Flusher).Flush()
 }
 
 func TestVPhSurface_SSE_ConcurrentSubscribersRace(t *testing.T) {
