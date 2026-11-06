@@ -212,7 +212,9 @@ func (h *Hub) InFlight(sessionID string) bool {
 // turn commits no partial assistant event, and pending approvals never
 // outlive the process.
 func (h *Hub) Shutdown() {
-	h.ap.DenyAllAll("shutdown", "shutdown")
+	if h.ap != nil {
+		h.ap.Shutdown()
+	}
 	h.mu.Lock()
 	turns := make([]*turn, 0, len(h.running))
 	for _, t := range h.running {

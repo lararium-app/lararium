@@ -1348,6 +1348,8 @@ func TestDevicesAdmin_PatchRailsToggle(t *testing.T) {
 		return false
 	})
 
+	e.srv.Drain()
+
 	// Verify audit device_rail_toggled
 	e.door.mu.Lock()
 	foundAudit := false
