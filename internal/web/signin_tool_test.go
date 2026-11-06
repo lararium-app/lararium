@@ -427,3 +427,196 @@ func TestSessionLoginTool_DenylistRefusesBeforeApproval(t *testing.T) {
 		t.Errorf("mgr state = %s, want Idle", mgr.State())
 	}
 }
+
+func TestSessionLoginTool_StaleEntryProceedsToApprovalCard(t *testing.T) {
+	origLookPath := execLookPath
+	defer func() { execLookPath = origLookPath }()
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+
+	w, mgr, runner := setupTestToolEnv(t)
+	passLoginGuard(t)
+	cfg := DefaultConfig()
+	novncDir := t.TempDir()
+	cfg.Signin.NoVNCDir = novncDir
+
+	origin := "https://carrier.example.com"
+	stagingDir := filepath.Join(t.TempDir(), "prestored")
+	_ = os.MkdirAll(stagingDir, 0o700)
+	_ = os.WriteFile(filepath.Join(stagingDir, "token.txt"), []byte("pre-existing"), 0o600)
+	if err := w.Store(origin, stagingDir); err != nil {
+		t.Fatalf("wallet.Store: %v", err)
+	}
+
+	idx := NewWalletIndex(w.Home())
+	if err := idx.MarkStale(origin); err != nil {
+		t.Fatalf("MarkStale failed: %v", err)
+	}
+
+	var raisedTitle string
+	approver := func(name, argsSummary string) (bool, string) {
+		raisedTitle = name
+		return true, "a_test_approval_002"
+	}
+
+	tool := SessionLoginTool(w.Home(), cfg,
+		WithLoginManager(mgr),
+		WithLoginWallet(w),
+		WithLoginIndex(idx),
+		WithLoginApprover(approver),
+	)
+
+	res, err := tool.Run(context.Background(), `{"origin": "https://carrier.example.com"}`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Stale entry proceeds to approval card flow and title says "Re-sign"
+	wantTitle := "Re-sign me in to carrier.example.com"
+	if raisedTitle != wantTitle {
+		t.Errorf("raised card title = %q, want %q", raisedTitle, wantTitle)
+	}
+	if mgr.State() != SigninLive {
+		t.Fatalf("manager state = %s, want Live", mgr.State())
+	}
+	if runner.startChromiumCalled != 1 {
+		t.Fatalf("startChromiumCalled = %d, want 1", runner.startChromiumCalled)
+	}
+	if !strings.Contains(res, "The sign-in window is open") {
+		t.Errorf("unexpected tool result: %s", res)
+	}
+
+	// Verify ReRaiseDate was stamped to today
+	entry, ok := idx.Get(origin)
+	if !ok {
+		t.Fatalf("expected entry in index")
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	if entry.ReRaiseDate != today {
+		t.Errorf("ReRaiseDate = %q, want %q", entry.ReRaiseDate, today)
+	}
+}
+
+func TestSessionLoginTool_StaleEntryRateLimitedToday(t *testing.T) {
+	origLookPath := execLookPath
+	defer func() { execLookPath = origLookPath }()
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+
+	w, mgr, _ := setupTestToolEnv(t)
+	passLoginGuard(t)
+	cfg := DefaultConfig()
+	cfg.Signin.NoVNCDir = t.TempDir()
+
+	origin := "https://carrier.example.com"
+	stagingDir := filepath.Join(t.TempDir(), "prestored")
+	_ = os.MkdirAll(stagingDir, 0o700)
+	_ = os.WriteFile(filepath.Join(stagingDir, "token.txt"), []byte("pre-existing"), 0o600)
+	if err := w.Store(origin, stagingDir); err != nil {
+		t.Fatalf("wallet.Store: %v", err)
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	idx := NewWalletIndex(w.Home())
+	if err := idx.MarkStale(origin); err != nil {
+		t.Fatalf("MarkStale failed: %v", err)
+	}
+	if err := idx.StampReRaise(origin, today); err != nil {
+		t.Fatalf("StampReRaise failed: %v", err)
+	}
+
+	approverCalled := false
+	approver := func(name, argsSummary string) (bool, string) {
+		approverCalled = true
+		return true, "a_test_approval_003"
+	}
+
+	tool := SessionLoginTool(w.Home(), cfg,
+		WithLoginManager(mgr),
+		WithLoginWallet(w),
+		WithLoginIndex(idx),
+		WithLoginApprover(approver),
+	)
+
+	// ReRaiseDate == today -> refusal, no card
+	res, err := tool.Run(context.Background(), `{"origin": "https://carrier.example.com"}`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	wantRes := "a refresh sign-in for carrier.example.com was raised earlier today; approve it or pass force:true"
+	if !strings.Contains(res, wantRes) {
+		t.Errorf("result = %q, want containing %q", res, wantRes)
+	}
+	if approverCalled {
+		t.Errorf("approver should NOT be called when rate-limited")
+	}
+	if mgr.State() != SigninIdle {
+		t.Errorf("manager state = %s, want Idle (no window)", mgr.State())
+	}
+}
+
+func TestSessionLoginTool_StaleEntryForceBypassesRateLimit(t *testing.T) {
+	origLookPath := execLookPath
+	defer func() { execLookPath = origLookPath }()
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+
+	w, mgr, runner := setupTestToolEnv(t)
+	passLoginGuard(t)
+	cfg := DefaultConfig()
+	cfg.Signin.NoVNCDir = t.TempDir()
+
+	origin := "https://carrier.example.com"
+	stagingDir := filepath.Join(t.TempDir(), "prestored")
+	_ = os.MkdirAll(stagingDir, 0o700)
+	_ = os.WriteFile(filepath.Join(stagingDir, "token.txt"), []byte("pre-existing"), 0o600)
+	if err := w.Store(origin, stagingDir); err != nil {
+		t.Fatalf("wallet.Store: %v", err)
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	idx := NewWalletIndex(w.Home())
+	if err := idx.MarkStale(origin); err != nil {
+		t.Fatalf("MarkStale failed: %v", err)
+	}
+	if err := idx.StampReRaise(origin, today); err != nil {
+		t.Fatalf("StampReRaise failed: %v", err)
+	}
+
+	var raisedTitle string
+	approver := func(name, argsSummary string) (bool, string) {
+		raisedTitle = name
+		return true, "a_test_approval_004"
+	}
+
+	tool := SessionLoginTool(w.Home(), cfg,
+		WithLoginManager(mgr),
+		WithLoginWallet(w),
+		WithLoginIndex(idx),
+		WithLoginApprover(approver),
+	)
+
+	// force: true bypasses rate limit and stale check; proceeds to approval card
+	res, err := tool.Run(context.Background(), `{"origin": "https://carrier.example.com", "force": true}`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	wantTitle := "Re-sign me in to carrier.example.com"
+	if raisedTitle != wantTitle {
+		t.Errorf("raised card title = %q, want %q", raisedTitle, wantTitle)
+	}
+	if mgr.State() != SigninLive {
+		t.Fatalf("manager state = %s, want Live", mgr.State())
+	}
+	if runner.startChromiumCalled != 1 {
+		t.Fatalf("startChromiumCalled = %d, want 1", runner.startChromiumCalled)
+	}
+	if !strings.Contains(res, "The sign-in window is open") {
+		t.Errorf("unexpected tool result: %s", res)
+	}
+}

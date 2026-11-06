@@ -38,6 +38,8 @@ type WalletEntry struct {
 	LastUsedAt     string `json:"last_used_at"`
 	LastGoal       string `json:"last_goal,omitempty"`
 	DailyAllowDate string `json:"daily_allow_date,omitempty"`
+	Stale          bool   `json:"stale,omitempty"`
+	ReRaiseDate    string `json:"re_raise_date,omitempty"`
 }
 
 // WalletIndex manages sessions/index.json in plaintext.
@@ -294,6 +296,62 @@ func (idx *WalletIndex) StampDailyAllow(origin, date string) error {
 		}
 	}
 	entry.DailyAllowDate = date
+	m[key] = entry
+	return idx.writeLocked(m)
+}
+
+// MarkStale sets the Stale flag for an origin in index.json.
+func (idx *WalletIndex) MarkStale(origin string) error {
+	key, err := OriginKey(origin)
+	if err != nil {
+		return fmt.Errorf("invalid origin: %w", err)
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	m, err := idx.readLocked()
+	if err != nil {
+		return err
+	}
+
+	entry, ok := m[key]
+	if !ok {
+		entry = WalletEntry{
+			Origin:    origin,
+			Policy:    PolicyAlwaysAsk,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	entry.Stale = true
+	m[key] = entry
+	return idx.writeLocked(m)
+}
+
+// StampReRaise records the date string for the last expiry re-raise.
+func (idx *WalletIndex) StampReRaise(origin, date string) error {
+	key, err := OriginKey(origin)
+	if err != nil {
+		return fmt.Errorf("invalid origin: %w", err)
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	m, err := idx.readLocked()
+	if err != nil {
+		return err
+	}
+
+	entry, ok := m[key]
+	if !ok {
+		entry = WalletEntry{
+			Origin:    origin,
+			Policy:    PolicyAlwaysAsk,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	entry.ReRaiseDate = date
 	m[key] = entry
 	return idx.writeLocked(m)
 }

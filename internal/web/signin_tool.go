@@ -22,7 +22,15 @@ type LoginToolConfig struct {
 	Manager         *SigninManager
 	ManagerProvider func() *SigninManager
 	Wallet          *Wallet
+	Index           *WalletIndex
 	Approver        loop.Approver
+}
+
+// WithLoginIndex injects a WalletIndex into the tool.
+func WithLoginIndex(idx *WalletIndex) LoginOption {
+	return func(c *LoginToolConfig) {
+		c.Index = idx
+	}
 }
 
 // WithLoginManager injects a SigninManager into the tool.
@@ -125,6 +133,15 @@ func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 		wallet = NewWallet(home, nil)
 	}
 
+	idx := tc.Index
+	if idx == nil {
+		if home != "" {
+			idx = NewWalletIndex(home)
+		} else if wallet != nil && wallet.Home() != "" {
+			idx = NewWalletIndex(wallet.Home())
+		}
+	}
+
 	// buildMgr constructs a private manager for standalone use (tests, the
 	// repl). The daemon path always resolves the shared surface instance via
 	// tc.Manager first or the provider second.
@@ -183,9 +200,28 @@ func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 				return fmt.Sprintf("invalid origin %q: %v", originRaw, err), nil
 			}
 
-			// 2. If wallet.Has(origin) and !force -> return a plain tool result stating an existing saved session is present and force:true re-does sign-in. NO window opens.
-			if wallet != nil && wallet.Has(originKey) && !a.Force {
-				return fmt.Sprintf("an existing saved session is present for %s; pass force: true to re-do sign-in", host), nil
+			// 2. Saved session, stale expiry check, and rate limiting
+			var isStale bool
+			if wallet != nil && wallet.Has(originKey) {
+				var entry WalletEntry
+				if idx != nil {
+					entry, _ = idx.Get(originKey)
+				}
+				if entry.Stale {
+					isStale = true
+				}
+				if !a.Force {
+					if !isStale {
+						return fmt.Sprintf("an existing saved session is present for %s; pass force: true to re-do sign-in", host), nil
+					}
+					today := time.Now().UTC().Format("2006-01-02")
+					if entry.ReRaiseDate == today {
+						return fmt.Sprintf("a refresh sign-in for %s was raised earlier today; approve it or pass force:true", host), nil
+					}
+					if idx != nil {
+						_ = idx.StampReRaise(originKey, today)
+					}
+				}
 			}
 
 			// 3. If the window core prereqs are missing (CheckPrereqs -> ErrPrereqMissing) -> return an honest tool result naming the missing binary.
@@ -239,6 +275,9 @@ func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 			}
 
 			cardTitle := "Sign me in to " + host
+			if isStale {
+				cardTitle = "Re-sign me in to " + host
+			}
 			// Pre-mint the view token so this same approval card can carry
 			// the link: it 404s until approval lets Start bind the assets,
 			// then becomes live (Start reuses a still-fresh pre-mint).
