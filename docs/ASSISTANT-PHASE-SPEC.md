@@ -1,6 +1,6 @@
 # ASSISTANT-PHASE-SPEC — model routing, multi-bot personas, and call intelligence
 
-Status: **DRAFT-v2 (round-1 reviewed)** — v1 carries the PO decisions of 2026-11-06 (full per-bot isolation §4.1; no phone-app replacement §5.2; experimental opt-in gate for all telephony stages §6.6). v2 applies Hermes hostile-review round 1 (2026-11-06): hearth state and file law for `bots/` (§4.5), capability defaults and status freshness (§2.1), offline validation pin (§2.2), screening determinism and timing budget (§5.1), mode-aware disclosure selection (§6.1), reserved slug and rule precedence (§4.3, §4.4), latency-overrun posture (§7.2), and slice-coverage fixes (§9). PROPOSED resolutions on open questions are marked as such pending PO ratification. Implementation track: post-1.0.0 feature phase; no effect on the RC freeze window.
+Status: **DRAFT-v2 (round-1 reviewed)** — v1 carries the PO decisions of 2026-11-06 (full per-bot isolation §4.1; no phone-app replacement §5.2; experimental opt-in gate for all telephony stages §6.6). v2 applies Hermes hostile-review round 1 (2026-11-06): hearth state and file law for `bots/` (§4.5), capability defaults and status freshness (§2.1), offline validation pin (§2.2), screening determinism and timing budget (§5.1), mode-aware disclosure selection (§6.1), reserved slug and rule precedence (§4.3, §4.4), latency-overrun posture (§7.2), and slice-coverage fixes (§9). PROPOSED resolutions on open questions are marked as such pending PO ratification. Implementation track: post-1.0.0 feature phase; no effect on the RC freeze window. **PO decision 2026-11-06: the call-intelligence pipeline (§5, §7, slices S-CALL-A–D) is PARKED as a future feature.** Active spec scope: model switching (§2), provider onboarding (§3), multi-bot architecture (§4), and the platform-assistant entry (S-ASSIST-1). Open questions Q1/Q3/Q4 are parked with §5 (proposals preserved for reuse); Q6 stays live.
 
 Companions:
 - `SURFACE-SPEC.md` (HTTP/SSE wire protocol, session CRUD, approval routes, `model_pin`)
@@ -21,7 +21,7 @@ This specification defines the architectural phase where Lararium:
 2. Implements runtime model switching, provider enumeration, and per-conversation/per-bot model pinning.
 3. Implements multi-provider onboarding with automated capability detection and validation probing.
 4. Extends the Penatus household model to support concurrent multi-bot personas with isolated namespaces, custom model targets, and scoped rail capabilities.
-5. Introduces a 4-stage call intelligence pipeline: screening verdicts (Stage A), default-dialer control and live transcription (Stage B), automated answering and qualification loops (Stage C), and live conversation assistance with proactive task extraction (Stage D).
+5. Introduces a 4-stage call intelligence pipeline: screening verdicts (Stage A), default-dialer control and live transcription (Stage B), automated answering and qualification loops (Stage C), and live conversation assistance with proactive task extraction (Stage D). **(PARKED — PO 2026-11-06; specified here for when it is picked up.)**
 
 ### Product Doctrine (Binding)
 
@@ -343,7 +343,7 @@ The host running `hearthd` pairs to a single physical phone client via `DeviceDo
 
 ---
 
-## 5. Call Assistance (Staged Pipeline)
+## 5. Call Assistance (Staged Pipeline) — **PARKED (PO 2026-11-06)**
 
 Telephony intelligence is structured into four distinct, cumulative stages.
 
@@ -488,7 +488,7 @@ All telephony intelligence (Stages A–D) ships **disabled by default**. Each st
 
 ---
 
-## 7. Latency Budget
+## 7. Latency Budget — **PARKED (PO 2026-11-06; telephony-only section)**
 
 To conduct a natural spoken conversation during Stage C automated screening, the perceived round-trip latency from the end of the caller's utterance to the beginning of the bot's vocalized reply MUST NOT exceed **1500 ms**.
 
@@ -527,10 +527,10 @@ xychart-beta
 
 ## 8. Open Questions for the Product Owner
 
-1. **Offline Stage A Screening:** Should Stage A screening fall back entirely to local device heuristics (contacts whitelist) when the phone is disconnected from the hearth, or should all calls ring through when offline? — **PROPOSED (round 1, pending PO):** local fail-open — cached contacts match rings through as known contact, everything else rings normally; the client never silences offline, and events queue for sync on reconnect. Rationale (§5.1): the bot may never silently hide a call the user did not explicitly opt out of.
+1. **Offline Stage A Screening:** *(PARKED with §5, PO 2026-11-06 — round-1 proposal preserved:)* local fail-open — cached contacts match rings through as known contact, everything else rings normally; the client never silences offline, and events queue for sync on reconnect. Rationale (§5.1): the bot may never silently hide a call the user did not explicitly opt out of.
 2. **Cross-Bot Memory Scope:** — **ANSWERED (PO 2026-11-06):** Each bot gets its own soul, memory, and namespace. Full isolation per §4.1 item 6; no shared household memory.
-3. **Robocall Transcript Retention:** Should confirmed robocall transcripts be recorded into `RailCallLog` (`<hearth>/devices/<id>/calllog.json`) as evidence, or discarded immediately to prevent log bloat? — **PROPOSED (round 1, pending PO):** record, under the existing retention law (30-day TTL / 200-entry atomic prune already caps growth); the evidence feeds prefix-list rule improvement.
-4. **Barge-in Transcript Handling:** When a caller interrupts the bot mid-sentence, should the bot's aborted utterance be logged to `events.jsonl` as a partial message or dropped from the session transcript? — **PROPOSED (round 1, pending PO):** log as a partial message flagged `"interrupted": true`. Transcript law is append-only; silently dropping breaks the record of what was actually spoken.
+3. **Robocall Transcript Retention:** *(PARKED with §5, PO 2026-11-06 — round-1 proposal preserved:)* record, under the existing retention law (30-day TTL / 200-entry atomic prune already caps growth); the evidence feeds prefix-list rule improvement.
+4. **Barge-in Transcript Handling:** *(PARKED with §5, PO 2026-11-06 — round-1 proposal preserved:)* log as a partial message flagged `"interrupted": true`. Transcript law is append-only; silently dropping breaks the record of what was actually spoken.
 5. **Dialer UI Integration:** — **ANSWERED (PO 2026-11-06):** Lararium does not replace the system phone app. All telephony stages are opt-in settings labeled experimental/testing; in-call UI is an overlay only (§5.2, §6.6).
 6. **Model Switch Compaction Timing:** When switching models mid-conversation (`PATCH /v1/sessions/{id}`), should context compaction be executed synchronously during the PATCH call or deferred until the first user message under the new model? — **PROPOSED (round 1, pending PO):** deferred; see §2.3 rule 4. Switching stays cheap and reversible, and compaction tokens are only spent if the session is actually used under the new model.
 
@@ -545,10 +545,10 @@ Implementation is partitioned into ordered slices. The first slice delivers wire
 | **S-MOD-1** | Model switcher wire API (`GET /v1/models`, `PATCH /v1/sessions/{id}`) and surface picker UI. | `lararium` | **M** | None |
 | **S-ONB-1** | Multi-provider onboarding wizard, probe endpoint (`POST /v1/providers/probe`), and capability detection. | `lararium` | **M** | `S-MOD-1` |
 | **S-BOT-1** | Multi-bot schema, persona directories, namespace isolation, and dynamic rail tool scoping. | `lararium` | **L** | `S-MOD-1` |
-| **S-CALL-A** | Stage A Call Screening: [ANDROID] `CallScreeningService` metadata handler + hearth screening decision cards. | `lararium`, `android-client` | **M** | `DEVICE-RAILS-SPEC` |
-| **S-CALL-B** | Stage B Default Dialer role: [ANDROID] Telecom in-call service, live transcript streaming over SSE. | `lararium`, `android-client` | **L** | `S-CALL-A` |
-| **S-CALL-C** | Stage C Bot Answering: mandatory disclosure line, bidirectional STT-LLM-TTS loop, barge-in cancellation and full-duplex audio handling (§7.2), qualification, and human takeover card. | `lararium`, `android-client` | **L** | `S-CALL-B`, `S-BOT-1` |
-| **S-CALL-D** | Stage D Live Call Assist: real-time dual-track transcription, contextual card popping, and post-call fasti job ingestion. | `lararium`, `android-client` | **M** | `S-CALL-C`, `PROACTIVITY-SPEC` |
+| **S-CALL-A** *(PARKED)* | Stage A Call Screening: [ANDROID] `CallScreeningService` metadata handler + hearth screening decision cards. | `lararium`, `android-client` | **M** | `DEVICE-RAILS-SPEC` |
+| **S-CALL-B** *(PARKED)* | Stage B Default Dialer role: [ANDROID] Telecom in-call service, live transcript streaming over SSE. | `lararium`, `android-client` | **L** | `S-CALL-A` |
+| **S-CALL-C** *(PARKED)* | Stage C Bot Answering: mandatory disclosure line, bidirectional STT-LLM-TTS loop, barge-in cancellation and full-duplex audio handling (§7.2), qualification, and human takeover card. | `lararium`, `android-client` | **L** | `S-CALL-B`, `S-BOT-1` |
+| **S-CALL-D** *(PARKED)* | Stage D Live Call Assist: real-time dual-track transcription, contextual card popping, and post-call fasti job ingestion. | `lararium`, `android-client` | **M** | `S-CALL-C`, `PROACTIVITY-SPEC` |
 | **S-ASSIST-1** | [ANDROID] Platform Assistant role registration: assist-interaction lifecycle handling routed to the chat surface with session context (power-button entry). Non-telephony; both flavors. | `android-client` | **M** | None |
 
 ---
