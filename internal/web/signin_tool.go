@@ -183,7 +183,7 @@ func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 		if novncDir == "" {
 			novncDir = DefaultNoVNCDir
 		}
-		runner := NewRealRunner(wallet.Home(), WithRunnerNoVNCDir(novncDir))
+		runner := NewRealRunner(wallet.Home(), WithRunnerNoVNCDir(novncDir), WithRunnerIsolation(cfg.Isolate))
 		return NewSigninManager(wallet, runner,
 			WithTimeout(time.Duration(timeoutS)*time.Second),
 			WithViewBaseURL(cfg.Signin.ViewBaseURL),

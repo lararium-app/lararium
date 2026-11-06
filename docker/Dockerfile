@@ -18,6 +18,11 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/hearthd ./cmd/hearthd
 # coreutils (cp/grep/sed) for first-run seeding, so the runtime image carries
 # a shell + coreutils.
 FROM debian:bookworm-slim
+# bubblewrap: process isolation for the daemon's Chromium launches
+# (web.isolate, default on; docs/WEB-LAYER-SPEC.md "Process isolation").
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends bubblewrap \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/hearthd /usr/local/bin/hearthd
 # /hearth = persona home (SOUL.md, MEMORY.md, sessions/); mount a volume there.
 # /etc/lararium = config (lararium.yaml); mount the config dir there.

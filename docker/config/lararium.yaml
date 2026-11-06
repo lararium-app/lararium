@@ -66,4 +66,5 @@ providers:
 #   enabled: true                      # false disables web_fetch and web_browse
 #   browse_timeout_s: 30               # browser navigation timeout
 #   max_text_bytes: 200000             # max extracted text bytes
+#   isolate: true                      # run Chromium inside bubblewrap (default); false = no process isolation
 #   # chrome_path: /usr/bin/chromium   # auto-detects $LARARIUM_CHROME, then chromium/chrome on PATH
