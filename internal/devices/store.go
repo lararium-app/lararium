@@ -374,6 +374,16 @@ func (m *Manager) Clock() Clock {
 	return m.clock
 }
 
+// Close stops background timers and releases resources.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.liveness != nil {
+		m.liveness.Close()
+	}
+	return nil
+}
+
 // ApplySync processes an incremental or snapshot sync push per DEVICE-RAILS-SPEC D6 & Rail Data At Rest.
 // Enforces monotonic per-rail seq (stale seq returns ErrStaleSeq with no write).
 func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Delta, seq int64) error {

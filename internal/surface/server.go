@@ -228,6 +228,7 @@ func (s *Server) ListenAndServe() error {
 	if s.Hub != nil {
 		s.Hub.Shutdown()
 	}
+	s.Drain()
 	drainCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(drainCtx); err != nil {
