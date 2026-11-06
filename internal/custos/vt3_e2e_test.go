@@ -364,14 +364,18 @@ type vt3SSEReader struct {
 
 func (w *vt3World) openSSE(t *testing.T, path string) *vt3SSEReader {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, w.tsrv.URL+path, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.tsrv.URL+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+w.adminToken)
 	req.Header.Set("Accept", "text/event-stream")
 
+	timer := time.AfterFunc(30*time.Second, cancel)
 	resp, err := w.client.Do(req)
+	timer.Stop()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,7 +611,9 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+p.token)
 	req.Header.Set("Accept", "text/event-stream")
 
+	timer := time.AfterFunc(30*time.Second, cancel)
 	resp, err := p.client.Do(req) //nolint:bodyclose // stream body is closed in background reader goroutine
+	timer.Stop()
 	if err != nil {
 		t.Fatalf("Do stream: %v", err)
 	}
@@ -1868,6 +1874,9 @@ func TestVT3g(t *testing.T) {
 	phone.OpenStream(t)
 	stEv := devSSE.nextEvent(t)
 	frames = append(frames, stEv.Data)
+	waitFor(t, "device online before action", func() bool {
+		return w.devDoor.IsOnline("pixel-g")
+	})
 
 	// 4. Sync
 	syncCode, syncBody := phone.Sync(t, devices.RailCalendar, []map[string]any{{"title": "confidential"}}, nil, 1)
@@ -1891,11 +1900,30 @@ func TestVT3g(t *testing.T) {
 		t.Fatalf("actTool not found")
 	}
 
+	actionCtx, cancelAction := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelAction()
+	actionDone := make(chan error, 1)
 	go func() {
-		_, _ = actTool.Run(context.Background(), `{"recipient":"+15551234","message":"canary test"}`)
+		_, err := actTool.Run(actionCtx, `{"recipient":"+15551234","message":"canary test"}`)
+		actionDone <- err
 	}()
 
-	actionFrame := phone.NextAction(t)
+	var actionFrame actionDispatchFrame
+	select {
+	case ev := <-phone.streamEvents:
+		if ev.Kind != "action_dispatch" {
+			t.Fatalf("expected action_dispatch event, got kind=%s data=%s", ev.Kind, ev.Data)
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &actionFrame); err != nil {
+			t.Fatalf("unmarshal action dispatch: %v", err)
+		}
+	case err := <-phone.streamErrs:
+		t.Fatalf("stream error: %v", err)
+	case err := <-actionDone:
+		t.Fatalf("action ended before dispatch: %v", err)
+	case <-actionCtx.Done():
+		t.Fatalf("timed out waiting for action dispatch: %v", actionCtx.Err())
+	}
 	frames = append(frames, actionFrame.Tool, string(actionFrame.Args))
 
 	rcptCode, rcptBody := phone.SubmitReceipt(t, actionFrame.ActionID, true, map[string]string{"result": "ok"}, "")
@@ -1903,6 +1931,14 @@ func TestVT3g(t *testing.T) {
 		t.Fatalf("receipt failed: %s", rcptBody)
 	}
 	bodies = append(bodies, rcptBody)
+	select {
+	case err := <-actionDone:
+		if err != nil {
+			t.Fatalf("action failed: %v", err)
+		}
+	case <-actionCtx.Done():
+		t.Fatalf("timed out waiting for action completion: %v", actionCtx.Err())
+	}
 
 	// 6. List and Get rows
 	listBody, _ := w.getAdmin("/v1/devices")
