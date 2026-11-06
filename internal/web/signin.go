@@ -3,11 +3,13 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,17 +58,41 @@ func (e *ErrPrereqMissing) Unwrap() error {
 	return e.Err
 }
 
-var execLookPath = exec.LookPath
+var (
+	execLookPath = exec.LookPath
+	osStat       = os.Stat
+)
 
-// CheckPrereqs verifies that Xvfb, x11vnc, and chromium are available in PATH.
+// CheckNoVNCAssets verifies that the noVNC static assets directory exists.
+// If missing or not a directory, it returns a typed *ErrPrereqMissing naming "novnc assets".
+func CheckNoVNCAssets(dir string) error {
+	if dir == "" {
+		dir = DefaultNoVNCDir
+	}
+	fi, err := osStat(dir)
+	if err != nil || !fi.IsDir() {
+		return &ErrPrereqMissing{
+			Binary: "novnc assets",
+			Err:    err,
+		}
+	}
+	return nil
+}
+
+// CheckPrereqs verifies that Xvfb, x11vnc, chromium, and websockify are available in PATH,
+// and that the noVNC assets directory exists.
 // If any is missing, it returns a typed *ErrPrereqMissing.
-func CheckPrereqs() error {
-	for _, bin := range []string{"Xvfb", "x11vnc", "chromium"} {
+func CheckPrereqs(novncDir ...string) error {
+	for _, bin := range []string{"Xvfb", "x11vnc", "chromium", "websockify"} {
 		if err := CheckPrereqBinary(bin); err != nil {
 			return err
 		}
 	}
-	return nil
+	dir := DefaultNoVNCDir
+	if len(novncDir) > 0 && novncDir[0] != "" {
+		dir = novncDir[0]
+	}
+	return CheckNoVNCAssets(dir)
 }
 
 // CheckPrereqBinary checks for the presence of a single binary in PATH.
@@ -80,10 +106,40 @@ func CheckPrereqBinary(bin string) error {
 	return nil
 }
 
+// BuildViewURL constructs the view URL for a sign-in token given a base URL and listen address.
+func BuildViewURL(viewBaseURL string, listenAddr string, token string) string {
+	viewPath := "/signin/v/" + token
+	viewBaseURL = strings.TrimSpace(viewBaseURL)
+	if viewBaseURL != "" {
+		return strings.TrimRight(viewBaseURL, "/") + viewPath
+	}
+
+	// Request-less fallback: http://<hostname>:<serve port>
+	var port string
+	if listenAddr != "" {
+		if _, p, err := net.SplitHostPort(listenAddr); err == nil {
+			port = p
+		} else if idx := strings.LastIndex(listenAddr, ":"); idx >= 0 {
+			port = listenAddr[idx+1:]
+		}
+	}
+
+	hostname, err := os.Hostname()
+	if err == nil && hostname != "" && port != "" {
+		return fmt.Sprintf("http://%s%s", net.JoinHostPort(hostname, port), viewPath)
+	}
+
+	// If unresolvable, return relative URL and let the card render it.
+	return viewPath
+}
+
 // SigninViewInfo holds connection details for the user to view/interact with the sign-in window.
 type SigninViewInfo struct {
-	Port     int    `json:"port"`
-	Password string `json:"password"`
+	Port       int    `json:"port"`
+	Password   string `json:"password"`
+	BridgePort int    `json:"bridge_port,omitempty"`
+	AssetsDir  string `json:"assets_dir,omitempty"`
+	ViewURL    string `json:"view_url,omitempty"`
 }
 
 // WindowRunner abstracts display server, VNC server, browser, and staging profile path.
@@ -98,6 +154,9 @@ type WindowRunner interface {
 	StartChromium(ctx context.Context, display string, profileDir string, targetURL string) error
 	StopChromium() error
 
+	StartWebsockify(ctx context.Context, rfbPort int, bindAddr string) (port int, err error)
+	StopWebsockify() error
+
 	ProfileDir() string
 }
 
@@ -108,14 +167,25 @@ type SigninManager struct {
 	runner  WindowRunner
 	timeout time.Duration
 
+	bindAddr    string
+	viewBaseURL string
+	listenAddr  string
+	novncDir    string
+
+	token       string
+	tokenExpiry time.Time
+	cardID      string
+
 	state  SigninState
 	origin string
 	info   SigninViewInfo
 	timer  *time.Timer
 
-	xvfbStarted     bool
-	vncStarted      bool
-	chromiumStarted bool
+	xvfbStarted       bool
+	vncStarted        bool
+	websockifyStarted bool
+	chromiumStarted   bool
+	assetsDir         string
 
 	teardownOnce sync.Once
 }
@@ -132,6 +202,38 @@ func WithTimeout(d time.Duration) SigninManagerOption {
 	}
 }
 
+// WithBindAddr sets the local bind address for the websockify bridge.
+func WithBindAddr(addr string) SigninManagerOption {
+	return func(m *SigninManager) {
+		if addr != "" {
+			m.bindAddr = addr
+		}
+	}
+}
+
+// WithViewBaseURL sets the external view base URL for sign-in links.
+func WithViewBaseURL(url string) SigninManagerOption {
+	return func(m *SigninManager) {
+		m.viewBaseURL = url
+	}
+}
+
+// WithListenAddr sets the daemon HTTP listen address for fallback view URL generation.
+func WithListenAddr(addr string) SigninManagerOption {
+	return func(m *SigninManager) {
+		m.listenAddr = addr
+	}
+}
+
+// WithNoVNCDir sets the noVNC static assets directory.
+func WithNoVNCDir(dir string) SigninManagerOption {
+	return func(m *SigninManager) {
+		if dir != "" {
+			m.novncDir = dir
+		}
+	}
+}
+
 // NewSigninManager creates a new sign-in window manager.
 // If runner is nil and wallet is non-nil, NewRealRunner is used.
 func NewSigninManager(wallet *Wallet, runner WindowRunner, opts ...SigninManagerOption) *SigninManager {
@@ -139,15 +241,105 @@ func NewSigninManager(wallet *Wallet, runner WindowRunner, opts ...SigninManager
 		runner = NewRealRunner(wallet.Home())
 	}
 	m := &SigninManager{
-		wallet:  wallet,
-		runner:  runner,
-		timeout: 10 * time.Minute,
-		state:   SigninIdle,
+		wallet:   wallet,
+		runner:   runner,
+		timeout:  10 * time.Minute,
+		bindAddr: "127.0.0.1",
+		novncDir: DefaultNoVNCDir,
+		state:    SigninIdle,
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
 	return m
+}
+
+// Token returns the active one-time token for the session.
+func (m *SigninManager) Token() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.token
+}
+
+// NewViewToken pre-mints the one-time view token so the approval card can
+// carry the view link BEFORE the window opens: the link safely 404s until
+// approval lets Start bind the assets, then becomes live. Start reuses a
+// still-fresh pre-minted token; ClearViewToken drops it when denied.
+func (m *SigninManager) NewViewToken() string {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return ""
+	}
+	token := hex.EncodeToString(tokenBytes)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.token = token
+	m.tokenExpiry = time.Now().Add(m.timeout)
+	return token
+}
+
+// ClearViewToken drops a pre-minted token (e.g. the owner denied the card).
+func (m *SigninManager) ClearViewToken() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.token = ""
+	m.tokenExpiry = time.Time{}
+}
+
+// ViewURL returns the view URL for the pending or active token, or "" when
+// no token is minted.
+func (m *SigninManager) ViewURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.token == "" {
+		return ""
+	}
+	return BuildViewURL(m.viewBaseURL, m.listenAddr, m.token)
+}
+
+// Wallet returns the wallet backing this manager, so the engine tool and the
+// /signin/ routes share one wallet instance (one key cache).
+func (m *SigninManager) Wallet() *Wallet { return m.wallet }
+
+// ValidateToken checks if token matches the active session token and has not expired.
+func (m *SigninManager) ValidateToken(token string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.token == "" || token == "" {
+		return false
+	}
+	if time.Now().After(m.tokenExpiry) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(m.token), []byte(token)) == 1
+}
+
+// AssetsDir returns the staging assets directory path.
+func (m *SigninManager) AssetsDir() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.assetsDir
+}
+
+// Timeout returns the session timeout.
+func (m *SigninManager) Timeout() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.timeout
+}
+
+// SetCardID stores the associated custody card ID.
+func (m *SigninManager) SetCardID(cardID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cardID = cardID
+}
+
+// CardID returns the associated custody card ID.
+func (m *SigninManager) CardID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cardID
 }
 
 // State returns the current lifecycle state of the manager.
@@ -267,7 +459,24 @@ func (m *SigninManager) Start(ctx context.Context, origin string) (SigninViewInf
 		return cleanupOnFail(ctx.Err())
 	}
 
-	// 4. Start Chromium window
+	// 4. Start websockify bridge
+	bindAddr := m.bindAddr
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
+	wsPort, err := m.runner.StartWebsockify(ctx, port, bindAddr)
+	if err != nil {
+		return cleanupOnFail(fmt.Errorf("start websockify: %w", err))
+	}
+	m.mu.Lock()
+	m.websockifyStarted = true
+	m.mu.Unlock()
+
+	if ctx.Err() != nil {
+		return cleanupOnFail(ctx.Err())
+	}
+
+	// 5. Start Chromium window
 	targetURL := origin
 	if !strings.Contains(targetURL, "://") {
 		targetURL = "https://" + targetURL
@@ -292,9 +501,35 @@ func (m *SigninManager) Start(ctx context.Context, origin string) (SigninViewInf
 		return SigninViewInfo{}, err
 	}
 
+	// Token: reuse a still-fresh pre-minted view token (its link was already
+	// delivered on the approval card); otherwise mint a 256-bit one-time token.
+	token := m.token
+	if token == "" || time.Now().After(m.tokenExpiry) {
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			m.teardownLocked(false)
+			m.mu.Unlock()
+			return SigninViewInfo{}, fmt.Errorf("generate signin token: %w", err)
+		}
+		token = hex.EncodeToString(tokenBytes)
+	}
+	viewURL := BuildViewURL(m.viewBaseURL, m.listenAddr, token)
+
+	var assetsDir string
+	if ar, ok := m.runner.(interface{ AssetsDir() string }); ok {
+		assetsDir = ar.AssetsDir()
+	}
+
+	m.token = token
+	m.tokenExpiry = time.Now().Add(m.timeout)
+	m.assetsDir = assetsDir
+
 	m.info = SigninViewInfo{
-		Port:     port,
-		Password: password,
+		Port:       port,
+		Password:   password,
+		BridgePort: wsPort,
+		AssetsDir:  assetsDir,
+		ViewURL:    viewURL,
 	}
 	info := m.info
 
@@ -387,9 +622,11 @@ func (m *SigninManager) Complete() error {
 
 func (m *SigninManager) teardownLocked(isSealing bool) {
 	m.teardownOnce.Do(func() {
+		startedWebsockify := m.websockifyStarted
 		startedChromium := m.chromiumStarted
 		startedVNC := m.vncStarted
 		startedXvfb := m.xvfbStarted
+		m.websockifyStarted = false
 		m.chromiumStarted = false
 		m.vncStarted = false
 		m.xvfbStarted = false
@@ -400,23 +637,31 @@ func (m *SigninManager) teardownLocked(isSealing bool) {
 		}
 
 		// Teardown ALWAYS and in order on every exit path:
-		// 1. chromium graceful-exit first (profile must flush)
+		// 1. websockify stops at the front
+		if startedWebsockify {
+			_ = runner.StopWebsockify()
+		}
+		// 2. chromium graceful-exit first (profile must flush)
 		if startedChromium {
 			_ = runner.StopChromium()
 		}
-		// 2. then vnc
+		// 3. then vnc
 		if startedVNC {
 			_ = runner.StopX11VNC()
 		}
-		// 3. then xvfb
+		// 4. then xvfb
 		if startedXvfb {
 			_ = runner.StopXvfb()
 		}
-		// 4. remove staging dir only when NOT sealing
+		// 5. remove staging dir only when NOT sealing
 		if !isSealing {
 			if dir := runner.ProfileDir(); dir != "" {
 				_ = os.RemoveAll(dir)
 			}
+		}
+		if m.assetsDir != "" {
+			_ = os.RemoveAll(m.assetsDir)
+			m.assetsDir = ""
 		}
 	})
 }
@@ -430,6 +675,7 @@ type RealRunner struct {
 
 	walletHome string
 	profileDir string
+	novncDir   string
 
 	xvfbCmd     *exec.Cmd
 	xvfbDisplay string
@@ -439,21 +685,49 @@ type RealRunner struct {
 	vncPwd     string
 	vncPwdFile string
 
+	wsCmd     *exec.Cmd
+	wsPort    int
+	assetsDir string
+
 	chromiumCmd *exec.Cmd
 }
 
+// RealRunnerOption configures a RealRunner.
+type RealRunnerOption func(*RealRunner)
+
+// WithRunnerNoVNCDir sets the noVNC assets directory for RealRunner.
+func WithRunnerNoVNCDir(dir string) RealRunnerOption {
+	return func(r *RealRunner) {
+		if dir != "" {
+			r.novncDir = dir
+		}
+	}
+}
+
 // NewRealRunner creates a RealRunner rooted under walletHome.
-func NewRealRunner(walletHome string) *RealRunner {
+func NewRealRunner(walletHome string, opts ...RealRunnerOption) *RealRunner {
 	randBytes := make([]byte, 16)
 	if _, err := rand.Read(randBytes); err != nil {
 		randBytes = []byte(fmt.Sprintf("%d", time.Now().UnixNano()))
 	}
 	stagingDir := filepath.Join(walletHome, "signin-staging", hex.EncodeToString(randBytes))
 
-	return &RealRunner{
+	r := &RealRunner{
 		walletHome: walletHome,
 		profileDir: stagingDir,
+		novncDir:   DefaultNoVNCDir,
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// AssetsDir returns the staging assets directory path.
+func (r *RealRunner) AssetsDir() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.assetsDir
 }
 
 // ProfileDir returns the staging profile directory path.
@@ -710,6 +984,185 @@ func (r *RealRunner) StopChromium() error {
 
 	r.chromiumCmd = nil
 	return nil
+}
+
+// StartWebsockify starts websockify pointing to rfbPort on localhost and serving noVNC assets on bindAddr.
+func (r *RealRunner) StartWebsockify(ctx context.Context, rfbPort int, bindAddr string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := CheckPrereqBinary("websockify"); err != nil {
+		return 0, err
+	}
+	novncDir := r.novncDir
+	if novncDir == "" {
+		novncDir = DefaultNoVNCDir
+	}
+	if err := CheckNoVNCAssets(novncDir); err != nil {
+		return 0, err
+	}
+
+	port, err := findFreePort(context.WithoutCancel(ctx))
+	if err != nil {
+		return 0, fmt.Errorf("find free port: %w", err)
+	}
+
+	stagingRoot := filepath.Dir(r.profileDir)
+	if err := os.MkdirAll(stagingRoot, 0o700); err != nil {
+		return 0, fmt.Errorf("create staging root for websockify: %w", err)
+	}
+	assetsDir, err := os.MkdirTemp(stagingRoot, "novnc-staging-*")
+	if err != nil {
+		return 0, fmt.Errorf("create novnc assets staging dir: %w", err)
+	}
+
+	// Copy noVNC static assets to staging dir
+	if err := copyDir(novncDir, assetsDir); err != nil {
+		_ = os.RemoveAll(assetsDir)
+		return 0, fmt.Errorf("copy novnc assets: %w", err)
+	}
+
+	// Write index.html with meta refresh redirect to vnc.html with connection query parameters
+	q := url.Values{}
+	q.Set("host", bindAddr)
+	q.Set("port", strconv.Itoa(port))
+	q.Set("path", "websockify")
+	q.Set("password", r.vncPwd)
+	q.Set("autoconnect", "1")
+	q.Set("resize", "scale")
+	redirectURL := "vnc.html?" + q.Encode()
+
+	indexContent := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="refresh" content="0; url=%s">
+  <title>Sign-in Window</title>
+</head>
+<body>
+  <p>Connecting to sign-in window... If not redirected, <a href="%s">click here</a>.</p>
+</body>
+</html>
+`, redirectURL, redirectURL)
+
+	if err := os.WriteFile(filepath.Join(assetsDir, "index.html"), []byte(indexContent), 0o644); err != nil {
+		_ = os.RemoveAll(assetsDir)
+		return 0, fmt.Errorf("write index.html: %w", err)
+	}
+
+	// #nosec G204 -- bindAddr and port numbers are internally controlled
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), "websockify",
+		"--web="+assetsDir,
+		fmt.Sprintf("%s:%d", bindAddr, port),
+		fmt.Sprintf("127.0.0.1:%d", rfbPort),
+	)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+
+	if err := cmd.Start(); err != nil {
+		_ = os.RemoveAll(assetsDir)
+		return 0, fmt.Errorf("start websockify: %w", err)
+	}
+
+	r.wsCmd = cmd
+	r.wsPort = port
+	r.assetsDir = assetsDir
+
+	addr := fmt.Sprintf("%s:%d", bindAddr, port)
+	deadline := time.Now().Add(3 * time.Second)
+	started := false
+	dialer := net.Dialer{Timeout: 50 * time.Millisecond}
+	dialCtx := context.WithoutCancel(ctx)
+	for time.Now().Before(deadline) {
+		conn, err := dialer.DialContext(dialCtx, "tcp", addr)
+		if err == nil {
+			_ = conn.Close()
+			started = true
+			break
+		}
+		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+			_ = os.RemoveAll(assetsDir)
+			return 0, fmt.Errorf("websockify exited prematurely: %v", cmd.ProcessState)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !started {
+		_ = cmd.Process.Kill()
+		_ = os.RemoveAll(assetsDir)
+		return 0, fmt.Errorf("timeout waiting for websockify on %s", addr)
+	}
+
+	return port, nil
+}
+
+// StopWebsockify gracefully terminates the websockify process and removes the assets staging directory.
+func (r *RealRunner) StopWebsockify() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.wsCmd != nil && r.wsCmd.Process != nil {
+		_ = r.wsCmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan error, 1)
+		go func() {
+			done <- r.wsCmd.Wait()
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			_ = r.wsCmd.Process.Kill()
+			<-done
+		}
+	}
+
+	r.wsCmd = nil
+	r.wsPort = 0
+	if r.assetsDir != "" {
+		_ = os.RemoveAll(r.assetsDir)
+		r.assetsDir = ""
+	}
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			// #nosec G122 -- staging directory is a freshly created isolated temp dir
+			return os.Symlink(linkTarget, target)
+		}
+		return copyFile(path, target, info.Mode())
+	})
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func findFreeDisplay(ctx context.Context) (string, error) {

@@ -601,8 +601,16 @@ func serve(cfgPath string) {
 
 	sched := mustScheduler(home)
 
-	// Build tools
-	tools := buildTools(home, sched, cfg.Web)
+	// Build tools. The sign-in manager is owned by the surface Server created
+	// below; the provider closure is late-bound so session_login and the
+	// /signin/ routes share the one instance (one window, one wallet cache).
+	var signinSrv *surface.Server
+	tools := buildTools(home, sched, cfg.Web, func() *internalweb.SigninManager {
+		if signinSrv == nil {
+			return nil
+		}
+		return signinSrv.SigninManager()
+	})
 
 	// System prompt (validated by Hub per-session)
 	requireSystemPrompt(home)
@@ -626,6 +634,7 @@ func serve(cfgPath string) {
 	}
 	// Issue #128: turn-approval cards (web chat + MCP rail) become visible
 	// and resolvable through the custody card surface.
+	signinSrv = srv
 	srv.SetApprovalHub(ap)
 	srv.AttachKeys(&surface.KeysDeps{
 		Store:     kstore,

@@ -20,6 +20,7 @@ import (
 func buildTools(home string, args ...any) []loop.Tool {
 	var wakeSched *loop.Scheduler
 	webCfg := web.DefaultConfig()
+	var signinProvider func() *web.SigninManager
 
 	for _, arg := range args {
 		switch v := arg.(type) {
@@ -31,6 +32,8 @@ func buildTools(home string, args ...any) []loop.Tool {
 			if v != nil {
 				webCfg = *v
 			}
+		case func() *web.SigninManager:
+			signinProvider = v
 		}
 	}
 	if wakeSched == nil {
@@ -169,6 +172,9 @@ func buildTools(home string, args ...any) []loop.Tool {
 	}
 	if webCfg.Enabled {
 		tools = append(tools, web.FetchTool(webCfg), web.BrowseTool(home, webCfg))
+		// Guided sign-in: approval-gated window; the provider keeps it on
+		// the surface-owned manager so /signin/ serves what it opens.
+		tools = append(tools, web.SessionLoginTool(home, webCfg, web.WithLoginManagerProvider(signinProvider)))
 	}
 	return tools
 }
