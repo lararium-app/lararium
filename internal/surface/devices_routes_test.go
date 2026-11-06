@@ -401,6 +401,7 @@ func (r *safeRecorder) Code() int {
 
 type flushHookRecorder struct {
 	*safeRecorder
+
 	once    sync.Once
 	onFlush func()
 	written chan struct{}
