@@ -205,6 +205,10 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	s.Cfg.Listen = ln.Addr().String()
+	if s.ListenReady != nil {
+		close(s.ListenReady)
+	}
 
 	srv := s.newHTTPServer(NewServer(s))
 
@@ -221,6 +225,7 @@ func (s *Server) ListenAndServe() error {
 	case err := <-serveErr:
 		return err
 	case <-sigs:
+	case <-s.ShutdownSig:
 	}
 	if s.OnShutdown != nil {
 		s.OnShutdown()

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,10 @@ type Server struct {
 	// OnShutdown is called on shutdown signals before Hub.Shutdown()
 	// (NUNTIUS-SPEC §2: bridge stops before hub drops pending approvals).
 	OnShutdown func()
+	// ShutdownSig is an optional test seam to inject a shutdown signal (issue #259).
+	ShutdownSig chan os.Signal
+	// ListenReady is an optional test seam closed when the listener is bound (issue #259).
+	ListenReady chan struct{}
 	// keys is nil until AttachKeys; routes answer 404 without it.
 	keys *KeysDeps
 
