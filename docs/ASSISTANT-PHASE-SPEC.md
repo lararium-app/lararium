@@ -1,6 +1,6 @@
 # ASSISTANT-PHASE-SPEC — model routing, multi-bot personas, and call intelligence
 
-Status: **DRAFT-v0 (unreviewed)** — initial design draft specifying platform assistant integration, dynamic model switching, multi-provider onboarding, multi-bot orchestration, and staged phone call intelligence.
+Status: **DRAFT-v1 (unreviewed)** — v1 incorporates PO decisions of 2026-11-06: full per-bot isolation (§4.1), no phone-app replacement (§5.2), experimental opt-in gate for all telephony stages (§6.6).
 
 Companions:
 - `SURFACE-SPEC.md` (HTTP/SSE wire protocol, session CRUD, approval routes, `model_pin`)
@@ -289,7 +289,8 @@ $$\text{Bot} = \langle \text{Persona}, \text{ModelRef}, \text{RailScope}, \text{
 2. **ModelRef:** Default pinned model ref (`<provider>/<model>`) or target chain assigned to the bot.
 3. **RailScope:** Whitelist of allowed device rails (`RailCalendar`, `RailContacts`, `RailNotifications`, `RailCallLog`, `RailHealth`, `RailDialer`, `RailSMS` per `internal/devices/types.go:124-132`) and external MCP connectors.
 4. **ApprovalPolicy:** Scoped worker rules in Custos policy (`internal/custos/policy.go:38-42`) governing auto/ask/deny execution thresholds for this specific bot.
-5. **SessionNamespace:** Dedicated session directory `<hearth>/bots/<bot_id>/sessions/` isolating transcripts, memory, and high-water sequence marks (`internal/fasti/goals.go:24-29`).
+5. **SessionNamespace:** Dedicated session directory `<hearth>/bots/<bot_id>/sessions/` isolating transcripts and high-water sequence marks (`internal/fasti/goals.go:24-29`).
+6. **Full Isolation (binding — PO decision 2026-11-06):** Each bot owns its complete identity stack: its own persona files (`SOUL.md`, `IDENTITY.md`, `USER.md`), its own memory hierarchy under `<hearth>/bots/<bot_id>/memory/`, and its own sessions, goals, and fasti jobs. Bots MUST NOT read or write another bot's persona, memory, or transcripts; there is no implicit shared household memory. Cross-bot interaction happens only through explicit, audited handoff mechanisms if and when separately specified.
 
 ### 4.2 Bot Concurrency & Parallel Execution
 
@@ -387,8 +388,9 @@ flowchart TD
 
 - **Mechanism:** [ANDROID] Implements platform Telecom `InCallService` and requests platform Default Dialer role.
 - **Flavor Support:** **GitHub flavor ONLY** (violates Google Play policy for assistant apps).
+- **UI rule (PO decision 2026-11-06):** Lararium does NOT replace the system phone app. In-call controls and live transcripts render as an overlay during active calls; normal dialing UX remains the user's existing app wherever the platform permits.
 - **Execution Flow:**
-  1. Android client provides full system call management (answer, mute, reject, audio route switching).
+  1. Android client provides in-call management for calls the user handles through the overlay (answer, mute, reject, audio route switching).
   2. Telephony lifecycle events (`DIALING`, `RINGING`, `ACTIVE`, `DISCONNECTED`) push to hearth over the existing device stream (`DEVICE-RAILS-SPEC.md §D6`).
   3. When an incoming or active call is in progress, the client captures incoming audio via telephony audio sources and runs local streaming speech recognition.
   4. Recognized text deltas stream to hearth as push events (`POST /v1/devices/<id>/sync`), updating live call state.
@@ -462,6 +464,9 @@ In accordance with Product Doctrine (b), the assistant NEVER answers a call auto
 2. **Zero Audio Retention by Default:** Raw audio buffers exist transiently in volatile memory during active stream conversion. Audio is purged immediately upon chunk transcription. Raw `.wav` / `.pcm` files are NEVER written to persistent disk storage unless the user explicitly enables debug recording (`telephony.record_raw_audio: true`).
 3. **Transcript Lifecycle:** Transcripts and structured summaries land in `<hearth>/devices/<id>/calllog.json` under standard retention law (`docs/DEVICE-RAILS-SPEC.md §Rail Data At Rest`: TTL 30 days, max 200 entries, pruned atomically).
 
+### 6.6 Experimental Opt-In Gate (Binding — PO decision 2026-11-06)
+All telephony intelligence (Stages A–D) ships **disabled by default**. Each stage is enabled individually through a client setting explicitly labeled as experimental/testing, and its enablement flow discloses the permissions, audio access, and consent implications the stage introduces. Where a stage technically requires the platform default-dialer role (Stage C answering; parts of Stages B/D), that role is requested only inside the corresponding opt-in, and Lararium MUST NOT otherwise replace or degrade the user's existing phone app experience. When the role is not granted, capabilities degrade to the strongest role-free stage (Stage A screening verdicts) rather than prompting the user to swap dialers.
+
 ---
 
 ## 7. Latency Budget
@@ -503,10 +508,10 @@ xychart-beta
 ## 8. Open Questions for the Product Owner
 
 1. **Offline Stage A Screening:** Should Stage A screening fall back entirely to local device heuristics (contacts whitelist) when the phone is disconnected from the hearth, or should all calls ring through when offline?
-2. **Cross-Bot Memory Scope:** Do multi-bot instances share a single household memory file (`agent/MEMORY.md`, `docs/PENATUS-SPEC.md:47`), or should each bot maintain an isolated memory hierarchy under `<hearth>/bots/<id>/memory/`?
+2. **Cross-Bot Memory Scope:** — **ANSWERED (PO 2026-11-06):** Each bot gets its own soul, memory, and namespace. Full isolation per §4.1 item 6; no shared household memory.
 3. **Robocall Transcript Retention:** Should confirmed robocall transcripts be recorded into `RailCallLog` (`<hearth>/devices/<id>/calllog.json`) as evidence, or discarded immediately to prevent log bloat?
 4. **Barge-in Transcript Handling:** When a caller interrupts the bot mid-sentence, should the bot's aborted utterance be logged to `events.jsonl` as a partial message or dropped from the session transcript?
-5. **Dialer UI Integration:** In the Android GitHub flavor, should the Lararium default dialer completely replace the system phone app UI, or function as an in-call floating overlay during active calls?
+5. **Dialer UI Integration:** — **ANSWERED (PO 2026-11-06):** Lararium does not replace the system phone app. All telephony stages are opt-in settings labeled experimental/testing; in-call UI is an overlay only (§5.2, §6.6).
 6. **Model Switch Compaction Timing:** When switching models mid-conversation (`PATCH /v1/sessions/{id}`), should context compaction be executed synchronously during the PATCH call or deferred until the first user message under the new model?
 
 ---
@@ -534,7 +539,8 @@ This section specifies normative interface requirements for the companion Androi
 - `[ANDROID]` The client MUST register as a platform Assistant application handling the system assist interaction lifecycle.
 - `[ANDROID]` The client MUST support flavor-differentiated builds: GitHub flavor with telephony and audio permissions; Play Store flavor restricted to CallScreeningService metadata.
 - `[ANDROID]` The client MUST maintain an authenticated, persistent HTTPS connection to the hearth surface using bearer credentials from the Android Keystore.
-- `[ANDROID]` In the GitHub flavor, the client MUST declare platform Telecom Default Dialer capability to control incoming and outgoing call states.
+- `[ANDROID]` In the GitHub flavor, the client MAY declare platform Telecom Default Dialer capability to enable controlled call states, but MUST request the role only inside the relevant experimental opt-in flow (§6.6) and never as a general onboarding requirement.
 - `[ANDROID]` In Stage C automated answering, the client MUST play the mandatory disclosure audio track into the call uplink before bridging STT/LLM audio.
 - `[ANDROID]` The client MUST implement continuous local Voice Activity Detection with a perceived latency target under 250 ms, immediately stopping audio playback upon barge-in detection.
+- `[ANDROID]` The client MUST NOT present Lararium as a replacement phone/dialer app outside an explicitly granted default-dialer opt-in, and MUST label every telephony stage setting as experimental/testing per §6.6.
 - `[ANDROID]` The client MUST NOT record, cache, or persist raw telephony audio to local disk storage unless an explicit operator debug toggle is active.
