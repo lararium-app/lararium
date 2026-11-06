@@ -309,8 +309,12 @@ func (s *Server) runConnectorGate(w http.ResponseWriter, r *http.Request, door C
 	// The waiter needs the config past this handler's return; take a copy
 	// (zeroed once the verdict is applied).
 	held := append([]byte(nil), body...)
-	//nolint:gosec,contextcheck // G118+contextcheck: the verdict may land after this handler returns; the waiter enforces its own hold deadline.
-	go s.awaitConnectorVerdict(door, hub, name, cardID, decision, held, meta, hold)
+	s.verdictWg.Add(1)
+	//nolint:contextcheck // the verdict may land after this handler returns; the waiter enforces its own hold deadline.
+	go func() {
+		defer s.verdictWg.Done()
+		s.awaitConnectorVerdict(door, hub, name, cardID, decision, held, meta, hold)
+	}()
 
 	// (e) 202 immediately — name and card id only.
 	writeJSONAny(w, http.StatusAccepted, map[string]string{"name": name, "card_id": cardID})
