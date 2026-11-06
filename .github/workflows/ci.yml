@@ -59,7 +59,7 @@ jobs:
           version: v2.14.0
 
       - name: Test
-        run: go test -race ./...
+        run: go test -race -p 2 ./...
 
       - name: Surface V-suite
         run: bash tests/surface/run.sh

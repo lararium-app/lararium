@@ -124,3 +124,13 @@ func (lt *livenessTracker) SetGracePeriod(d time.Duration) {
 	defer lt.mu.Unlock()
 	lt.gracePeriod = d
 }
+
+// Close stops all active grace timers.
+func (lt *livenessTracker) Close() {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	for id, t := range lt.graceTimers {
+		t.Stop()
+		delete(lt.graceTimers, id)
+	}
+}
