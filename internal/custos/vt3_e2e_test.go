@@ -481,6 +481,23 @@ type fakePhone struct {
 	receiptScript func(action actionDispatchFrame) (ok bool, result any, errStr string)
 }
 
+func waitVT3Done(t *testing.T, done <-chan struct{}, label string) bool {
+	t.Helper()
+	wait := 30 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		wait = min(wait, max(time.Until(deadline)-time.Second, time.Millisecond))
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		t.Errorf("timed out waiting for %s", label)
+		return false
+	}
+}
+
 func (w *vt3World) newPhone(t *testing.T) *fakePhone {
 	t.Helper()
 	return &fakePhone{
@@ -593,8 +610,8 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 
 	if p.streamCancel != nil {
 		p.streamCancel()
-		if p.streamDone != nil {
-			<-p.streamDone
+		if p.streamDone != nil && !waitVT3Done(t, p.streamDone, "previous phone stream to stop") {
+			t.FailNow()
 		}
 	}
 
@@ -684,8 +701,8 @@ func (p *fakePhone) CloseStream() {
 	defer p.streamMu.Unlock()
 	if p.streamCancel != nil {
 		p.streamCancel()
-		if p.streamDone != nil {
-			<-p.streamDone
+		if p.streamDone != nil && !waitVT3Done(p.t, p.streamDone, "phone stream to stop") {
+			return
 		}
 		p.streamCancel = nil
 		p.streamDone = nil
@@ -993,8 +1010,8 @@ func (w *vt3World) cleanup() {
 	if w.doorCancel != nil {
 		w.doorCancel()
 	}
-	if w.doorDone != nil {
-		<-w.doorDone
+	if w.doorDone != nil && !waitVT3Done(w.t, w.doorDone, "door client to stop") {
+		return
 	}
 	if w.d != nil {
 		w.d.Stop()
