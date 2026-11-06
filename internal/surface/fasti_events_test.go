@@ -120,7 +120,12 @@ func TestVPhSurface_SSE_SlowClientDisconnect(t *testing.T) {
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		env.h.ServeHTTP(&slowFastiWriter{ResponseWriter: w, blocked: blocked, release: release}, r)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		env.h.ServeHTTP(&slowFastiWriter{ResponseWriter: w, flusher: flusher, blocked: blocked, release: release}, r)
 	}))
 	defer ts.Close()
 	defer unblock()
@@ -195,6 +200,8 @@ func TestVPhSurface_SSE_SlowClientDisconnect(t *testing.T) {
 
 type slowFastiWriter struct {
 	http.ResponseWriter
+
+	flusher http.Flusher
 	blocked chan<- struct{}
 	release <-chan struct{}
 	flushes int
@@ -206,7 +213,7 @@ func (w *slowFastiWriter) Flush() {
 		close(w.blocked)
 		<-w.release
 	}
-	w.ResponseWriter.(http.Flusher).Flush()
+	w.flusher.Flush()
 }
 
 func TestVPhSurface_SSE_ConcurrentSubscribersRace(t *testing.T) {
