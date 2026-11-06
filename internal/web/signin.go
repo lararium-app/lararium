@@ -696,6 +696,9 @@ type RealRunner struct {
 	assetsDir string
 
 	chromiumCmd *exec.Cmd
+
+	isolate  bool
+	warnOnce sync.Once
 }
 
 // RealRunnerOption configures a RealRunner.
@@ -707,6 +710,14 @@ func WithRunnerNoVNCDir(dir string) RealRunnerOption {
 		if dir != "" {
 			r.novncDir = dir
 		}
+	}
+}
+
+// WithRunnerIsolation sets whether Chromium is launched inside a bubblewrap
+// sandbox (web.isolate). NewRealRunner defaults to true.
+func WithRunnerIsolation(isolate bool) RealRunnerOption {
+	return func(r *RealRunner) {
+		r.isolate = isolate
 	}
 }
 
@@ -722,6 +733,7 @@ func NewRealRunner(walletHome string, opts ...RealRunnerOption) *RealRunner {
 		walletHome: walletHome,
 		profileDir: stagingDir,
 		novncDir:   DefaultNoVNCDir,
+		isolate:    true,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -953,7 +965,31 @@ func (r *RealRunner) StartChromium(ctx context.Context, display, profileDir, tar
 		targetURL,
 	}
 
-	cmd := exec.CommandContext(context.WithoutCancel(ctx), "chromium", args...)
+	name := "chromium"
+	if r.isolate {
+		// Same bubblewrap profile as the headless browser; the only extra
+		// mount is the Xvfb socket directory so the headed window can draw.
+		if err := os.MkdirAll(profileDir, 0o700); err != nil {
+			return fmt.Errorf("create chromium profile dir: %w", err)
+		}
+		bwrap, err := bwrapAvailable()
+		if err != nil {
+			return err
+		}
+		wrapped := append([]string{bwrap}, bwrapProfile(isolationParams{
+			Home:        isolationHome(),
+			StateRoot:   r.walletHome,
+			UserDataDir: profileDir,
+			ROBinds:     []string{x11SocketDir},
+		})...)
+		wrapped = append(wrapped, "--", "chromium")
+		name = wrapped[0]
+		args = append(wrapped[1:], args...)
+	} else {
+		isolationWarnOnce(&r.warnOnce)
+	}
+
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), name, args...)
 	cmd.Env = append(os.Environ(), "DISPLAY="+display)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

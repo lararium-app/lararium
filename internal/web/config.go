@@ -44,11 +44,14 @@ func DefaultSigninConfig() SigninConfig {
 
 // Config configures the web fetch and browse capabilities.
 type Config struct {
-	Enabled        bool         `yaml:"enabled"`
-	BrowseTimeoutS int          `yaml:"browse_timeout_s"`
-	MaxTextBytes   int          `yaml:"max_text_bytes"`
-	ChromePath     string       `yaml:"chrome_path"`
-	Signin         SigninConfig `yaml:"signin"`
+	Enabled        bool   `yaml:"enabled"`
+	BrowseTimeoutS int    `yaml:"browse_timeout_s"`
+	MaxTextBytes   int    `yaml:"max_text_bytes"`
+	ChromePath     string `yaml:"chrome_path"`
+	// Isolate wraps every Chromium launch in a bubblewrap sandbox (default
+	// true). See sandbox.go and docs/WEB-LAYER-SPEC.md "Process isolation".
+	Isolate bool         `yaml:"isolate"`
+	Signin  SigninConfig `yaml:"signin"`
 }
 
 // DefaultConfig returns the default configuration.
@@ -58,6 +61,7 @@ func DefaultConfig() Config {
 		BrowseTimeoutS: DefaultBrowseTimeoutS,
 		MaxTextBytes:   DefaultMaxTextBytes,
 		ChromePath:     DetectChrome(),
+		Isolate:        true,
 		Signin:         DefaultSigninConfig(),
 	}
 }
@@ -93,6 +97,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		BrowseTimeoutS *int             `yaml:"browse_timeout_s"`
 		MaxTextBytes   *int             `yaml:"max_text_bytes"`
 		ChromePath     *string          `yaml:"chrome_path"`
+		Isolate        *bool            `yaml:"isolate"`
 		Signin         *rawSigninConfig `yaml:"signin"`
 	}
 
@@ -132,6 +137,12 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		c.ChromePath = strings.TrimSpace(*raw.ChromePath)
 	} else {
 		c.ChromePath = DetectChrome()
+	}
+
+	if raw.Isolate != nil {
+		c.Isolate = *raw.Isolate
+	} else {
+		c.Isolate = true
 	}
 
 	c.Signin = DefaultSigninConfig()

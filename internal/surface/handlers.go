@@ -189,7 +189,7 @@ func (s *Server) getWebSignin() *web.SigninManager {
 		}
 		viewBaseURL := s.webCfg.Signin.ViewBaseURL
 
-		runner := web.NewRealRunner(s.webHome, web.WithRunnerNoVNCDir(novncDir))
+		runner := web.NewRealRunner(s.webHome, web.WithRunnerNoVNCDir(novncDir), web.WithRunnerIsolation(s.webCfg.Isolate))
 		s.webSignin = web.NewSigninManager(s.webWallet, runner,
 			web.WithTimeout(time.Duration(timeoutS)*time.Second),
 			web.WithBindAddr(host),
