@@ -18,6 +18,15 @@ func TestConfig_Defaults(t *testing.T) {
 	if cfg.MaxTextBytes != 200000 {
 		t.Errorf("expected MaxTextBytes=200000 by default, got %d", cfg.MaxTextBytes)
 	}
+	if cfg.Signin.TimeoutS != 600 {
+		t.Errorf("expected Signin.TimeoutS=600 by default, got %d", cfg.Signin.TimeoutS)
+	}
+	if cfg.Signin.NoVNCDir != "/usr/share/novnc" {
+		t.Errorf("expected Signin.NoVNCDir=/usr/share/novnc by default, got %s", cfg.Signin.NoVNCDir)
+	}
+	if cfg.Signin.ViewBaseURL != "" {
+		t.Errorf("expected Signin.ViewBaseURL='' by default, got %s", cfg.Signin.ViewBaseURL)
+	}
 }
 
 func TestConfig_UnmarshalYAML(t *testing.T) {
@@ -104,6 +113,35 @@ web:
 `,
 			wantErrStr: "not found",
 		},
+		{
+			name: "custom signin config",
+			yamlData: `
+web:
+  signin:
+    timeout_s: 300
+    novnc_dir: /opt/novnc
+    view_base_url: https://signin.example.com
+`,
+			wantCfg: Config{
+				Enabled:        true,
+				BrowseTimeoutS: 30,
+				MaxTextBytes:   200000,
+				Signin: SigninConfig{
+					TimeoutS:    300,
+					NoVNCDir:    "/opt/novnc",
+					ViewBaseURL: "https://signin.example.com",
+				},
+			},
+		},
+		{
+			name: "negative signin timeout is rejected",
+			yamlData: `
+web:
+  signin:
+    timeout_s: -5
+`,
+			wantErrStr: "web.signin.timeout_s cannot be negative",
+		},
 	}
 
 	for _, tc := range tests {
@@ -140,6 +178,15 @@ web:
 			}
 			if tc.wantCfg.ChromePath != "" && w.Web.ChromePath != tc.wantCfg.ChromePath {
 				t.Errorf("ChromePath = %q, want %q", w.Web.ChromePath, tc.wantCfg.ChromePath)
+			}
+			if tc.wantCfg.Signin.TimeoutS != 0 && w.Web.Signin.TimeoutS != tc.wantCfg.Signin.TimeoutS {
+				t.Errorf("Signin.TimeoutS = %d, want %d", w.Web.Signin.TimeoutS, tc.wantCfg.Signin.TimeoutS)
+			}
+			if tc.wantCfg.Signin.NoVNCDir != "" && w.Web.Signin.NoVNCDir != tc.wantCfg.Signin.NoVNCDir {
+				t.Errorf("Signin.NoVNCDir = %q, want %q", w.Web.Signin.NoVNCDir, tc.wantCfg.Signin.NoVNCDir)
+			}
+			if tc.wantCfg.Signin.ViewBaseURL != "" && w.Web.Signin.ViewBaseURL != tc.wantCfg.Signin.ViewBaseURL {
+				t.Errorf("Signin.ViewBaseURL = %q, want %q", w.Web.Signin.ViewBaseURL, tc.wantCfg.Signin.ViewBaseURL)
 			}
 		})
 	}
