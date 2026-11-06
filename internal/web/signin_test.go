@@ -18,22 +18,27 @@ type fakeRunner struct {
 
 	profileDir string
 
-	startXvfbErr     error
-	startX11VNCErr   error
-	startChromiumErr error
+	startXvfbErr       error
+	startX11VNCErr     error
+	startWebsockifyErr error
+	startChromiumErr   error
 
-	startXvfbCalled     int
-	stopXvfbCalled      int
-	startX11VNCCalled   int
-	stopX11VNCCalled    int
-	startChromiumCalled int
-	stopChromiumCalled  int
+	startXvfbCalled       int
+	stopXvfbCalled        int
+	startX11VNCCalled     int
+	stopX11VNCCalled      int
+	startWebsockifyCalled int
+	stopWebsockifyCalled  int
+	startChromiumCalled   int
+	stopChromiumCalled    int
 
 	teardownOrder []string
 
-	display  string
-	vncPort  int
-	password string
+	display   string
+	vncPort   int
+	password  string
+	wsPort    int
+	assetsDir string
 }
 
 func newFakeRunner(profileDir string) *fakeRunner {
@@ -42,6 +47,8 @@ func newFakeRunner(profileDir string) *fakeRunner {
 		display:    ":99",
 		vncPort:    5900,
 		password:   "fake123",
+		wsPort:     6080,
+		assetsDir:  filepath.Join(profileDir, "assets"),
 	}
 }
 
@@ -101,6 +108,30 @@ func (f *fakeRunner) StopChromium() error {
 	f.stopChromiumCalled++
 	f.teardownOrder = append(f.teardownOrder, "chromium")
 	return nil
+}
+
+func (f *fakeRunner) StartWebsockify(ctx context.Context, rfbPort int, bindAddr string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startWebsockifyCalled++
+	if f.startWebsockifyErr != nil {
+		return 0, f.startWebsockifyErr
+	}
+	return f.wsPort, nil
+}
+
+func (f *fakeRunner) StopWebsockify() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopWebsockifyCalled++
+	f.teardownOrder = append(f.teardownOrder, "websockify")
+	return nil
+}
+
+func (f *fakeRunner) AssetsDir() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.assetsDir
 }
 
 func (f *fakeRunner) ProfileDir() string {
@@ -166,8 +197,8 @@ func TestSigninManager_HappyPath(t *testing.T) {
 		t.Fatalf("expected stagingDir to be removed after Complete, got: %v", err)
 	}
 
-	// Teardown must be strictly in order: chromium first (profile flush), then vnc, then xvfb
-	expectedOrder := []string{"chromium", "vnc", "xvfb"}
+	// Teardown must be strictly in order: websockify stops at the front, chromium (profile flush), then vnc, then xvfb
+	expectedOrder := []string{"websockify", "chromium", "vnc", "xvfb"}
 	if !reflect.DeepEqual(runner.getTeardownOrder(), expectedOrder) {
 		t.Fatalf("teardown order mismatch: got %v, want %v", runner.getTeardownOrder(), expectedOrder)
 	}
@@ -239,7 +270,7 @@ func TestSigninManager_TimeoutPath(t *testing.T) {
 	}
 
 	// Teardown order
-	expectedOrder := []string{"chromium", "vnc", "xvfb"}
+	expectedOrder := []string{"websockify", "chromium", "vnc", "xvfb"}
 	if !reflect.DeepEqual(runner.getTeardownOrder(), expectedOrder) {
 		t.Fatalf("teardown order mismatch: got %v, want %v", runner.getTeardownOrder(), expectedOrder)
 	}
@@ -280,7 +311,7 @@ func TestSigninManager_CancelPath(t *testing.T) {
 		t.Fatalf("wallet should not store session on cancel")
 	}
 
-	expectedOrder := []string{"chromium", "vnc", "xvfb"}
+	expectedOrder := []string{"websockify", "chromium", "vnc", "xvfb"}
 	if !reflect.DeepEqual(runner.getTeardownOrder(), expectedOrder) {
 		t.Fatalf("teardown order mismatch: got %v, want %v", runner.getTeardownOrder(), expectedOrder)
 	}
@@ -420,16 +451,19 @@ func TestSigninManager_FailureTeardownRanOnce_MidStartChromium(t *testing.T) {
 		t.Fatalf("state after failure = %s, want SigninFailed", mgr.State())
 	}
 
-	// Xvfb and VNC were started, so both must be stopped
+	// Xvfb, VNC, and websockify were started, so all must be stopped
 	if runner.stopXvfbCalled != 1 {
 		t.Fatalf("stopXvfbCalled = %d, want 1", runner.stopXvfbCalled)
 	}
 	if runner.stopX11VNCCalled != 1 {
 		t.Fatalf("stopX11VNCCalled = %d, want 1", runner.stopX11VNCCalled)
 	}
+	if runner.stopWebsockifyCalled != 1 {
+		t.Fatalf("stopWebsockifyCalled = %d, want 1", runner.stopWebsockifyCalled)
+	}
 
-	// Teardown order for what was started: vnc then xvfb
-	expectedOrder := []string{"vnc", "xvfb"}
+	// Teardown order for what was started: websockify then vnc then xvfb
+	expectedOrder := []string{"websockify", "vnc", "xvfb"}
 	if !reflect.DeepEqual(runner.getTeardownOrder(), expectedOrder) {
 		t.Fatalf("teardown order mismatch: got %v, want %v", runner.getTeardownOrder(), expectedOrder)
 	}
@@ -479,6 +513,39 @@ func TestPrereqs_MissingBinaryToleratesAbsence(t *testing.T) {
 	}
 	if prereqErr.Binary != "x11vnc" {
 		t.Fatalf("prereqErr.Binary = %q, want x11vnc", prereqErr.Binary)
+	}
+
+	// 3. CheckPrereqs with mocked LookPath returning error for websockify
+	execLookPath = func(file string) (string, error) {
+		if file == "websockify" {
+			return "", errors.New("mocked missing websockify")
+		}
+		return "/usr/bin/" + file, nil
+	}
+	err = CheckPrereqs()
+	if err == nil {
+		t.Fatal("expected CheckPrereqs to return error for missing websockify, got nil")
+	}
+	if !errors.As(err, &prereqErr) {
+		t.Fatalf("expected *ErrPrereqMissing, got: %T (%v)", err, err)
+	}
+	if prereqErr.Binary != "websockify" {
+		t.Fatalf("prereqErr.Binary = %q, want websockify", prereqErr.Binary)
+	}
+
+	// 4. CheckPrereqs with missing noVNC assets
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	err = CheckPrereqs("/nonexistent/novnc/dir/lararium")
+	if err == nil {
+		t.Fatal("expected CheckPrereqs to return error for missing novnc assets, got nil")
+	}
+	if !errors.As(err, &prereqErr) {
+		t.Fatalf("expected *ErrPrereqMissing, got: %T (%v)", err, err)
+	}
+	if prereqErr.Binary != "novnc assets" {
+		t.Fatalf("prereqErr.Binary = %q, want 'novnc assets'", prereqErr.Binary)
 	}
 }
 

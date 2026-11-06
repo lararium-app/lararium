@@ -112,3 +112,8 @@ func BrowseTool(home string, cfg Config, opts ...BrowseOption) loop.Tool {
 		},
 	}
 }
+
+// LoginTool returns the rails agent loop tool for guided browser sign-in sessions.
+func LoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
+	return SessionLoginTool(home, cfg, opts...)
+}

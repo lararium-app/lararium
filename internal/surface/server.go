@@ -32,6 +32,12 @@ func NewServer(s *Server) http.Handler {
 	// Pairing endpoint (no auth; issue #184).
 	mux.HandleFunc("/v1/pair", s.pairHandler)
 
+	// Guided sign-in window routes: /signin/v/<token>, /signin/api/<token>/...
+	// Mounted outside /v1/ as auth-exempt from BearerAuth: protected by the 256-bit
+	// ephemeral token itself and token TTL so paired mobile/browser viewers can open the link directly.
+	// HostGate and cleanPathGate still apply.
+	s.registerSigninRoutes(mux)
+
 	// Everything under /v1/ requires a bearer token.
 	mux.Handle("/v1/", BearerAuth(s.Store)(http.HandlerFunc(s.dispatch)))
 
