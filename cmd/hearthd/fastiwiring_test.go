@@ -315,13 +315,26 @@ func (s *spyTurnDoor) RunHeadlessTurn(
 
 func (s *spyTurnDoor) waitCall(t *testing.T) turnDoorCall {
 	t.Helper()
+	timer := time.NewTimer(fastiTestWait(t))
+	defer timer.Stop()
 	select {
 	case c := <-s.callCh:
 		return c
-	case <-time.After(5 * time.Second):
+	case <-timer.C:
 		t.Fatal("timed out waiting for RunHeadlessTurn call")
 		return turnDoorCall{}
 	}
+}
+
+func fastiTestWait(t *testing.T) time.Duration {
+	t.Helper()
+	wait := 30 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		if remaining := time.Until(deadline) - time.Second; remaining < wait {
+			wait = max(remaining, time.Millisecond)
+		}
+	}
+	return wait
 }
 
 type spyAnnouncer struct {
@@ -467,7 +480,8 @@ cadence: hourly
 
 func readSSEEvent(t *testing.T, ch <-chan fasti.Event, match func(fasti.Event) bool) fasti.Event {
 	t.Helper()
-	timeout := time.After(5 * time.Second)
+	timer := time.NewTimer(fastiTestWait(t))
+	defer timer.Stop()
 	for {
 		select {
 		case ev, ok := <-ch:
@@ -477,7 +491,7 @@ func readSSEEvent(t *testing.T, ch <-chan fasti.Event, match func(fasti.Event) b
 			if match(ev) {
 				return ev
 			}
-		case <-timeout:
+		case <-timer.C:
 			t.Fatal("timed out waiting for matching SSE event")
 		}
 	}
@@ -654,6 +668,12 @@ quiet: "22:00-06:00"
 	}
 
 	// (c) Advance FakeClock 10m with NO HTTP/CLI mutation -> step 2 hits TurnBudget=2 with unmet req -> status transitions to "stale".
+	// The SSE update is published before the next timer is armed.
+	syncCtx, cancelSync := context.WithTimeout(context.Background(), fastiTestWait(t))
+	defer cancelSync()
+	if err := eng.Sync(syncCtx); err != nil {
+		t.Fatalf("sync after goal step: %v", err)
+	}
 	clk.Advance(10 * time.Minute) // 10:15:00Z
 	_ = door.waitCall(t)
 
