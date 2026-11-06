@@ -1,7 +1,7 @@
 # Upgrading Lararium
 
 Lararium guarantees zero-data-surgery upgrades: moving from an older release
-(such as `v0.8.x`) to the current release (`v0.10.x` / `v1.0-beta`) requires only
+(such as `v1.0.0-beta8` or `v0.8.x`) to the current release requires only
 updating the executable or container image. Your configuration, door tokens,
 chat logs, audit chains, and persona state remain intact and backwards-compatible.
 
@@ -43,7 +43,7 @@ git pull && CGO_ENABLED=0 go build -o /usr/local/bin/hearthd ./cmd/hearthd && sy
 Or when running manually under a process manager:
 
 ```bash
-pkill hearthd && /usr/local/bin/hearthd -config /etc/lararium/lararium.yaml serve &
+pkill hearthd && /usr/local/bin/hearthd serve --config ~/.lararium/lararium.yaml &
 ```
 
 ---
@@ -52,17 +52,17 @@ pkill hearthd && /usr/local/bin/hearthd -config /etc/lararium/lararium.yaml serv
 
 Upgrades never rewrite, drop, or invalidate existing live state:
 
-1. **Configuration (`/etc/lararium/lararium.yaml`)**:
+1. **Configuration (`~/.lararium/lararium.yaml` or `/etc/lararium/lararium.yaml`)**:
    The strict config loader accepts earlier configurations without error. Additive fields (such as MCP connector definitions) default safely when absent.
-2. **Persona & Memory (`/hearth/*.md`)**:
+2. **Persona & Memory (`~/.lararium/*.md` or `/hearth/*.md`)**:
    `SOUL.md`, `IDENTITY.md`, `USER.md`, and `MEMORY.md` are untouched.
-3. **Door Tokens (`/hearth/tokens.json`)**:
+3. **Door Tokens (`~/.lararium/tokens.json` or `/hearth/tokens.json`)**:
    All door tokens minted on earlier releases continue to validate immediately for authenticated API and web requests.
-4. **Chat Sessions & Audit Chains (`/hearth/sessions/`)**:
+4. **Chat Sessions & Audit Chains (`~/.lararium/sessions/` or `/hearth/sessions/`)**:
    All conversation logs and sequence numbers in `events.jsonl` remain continuous and valid.
-5. **Key Store (`/hearth/keys.json`)**:
+5. **Key Store (`~/.lararium/keys.json` or `/hearth/keys.json`)**:
    Provider keys and secrets remain in place.
-6. **Search Indices (`/hearth/memory/index.db`)**:
+6. **Search Indices (`~/.lararium/memory/index.db` or `/hearth/memory/index.db`)**:
    SQLite FTS5 indices upgrade cleanly or rebuild transparently on boot.
 
 ---
@@ -81,7 +81,7 @@ curl -s -i -H "Host: localhost" -H "Authorization: Bearer <YOUR_DOOR_TOKEN>" htt
 
 # 3. Create and verify a backup bundle
 hearthd backup create --out /tmp/post-upgrade-backup.zip
-hearthd backup verify /tmp/post-upgrade-backup.zip
+hearthd backup verify /tmp/post-upgrade-backup.zip [--identity <identity-file>]
 ```
 
 > Containerized installs: `restore --replace` against a bind/volume mount
@@ -97,7 +97,7 @@ hearthd backup verify /tmp/post-upgrade-backup.zip
 
 Because volumes and state files are preserved non-destructively:
 
-- **Docker**: Pin the image tag back to the previous version (e.g. `ghcr.io/lararium-app/hearthd:v0.8.4-alpha`) and restart the container (`docker compose up -d`). Your named volumes (`hearth_cfg`, `hearth_data`) remain untouched.
+- **Docker**: Pin the image tag back to the previous version (e.g. `ghcr.io/lararium-app/hearthd:v1.0.0-beta8`) and restart the container (`docker compose up -d`). Your named volumes (`hearth_cfg`, `hearth_data`) remain untouched.
 - **Bare Host**: Replace `/usr/local/bin/hearthd` with the previous binary and restart the service.
 
 ---
@@ -108,4 +108,4 @@ The upgrade drill is automated as a continuous integration test:
 - **CI Workflow**: `.github/workflows/upgrade.yml`
 - **Drill Script**: `scripts/upgrade-drill.sh`
 
-The drill boots a live `v0.8.4-alpha` container on named volumes, seeds tokens and chat turns, stops the container, boots the target binary against the same volumes, and asserts health, token validity, and audit integrity end-to-end.
+The drill boots a live seed container (`v1.0.0-beta8` by default in CI, configurable via `FROM_VERSION`) on named volumes, seeds tokens and chat turns, stops the container, boots the target binary against the same volumes, and asserts health, token validity, and audit integrity end-to-end.

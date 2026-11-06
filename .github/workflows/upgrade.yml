@@ -6,6 +6,12 @@ on:
     paths-ignore: ['docs/**', '*.md']
   pull_request:
     paths-ignore: ['docs/**', '*.md']
+  workflow_dispatch:
+    inputs:
+      from_version:
+        description: 'seed tag to upgrade from'
+        type: string
+        default: 'v1.0.0-beta8'
 
 permissions:
   contents: read
@@ -31,7 +37,7 @@ jobs:
       - name: Run upgrade drill
         run: bash scripts/upgrade-drill.sh
         env:
-          FROM_VERSION: v0.8.4-alpha
+          FROM_VERSION: ${{ inputs.from_version || 'v1.0.0-beta8' }}
           TO_BINARY: bin/hearthd
 
       - name: Always clean drill containers and volumes
