@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lararium-app/lararium/internal/fasti"
 	"github.com/lararium-app/lararium/internal/web"
@@ -109,6 +111,8 @@ type Server struct {
 	webWallet   *web.Wallet
 	webIndex    *web.WalletIndex
 	webActivity *web.ActivityLogger
+	webSignin   *web.SigninManager
+	webCfg      web.Config
 	webHome     string
 }
 
@@ -119,6 +123,20 @@ func (s *Server) SetWebWallet(w *web.Wallet, idx *web.WalletIndex, act *web.Acti
 	s.webWallet = w
 	s.webIndex = idx
 	s.webActivity = act
+}
+
+// SetWebSignin attaches a SigninManager to the Server.
+func (s *Server) SetWebSignin(sm *web.SigninManager) {
+	s.webMu.Lock()
+	defer s.webMu.Unlock()
+	s.webSignin = sm
+}
+
+// SetWebConfig sets the web configuration.
+func (s *Server) SetWebConfig(cfg web.Config) {
+	s.webMu.Lock()
+	defer s.webMu.Unlock()
+	s.webCfg = cfg
 }
 
 // SetWebHome sets the base directory for lazily creating web wallet dependencies.
@@ -137,6 +155,61 @@ func (s *Server) getWebDeps() (*web.Wallet, *web.WalletIndex, *web.ActivityLogge
 		s.webActivity = web.NewActivityLogger(s.webHome)
 	}
 	return s.webWallet, s.webIndex, s.webActivity
+}
+
+func (s *Server) getWebSignin() *web.SigninManager {
+	s.webMu.Lock()
+	defer s.webMu.Unlock()
+	if s.webSignin == nil && s.webHome != "" {
+		if s.webWallet == nil {
+			s.webWallet = web.NewWallet(s.webHome, nil)
+		}
+		host, _, err := net.SplitHostPort(s.Cfg.Listen)
+		if err != nil || host == "" {
+			host = s.Cfg.Listen
+		}
+		if host == "" {
+			host = "127.0.0.1"
+		}
+
+		timeoutS := s.webCfg.Signin.TimeoutS
+		if timeoutS <= 0 {
+			timeoutS = web.DefaultSigninTimeoutS
+		}
+		novncDir := s.webCfg.Signin.NoVNCDir
+		if novncDir == "" {
+			novncDir = web.DefaultNoVNCDir
+		}
+		viewBaseURL := s.webCfg.Signin.ViewBaseURL
+
+		runner := web.NewRealRunner(s.webHome, web.WithRunnerNoVNCDir(novncDir))
+		s.webSignin = web.NewSigninManager(s.webWallet, runner,
+			web.WithTimeout(time.Duration(timeoutS)*time.Second),
+			web.WithBindAddr(host),
+			web.WithViewBaseURL(viewBaseURL),
+			web.WithListenAddr(s.Cfg.Listen),
+			web.WithNoVNCDir(novncDir),
+		)
+	}
+	return s.webSignin
+}
+
+func (s *Server) registerSigninRoutes(mux *http.ServeMux) {
+	handler := web.NewSigninHTTPHandlerFunc(
+		func() *web.SigninManager {
+			return s.getWebSignin()
+		},
+		func(cardID string, allow bool) error {
+			if cardID == "" {
+				return nil
+			}
+			if hub := s.approvalsViaRegistry(); hub != nil {
+				hub.ResolveFromVia("", cardID, allow, "custos", "signin")
+			}
+			return nil
+		},
+	)
+	mux.Handle("/signin/", handler)
 }
 
 // SetDeviceDoor attaches the device control plane.
