@@ -87,6 +87,8 @@ func (h *SigninHTTPHandler) serveView(w http.ResponseWriter, r *http.Request, to
 		return
 	}
 
+	// The page embeds the ephemeral RFB password: never cache it.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
@@ -142,7 +144,6 @@ func (h *SigninHTTPHandler) handleDone(w http.ResponseWriter, r *http.Request, m
 		return
 	}
 
-	_ = mgr.ResolveCard(true)
 	if h.resolver != nil && mgr.CardID() != "" {
 		_ = h.resolver(mgr.CardID(), true)
 	}
@@ -165,7 +166,6 @@ func (h *SigninHTTPHandler) handleCancel(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	_ = mgr.ResolveCard(false)
 	if h.resolver != nil && mgr.CardID() != "" {
 		_ = h.resolver(mgr.CardID(), false)
 	}

@@ -187,8 +187,6 @@ type SigninManager struct {
 	chromiumStarted   bool
 	assetsDir         string
 
-	cardResolver func(cardID string, allow bool) error
-
 	teardownOnce sync.Once
 }
 
@@ -236,13 +234,6 @@ func WithNoVNCDir(dir string) SigninManagerOption {
 	}
 }
 
-// WithCardResolver sets the callback used to resolve the custody card on done/cancel.
-func WithCardResolver(fn func(cardID string, allow bool) error) SigninManagerOption {
-	return func(m *SigninManager) {
-		m.cardResolver = fn
-	}
-}
-
 // NewSigninManager creates a new sign-in window manager.
 // If runner is nil and wallet is non-nil, NewRealRunner is used.
 func NewSigninManager(wallet *Wallet, runner WindowRunner, opts ...SigninManagerOption) *SigninManager {
@@ -269,6 +260,46 @@ func (m *SigninManager) Token() string {
 	defer m.mu.Unlock()
 	return m.token
 }
+
+// NewViewToken pre-mints the one-time view token so the approval card can
+// carry the view link BEFORE the window opens: the link safely 404s until
+// approval lets Start bind the assets, then becomes live. Start reuses a
+// still-fresh pre-minted token; ClearViewToken drops it when denied.
+func (m *SigninManager) NewViewToken() string {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return ""
+	}
+	token := hex.EncodeToString(tokenBytes)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.token = token
+	m.tokenExpiry = time.Now().Add(m.timeout)
+	return token
+}
+
+// ClearViewToken drops a pre-minted token (e.g. the owner denied the card).
+func (m *SigninManager) ClearViewToken() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.token = ""
+	m.tokenExpiry = time.Time{}
+}
+
+// ViewURL returns the view URL for the pending or active token, or "" when
+// no token is minted.
+func (m *SigninManager) ViewURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.token == "" {
+		return ""
+	}
+	return BuildViewURL(m.viewBaseURL, m.listenAddr, m.token)
+}
+
+// Wallet returns the wallet backing this manager, so the engine tool and the
+// /signin/ routes share one wallet instance (one key cache).
+func (m *SigninManager) Wallet() *Wallet { return m.wallet }
 
 // ValidateToken checks if token matches the active session token and has not expired.
 func (m *SigninManager) ValidateToken(token string) bool {
@@ -309,25 +340,6 @@ func (m *SigninManager) CardID() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cardID
-}
-
-// SetCardResolver sets the card resolver callback.
-func (m *SigninManager) SetCardResolver(fn func(cardID string, allow bool) error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cardResolver = fn
-}
-
-// ResolveCard resolves the pending custody card via the installed resolver.
-func (m *SigninManager) ResolveCard(allow bool) error {
-	m.mu.Lock()
-	resolver := m.cardResolver
-	cardID := m.cardID
-	m.mu.Unlock()
-	if resolver != nil && cardID != "" {
-		return resolver(cardID, allow)
-	}
-	return nil
 }
 
 // State returns the current lifecycle state of the manager.
@@ -489,14 +501,18 @@ func (m *SigninManager) Start(ctx context.Context, origin string) (SigninViewInf
 		return SigninViewInfo{}, err
 	}
 
-	// Mint 256-bit one-time token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		m.teardownLocked(false)
-		m.mu.Unlock()
-		return SigninViewInfo{}, fmt.Errorf("generate signin token: %w", err)
+	// Token: reuse a still-fresh pre-minted view token (its link was already
+	// delivered on the approval card); otherwise mint a 256-bit one-time token.
+	token := m.token
+	if token == "" || time.Now().After(m.tokenExpiry) {
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			m.teardownLocked(false)
+			m.mu.Unlock()
+			return SigninViewInfo{}, fmt.Errorf("generate signin token: %w", err)
+		}
+		token = hex.EncodeToString(tokenBytes)
 	}
-	token := hex.EncodeToString(tokenBytes)
 	viewURL := BuildViewURL(m.viewBaseURL, m.listenAddr, token)
 
 	var assetsDir string

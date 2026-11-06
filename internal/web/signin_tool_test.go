@@ -3,12 +3,24 @@ package web
 import (
 	"context"
 	"errors"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// passLoginGuard stubs the SSRF guard so tool tests need no network/DNS.
+func passLoginGuard(t *testing.T) {
+	t.Helper()
+	orig := signinValidateURL
+	t.Cleanup(func() { signinValidateURL = orig })
+	signinValidateURL = func(_ context.Context, _ string) (*url.URL, []net.IP, error) {
+		return nil, nil, nil
+	}
+}
 
 func setupTestToolEnv(t *testing.T) (*Wallet, *SigninManager, *fakeRunner) {
 	t.Helper()
@@ -134,6 +146,7 @@ func TestSessionLoginTool_HappyPathAndCustodyCard(t *testing.T) {
 	}
 
 	w, mgr, runner := setupTestToolEnv(t)
+	passLoginGuard(t)
 	cfg := DefaultConfig()
 	// Point to temp dir for novnc assets so test host assets are not required
 	novncDir := t.TempDir()
@@ -146,19 +159,10 @@ func TestSessionLoginTool_HappyPathAndCustodyCard(t *testing.T) {
 		return true, "a_test_approval_001"
 	}
 
-	var registeredCardTitle, registeredDest, registeredURL string
-	registrar := func(cardTitle, cardDest, summary string) (string, error) {
-		registeredCardTitle = cardTitle
-		registeredDest = cardDest
-		registeredURL = summary
-		return "card_custos_001", nil
-	}
-
 	tool := SessionLoginTool(w.Home(), cfg,
 		WithLoginManager(mgr),
 		WithLoginWallet(w),
 		WithLoginApprover(approver),
-		WithLoginCardRegistrar(registrar),
 	)
 
 	// Call session_login
@@ -188,15 +192,18 @@ func TestSessionLoginTool_HappyPathAndCustodyCard(t *testing.T) {
 		t.Fatalf("startChromiumCalled = %d, want 1", runner.startChromiumCalled)
 	}
 
-	// 3. Card payload carries View URL
-	if registeredCardTitle != wantTitle {
-		t.Errorf("registered card title = %q, want %q", registeredCardTitle, wantTitle)
+	// 3. The approval card itself carries the view link: the token was
+	// pre-minted before the card was raised, so the link ships immediately
+	// (it 404s until approval starts the window, then goes live).
+	if !strings.Contains(raisedSummary, "/signin/v/") {
+		t.Errorf("approval summary = %q, want the /signin/v/<token> link", raisedSummary)
 	}
-	if registeredDest != "carrier.example.com" {
-		t.Errorf("registered card dest = %q, want 'carrier.example.com'", registeredDest)
+	if tok := mgr.Token(); tok == "" || !strings.Contains(raisedSummary, tok) {
+		t.Errorf("approval summary = %q, want it to embed the pre-minted token %q", raisedSummary, mgr.Token())
 	}
-	if !strings.Contains(registeredURL, "/signin/v/") {
-		t.Errorf("registered card summary = %q, want containing ViewURL '/signin/v/'", registeredURL)
+	// Done/Cancel on the viewer resolves the approval via this binding.
+	if mgr.CardID() != "a_test_approval_001" {
+		t.Errorf("CardID = %q, want the approval id bound for Done resolution", mgr.CardID())
 	}
 
 	// 4. Tool result says window is open, model must NOT wait/poll, returns immediately
@@ -214,6 +221,7 @@ func TestSessionLoginTool_EngineCtxApproverInjection(t *testing.T) {
 	}
 
 	w, mgr, _ := setupTestToolEnv(t)
+	passLoginGuard(t)
 	cfg := DefaultConfig()
 	cfg.Signin.NoVNCDir = t.TempDir()
 
@@ -256,6 +264,7 @@ func TestSessionLoginTool_UserDeniesApproval(t *testing.T) {
 	}
 
 	w, mgr, _ := setupTestToolEnv(t)
+	passLoginGuard(t)
 	cfg := DefaultConfig()
 	cfg.Signin.NoVNCDir = t.TempDir()
 
@@ -280,6 +289,9 @@ func TestSessionLoginTool_UserDeniesApproval(t *testing.T) {
 	if mgr.State() != SigninIdle {
 		t.Fatalf("mgr state = %s, want Idle (window never opened on denial)", mgr.State())
 	}
+	if tok := mgr.Token(); tok != "" {
+		t.Errorf("pre-minted token = %q, want cleared on denial (no live link may remain)", tok)
+	}
 }
 
 func TestSessionLoginTool_ForceOpensWindowEvenIfSessionPresent(t *testing.T) {
@@ -290,6 +302,7 @@ func TestSessionLoginTool_ForceOpensWindowEvenIfSessionPresent(t *testing.T) {
 	}
 
 	w, mgr, _ := setupTestToolEnv(t)
+	passLoginGuard(t)
 	origin := "https://carrier.example.com"
 
 	// Pre-store session in wallet
@@ -324,5 +337,93 @@ func TestSessionLoginTool_ForceOpensWindowEvenIfSessionPresent(t *testing.T) {
 	}
 	if mgr.State() != SigninLive {
 		t.Fatalf("mgr state = %s, want Live on force:true", mgr.State())
+	}
+}
+
+func TestSessionLoginTool_ProviderWinsOverBuildTimeManager(t *testing.T) {
+	origLookPath := execLookPath
+	defer func() { execLookPath = origLookPath }()
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+
+	w, mgrA, _ := setupTestToolEnv(t)
+	passLoginGuard(t)
+	_, mgrB, _ := setupTestToolEnv(t)
+	cfg := DefaultConfig()
+	cfg.Signin.NoVNCDir = t.TempDir()
+
+	approver := func(name, argsSummary string) (bool, string) {
+		return true, "a_provider_test"
+	}
+
+	tool := SessionLoginTool(w.Home(), cfg,
+		WithLoginManager(mgrA), // build-time manager — must lose to the provider
+		WithLoginWallet(w),
+		WithLoginApprover(approver),
+		WithLoginManagerProvider(func() *SigninManager { return mgrB }),
+	)
+
+	res, err := tool.Run(context.Background(), `{"origin": "https://carrier.example.com"}`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res, "window is open") {
+		t.Errorf("result = %q, want 'window is open'", res)
+	}
+	if mgrB.State() != SigninLive {
+		t.Errorf("provider manager state = %s, want Live", mgrB.State())
+	}
+	if mgrA.State() != SigninIdle {
+		t.Errorf("build-time manager state = %s, want Idle (shared instance must win)", mgrA.State())
+	}
+}
+
+func TestSessionLoginTool_DenylistRefusesBeforeApproval(t *testing.T) {
+	origLookPath := execLookPath
+	defer func() { execLookPath = origLookPath }()
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+
+	origGuard := signinValidateURL
+	defer func() { signinValidateURL = origGuard }()
+	blockedErr := false
+	signinValidateURL = func(_ context.Context, raw string) (*url.URL, []net.IP, error) {
+		blockedErr = true
+		return nil, nil, errors.New("refused: private address")
+	}
+
+	w, mgr, _ := setupTestToolEnv(t)
+	cfg := DefaultConfig()
+	cfg.Signin.NoVNCDir = t.TempDir()
+
+	approverCalled := false
+	approver := func(name, argsSummary string) (bool, string) {
+		approverCalled = true
+		return true, "a_should_never_raise"
+	}
+
+	tool := SessionLoginTool(w.Home(), cfg,
+		WithLoginManager(mgr),
+		WithLoginWallet(w),
+		WithLoginApprover(approver),
+	)
+
+	res, err := tool.Run(context.Background(), `{"origin": "http://192.168.1.1/admin"}`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !blockedErr {
+		t.Fatal("SSRF guard was not consulted")
+	}
+	if approverCalled {
+		t.Error("approval card raised for a denylisted host; guard must run first")
+	}
+	if !strings.Contains(res, "refused") {
+		t.Errorf("result = %q, want an honest refusal message", res)
+	}
+	if mgr.State() != SigninIdle {
+		t.Errorf("mgr state = %s, want Idle", mgr.State())
 	}
 }

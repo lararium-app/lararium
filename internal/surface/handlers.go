@@ -194,6 +194,13 @@ func (s *Server) getWebSignin() *web.SigninManager {
 	return s.webSignin
 }
 
+// SigninManager returns the shared lazily-built sign-in manager so the
+// engine's session_login tool and the /signin/ routes operate on one
+// instance (one window, one wallet key cache, one card binding).
+func (s *Server) SigninManager() *web.SigninManager {
+	return s.getWebSignin()
+}
+
 func (s *Server) registerSigninRoutes(mux *http.ServeMux) {
 	handler := web.NewSigninHTTPHandlerFunc(
 		func() *web.SigninManager {

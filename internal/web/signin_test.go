@@ -606,3 +606,40 @@ func TestRealRunner_Helpers(t *testing.T) {
 		t.Fatalf("unexpected port: %d", port)
 	}
 }
+
+func TestSignin_PreMintedTokenReuseAndClear(t *testing.T) {
+	// Denied-then-retried: a cleared pre-mint means Start mints fresh.
+	_, mgrA, _ := setupTestToolEnv(t)
+	mgrA.NewViewToken()
+	mgrA.ClearViewToken()
+	if mgrA.Token() != "" {
+		t.Fatal("ClearViewToken left a token behind")
+	}
+	if _, err := mgrA.Start(context.Background(), "https://carrier.example.com"); err != nil {
+		t.Fatalf("Start after clear: %v", err)
+	}
+	if mgrA.Token() == "" {
+		t.Fatal("Start did not mint a token when none was pre-minted")
+	}
+
+	// Approval path: Start must reuse the pre-minted token — the approval
+	// card already delivered its link to the owner.
+	_, mgrB, _ := setupTestToolEnv(t)
+	tok := mgrB.NewViewToken()
+	if tok == "" {
+		t.Fatal("NewViewToken returned empty token")
+	}
+	if !strings.Contains(mgrB.ViewURL(), tok) {
+		t.Fatalf("ViewURL = %q, want the pre-minted token embedded", mgrB.ViewURL())
+	}
+	info, err := mgrB.Start(context.Background(), "https://carrier.example.com")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if mgrB.Token() != tok {
+		t.Error("Start minted a fresh token; want reuse of the pre-minted one")
+	}
+	if !strings.Contains(info.ViewURL, tok) {
+		t.Errorf("Start info ViewURL = %q, want the pre-minted token", info.ViewURL)
+	}
+}
