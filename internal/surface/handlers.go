@@ -114,6 +114,13 @@ type Server struct {
 	webSignin   *web.SigninManager
 	webCfg      web.Config
 	webHome     string
+
+	verdictWg sync.WaitGroup
+}
+
+// Drain waits for all background verdict handlers to complete.
+func (s *Server) Drain() {
+	s.verdictWg.Wait()
 }
 
 // SetWebWallet attaches the session wallet, index, and activity logger to the Server.

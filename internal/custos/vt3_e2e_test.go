@@ -70,9 +70,12 @@ func (a *vt3PairStoreAdapter) Redeem(userID, code string, now time.Time) (surfac
 
 // vt3DeviceDoorAdapter adapts *devices.Manager to surface.DeviceDoor per DEVICE-RAILS-SPEC D1-D8.
 type vt3DeviceDoorAdapter struct {
-	mgr         *devices.Manager
-	audit       *custos.AuditLogger
-	gracePeriod time.Duration
+	mgr           *devices.Manager
+	audit         *custos.AuditLogger
+	gracePeriod   time.Duration
+	writerWg      sync.WaitGroup
+	activeWriters atomic.Int64
+	closed        atomic.Bool
 }
 
 func newVT3DeviceDoorAdapter(mgr *devices.Manager, audit *custos.AuditLogger) *vt3DeviceDoorAdapter {
@@ -81,6 +84,29 @@ func newVT3DeviceDoorAdapter(mgr *devices.Manager, audit *custos.AuditLogger) *v
 		audit:       audit,
 		gracePeriod: devices.DefaultGracePeriod,
 	}
+}
+
+func (a *vt3DeviceDoorAdapter) trackWrite() (func(), error) {
+	if a.closed.Load() {
+		return nil, errors.New("device door closed")
+	}
+	a.writerWg.Add(1)
+	a.activeWriters.Add(1)
+	return func() {
+		a.activeWriters.Add(-1)
+		a.writerWg.Done()
+	}, nil
+}
+
+// Drain marks the door closed and waits for all active writes to complete.
+func (a *vt3DeviceDoorAdapter) Drain() {
+	a.closed.Store(true)
+	a.writerWg.Wait()
+}
+
+// ActiveWriters returns the count of in-flight write operations.
+func (a *vt3DeviceDoorAdapter) ActiveWriters() int64 {
+	return a.activeWriters.Load()
 }
 
 var _ surface.DeviceDoor = (*vt3DeviceDoorAdapter)(nil)
@@ -106,6 +132,12 @@ func (a *vt3DeviceDoorAdapter) ValidateRails(rails []surface.DeclaredRail) error
 }
 
 func (a *vt3DeviceDoorAdapter) Register(deviceID, displayName string, rails []surface.DeclaredRail) error {
+	done, err := a.trackWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+
 	devRails := make([]devices.DeclaredRail, len(rails))
 	for i, r := range rails {
 		devRails[i] = devices.DeclaredRail{
@@ -196,11 +228,23 @@ func toVT3SurfaceDeviceCard(mgr *devices.Manager, dev devices.Device) surface.De
 }
 
 func (a *vt3DeviceDoorAdapter) Forget(deviceID string) error {
+	done, err := a.trackWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+
 	return a.mgr.Forget(deviceID)
 }
 
 func (a *vt3DeviceDoorAdapter) SetRailEnabled(deviceID, rail string, enabled bool) error {
-	err := a.mgr.SetRailEnabled(deviceID, rail, enabled)
+	done, err := a.trackWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	err = a.mgr.SetRailEnabled(deviceID, rail, enabled)
 	if errors.Is(err, devices.ErrRailNotFound) {
 		return surface.ErrRailNotFound
 	}
@@ -220,6 +264,12 @@ func (a *vt3DeviceDoorAdapter) LastSeen(deviceID string) time.Time {
 }
 
 func (a *vt3DeviceDoorAdapter) ApplySync(deviceID, rail string, snapshot []byte, deltas []surface.DeviceDelta, seq int64) error {
+	done, err := a.trackWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+
 	devDeltas := make([]devices.Delta, len(deltas))
 	for i, d := range deltas {
 		devDeltas[i] = devices.Delta{
@@ -228,7 +278,7 @@ func (a *vt3DeviceDoorAdapter) ApplySync(deviceID, rail string, snapshot []byte,
 			Data: d.Data,
 		}
 	}
-	err := a.mgr.ApplySync(deviceID, rail, snapshot, devDeltas, seq)
+	err = a.mgr.ApplySync(deviceID, rail, snapshot, devDeltas, seq)
 	if err != nil {
 		var staleSeq *devices.ErrStaleSeq
 		switch {
@@ -257,6 +307,12 @@ func (a *vt3DeviceDoorAdapter) SetActionBroker(broker surface.ActionBroker) {
 }
 
 func (a *vt3DeviceDoorAdapter) Audit(kind string, payload surface.DeviceAuditPayload) error {
+	done, err := a.trackWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+
 	p := devices.DeviceAuditPayload{
 		DeviceID:    payload.DeviceID,
 		DisplayName: payload.DisplayName,
@@ -308,14 +364,18 @@ type vt3SSEReader struct {
 
 func (w *vt3World) openSSE(t *testing.T, path string) *vt3SSEReader {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, w.tsrv.URL+path, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.tsrv.URL+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+w.adminToken)
 	req.Header.Set("Accept", "text/event-stream")
 
+	timer := time.AfterFunc(30*time.Second, cancel)
 	resp, err := w.client.Do(req)
+	timer.Stop()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,6 +479,23 @@ type fakePhone struct {
 
 	scriptMu      sync.Mutex
 	receiptScript func(action actionDispatchFrame) (ok bool, result any, errStr string)
+}
+
+func waitVT3Done(t *testing.T, done <-chan struct{}, label string) bool {
+	t.Helper()
+	wait := 30 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		wait = min(wait, max(time.Until(deadline)-time.Second, time.Millisecond))
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		t.Errorf("timed out waiting for %s", label)
+		return false
+	}
 }
 
 func (w *vt3World) newPhone(t *testing.T) *fakePhone {
@@ -533,14 +610,14 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 
 	if p.streamCancel != nil {
 		p.streamCancel()
-		if p.streamDone != nil {
-			<-p.streamDone
+		if p.streamDone != nil && !waitVT3Done(t, p.streamDone, "previous phone stream to stop") {
+			t.FailNow()
 		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.streamCancel = cancel
-	p.streamDone = make(chan struct{})
+	p.streamDone = nil
 	p.streamEvents = make(chan vt3SSEEvent, 64)
 	p.streamErrs = make(chan error, 1)
 
@@ -551,7 +628,9 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+p.token)
 	req.Header.Set("Accept", "text/event-stream")
 
+	timer := time.AfterFunc(30*time.Second, cancel)
 	resp, err := p.client.Do(req) //nolint:bodyclose // stream body is closed in background reader goroutine
+	timer.Stop()
 	if err != nil {
 		t.Fatalf("Do stream: %v", err)
 	}
@@ -560,6 +639,7 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 		t.Fatalf("GET stream status = %d", resp.StatusCode)
 	}
 
+	p.streamDone = make(chan struct{})
 	go func() {
 		defer close(p.streamDone)
 		defer resp.Body.Close()
@@ -622,8 +702,8 @@ func (p *fakePhone) CloseStream() {
 	defer p.streamMu.Unlock()
 	if p.streamCancel != nil {
 		p.streamCancel()
-		if p.streamDone != nil {
-			<-p.streamDone
+		if p.streamDone != nil && !waitVT3Done(p.t, p.streamDone, "phone stream to stop") {
+			return
 		}
 		p.streamCancel = nil
 		p.streamDone = nil
@@ -786,6 +866,7 @@ type vt3World struct {
 	hub         *surface.ApprovalHub
 	doorClient  *custosdoor.Client
 	doorCancel  context.CancelFunc
+	doorDone    chan struct{}
 	adminToken  string
 	srv         *surface.Server
 	tsrv        *httptest.Server
@@ -795,6 +876,8 @@ type vt3World struct {
 	auditLogger *custos.AuditLogger
 	devMgr      *devices.Manager
 	devDoor     *vt3DeviceDoorAdapter
+	doors       []*vt3DeviceDoorAdapter
+	doorsMu     sync.Mutex
 }
 
 func newVT3World(t *testing.T) *vt3World {
@@ -845,6 +928,7 @@ func newVT3World(t *testing.T) *vt3World {
 	}
 	doorCtx, doorCancel := context.WithCancel(context.Background())
 	w.doorCancel = doorCancel
+	w.doorDone = make(chan struct{})
 
 	unsubMCP := w.doorClient.SubscribeMCP(func([]custosdoor.ConnectorStatus, []custosdoor.ToolInfo) {
 		select {
@@ -854,7 +938,10 @@ func newVT3World(t *testing.T) *vt3World {
 	})
 	defer unsubMCP()
 
-	go w.doorClient.Run(doorCtx)
+	go func() {
+		defer close(w.doorDone)
+		w.doorClient.Run(doorCtx)
+	}()
 
 	select {
 	case <-attachedCh:
@@ -885,6 +972,7 @@ func newVT3World(t *testing.T) *vt3World {
 	w.auditLogger = custos.NewAuditLogger(w.stateDir)
 	_ = w.auditLogger.EnsureAuditDir()
 	w.devDoor = newVT3DeviceDoorAdapter(w.devMgr, w.auditLogger)
+	w.doors = []*vt3DeviceDoorAdapter{w.devDoor}
 
 	w.srv = &surface.Server{
 		Store:     tokenStore,
@@ -909,9 +997,22 @@ func newVT3World(t *testing.T) *vt3World {
 	return w
 }
 
+func (w *vt3World) ActiveWriters() int64 {
+	w.doorsMu.Lock()
+	defer w.doorsMu.Unlock()
+	var total int64
+	for _, d := range w.doors {
+		total += d.ActiveWriters()
+	}
+	return total
+}
+
 func (w *vt3World) cleanup() {
 	if w.doorCancel != nil {
 		w.doorCancel()
+	}
+	if w.doorDone != nil && !waitVT3Done(w.t, w.doorDone, "door client to stop") {
+		return
 	}
 	if w.d != nil {
 		w.d.Stop()
@@ -919,16 +1020,40 @@ func (w *vt3World) cleanup() {
 			c.Shutdown(false)
 		}
 	}
+	if w.srv != nil {
+		w.srv.Drain()
+	}
+	w.doorsMu.Lock()
+	for _, d := range w.doors {
+		d.Drain()
+	}
+	w.doorsMu.Unlock()
+	if w.devMgr != nil {
+		_ = w.devMgr.Close()
+	}
 }
 
 func (w *vt3World) restartDaemon() {
 	w.t.Helper()
+	if w.srv != nil {
+		w.srv.Drain()
+	}
+	if w.devDoor != nil {
+		w.devDoor.Drain()
+	}
+	if w.devMgr != nil {
+		_ = w.devMgr.Close()
+	}
+
 	var err error
 	w.devMgr, err = devices.NewManager(w.dir)
 	if err != nil {
 		w.t.Fatalf("restart devices.NewManager: %v", err)
 	}
 	w.devDoor = newVT3DeviceDoorAdapter(w.devMgr, w.auditLogger)
+	w.doorsMu.Lock()
+	w.doors = append(w.doors, w.devDoor)
+	w.doorsMu.Unlock()
 	w.srv.SetDeviceDoor(w.devDoor)
 }
 
@@ -1363,8 +1488,11 @@ func TestVT3d(t *testing.T) {
 	w := newVT3World(t)
 	phone := w.newPhone(t)
 
-	// Inject 50ms grace window via the merged exported test hooks
-	w.devDoor.SetGracePeriod(50 * time.Millisecond)
+	// Inject a short grace window via the merged exported test hooks.
+	// 500ms (was 50ms): short-circuits the grace timer while leaving enough
+	// headroom that the post-close "still online" assert cannot lose a race
+	// to a scheduler stall on loaded CI runners (lararium#261).
+	w.devDoor.SetGracePeriod(500 * time.Millisecond)
 
 	phone.Pair(t, "pixel-d")
 	rails := []surface.DeclaredRail{
@@ -1382,9 +1510,11 @@ func TestVT3d(t *testing.T) {
 
 	// Connect stream
 	phone.OpenStream(t)
-	if !w.devDoor.IsOnline("pixel-d") {
-		t.Fatalf("device expected online after OpenStream")
-	}
+	// Online-marking is async behind the stream attach; wait for it instead of
+	// asserting instantly (loaded runners lost this race, lararium#261).
+	waitFor(t, "device online after OpenStream", func() bool {
+		return w.devDoor.IsOnline("pixel-d")
+	})
 
 	// 1. Close stream
 	phone.CloseStream()
@@ -1634,6 +1764,88 @@ func TestVT3f(t *testing.T) {
 	}
 }
 
+// TestVT3fTempdirCleanupRace regression-tests issue #246: ensures daemon restart
+// and harness teardown drain and join every background writer before TempDir cleanup,
+// leaving zero live-writer stragglers on the harness WaitGroup/counter seam.
+func TestVT3fTempdirCleanupRace(t *testing.T) {
+	var world *vt3World
+	var oldDoor, newDoor *vt3DeviceDoorAdapter
+	var tempDir string
+
+	t.Run("run", func(t *testing.T) {
+		w := newVT3World(t)
+		world = w
+		tempDir = w.dir
+		oldDoor = w.devDoor
+
+		phone := w.newPhone(t)
+		phone.Pair(t, "pixel-race")
+		rails := []surface.DeclaredRail{
+			{Name: devices.RailContacts, ReadOnly: true},
+		}
+		cardID, code, body := phone.Register(t, "pixel-race", "Pixel Race", rails)
+		if code != http.StatusAccepted {
+			t.Fatalf("Register status = %d: %s", code, body)
+		}
+		w.resolveCard(t, cardID)
+		phone.OpenStream(t)
+
+		phone.Sync(t, devices.RailContacts, []map[string]any{{"name": "Race Me"}}, nil, 1)
+
+		railFile := filepath.Join(w.dir, "devices", "pixel-race", "contacts.json")
+		if _, err := os.Stat(railFile); err != nil {
+			t.Fatalf("rail data file not created: %v", err)
+		}
+
+		// DELETE /v1/devices/pixel-race
+		delBody, delCode := w.deleteAdmin("/v1/devices/pixel-race")
+		if delCode != http.StatusOK && delCode != http.StatusNoContent {
+			t.Fatalf("DELETE status = %d: %s", delCode, delBody)
+		}
+
+		// Step 5: Daemon restart drains old instance
+		w.restartDaemon()
+		newDoor = w.devDoor
+		if oldDoor == newDoor {
+			t.Fatalf("expected restartDaemon to allocate a new door adapter")
+		}
+		if oldDoor.ActiveWriters() != 0 {
+			t.Fatalf("oldDoor active writers = %d after restartDaemon, want 0", oldDoor.ActiveWriters())
+		}
+
+		// Step 6: Re-register creates a fresh card; left pending at test return
+		newCardID, newCode, newBody := phone.Register(t, "pixel-race", "Pixel Race Resurrected", rails)
+		if newCode != http.StatusAccepted || newCardID == "" {
+			t.Fatalf("re-registration status = %d: %s", newCode, newBody)
+		}
+		if newCardID == cardID {
+			t.Fatalf("re-registration MUST issue a fresh card_id")
+		}
+		// Subtest finishes here with a pending registration card in flight.
+		// All t.Cleanup callbacks (including w.cleanup and t.TempDir removal)
+		// execute deterministically before t.Run returns.
+	})
+
+	// After subtest and harness cleanup have completed:
+	if oldDoor == nil || newDoor == nil || world == nil {
+		t.Fatalf("missing world or door adapters from subtest")
+	}
+	if count := oldDoor.ActiveWriters(); count != 0 {
+		t.Fatalf("oldDoor active writers straggler count = %d, want 0", count)
+	}
+	if count := newDoor.ActiveWriters(); count != 0 {
+		t.Fatalf("newDoor active writers straggler count = %d, want 0", count)
+	}
+	if count := world.ActiveWriters(); count != 0 {
+		t.Fatalf("world active writers straggler count = %d, want 0", count)
+	}
+
+	// Verify tempDir was successfully removed by t.TempDir() cleanup without error
+	if _, err := os.Stat(tempDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp dir %s still exists or failed to remove: %v", tempDir, err)
+	}
+}
+
 // TestVT3g proves: pairing token never leaks — assertNoNeedle across every
 // response body, SSE frame, audit line, and log capture for a full
 // register→sync→action lifecycle (assertion must cover base64/url-encoded forms too).
@@ -1680,6 +1892,9 @@ func TestVT3g(t *testing.T) {
 	phone.OpenStream(t)
 	stEv := devSSE.nextEvent(t)
 	frames = append(frames, stEv.Data)
+	waitFor(t, "device online before action", func() bool {
+		return w.devDoor.IsOnline("pixel-g")
+	})
 
 	// 4. Sync
 	syncCode, syncBody := phone.Sync(t, devices.RailCalendar, []map[string]any{{"title": "confidential"}}, nil, 1)
@@ -1703,11 +1918,30 @@ func TestVT3g(t *testing.T) {
 		t.Fatalf("actTool not found")
 	}
 
+	actionCtx, cancelAction := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelAction()
+	actionDone := make(chan error, 1)
 	go func() {
-		_, _ = actTool.Run(context.Background(), `{"recipient":"+15551234","message":"canary test"}`)
+		_, err := actTool.Run(actionCtx, `{"recipient":"+15551234","message":"canary test"}`)
+		actionDone <- err
 	}()
 
-	actionFrame := phone.NextAction(t)
+	var actionFrame actionDispatchFrame
+	select {
+	case ev := <-phone.streamEvents:
+		if ev.Kind != "action_dispatch" {
+			t.Fatalf("expected action_dispatch event, got kind=%s data=%s", ev.Kind, ev.Data)
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &actionFrame); err != nil {
+			t.Fatalf("unmarshal action dispatch: %v", err)
+		}
+	case err := <-phone.streamErrs:
+		t.Fatalf("stream error: %v", err)
+	case err := <-actionDone:
+		t.Fatalf("action ended before dispatch: %v", err)
+	case <-actionCtx.Done():
+		t.Fatalf("timed out waiting for action dispatch: %v", actionCtx.Err())
+	}
 	frames = append(frames, actionFrame.Tool, string(actionFrame.Args))
 
 	rcptCode, rcptBody := phone.SubmitReceipt(t, actionFrame.ActionID, true, map[string]string{"result": "ok"}, "")
@@ -1715,6 +1949,14 @@ func TestVT3g(t *testing.T) {
 		t.Fatalf("receipt failed: %s", rcptBody)
 	}
 	bodies = append(bodies, rcptBody)
+	select {
+	case err := <-actionDone:
+		if err != nil {
+			t.Fatalf("action failed: %v", err)
+		}
+	case <-actionCtx.Done():
+		t.Fatalf("timed out waiting for action completion: %v", actionCtx.Err())
+	}
 
 	// 6. List and Get rows
 	listBody, _ := w.getAdmin("/v1/devices")
