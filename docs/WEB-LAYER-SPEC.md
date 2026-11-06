@@ -1,6 +1,7 @@
 # Web Layer — the agent's hands on the web
 
-Status: DRAFT for PO red-line. No code until sign-off.
+Status: SHIPPED — P1 (#248) + P2a (#250); PO decision recorded in 266af6d.
+This document remains the normative reference for the web layer.
 Author: Hermes · 2026-11-05
 
 ## 1. The problem, in the PO's words
