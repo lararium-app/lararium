@@ -621,18 +621,32 @@ func (p *fakePhone) OpenStream(t *testing.T) {
 	p.streamEvents = make(chan vt3SSEEvent, 64)
 	p.streamErrs = make(chan error, 1)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/devices/"+p.deviceID+"/stream", nil)
-	if err != nil {
-		t.Fatalf("NewRequest stream: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+p.token)
-	req.Header.Set("Accept", "text/event-stream")
+	// Device-row creation runs in the register handler's post-202 goroutine, so a
+	// stream opened right after resolveCard can see a transient 404 until that
+	// goroutine commits (late on loaded CI runners, lararium#261). Retry 404 only,
+	// bounded at 5s; any other status, or a persistent 404, still fails.
+	var resp *http.Response
+	retryDeadline := time.Now().Add(5 * time.Second)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/devices/"+p.deviceID+"/stream", nil)
+		if err != nil {
+			t.Fatalf("NewRequest stream: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+p.token)
+		req.Header.Set("Accept", "text/event-stream")
 
-	timer := time.AfterFunc(30*time.Second, cancel)
-	resp, err := p.client.Do(req) //nolint:bodyclose // stream body is closed in background reader goroutine
-	timer.Stop()
-	if err != nil {
-		t.Fatalf("Do stream: %v", err)
+		timer := time.AfterFunc(30*time.Second, cancel)
+		resp, err = p.client.Do(req) //nolint:bodyclose // stream body is closed in background reader goroutine
+		timer.Stop()
+		if err != nil {
+			t.Fatalf("Do stream: %v", err)
+		}
+		if resp.StatusCode == http.StatusNotFound && time.Now().Before(retryDeadline) {
+			resp.Body.Close()
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		break
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
