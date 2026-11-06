@@ -108,6 +108,9 @@ func TestSigninHTTP_ViewPage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /signin/v/%s code = %d, want 200", token, rec.Code)
 	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("view page Cache-Control = %q, want no-store (page embeds the RFB password)", cc)
+	}
 	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 		t.Errorf("Content-Type = %q, want 'text/html; charset=utf-8'", ct)
 	}
