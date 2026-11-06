@@ -44,8 +44,8 @@ artifact (test, release note, drill transcript, soak log, or doc diff).
 - [ ] Proactivity trust-boundary pass at RC tip: scheduled turns can fire
       tools with nobody watching; the mitigations that make that lawful —
       opt-in `fasti:` block, quiet hours, noise budget, custody cards for
-      model-proposed jobs — verified by `tests/proactivity/run.sh` and the
-      V-P spec suite (`scripts/spec-verify.sh`) passing at the tag.
+      model-proposed jobs — verified by `tests/proactivity/run.sh` (CI
+      job `proactivity` — the V-P exit suite) passing at the tag.
 - [ ] Neutrality + secret hygiene clean at the RC tag: the CI scan step in
       `.github/workflows/ci.yml` green at the tag tip, and
       `scripts/scan-secrets.sh` (including test fixtures, per the beta
@@ -57,10 +57,10 @@ artifact (test, release note, drill transcript, soak log, or doc diff).
 
 - [ ] Upgrade drill on the real chain: **v1.0.0-beta8 → RC** on a live
       hearth with data, one command. `scripts/upgrade-drill.sh` already
-      takes `FROM_VERSION`; the RC gate includes parameterizing
-      `.github/workflows/upgrade.yml` (today pinned to `v0.8.4-alpha`) so
-      CI exercises the beta8 chain, plus `docs/UPGRADE.md` matching
-      reality.
+      takes `FROM_VERSION`, and
+      `.github/workflows/upgrade.yml` already defaults to `v1.0.0-beta8`; the
+      RC gate runs the drill at the tag tip (beta chain), plus
+      `docs/UPGRADE.md` matching reality.
 - [ ] Backup → wipe → restore re-rehearsed on the 1.0 line (the beta
       rehearsal ran on v0.10.x): `docs/RECOVERY.md` and
       `docs/RUNBOOK-RECOVERY.md` re-executed and refreshed.
