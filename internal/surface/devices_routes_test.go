@@ -399,6 +399,36 @@ func (r *safeRecorder) Code() int {
 	return r.code
 }
 
+type flushHookRecorder struct {
+	*safeRecorder
+
+	once    sync.Once
+	onFlush func()
+	written chan struct{}
+}
+
+func (r *flushHookRecorder) Flush() {
+	r.once.Do(r.onFlush)
+}
+
+func (r *flushHookRecorder) Write(p []byte) (int, error) {
+	n, err := r.safeRecorder.Write(p)
+	select {
+	case r.written <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func sseReadyWait(t *testing.T) time.Duration {
+	t.Helper()
+	wait := 30 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		wait = min(wait, max(time.Until(deadline)-time.Second, time.Millisecond))
+	}
+	return wait
+}
+
 func assertNoNeedleText(t *testing.T, label, data, needle string) {
 	t.Helper()
 	if strings.Contains(data, needle) {
@@ -1379,6 +1409,59 @@ func TestDevicesAdmin_DeleteForget(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 5. SSE Feeds: GET /v1/devices/events & GET /v1/devices/<id>/events
 // ---------------------------------------------------------------------------
+
+func TestSSESubscriptionsReadyBeforeHeaders(t *testing.T) {
+	t.Run("devices", func(t *testing.T) {
+		e := setupDeviceEnv(t, true)
+		if err := e.door.Register("sse-ready", "Ready", []DeclaredRail{{Name: "calendar", ReadOnly: true}}); err != nil {
+			t.Fatal(err)
+		}
+		rec := &flushHookRecorder{
+			safeRecorder: newSafeRecorder(),
+			written:      make(chan struct{}, 1),
+			onFlush: func() {
+				e.door.SetOnline("sse-ready", true)
+				e.srv.pokeDeviceRail()
+			},
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodGet, "/v1/devices/events", nil).WithContext(ctx)
+		go e.srv.devicesEventsHandler(rec, req, "")
+		select {
+		case <-rec.written:
+			if !strings.Contains(rec.BodyString(), `"device_id":"sse-ready"`) {
+				t.Fatalf("missing device event: %s", rec.BodyString())
+			}
+		case <-time.After(sseReadyWait(t)):
+			t.Fatal("device update at header flush was lost")
+		}
+	})
+	t.Run("cards", func(t *testing.T) {
+		reg := NewFakeCustosRegistry()
+		s := &Server{}
+		s.SetCustosRegistry(reg)
+		rec := &flushHookRecorder{
+			safeRecorder: newSafeRecorder(),
+			written:      make(chan struct{}, 1),
+			onFlush: func() {
+				reg.PublishCard(CustosCard{ID: "ready-card"})
+			},
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodGet, "/v1/custos/cards/events", nil).WithContext(ctx)
+		go s.custosEventsHandler(rec, req)
+		select {
+		case <-rec.written:
+			if !strings.Contains(rec.BodyString(), `"id":"ready-card"`) {
+				t.Fatalf("missing card event: %s", rec.BodyString())
+			}
+		case <-time.After(sseReadyWait(t)):
+			t.Fatal("card update at header flush was lost")
+		}
+	})
+}
 
 func TestDevicesSSE_FeedsAndEvents(t *testing.T) {
 	e := setupDeviceEnv(t, true)
