@@ -62,6 +62,15 @@ type Session struct {
 	// the trigger check uses real counts when available.
 	lastIn  int
 	lastOut int
+
+	// extraContent caches provider extra_content (such as Gemini thought_signatures)
+	// keyed by tool call ID across the live session so follow-up tool turns and
+	// next-turn message reconstruction carry the signatures without polluting events.jsonl.
+	extraContent map[string]json.RawMessage
+}
+
+func isExtraEmpty(raw json.RawMessage) bool {
+	return len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // messages rebuilds the router message slice from the log per the spec §3
@@ -123,9 +132,16 @@ func (s *Session) messages() []router.Message {
 			if f.CallID == "" {
 				continue
 			}
+			var extra json.RawMessage
+			if s.extraContent != nil {
+				if ex, ok := s.extraContent[f.CallID]; ok && !isExtraEmpty(ex) {
+					extra = ex
+				}
+			}
 			msgs = append(msgs, router.Message{
-				Role:      router.RoleAssistant,
-				ToolCalls: []router.ToolCall{{ID: f.CallID, Name: f.Name, ArgsJSON: string(f.Args)}},
+				Role:         router.RoleAssistant,
+				ToolCalls:    []router.ToolCall{{ID: f.CallID, Name: f.Name, ArgsJSON: string(f.Args), ExtraContent: extra}},
+				ExtraContent: extra,
 			})
 		case "tool_result":
 			var f struct {
@@ -292,6 +308,16 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 		// The messages() projection rebuilds wire shape from these events,
 		// so the log stays the single source of truth.
 		for _, tc := range comp.ToolCalls {
+			extra := tc.ExtraContent
+			if isExtraEmpty(extra) {
+				extra = comp.ExtraContent
+			}
+			if !isExtraEmpty(extra) && tc.ID != "" {
+				if s.extraContent == nil {
+					s.extraContent = make(map[string]json.RawMessage)
+				}
+				s.extraContent[tc.ID] = extra
+			}
 			args := json.RawMessage(tc.ArgsJSON)
 			if !json.Valid(args) {
 				args = raw(tc.ArgsJSON)

@@ -293,6 +293,9 @@ func (o *openAI) buildRequestBody(msgs []Message, opts Options, model string) op
 	reqMsgs := make([]openAIMessage, 0, len(msgs))
 	for _, m := range msgs {
 		om := openAIMessage{Role: string(m.Role), Content: m.Content}
+		if !isExtraEmpty(m.ExtraContent) {
+			om.ExtraContent = m.ExtraContent
+		}
 		if m.ToolCallID != "" {
 			om.ToolCallID = m.ToolCallID
 		}
@@ -302,6 +305,15 @@ func (o *openAI) buildRequestBody(msgs []Message, opts Options, model string) op
 			otc.Type = "function"
 			otc.Function.Name = tc.Name
 			otc.Function.Args = tc.ArgsJSON
+			// Gemini requires the thought_signature on the tool_calls[]
+			// entry itself (verified live 2026-11-07: tool_call-level
+			// placement returns 200; message-level alone returns 400).
+			if !isExtraEmpty(tc.ExtraContent) {
+				otc.ExtraContent = tc.ExtraContent
+				if isExtraEmpty(om.ExtraContent) {
+					om.ExtraContent = tc.ExtraContent
+				}
+			}
 			om.ToolCalls = append(om.ToolCalls, otc)
 		}
 		reqMsgs = append(reqMsgs, om)
@@ -376,9 +388,10 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 	// Tool calls are accumulated by index, merging fragments.
 	// Each SSE chunk may contain partial tool_calls.
 	type toolCallAccum struct {
-		ID       string
-		Name     string
-		ArgsJSON string
+		ID           string
+		Name         string
+		ArgsJSON     string
+		ExtraContent json.RawMessage
 	}
 	var toolCallMap map[int]*toolCallAccum
 
@@ -447,6 +460,13 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 				}
 			}
 
+			// Accumulate extra_content. Last non-empty wins.
+			if !isExtraEmpty(choice.Delta.ExtraContent) {
+				c.ExtraContent = choice.Delta.ExtraContent
+			} else if !isExtraEmpty(choice.ExtraContent) {
+				c.ExtraContent = choice.ExtraContent
+			}
+
 			// Accumulate tool calls by index.
 			for _, tc := range choice.Delta.ToolCalls {
 				idx := tc.Index
@@ -468,6 +488,9 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 					acc.Name = tc.Function.Name
 				}
 				acc.ArgsJSON += tc.Function.Args
+				if !isExtraEmpty(tc.ExtraContent) {
+					acc.ExtraContent = tc.ExtraContent
+				}
 			}
 		}
 	}
@@ -484,11 +507,23 @@ func (o *openAI) streamComplete(ctx context.Context, msgs []Message, opts Option
 	sort.Ints(indices)
 	for _, i := range indices {
 		acc := toolCallMap[i]
+		tcExtra := acc.ExtraContent
+		if isExtraEmpty(tcExtra) && !isExtraEmpty(c.ExtraContent) {
+			tcExtra = c.ExtraContent
+		}
+		var extra json.RawMessage
+		if !isExtraEmpty(tcExtra) {
+			extra = tcExtra
+		}
 		c.ToolCalls = append(c.ToolCalls, ToolCall{
-			ID:       acc.ID,
-			Name:     acc.Name,
-			ArgsJSON: acc.ArgsJSON,
+			ID:           acc.ID,
+			Name:         acc.Name,
+			ArgsJSON:     acc.ArgsJSON,
+			ExtraContent: extra,
 		})
+		if isExtraEmpty(c.ExtraContent) && !isExtraEmpty(acc.ExtraContent) {
+			c.ExtraContent = acc.ExtraContent
+		}
 	}
 
 	// Fallback estimate only if the server sent no usage chunk.
@@ -508,15 +543,17 @@ type openAIStreamChunk struct {
 }
 
 type streamChoice struct {
-	Index        int         `json:"index"`
-	Delta        streamDelta `json:"delta"`
-	FinishReason string      `json:"finish_reason"`
+	Index        int             `json:"index"`
+	Delta        streamDelta     `json:"delta"`
+	FinishReason string          `json:"finish_reason"`
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 type streamDelta struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content,omitempty"`
-	ToolCalls []streamToolCall `json:"tool_calls,omitempty"`
+	Role         string           `json:"role"`
+	Content      string           `json:"content,omitempty"`
+	ToolCalls    []streamToolCall `json:"tool_calls,omitempty"`
+	ExtraContent json.RawMessage  `json:"extra_content,omitempty"`
 }
 
 type streamToolCall struct {
@@ -527,6 +564,7 @@ type streamToolCall struct {
 		Name string `json:"name"`
 		Args string `json:"arguments"`
 	} `json:"function"`
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 type openAIUsage struct {

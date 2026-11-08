@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -198,5 +199,117 @@ func TestFullArgsPreservedOnCard(t *testing.T) {
 	}
 	if capturedSummary != longArgs {
 		t.Fatalf("expected full args preserved, got: %s", capturedSummary)
+	}
+}
+
+// sigStub replies with a tool call and extra_content first, then verifies the follow-up request carries it.
+type sigStub struct {
+	n        int32
+	gotMsgs  [][]router.Message
+	sawSig   bool
+	sigBytes []byte
+}
+
+func (s *sigStub) Name() string { return "sigstub" }
+func (s *sigStub) Capabilities(context.Context) (router.Caps, error) {
+	return router.Caps{SupportsTools: true, ContextLength: 100000, Source: "stub"}, nil
+}
+
+func (s *sigStub) Complete(_ context.Context, msgs []router.Message, opts router.Options) (*router.Completion, error) {
+	s.gotMsgs = append(s.gotMsgs, msgs)
+	i := atomic.AddInt32(&s.n, 1)
+
+	for _, m := range msgs {
+		if m.Role == router.RoleAssistant && len(m.ToolCalls) > 0 {
+			if bytes.Equal(m.ExtraContent, s.sigBytes) {
+				s.sawSig = true
+			}
+		}
+	}
+
+	if i == 1 && len(opts.Tools) > 0 {
+		return &router.Completion{
+			ToolCalls:    []router.ToolCall{{ID: "call_sig_1", Name: "echo", ArgsJSON: `{"v":"hello"}`}},
+			ExtraContent: s.sigBytes,
+			Model:        "sigstub",
+		}, nil
+	}
+	return &router.Completion{Text: "final:done", Model: "sigstub"}, nil
+}
+
+func TestToolLoopExtraContentPassthrough(t *testing.T) {
+	wantSig := []byte(`{"google":{"thought_signature":"b64_sig_turn_abc=="}}`)
+	ss := &sigStub{sigBytes: wantSig}
+	dir := t.TempDir()
+	log, err := penatus.OpenLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := router.NewRouter(router.Profile{Chain: []router.Target{{Provider: ss}}})
+	rt.SetProfile("compact", router.Profile{Chain: []router.Target{{Provider: ss}}})
+	s := &Session{Log: log, Sys: "SYS", Router: rt, CompactProfile: "compact", TriggerPct: 80}
+
+	calls := map[string]string{}
+	tools := []Tool{{
+		Spec:    router.ToolSpec{Name: "echo", ParamsJSONSchema: `{"type":"object"}`},
+		Trusted: true,
+		Run: func(_ context.Context, args string) (string, error) {
+			calls["echo"] = args
+			return "ECHOED:hello", nil
+		},
+	}}
+
+	text, err := s.RunTurnTools(context.Background(), "go", nil, tools, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "final:done" {
+		t.Fatalf("final text = %q, want final:done", text)
+	}
+	if calls["echo"] != `{"v":"hello"}` {
+		t.Fatalf("tool got args %q", calls["echo"])
+	}
+
+	// Verify the provider's follow-up request carried the signature.
+	if !ss.sawSig {
+		t.Fatalf("follow-up request to provider did not contain thought_signature extra_content; saw messages: %+v", ss.gotMsgs)
+	}
+
+	// Verify events.jsonl format was NOT changed and contains no thought_signature.
+	var kinds []string
+	for _, ev := range log.Live() {
+		kinds = append(kinds, ev.T)
+		b, _ := ev.MarshalJSON()
+		if bytes.Contains(b, []byte("thought_signature")) {
+			t.Fatalf("events.jsonl must not contain thought_signature, got event: %s", string(b))
+		}
+	}
+	want := []string{"msg", "tool_call", "tool_result", "msg"}
+	if fmt.Sprint(kinds) != fmt.Sprint(want) {
+		t.Fatalf("event kinds = %v, want %v", kinds, want)
+	}
+
+	// Verify in-memory reconstruction preserves extra_content.
+	msgs := s.messages()
+	var foundAsstWithSig bool
+	for _, m := range msgs {
+		if m.Role == router.RoleAssistant && len(m.ToolCalls) > 0 {
+			if bytes.Equal(m.ExtraContent, wantSig) {
+				foundAsstWithSig = true
+			}
+		}
+	}
+	if !foundAsstWithSig {
+		t.Fatalf("reconstructed messages missing assistant ExtraContent: %+v", msgs)
+	}
+
+	// Drive a second turn on the same session to ensure history replay preserves extra_content across turns.
+	ss.sawSig = false
+	_, err = s.RunTurnTools(context.Background(), "next turn", nil, tools, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ss.sawSig {
+		t.Fatal("history messages in turn 2 did not preserve thought_signature extra_content")
 	}
 }
