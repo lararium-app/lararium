@@ -704,15 +704,17 @@ func (h *Hub) executeTurn(
 	// the stream so the client never waits on it; the running-map slot and
 	// single-writer lock are still held, so no other turn can touch the
 	// log meanwhile. Failure is logged and never fails the finished turn.
-	h.maybeCompact(sess, sessionID)
+	h.maybeCompact(engineCtx, sess, sessionID)
 	return nil
 }
 
 // maybeCompact runs the session's post-turn compaction trigger under a
-// bounded background context (independent of the possibly-expired
-// engine context). Under-trigger turns return cheaply with no effect.
-func (h *Hub) maybeCompact(sess *loop.Session, sessionID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+// bounded context detached from the turn's cancellation (the turn has
+// already committed; a disconnecting client must not kill the cleanup)
+// while still inheriting the turn's context values. Under-trigger turns
+// return cheaply with no effect.
+func (h *Hub) maybeCompact(parent context.Context, sess *loop.Session, sessionID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 60*time.Second)
 	defer cancel()
 	if _, err := sess.MaybeCompact(ctx); err != nil {
 		stdlog.Printf("hearthd serve: compaction on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours

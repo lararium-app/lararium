@@ -26,7 +26,7 @@ func compactHub(t *testing.T, mainSP, compactSP *stubProvider) *Hub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		role := "user"
 		if i%2 == 1 {
 			role = "assistant"
