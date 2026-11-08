@@ -698,7 +698,25 @@ func (h *Hub) executeTurn(
 		InTokens:  inTok,
 		OutTokens: outTok,
 	}))
+
+	// Post-turn compaction check (issue #269; REPL parity, spec §3:
+	// after completed turns only). Runs after the terminal event has left
+	// the stream so the client never waits on it; the running-map slot and
+	// single-writer lock are still held, so no other turn can touch the
+	// log meanwhile. Failure is logged and never fails the finished turn.
+	h.maybeCompact(sess, sessionID)
 	return nil
+}
+
+// maybeCompact runs the session's post-turn compaction trigger under a
+// bounded background context (independent of the possibly-expired
+// engine context). Under-trigger turns return cheaply with no effect.
+func (h *Hub) maybeCompact(sess *loop.Session, sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := sess.MaybeCompact(ctx); err != nil {
+		stdlog.Printf("hearthd serve: compaction on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours
+	}
 }
 
 // lastAssistantUsage reads seq and token usage off the newest assistant
