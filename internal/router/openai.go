@@ -209,10 +209,11 @@ type streamOptions struct {
 }
 
 type openAIMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	Role         string           `json:"role"`
+	Content      string           `json:"content,omitempty"`
+	ToolCallID   string           `json:"tool_call_id,omitempty"`
+	ToolCalls    []openAIToolCall `json:"tool_calls,omitempty"`
+	ExtraContent json.RawMessage  `json:"extra_content,omitempty"`
 }
 
 type openAIToolCall struct {
@@ -222,6 +223,7 @@ type openAIToolCall struct {
 		Name string `json:"name"`
 		Args string `json:"arguments"`
 	} `json:"function"`
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 type openAITool struct {
@@ -286,6 +288,9 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 	reqMsgs := make([]openAIMessage, 0, len(msgs))
 	for _, m := range msgs {
 		om := openAIMessage{Role: string(m.Role), Content: m.Content}
+		if !isExtraEmpty(m.ExtraContent) {
+			om.ExtraContent = m.ExtraContent
+		}
 		if m.ToolCallID != "" {
 			om.ToolCallID = m.ToolCallID
 		}
@@ -295,6 +300,15 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 			otc.Type = "function"
 			otc.Function.Name = tc.Name
 			otc.Function.Args = tc.ArgsJSON
+			// Gemini requires the thought_signature on the tool_calls[]
+			// entry itself (verified live 2026-11-07: tool_call-level
+			// placement returns 200; message-level alone returns 400).
+			if !isExtraEmpty(tc.ExtraContent) {
+				otc.ExtraContent = tc.ExtraContent
+				if isExtraEmpty(om.ExtraContent) {
+					om.ExtraContent = tc.ExtraContent
+				}
+			}
 			om.ToolCalls = append(om.ToolCalls, otc)
 		}
 		reqMsgs = append(reqMsgs, om)
@@ -370,13 +384,28 @@ func (o *openAI) Complete(ctx context.Context, msgs []Message, opts Options) (*C
 		Text:   choice.Message.Content,
 		Probed: oresp.Usage != nil,
 	}
+	if !isExtraEmpty(choice.Message.ExtraContent) {
+		c.ExtraContent = choice.Message.ExtraContent
+	}
 
 	for _, tc := range choice.Message.ToolCalls {
+		tcExtra := tc.ExtraContent
+		if isExtraEmpty(tcExtra) && !isExtraEmpty(choice.Message.ExtraContent) {
+			tcExtra = choice.Message.ExtraContent
+		}
+		var extra json.RawMessage
+		if !isExtraEmpty(tcExtra) {
+			extra = tcExtra
+		}
 		c.ToolCalls = append(c.ToolCalls, ToolCall{
-			ID:       tc.ID,
-			Name:     tc.Function.Name,
-			ArgsJSON: tc.Function.Args,
+			ID:           tc.ID,
+			Name:         tc.Function.Name,
+			ArgsJSON:     tc.Function.Args,
+			ExtraContent: extra,
 		})
+		if isExtraEmpty(c.ExtraContent) && !isExtraEmpty(tc.ExtraContent) {
+			c.ExtraContent = tc.ExtraContent
+		}
 	}
 
 	if oresp.Usage != nil {
