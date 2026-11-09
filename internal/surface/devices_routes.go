@@ -472,7 +472,7 @@ func (s *Server) deviceSyncHandler(w http.ResponseWriter, r *http.Request, id st
 		case errors.Is(err, ErrRailDisabled):
 			writeJSONAny(w, http.StatusConflict, map[string]string{"error": err.Error(), "reason": "rail_disabled"})
 		case errors.As(err, &staleSeq):
-			writeJSONAny(w, http.StatusConflict, map[string]string{"error": err.Error(), "reason": "stale_seq"})
+			writeJSONAny(w, http.StatusConflict, map[string]any{"error": err.Error(), "reason": "stale_seq", "current_seq": staleSeq.Current})
 		default:
 			writeJSONAny(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "reason": "sync_failed"})
 		}
