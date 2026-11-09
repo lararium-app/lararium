@@ -430,7 +430,7 @@ func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Del
 		}
 	}
 
-	if seq <= curSeq {
+	if snapshot == nil && seq <= curSeq {
 		return &ErrStaleSeq{
 			DeviceID: deviceID,
 			Rail:     rail,

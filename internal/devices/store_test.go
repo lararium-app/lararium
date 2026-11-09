@@ -189,10 +189,16 @@ func TestSeqMonotonicity(t *testing.T) {
 		t.Fatalf("ApplySync seq 1: %v", err)
 	}
 
-	// Seq 1 duplicate -> ErrStaleSeq
+	// Seq 1 duplicate with snapshot -> full snapshot is accepted (re-establishes baseline)
 	err = mgr.ApplySync("pixel-seq", RailCalendar, []byte(`[{"title":"Duplicate"}]`), nil, 1)
+	if err != nil {
+		t.Fatalf("full snapshot push at equal seq must be accepted, got: %v", err)
+	}
+
+	// Seq 1 duplicate with nil snapshot (deltas only) -> ErrStaleSeq
+	err = mgr.ApplySync("pixel-seq", RailCalendar, nil, nil, 1)
 	if err == nil {
-		t.Fatalf("expected ErrStaleSeq on equal seq")
+		t.Fatalf("expected ErrStaleSeq on equal seq with nil snapshot")
 	}
 	var staleErr *ErrStaleSeq
 	if !errors.As(err, &staleErr) {
@@ -202,10 +208,10 @@ func TestSeqMonotonicity(t *testing.T) {
 		t.Fatalf("staleErr = %+v, want current=1 proposed=1", staleErr)
 	}
 
-	// Seq 0 backwards -> ErrStaleSeq
-	err = mgr.ApplySync("pixel-seq", RailCalendar, []byte(`[{"title":"Old"}]`), nil, 0)
+	// Seq 0 backwards with nil snapshot -> ErrStaleSeq
+	err = mgr.ApplySync("pixel-seq", RailCalendar, nil, nil, 0)
 	if err == nil {
-		t.Fatalf("expected ErrStaleSeq on lower seq")
+		t.Fatalf("expected ErrStaleSeq on lower seq with nil snapshot")
 	}
 
 	// Seq 10 -> success
@@ -214,8 +220,8 @@ func TestSeqMonotonicity(t *testing.T) {
 		t.Fatalf("ApplySync seq 10: %v", err)
 	}
 
-	// Seq 9 -> ErrStaleSeq
-	err = mgr.ApplySync("pixel-seq", RailCalendar, []byte(`[{"title":"Stale"}]`), nil, 9)
+	// Seq 9 with nil snapshot -> ErrStaleSeq
+	err = mgr.ApplySync("pixel-seq", RailCalendar, nil, nil, 9)
 	if err == nil {
 		t.Fatalf("expected ErrStaleSeq on lower seq 9")
 	}
