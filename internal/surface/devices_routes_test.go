@@ -1179,10 +1179,17 @@ func TestDevicesSync_Matrix(t *testing.T) {
 	if wStale.Code != http.StatusConflict {
 		t.Fatalf("stale sync code = %d, want 409", wStale.Code)
 	}
-	var res map[string]string
-	_ = json.Unmarshal(wStale.Body.Bytes(), &res)
+	res := map[string]string{}
+	var staleRaw map[string]any
+	_ = json.Unmarshal(wStale.Body.Bytes(), &staleRaw)
+	res["reason"], _ = staleRaw["reason"].(string)
 	if res["reason"] != "stale_seq" {
 		t.Fatalf("reason = %q, want stale_seq", res["reason"])
+	}
+	var staleBody map[string]any
+	_ = json.Unmarshal(wStale.Body.Bytes(), &staleBody)
+	if cur, ok := staleBody["current_seq"].(float64); !ok || cur != 1 {
+		t.Fatalf("current_seq = %v, want numeric 1 (body %s)", staleBody["current_seq"], wStale.Body.String())
 	}
 
 	// 3. Unknown rail -> 400 unknown_rail

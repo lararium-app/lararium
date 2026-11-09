@@ -430,13 +430,18 @@ func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Del
 		}
 	}
 
-	if seq <= curSeq {
+	if seq < curSeq || (seq == curSeq && snapshot == nil) {
 		return &ErrStaleSeq{
 			DeviceID: deviceID,
 			Rail:     rail,
 			Current:  curSeq,
 			Proposed: seq,
 		}
+	}
+	if seq == curSeq {
+		// Full snapshot re-push at the current seq: idempotent replay. The
+		// server already holds this state; write nothing, advance nothing.
+		return nil
 	}
 
 	// Apply retention and merge deltas

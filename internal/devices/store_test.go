@@ -189,10 +189,14 @@ func TestSeqMonotonicity(t *testing.T) {
 		t.Fatalf("ApplySync seq 1: %v", err)
 	}
 
-	// Seq 1 duplicate -> ErrStaleSeq
-	err = mgr.ApplySync("pixel-seq", RailCalendar, []byte(`[{"title":"Duplicate"}]`), nil, 1)
+	// Seq 1 duplicate with a snapshot is an idempotent replay (#274);
+	// delta-only at seq 1 is still stale.
+	if err := mgr.ApplySync("pixel-seq", RailCalendar, []byte(`[{"title":"Duplicate"}]`), nil, 1); err != nil {
+		t.Fatalf("snapshot replay at equal seq must be a no-op, got %v", err)
+	}
+	err = mgr.ApplySync("pixel-seq", RailCalendar, nil, nil, 1)
 	if err == nil {
-		t.Fatalf("expected ErrStaleSeq on equal seq")
+		t.Fatalf("expected ErrStaleSeq on equal seq without snapshot")
 	}
 	var staleErr *ErrStaleSeq
 	if !errors.As(err, &staleErr) {
@@ -497,5 +501,94 @@ func TestForgetWipes(t *testing.T) {
 	// Read after forget returns ErrDeviceTombstoned
 	if _, _, err := mgr.Read("pixel-wipe", RailCalendar); !errors.Is(err, ErrDeviceTombstoned) {
 		t.Fatalf("Read after forget = %v, want ErrDeviceTombstoned", err)
+	}
+}
+
+func TestApplySync_SnapshotReplay(t *testing.T) {
+	dir := t.TempDir()
+	clk := newMockClock(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
+
+	mgr, err := NewManager(dir, WithClock(clk))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	const id = "pixel-replay"
+	if err := mgr.Register(Device{
+		DeviceID:      id,
+		RailsDeclared: []DeclaredRail{{Name: RailCalendar, ReadOnly: true}},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	snap := []byte(`[{"title":"First"}]`)
+
+	// (a) initial snapshot at seq 1
+	if err := mgr.ApplySync(id, RailCalendar, snap, nil, 1); err != nil {
+		t.Fatalf("seq 1: %v", err)
+	}
+	_, _, err = mgr.Read(id, RailCalendar)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	railFile := filepath.Join(dir, "devices", id, RailCalendar+".json")
+	before, err := os.ReadFile(railFile)
+	if err != nil {
+		t.Fatalf("read rail file: %v", err)
+	}
+
+	// Advance the clock so any rewrite would change last_sync.
+	clk.Advance(time.Hour)
+
+	assertUnchanged := func(step string) {
+		t.Helper()
+		after, err := os.ReadFile(railFile)
+		if err != nil {
+			t.Fatalf("%s: read rail file: %v", step, err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("%s: stored doc changed:\nbefore=%s\nafter=%s", step, before, after)
+		}
+	}
+
+	// (b) identical snapshot at seq 1 -> ok, doc unchanged
+	if err := mgr.ApplySync(id, RailCalendar, snap, nil, 1); err != nil {
+		t.Fatalf("identical replay: %v", err)
+	}
+	assertUnchanged("identical replay")
+
+	// (c) different payload at same seq -> still a no-op; replay never rewrites
+	if err := mgr.ApplySync(id, RailCalendar, []byte(`[{"title":"Different"}]`), nil, 1); err != nil {
+		t.Fatalf("different-payload replay: %v", err)
+	}
+	assertUnchanged("different-payload replay")
+
+	// (d) seq 0 after 1 -> stale
+	var staleErr *ErrStaleSeq
+	err = mgr.ApplySync(id, RailCalendar, snap, nil, 0)
+	if !errors.As(err, &staleErr) {
+		t.Fatalf("seq 0: want *ErrStaleSeq, got %v", err)
+	}
+
+	// (e) delta-only (nil snapshot) at seq 1 -> stale
+	staleErr = nil
+	err = mgr.ApplySync(id, RailCalendar, nil, nil, 1)
+	if !errors.As(err, &staleErr) {
+		t.Fatalf("delta-only seq 1: want *ErrStaleSeq, got %v", err)
+	}
+	if staleErr.Current != 1 || staleErr.Proposed != 1 {
+		t.Fatalf("staleErr = %+v, want current=1 proposed=1", staleErr)
+	}
+	assertUnchanged("rejected pushes")
+
+	// (f) after replays, seq 2 advances
+	if err := mgr.ApplySync(id, RailCalendar, []byte(`[{"title":"Second"}]`), nil, 2); err != nil {
+		t.Fatalf("seq 2: %v", err)
+	}
+	items, _, err := mgr.Read(id, RailCalendar)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !strings.Contains(string(items), "Second") {
+		t.Fatalf("items = %s, want Second", items)
 	}
 }
