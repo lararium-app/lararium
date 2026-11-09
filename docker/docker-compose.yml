@@ -1,8 +1,13 @@
 # Prefer pulling a published image? See README → "Docker pull (recommended)".
-# hearthd in Docker — see docker/config/lararium.yaml (config) and
-# docker/hearth/ (persona home: SOUL.md, IDENTITY.md, USER.md, MEMORY.md,
-# sessions/). API keys come from the host environment or keys.json; nothing secret
-# is baked into the image.
+# Full zero-cloud stack in Docker (chat + vault + connectors + web browsing +
+# guided sign-in + offline search).
+# See docker/config/lararium.yaml (config) and docker/hearth/ (persona home:
+# SOUL.md, IDENTITY.md, USER.md, MEMORY.md, sessions/). API keys come from the host
+# environment or keys.json; nothing secret is baked into the image.
+#
+# Port overrides:
+#   LARARIUM_PORT=7717 (web chat + API)
+#   SEARXNG_PORT=8888  (SearXNG search instance)
 #
 #   # talk to a model server on your own machine (llama.cpp et al):
 #   docker compose up --build
@@ -43,7 +48,7 @@ services:
     # "WARNING: listening beyond loopback" at startup — expected in
     # containerized mode; host exposure stays loopback-only per this map.
     ports:
-      - "127.0.0.1:7717:7717"
+      - "127.0.0.1:${LARARIUM_PORT:-7717}:7717"
     environment:
       # Provider keys: whatever your lararium.yaml references via
       # api_key_env. Uncomment what you use (add more freely — a
@@ -64,3 +69,33 @@ services:
       # an empty volume would shadow them; the bind keeps them editable and
       # persistent (sessions/ JSONL lands here too).
       - ./hearth:/hearth
+
+  custosd:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: custosd
+    user: "${LARARIUM_UID:-1000}:${LARARIUM_UID:-1000}"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      LARARIUM_CONFIG: /etc/lararium/lararium.yaml
+      LARARIUM_DOCKER: "1"
+    volumes:
+      - ./config:/etc/lararium
+      - ./hearth:/hearth
+    depends_on:
+      - searxng
+
+  searxng:
+    image: searxng/searxng:2026.11.9-57ff753ad
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me-local-only}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro

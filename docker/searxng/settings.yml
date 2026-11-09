@@ -1,0 +1,16 @@
+# local zero-cloud search instance for Lararium
+# See https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  # Secret key is set via SEARXNG_SECRET environment variable
+  limiter: false # local instance, JSON API needs it off for the MCP connector
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json

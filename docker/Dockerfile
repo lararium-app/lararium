@@ -12,7 +12,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/hearthd ./cmd/hearthd
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/hearthd ./cmd/hearthd \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/custosd ./cmd/custosd \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/custos ./cmd/custos
 
 # debian-slim (not distroless): the entrypoint shim is POSIX sh and needs
 # coreutils (cp/grep/sed) for first-run seeding, so the runtime image carries
@@ -20,10 +22,28 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/hearthd ./cmd/hearthd
 FROM debian:bookworm-slim
 # bubblewrap: process isolation for the daemon's Chromium launches
 # (web.isolate, default on; docs/WEB-LAYER-SPEC.md "Process isolation").
+# Chromium, Xvfb, x11vnc, websockify, noVNC, xdotool: browser layer and guided
+# sign-in window mechanics (docs/WEB-LAYER-SPEC.md).
+# Node.js + npm: runtime environment for MCP connectors (pinned mcp-searxng).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends bubblewrap \
+ && apt-get install -y --no-install-recommends \
+      bubblewrap \
+      chromium \
+      xvfb \
+      x11vnc \
+      websockify \
+      novnc \
+      xdotool \
+      nodejs \
+      npm \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/hearthd /usr/local/bin/hearthd
+RUN npm install -g mcp-searxng@2.10.0 \
+ && echo 'globalThis.File = require("node:buffer").File;' > /usr/local/lib/node-compat.cjs \
+ && rm -f /usr/local/bin/mcp-searxng \
+ && printf '#!/bin/sh\nexec node --require /usr/local/lib/node-compat.cjs /usr/local/lib/node_modules/mcp-searxng/dist/cli.js "$@"\n' > /usr/local/bin/mcp-searxng \
+ && chmod +x /usr/local/bin/mcp-searxng
+ENV LARARIUM_CHROME=/usr/bin/chromium
+COPY --from=build /out/hearthd /out/custosd /out/custos /usr/local/bin/
 # /hearth = persona home (SOUL.md, MEMORY.md, sessions/); mount a volume there.
 # /etc/lararium = config (lararium.yaml); mount the config dir there.
 #
