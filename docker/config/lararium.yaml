@@ -62,9 +62,26 @@ providers:
 
 # --- Web layer (fetch and browse public pages). Enabled by default.
 # --- Full law: docs/WEB-LAYER-SPEC.md.
-# web:
-#   enabled: true                      # false disables web_fetch and web_browse
-#   browse_timeout_s: 30               # browser navigation timeout
-#   max_text_bytes: 200000             # max extracted text bytes
-#   isolate: true                      # run Chromium inside bubblewrap (default); false = no process isolation
-#   # chrome_path: /usr/bin/chromium   # auto-detects $LARARIUM_CHROME, then chromium/chrome on PATH
+web:
+  enabled: true                      # false disables web_fetch and web_browse
+  browse_timeout_s: 30               # browser navigation timeout
+  max_text_bytes: 200000             # max extracted text bytes
+  isolate: true                      # run Chromium inside bubblewrap (default); false = no process isolation
+  chrome_path: /usr/bin/chromium     # auto-detects $LARARIUM_CHROME, then chromium/chrome on PATH
+
+# --- Credential vault & MCP connector execution (custosd).
+# --- Full law: docs/CUSTOS-SPEC.md, docs/MCP-SPEC.md, docs/CONNECTOR-LIFE-SPEC.md.
+custos:
+  doors_sock: /hearth/custos/doors.sock
+  door_token: /hearth/custos/door.token
+  unlock_keyfile: /hearth/unlock.key
+  connectors:
+    mcp:
+      - name: searxng
+        transport: stdio
+        command: /usr/local/bin/mcp-searxng
+        env:
+          SEARXNG_URL: "http://searxng:8080"
+        list_timeout: 120s
+        # Remove via API: DELETE /v1/mcp/connectors/searxng (or via web UI);
+        # the config file is a SEED — API edits take over and the daemon never rewrites YAML.

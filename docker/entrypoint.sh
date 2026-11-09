@@ -36,6 +36,41 @@ fi
 # 4. Explicit arguments are hearthd subcommands (`docker run ghcr.io/lararium-app/hearthd
 #    token create x`); with none, serve the web chat + API. For a shell,
 #    override --entrypoint.
+#
+# The custosd service owns the vault bootstrap: BOTH containers run this
+# entrypoint, so bootstrapping unconditionally races `custos init` on first
+# start — the loser dies on ErrVaultExists and (with no restart policy) stays
+# dead. Only the custosd path initializes state; the daemon unlocks from the
+# keyfile itself on every boot.
+if [ "$#" -gt 0 ] && [ "$1" = "custosd" ]; then
+	shift
+	# First-run vault bootstrap. The marker per internal/custos/vault.go
+	# (Exists) is vault.age or vault.key.
+	CUSTOS_DIR="$HEARTH_HOME/custos"
+	if [ ! -f "$CUSTOS_DIR/vault.age" ] && [ ! -f "$CUSTOS_DIR/vault.key" ]; then
+		# If custos.unlock_keyfile is unset or missing, create it: custos
+		# init reads it as the vault passphrase, and custosd unlocks from
+		# the same file on every boot.
+		KEYFILE="$(sed -n 's/^[[:space:]]*unlock_keyfile:[[:space:]]*//p' "$CONFIG" 2>/dev/null | sed 's/#.*//' | tr -d ' "' || true)"
+		KEYFILE="${KEYFILE:-$HEARTH_HOME/unlock.key}"
+		if [ ! -f "$KEYFILE" ]; then
+			mkdir -p "$(dirname "$KEYFILE")"
+			( umask 077 && head -c32 /dev/urandom | base64 > "$KEYFILE" )
+		fi
+
+		# Docs' law: `custos init` prints nothing on success; verify disk.
+		if ! custos -config "$CONFIG" init; then
+			echo "lararium: custos init failed" >&2
+			exit 1
+		fi
+		if [ ! -f "$CUSTOS_DIR/vault.key" ] || [ ! -f "$CUSTOS_DIR/vault.age" ]; then
+			echo "lararium: custos bootstrap failed: vault files missing on disk" >&2
+			exit 1
+		fi
+	fi
+	exec custosd -config "$CONFIG" "$@"
+fi
+
 if [ "$#" -gt 0 ]; then
 	exec hearthd -config "$CONFIG" "$@"
 fi
