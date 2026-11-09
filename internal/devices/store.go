@@ -390,6 +390,13 @@ func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Del
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// An explicit JSON null snapshot arrives as literal bytes "null" (non-nil RawMessage).
+	// Treat it as an omitted snapshot so delta-only pushes keep the monotonicity guard
+	// instead of silently replacing stored items (#274).
+	if bytes.Equal(bytes.TrimSpace(snapshot), []byte("null")) {
+		snapshot = nil
+	}
+
 	dev, ok := m.devices[deviceID]
 	if !ok || dev.Tombstoned || m.tombstones[deviceID] {
 		return ErrDeviceNotFound

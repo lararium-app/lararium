@@ -236,6 +236,53 @@ func TestSeqMonotonicity(t *testing.T) {
 	}
 }
 
+// A literal JSON null snapshot ("snapshot": null on the wire) must behave as an
+// omitted snapshot: delta-only semantics keep the stale-seq guard and never wipe
+// stored items (#274 hardening).
+func TestSnapshotNullLiteralTreatedAsOmitted(t *testing.T) {
+	dir := t.TempDir()
+	clk := newMockClock(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
+
+	mgr, err := NewManager(dir, WithClock(clk))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	dev := Device{
+		DeviceID: "pixel-null",
+		RailsDeclared: []DeclaredRail{
+			{Name: RailCalendar, ReadOnly: true},
+		},
+	}
+	if err := mgr.Register(dev); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Seed a full snapshot at seq 5.
+	if err := mgr.ApplySync("pixel-null", RailCalendar, []byte(`[{"title":"Kept"}]`), nil, 5); err != nil {
+		t.Fatalf("seed ApplySync seq 5: %v", err)
+	}
+
+	// Explicit null snapshot at stale seq -> ErrStaleSeq (guard preserved for delta pushes).
+	err = mgr.ApplySync("pixel-null", RailCalendar, []byte("null"), nil, 3)
+	var staleErr *ErrStaleSeq
+	if !errors.As(err, &staleErr) {
+		t.Fatalf("expected ErrStaleSeq for null-snapshot push at stale seq, got: %v", err)
+	}
+
+	// Explicit null snapshot at fresh seq -> accepted as delta-only; stored items survive.
+	if err := mgr.ApplySync("pixel-null", RailCalendar, []byte("null "), nil, 7); err != nil {
+		t.Fatalf("ApplySync null snapshot seq 7: %v", err)
+	}
+	readItems, _, err := mgr.Read("pixel-null", RailCalendar)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !strings.Contains(string(readItems), "Kept") {
+		t.Fatalf("read items = %s, want stored 'Kept' item preserved after null-snapshot delta push", readItems)
+	}
+}
+
 func TestRetentionWindowsPerRail(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
