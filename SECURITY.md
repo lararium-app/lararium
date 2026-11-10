@@ -15,8 +15,10 @@ latest release and reproduce against it.
 
 **Do not open a public issue for security problems.**
 
-Report privately by email to **security@lararium.io** (a role mailbox —
-never a personal account). Include:
+Report privately through the repository's **Security tab → "Report a
+vulnerability"** form (private disclosure to maintainers only). If the
+form is not visible, enable private vulnerability reporting in
+**Settings → Advanced Security** (one-time, repository setting). Include:
 
 - a description of the issue and the affected component
   (`hearthd`, `cell`, the PWA, or the pairing flow)
