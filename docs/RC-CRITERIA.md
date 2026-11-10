@@ -50,8 +50,6 @@ artifact (test, release note, drill transcript, soak log, or doc diff).
       `.github/workflows/ci.yml` green at the tag tip, and
       `scripts/scan-secrets.sh` (including test fixtures, per the beta
       extension) run manually at the tag.
-- [ ] DMARC: `rua` switched to `dmarc@lararium.io`, one full reporting
-      cycle reviewed, then ratchet `p=none` → `p=quarantine`.
 
 ## C. Lifecycle (the promises the docs make)
 
