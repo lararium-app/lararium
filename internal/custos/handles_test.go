@@ -14,8 +14,14 @@ import (
 )
 
 // handleTestValue is the fake secret under test; the name avoids "secret" so
-// gosec's hardcoded-credential heuristic stays quiet.
-const handleTestValue = "sk-liv-HAND...9876"
+// gosec's hardcoded-credential heuristic stays quiet. Its last4 uses letters
+// outside [0-9a-f] on purpose: hygiene assertions grep whole audit lines, and
+// a hex last4 (e.g. "9876") can appear by chance inside random hash fields —
+// a birthday flake (issue #261, 2026-11-10 sighting).
+const (
+	handleTestValue = "sk-liv-HAND...wxyz"
+	handleTestLast4 = "wxyz"
+)
 
 func setupHandleVault(t *testing.T) (*custos.Vault, string, string) {
 	t.Helper()
@@ -81,7 +87,7 @@ func TestHandleA1_CreateList(t *testing.T) {
 	if !strings.HasPrefix(rec.Handle, "hdl_") || len(rec.Handle) != 26 {
 		t.Fatalf("bad handle shape %q", rec.Handle)
 	}
-	if rec.Last4 != "9876" {
+	if rec.Last4 != handleTestLast4 {
 		t.Fatalf("last4 = %q", rec.Last4)
 	}
 	list, err := v.ListHandles()
@@ -98,7 +104,7 @@ func TestHandleA1_CreateList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(out, []byte(handleTestValue)) || bytes.Contains(out, []byte("9876")) {
+	if bytes.Contains(out, []byte(handleTestValue)) || bytes.Contains(out, []byte(handleTestLast4)) {
 		t.Fatal("list output leaks secret material")
 	}
 	// No secret substring in any on-disk state file (vault is age-encrypted;
@@ -379,14 +385,14 @@ func TestHandleA7_SecretHygiene(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(listJSON, []byte(handleTestValue)) || bytes.Contains(listJSON, []byte("9876")) {
+	if bytes.Contains(listJSON, []byte(handleTestValue)) || bytes.Contains(listJSON, []byte(handleTestLast4)) {
 		t.Fatal("list leaks secret material")
 	}
 	for _, l := range readAuditLines(t, stateDir) {
 		if strings.Contains(l, handleTestValue) {
 			t.Fatalf("secret in audit line: %s", l)
 		}
-		if strings.Contains(l, "9876") {
+		if strings.Contains(l, handleTestLast4) {
 			t.Fatalf("last4 in audit line: %s", l)
 		}
 		if strings.Contains(l, rec.Handle) {
@@ -410,7 +416,7 @@ func TestHandleViews_CarryLast4NoSecret(t *testing.T) {
 		t.Fatalf("views: %v %v", views, err)
 	}
 	hv := views[0]
-	if hv.Handle != rec.Handle || hv.Name != "svc" || hv.Kind != "api_key" || hv.Last4 != "9876" ||
+	if hv.Handle != rec.Handle || hv.Name != "svc" || hv.Kind != "api_key" || hv.Last4 != handleTestLast4 ||
 		hv.Created == "" || hv.Expires == "" || hv.Rate == nil || hv.Rate.N != 3 || hv.Rate.Window != 60 {
 		t.Fatalf("unexpected view %+v", hv)
 	}
