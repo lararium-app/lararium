@@ -74,6 +74,10 @@ type HearthConfig struct {
 	CompactionTriggerPct int `yaml:"compaction_trigger_pct"`
 	// MaxTokens caps each generation (0 = provider default).
 	MaxTokens int `yaml:"max_tokens"`
+	// Name is the display name reported on GET /v1/health so clients can show
+	// WHICH hearth they are talking to; empty means default to the machine
+	// hostname at request time.
+	Name string `yaml:"name"`
 }
 
 type ModelsConfig struct {
@@ -631,6 +635,7 @@ func serve(cfgPath string) {
 		Hub:               hub,
 		PairStore:         newPairStoreAdapter(openPairStore(home)),
 		DeviceAutoApprove: cfg.Devices.IsAutoApprove(),
+		HearthName:        cfg.Hearth.Name,
 	}
 	// Issue #128: turn-approval cards (web chat + MCP rail) become visible
 	// and resolvable through the custody card surface.
