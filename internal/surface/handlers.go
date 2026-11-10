@@ -55,6 +55,9 @@ type Server struct {
 	Sessions SessionSource
 	Hub      TurnHub
 	Fasti    *fasti.Engine
+	// HearthName is the display name served on /v1/health; empty resolves to
+	// the hostname label.
+	HearthName string
 	// OnShutdown is called on shutdown signals before Hub.Shutdown()
 	// (NUNTIUS-SPEC §2: bridge stops before hub drops pending approvals).
 	OnShutdown func()
@@ -268,8 +271,34 @@ func (s *Server) deviceAutoApprove() bool {
 // BackupFunc handles control-socket backup verbs (PENATUS §4.5.3.1).
 type BackupFunc func(outAbs string, noConfig bool, progress func(string)) error
 
+// osHostname is a seam so tests can stub the machine hostname lookup.
+var osHostname = os.Hostname
+
+// resolveHearthName returns the configured display name, falling back to the
+// first DNS label of the hostname so an unconfigured hearth is still
+// distinguishable from its siblings on a phone header.
+func resolveHearthName(s *Server) string {
+	if name := strings.TrimSpace(s.HearthName); name != "" {
+		return name
+	}
+	h, err := osHostname()
+	if err != nil {
+		return "hearth"
+	}
+	if label := strings.SplitN(h, ".", 2)[0]; label != "" {
+		return label
+	}
+	return "hearth"
+}
+
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSONBody(w, http.StatusOK, `{"ok":true,"version":"1.0.0-beta9"}`)
+	// Map + marshal (not a literal) because the name is operator-typed text
+	// that must always be JSON-escaped.
+	writeJSONAny(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"version": "1.0.0-beta9",
+		"name":    resolveHearthName(s),
+	})
 }
 
 func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {
