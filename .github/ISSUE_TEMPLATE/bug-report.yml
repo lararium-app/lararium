@@ -5,8 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Security problems go to the private **"Report a vulnerability"** form in the
-        Security tab, not here.
+        Security problems go to **security@lararium.io**, not here.
         Before filing: update to the latest commit/release and confirm the issue reproduces.
   - type: textarea
     id: what-happened
