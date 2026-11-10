@@ -755,8 +755,8 @@ func TestNoAutoPoll(t *testing.T) {
 		t.Fatalf("scan did not run after picking 1")
 	}
 
-	// Pick server 1, model 1, compact same (y), default device name, default remote (N)
-	_, _ = pw.Write([]byte("1\n1\ny\n\n\n"))
+	// Pick server 1, model 1, compact same (y), default device name, default remote (N), default hearth name
+	_, _ = pw.Write([]byte("1\n1\ny\n\n\n\n"))
 
 	select {
 	case err := <-doneCh:

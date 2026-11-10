@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -441,4 +442,182 @@ func TestFirstDoor_NonTTYUnchanged(t *testing.T) {
 // openTestTokenStore opens a TokenStore for test verification.
 func openTestTokenStore(path string) (*surface.TokenStore, error) {
 	return surface.OpenTokenStore(path)
+}
+
+func TestLoadConfig_HearthName(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := createSetupTestConfig(t, dir)
+	if err := setHearthName(cfgPath, "Rig 7"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Hearth.Name != "Rig 7" {
+		t.Errorf("Hearth.Name = %q, want %q", cfg.Hearth.Name, "Rig 7")
+	}
+}
+
+func TestSetHearthName_PreservesKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := createSetupTestConfig(t, dir)
+	if err := setHearthName(cfgPath, "Rig 7"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Hearth.Name != "Rig 7" || cfg.Hearth.CompactionTriggerPct != 80 || cfg.Hearth.MaxTokens != 512 {
+		t.Errorf("hearth keys wrong: %+v", cfg.Hearth)
+	}
+	if len(cfg.Serve.AllowedHosts) != 2 || len(cfg.Providers) != 1 || len(cfg.Models.Default) != 1 {
+		t.Errorf("other keys lost: serve=%+v providers=%+v models=%+v", cfg.Serve, cfg.Providers, cfg.Models)
+	}
+	got, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"# Reference config header comment",
+		"# Serve config comment",
+		"# local model comment",
+		"# Trailing comments must survive round-trip",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("comment dropped from yaml: %q", want)
+		}
+	}
+}
+
+func TestSetHearthName_BakAndRerun(t *testing.T) {
+	cfgPath := createSetupTestConfig(t, t.TempDir())
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setHearthName(cfgPath, "Rig 7"); err != nil {
+		t.Fatal(err)
+	}
+	bak, err := os.ReadFile(cfgPath + ".bak")
+	if err != nil {
+		t.Fatalf("backup not written: %v", err)
+	}
+	if string(bak) != string(before) {
+		t.Error("backup differs from original config")
+	}
+	// Rerun must replace the existing name key, not duplicate it, and must
+	// leave the original .bak untouched.
+	if err := setHearthName(cfgPath, "Rig 8"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Hearth.Name != "Rig 8" {
+		t.Errorf("Hearth.Name = %q, want %q", cfg.Hearth.Name, "Rig 8")
+	}
+	rewritten, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(rewritten), `name: "Rig`) != 1 {
+		t.Errorf("name key duplicated:\n%s", rewritten)
+	}
+	bak2, err := os.ReadFile(cfgPath + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(bak2) != string(before) {
+		t.Error("second rewrite overwrote the original backup")
+	}
+}
+
+func TestSetHearthName_NumericLookingName(t *testing.T) {
+	cfgPath := createSetupTestConfig(t, t.TempDir())
+	if err := setHearthName(cfgPath, "7717"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig rejected numeric-looking name: %v", err)
+	}
+	if cfg.Hearth.Name != "7717" {
+		t.Errorf("Hearth.Name = %q, want %q", cfg.Hearth.Name, "7717")
+	}
+}
+
+func TestSetHearthName_NonMapHearth(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "lararium.yaml")
+	orig := "hearth: 7\n"
+	if err := os.WriteFile(cfgPath, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setHearthName(cfgPath, "Rig 7"); err == nil {
+		t.Fatal("expected error for non-map hearth")
+	}
+	got, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != orig {
+		t.Errorf("file changed: %q", got)
+	}
+}
+
+func TestPromptHearthName(t *testing.T) {
+	scripted := func(lines ...string) func(string) (string, error) {
+		i := 0
+		return func(string) (string, error) {
+			if i >= len(lines) {
+				return "", io.EOF
+			}
+			l := lines[i]
+			i++
+			return l, nil
+		}
+	}
+	tests := []struct {
+		name     string
+		readLine func(string) (string, error)
+		want     string
+	}{
+		{"value", scripted("Rig 7"), "Rig 7"},
+		{"blank", scripted(""), ""},
+		{"eof", scripted(), ""},
+		{"invalid then valid", scripted("bad\x01name", "Rig 7"), "Rig 7"},
+		{"three invalid", scripted(strings.Repeat("x", 65), "a\tb", "c\x02", "Rig 7"), ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath := createSetupTestConfig(t, t.TempDir())
+			before, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			if err := promptHearthName(cfgPath, &out, &errOut, tc.readLine); err != nil {
+				t.Fatalf("promptHearthName: %v", err)
+			}
+			if tc.want == "" {
+				after, err := os.ReadFile(cfgPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Errorf("yaml touched:\n%s", after)
+				}
+				return
+			}
+			cfg, err := LoadConfig(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Hearth.Name != tc.want {
+				t.Errorf("Hearth.Name = %q, want %q", cfg.Hearth.Name, tc.want)
+			}
+		})
+	}
 }
