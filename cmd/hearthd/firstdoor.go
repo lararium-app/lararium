@@ -379,10 +379,135 @@ func promptRemoteAccess(cfgPath string, cfg *Config, out, errOut io.Writer, read
 	return nil
 }
 
+// setHearthName sets hearth.name in an existing yaml config, preserving
+// comments and unrelated YAML via yaml.Node round-trip: the reference config
+// is rich in instructional comments and silent config drift is the failure
+// mode this repo refuses (same discipline as appendAllowedHosts, including
+// the .bak taken before the first rewrite).
+func setHearthName(path, name string) error {
+	bakPath := path + ".bak"
+	if _, err := os.Stat(bakPath); os.IsNotExist(err) {
+		oldBytes, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading config for backup: %w", err)
+		}
+		if err := atomicWriteFile(bakPath, oldBytes, 0o600); err != nil {
+			return fmt.Errorf("writing backup %q: %w", bakPath, err)
+		}
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("decoding YAML nodes: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("invalid YAML structure in %s", path)
+	}
+
+	root := doc.Content[0]
+	var hearthNode *yaml.Node
+	for i := 0; i < len(root.Content); i += 2 {
+		if root.Content[i].Value == "hearth" {
+			hearthNode = root.Content[i+1]
+			break
+		}
+	}
+	if hearthNode == nil {
+		hearthNode = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "hearth"},
+			hearthNode,
+		)
+	} else if hearthNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("invalid YAML structure in %s: hearth is not a mapping", path)
+	}
+
+	// DoubleQuotedStyle so a numeric-looking name (e.g. "7717") still
+	// round-trips back into the string field LoadConfig expects.
+	nameNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name, Style: yaml.DoubleQuotedStyle}
+	for i := 0; i < len(hearthNode.Content); i += 2 {
+		if hearthNode.Content[i].Value == "name" {
+			hearthNode.Content[i+1] = nameNode
+			return marshalNodeToFile(&doc, path)
+		}
+	}
+	hearthNode.Content = append(hearthNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: "name"},
+		nameNode,
+	)
+	return marshalNodeToFile(&doc, path)
+}
+
+func marshalNodeToFile(doc *yaml.Node, path string) error {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2) // match appendAllowedHosts: keep the config's 2-space house style
+	if err := enc.Encode(doc); err != nil {
+		_ = enc.Close()
+		return fmt.Errorf("encoding YAML: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("encoding YAML: %w", err)
+	}
+	if err := atomicWriteFile(path, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("writing updated config: %w", err)
+	}
+	return nil
+}
+
+// validateHearthName rejects names that cannot be shown safely in a client header.
+func validateHearthName(name string) error {
+	if len([]rune(name)) > 64 {
+		return errors.New("hearth name cannot exceed 64 characters")
+	}
+	for _, r := range name {
+		if r < 0x20 {
+			return errors.New("hearth name cannot contain control characters")
+		}
+	}
+	return nil
+}
+
+// promptHearthName asks for the display name paired devices show for this
+// hearth. It is optional: EOF, empty, or repeated invalid input all fall back
+// to the hostname default rather than failing setup.
+func promptHearthName(cfgPath string, out, errOut io.Writer, readLine func(string) (string, error)) error {
+	const maxAttempts = 3
+	for range maxAttempts {
+		raw, err := readLine("Hearth display name (shown to paired devices) [Enter = hostname]: ")
+		if err != nil {
+			raw = ""
+		}
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			fmt.Fprintln(out, "Using the machine hostname as the hearth name.")
+			return nil
+		}
+		if err := validateHearthName(name); err != nil {
+			fmt.Fprintln(errOut, err)
+			continue
+		}
+		if err := setHearthName(cfgPath, name); err != nil {
+			return fmt.Errorf("updating hearth.name: %w", err)
+		}
+		return nil
+	}
+	fmt.Fprintln(out, "Too many invalid names; using the machine hostname as the hearth name.")
+	return nil
+}
+
 // runFirstDoorFlow executes the two interactive steps in order (spec §1, §2).
 func runFirstDoorFlow(cfgPath string, cfg *Config, out, errOut io.Writer, readLine func(string) (string, error), defaultDeviceName string) error {
 	if _, err := runFirstDoorStep(cfg, out, errOut, readLine, defaultDeviceName); err != nil {
 		return err
 	}
-	return promptRemoteAccess(cfgPath, cfg, out, errOut, readLine)
+	if err := promptRemoteAccess(cfgPath, cfg, out, errOut, readLine); err != nil {
+		return err
+	}
+	return promptHearthName(cfgPath, out, errOut, readLine)
 }
