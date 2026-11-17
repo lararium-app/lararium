@@ -174,6 +174,7 @@ func (probeFailStub) Name() string { return "pf" }
 func (probeFailStub) Capabilities(context.Context) (router.Caps, error) {
 	return router.Caps{}, fmt.Errorf("probe down")
 }
+
 func (probeFailStub) Complete(_ context.Context, _ []router.Message, _ router.Options) (*router.Completion, error) {
 	return &router.Completion{Text: "SUMMARY", Model: "pf"}, nil
 }
