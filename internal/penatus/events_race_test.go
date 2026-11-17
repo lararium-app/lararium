@@ -120,7 +120,7 @@ func TestResyncDetectsExternalCorruption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := log.Append(Event{T: "msg", Fields: fields("ok")}); err != nil {
 			t.Fatal(err)
 		}
