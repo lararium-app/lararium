@@ -102,7 +102,13 @@ func TestTurn_CompactsAfterCleanTurnOverTrigger(t *testing.T) {
 	}
 }
 
-func TestTurn_FailedTurnDoesNotCompact(t *testing.T) {
+// SOAK-INCIDENT-2026-11-15 defect C: a provider-error turn that is
+// over the compaction trigger MUST attempt compaction — the broken cron
+// session overflowed every tick and never healed because failed turns
+// skipped the post-turn compact check (doom loop). Under-trigger failed
+// turns still compact nothing (cheap no-op; covered by the clean-turn
+// tests' default dirs).
+func TestTurn_FailedTurnCompactsWhenOverTrigger(t *testing.T) {
 	mainSP := okProvider(10, "")
 	mainSP.replies = func(int, []router.Message) (*router.Completion, error) {
 		return nil, errors.New("connection refused")
@@ -111,8 +117,8 @@ func TestTurn_FailedTurnDoesNotCompact(t *testing.T) {
 	if err := hub.RunHeadlessTurn(context.Background(), "main", "hello", "cron", 0, nil); err == nil {
 		t.Fatal("expected turn error")
 	}
-	if n := countCompacts(t, hub); n != 0 {
-		t.Fatalf("compact events = %d, want 0 after failed turn", n)
+	if n := countCompacts(t, hub); n != 1 {
+		t.Fatalf("compact events = %d, want 1 (failed turn must heal an over-trigger session)", n)
 	}
 }
 

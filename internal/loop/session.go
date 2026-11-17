@@ -215,18 +215,44 @@ func decodeInto(ev penatus.Event, dst any) {
 // completions until the model answers without calling tools (or maxSteps).
 // Returns the final assistant text.
 func (s *Session) RunTurn(ctx context.Context, userText string, onDelta func(string)) (string, error) {
-	return s.runTurn(ctx, userText, onDelta, nil)
+	return s.runTurn(ctx, userText, onDelta, nil, defaultMaxToolCallsPerTurn)
 }
+
+// Tool-call fanout bounds (SOAK-INCIDENT-2026-11-15, defect A). A cron
+// model emitted 452 identical tool calls in one round; the loop executed
+// them all. Caps keep a runaway model bounded while staying
+// informative: over-cap calls are still recorded (approval "capped")
+// with a guidance result so the model can recover instead of stalling.
+const (
+	// maxToolCallsPerRound bounds tool calls executed in a single round.
+	// Anything over this in one answer is model confusion, not intent.
+	maxToolCallsPerRound = 8
+
+	// defaultMaxToolCallsPerTurn bounds executed tool calls across one
+	// turn, independent of round count (maxSteps x per-round alone
+	// still allows ~96).
+	defaultMaxToolCallsPerTurn = 64
+)
+
+// cappedToolResult is the tool_result text an over-cap call receives.
+const cappedToolResult = "[capped] Tool-call fanout limit reached for this turn. " +
+	"Repeat calls were NOT executed. Stop looping: consolidate into one action or answer directly."
 
 // RunTurnTools is RunTurn with a tool registry + approval hook.
 func (s *Session) RunTurnTools(ctx context.Context, userText string, onDelta func(string), tools []Tool, ap Approver) (string, error) {
-	return s.runTurn(ctx, userText, onDelta, newToolEngine(tools, s.Log.Dir(), ap))
+	return s.runTurnToolsBounded(ctx, userText, onDelta, tools, ap, defaultMaxToolCallsPerTurn)
+}
+
+// runTurnToolsBounded is RunTurnTools with an explicit per-turn executed
+// tool-call budget (tests and special channels only).
+func (s *Session) runTurnToolsBounded(ctx context.Context, userText string, onDelta func(string), tools []Tool, ap Approver, maxCalls int) (string, error) {
+	return s.runTurn(ctx, userText, onDelta, newToolEngine(tools, s.Log.Dir(), ap), maxCalls)
 }
 
 // maxSteps bounds one user turn's model round-trips (no infinite tool loops).
 const maxSteps = 12
 
-func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
+func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine, maxCalls int) (string, error) {
 	ctx = withSession(ctx, s)
 	// Turn-pinned key snapshot (KEYS-SPEC K6): one registry read at
 	// turn start; every provider call in this turn resolves through
@@ -256,6 +282,8 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 	_, _ = penatus.SetTitleIfEmpty(s.Log.Dir(), userText)
 
 	var final string
+	// turnCalls spans the whole turn (budget); roundCalls is per round.
+	turnCalls := 0
 	for range maxSteps {
 		msgs := s.messages()
 		opts := router.Options{MaxTokens: s.MaxTokens}
@@ -307,7 +335,20 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 		// Tool round: log the assistant's call turn, then dispatch each.
 		// The messages() projection rebuilds wire shape from these events,
 		// so the log stays the single source of truth.
+		//
+		// Fanout caps (SOAK-INCIDENT-2026-11-15 defect A): over-cap calls
+		// are still logged (audit trail stays complete) but never reach
+		// Gate or Execute — they get a canned guidance result so the
+		// model sees why and can recover.
+		roundCalls := 0
 		for _, tc := range comp.ToolCalls {
+			roundCalls++
+			capped := false
+			if roundCalls > maxToolCallsPerRound || turnCalls >= maxCalls {
+				capped = true
+			} else {
+				turnCalls++
+			}
 			extra := tc.ExtraContent
 			if isExtraEmpty(extra) {
 				extra = comp.ExtraContent
@@ -322,7 +363,13 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			if !json.Valid(args) {
 				args = raw(tc.ArgsJSON)
 			}
-			approval, tool, denyText := eng.Gate(tc)
+			var approval, denyText string
+			var tool *Tool
+			if capped {
+				approval = "capped"
+			} else {
+				approval, tool, denyText = eng.Gate(tc)
+			}
 			// A5/V7: a cancelled turn commits NOTHING for the gated
 			// call — the tool never ran and the absence of records IS
 			// the record. Bail before tool_call so no dispatch line
@@ -341,9 +388,12 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			}
 
 			var out ToolOutcome
-			if tool != nil {
+			switch {
+			case capped:
+				out = ToolOutcome{Approval: approval, OK: false, Text: cappedToolResult, Digest: digest(tc.ArgsJSON)}
+			case tool != nil:
 				out = eng.Execute(ctx, tc, tool, approval)
-			} else {
+			default:
 				if ctx.Err() != nil {
 					return final, ctx.Err()
 				}
@@ -466,19 +516,31 @@ func (s *Session) MaybeCompact(ctx context.Context) (bool, error) {
 	// Trigger per spec: prompt tokens > triggerPct% of probed window,
 	// using the real completion usage when the provider reports it.
 	caps, err := s.Router.Probe(ctx, "chat")
-	if err != nil || caps.ContextLength <= 0 {
-		//nolint:nilerr // can't trigger what we can't measure; probe failure is not the caller's error
-		return false, nil
+	ctxLen := 0
+	if err == nil && caps.ContextLength > 0 {
+		ctxLen = caps.ContextLength
 	}
 	approx := s.lastIn
 	if approx <= 0 {
 		approx = estTokens(s.messages())
 	}
-	if approx*100 <= caps.ContextLength*s.TriggerPct {
+	if ctxLen <= 0 {
+		// SOAK-INCIDENT-2026-11-15 defect C: a probe failure used to
+		// disable compaction entirely, and the broken cron session grew
+		// unbounded. Fall back to a conservative floor so an oversized
+		// transcript still gets bounded; over-compacting is always the
+		// safe direction (the log itself is never rewritten).
+		ctxLen = compactFallbackContextLen
+	}
+	if approx*100 <= ctxLen*s.TriggerPct {
 		return false, nil
 	}
 	return true, s.Compact(ctx)
 }
+
+// compactFallbackContextLen is the context-window floor used when the
+// router probe fails or reports no window (see MaybeCompact).
+const compactFallbackContextLen = 16384
 
 // Compact summarizes everything after the last compact (minus the most
 // recent turns, kept verbatim) and appends the compact event.

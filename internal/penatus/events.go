@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // CorruptError indicates a seq gap or duplicate in an events log.
@@ -80,7 +83,17 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 }
 
 // Log is an append-only events.jsonl log for a session.
+//
+// Concurrency contract (SOAK-INCIDENT-2026-11-15, defect B): appends are
+// serialized in-process by mu AND across Log instances/processes by an
+// flock on a sidecar lock file. The next seq is always re-derived from
+// the file while the lock is held, so a stale cached instance can never
+// assign a duplicate seq to a second concurrent writer.
 type Log struct {
+	// mu guards every field below (and the in-memory events mirror).
+	// Append additionally holds the file lock while assigning seq,
+	// writing, and re-deriving nextSeq.
+	mu       sync.Mutex
 	dir      string
 	path     string
 	readOnly bool
@@ -155,9 +168,37 @@ func OpenLog(dir string) (*Log, error) {
 // Append writes an event to the log with O_APPEND and fsync.
 // Assigns Seq (next) and TS (UTC now, RFC3339Nano) if empty.
 // Refuses on a read-only (corrupt) log.
+//
+// The seq assignment and the write happen while holding both the
+// in-process mutex and an exclusive flock on the sidecar lock file, and
+// nextSeq is re-derived from the on-disk tail first. Two concurrent
+// writers (scheduler wake vs. turn completion, separate Log instances
+// or separate processes) therefore serialize instead of colliding on a
+// cached seq — the seq=898 duplicate that corrupted the SOAK-INCIDENT
+// transcript could not happen under this contract.
 func (l *Log) Append(e Event) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.appendLocked(e)
+}
+
+// appendLocked performs the locked append. Callers hold l.mu.
+func (l *Log) appendLocked(e Event) error {
 	if l.readOnly {
 		return fmt.Errorf("log is read-only (corrupt)")
+	}
+
+	unlock, err := l.lockFile()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	// Re-derive seq from disk while the lock is held: another writer
+	// (this or another process) may have appended since our open or
+	// last append. resyncLocked() only advances nextSeq, never rewinds.
+	if err := l.resyncLocked(); err != nil {
+		return err
 	}
 
 	if e.Seq == 0 {
@@ -193,10 +234,92 @@ func (l *Log) Append(e Event) error {
 	return nil
 }
 
+// lockFile takes an exclusive flock on <events.jsonl>.lock and returns
+// the unlock func. The sidecar (not events.jsonl itself) is locked so
+// readers opening the transcript never block behind the lock semantics
+// on the data file.
+func (l *Log) lockFile() (func(), error) {
+	lockPath := l.path + ".lock"
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(lf.Fd()), unix.LOCK_EX); err != nil {
+		lf.Close()
+		return nil, fmt.Errorf("lock %s: %w", lockPath, err)
+	}
+	return func() {
+		_ = unix.Flock(int(lf.Fd()), unix.LOCK_UN)
+		_ = lf.Close()
+	}, nil
+}
+
+// resyncLocked re-reads the on-disk tail while the file lock is held and
+// advances nextSeq (and the in-memory mirror) past anything appended by
+// another writer. Returns an error if the file shrank or a seq gap or
+// duplicate appears (the log is then marked read-only, same as OpenLog).
+func (l *Log) resyncLocked() error {
+	f, err := os.Open(l.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Nobody has written yet; our own append will create it.
+			if l.nextSeq == 0 {
+				l.nextSeq = 1
+			}
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	expected := int64(1)
+	var tail []Event
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var evt Event
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			l.readOnly = true
+			return fmt.Errorf("penatus: resync parse error: %w", err)
+		}
+		if evt.Seq != expected {
+			l.readOnly = true
+			return CorruptError{Got: evt.Seq, Want: expected}
+		}
+		tail = append(tail, evt)
+		expected++
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if int64(len(tail)) < int64(len(l.events)) {
+		// File shrank under us — treat as corruption; never rewind.
+		l.readOnly = true
+		return fmt.Errorf("penatus: log shrank (%d lines < %d cached)", len(tail), len(l.events))
+	}
+	// Mirror what we missed so Live() sees the other writer's events too.
+	l.events = tail
+	l.nextSeq = expected
+	return nil
+}
+
 // Live returns events that are not tombstoned. If a compact event exists,
 // assembly per spec §3 is applied: summary replaces its covers range,
 // kept members ride along. Handles transitive nested compactions.
+//
+// The snapshot is taken under mu so a concurrent Append can neither race
+// the slice read nor alias the backing array.
 func (l *Log) Live() []Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.liveLocked()
+}
+
+func (l *Log) liveLocked() []Event {
 	// Build tombstone set
 	tombstoned := make(map[int64]bool)
 	for _, e := range l.events {

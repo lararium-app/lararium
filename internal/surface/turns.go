@@ -681,6 +681,12 @@ func (h *Hub) executeTurn(
 				TS:     time.Now().UTC().Format(time.RFC3339),
 				Fields: asstFields,
 			})
+			// SOAK-INCIDENT-2026-11-15 defect C: an overflow-failed turn
+			// previously skipped compaction entirely, so the broken
+			// session could never heal (doom loop). Try a bounded
+			// compaction attempt on provider-error turns too; under-
+			// trigger sessions return cheaply with no effect.
+			h.maybeCompact(engineCtx, sess, sessionID)
 			ts.terminal("error", payloadJSON(map[string]string{"error": reason}))
 			return err
 		}
