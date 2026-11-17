@@ -14,8 +14,7 @@ import (
 // final answer. Reproduces the SOAK-INCIDENT-2026-11-15 shape (model
 // emitted 452 identical calls in one round).
 type fanoutStub struct {
-	n         int
-	execCount *int
+	n int
 }
 
 func (f *fanoutStub) Name() string { return "fanout" }
@@ -184,7 +183,7 @@ func TestCompactProbeFailFallback(t *testing.T) {
 	s := fanoutSession(t, probeFailStub{})
 	// Seed transcripts well over the fallback floor (16384*0.8 ≈ 13107
 	// tokens ≈ 52k chars of content per estTokens len/4 rule).
-	for i := 0; i < 24; i++ {
+	for range 24 {
 		if _, err := s.RunTurn(context.Background(), strings.Repeat("word ", 4000), nil); err != nil {
 			t.Fatal(err)
 		}

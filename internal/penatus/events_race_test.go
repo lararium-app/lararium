@@ -22,7 +22,7 @@ func jam(path, line string) {
 		panic(err)
 	}
 	defer f.Close()
-	if _, err := f.Write([]byte(line + "\n")); err != nil {
+	if _, err := f.WriteString(line + "\n"); err != nil {
 		panic(err)
 	}
 }
@@ -38,7 +38,7 @@ func TestConcurrentAppendSeparateInstances(t *testing.T) {
 	const writers, perWriter = 4, 25
 
 	var wg sync.WaitGroup
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		// Each writer opens its OWN Log from disk — models the
 		// scheduler-wake path (fresh OpenLog per event) racing a
 		// persistent turn Log.
@@ -49,7 +49,7 @@ func TestConcurrentAppendSeparateInstances(t *testing.T) {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < perWriter; i++ {
+			for i := range perWriter {
 				if err := log.Append(Event{
 					T:      "msg",
 					Fields: fields(fmt.Sprintf("w%d_%d", w, i)),
@@ -87,11 +87,11 @@ func TestConcurrentAppendSameInstance(t *testing.T) {
 	const writers, perWriter = 8, 50
 
 	var wg sync.WaitGroup
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < perWriter; i++ {
+			for i := range perWriter {
 				if err := log.Append(Event{
 					T:      "tool_result",
 					Fields: fields(fmt.Sprintf("g%d_%d", w, i)),
