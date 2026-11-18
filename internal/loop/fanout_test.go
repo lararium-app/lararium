@@ -20,12 +20,13 @@ func (p *fanoutProvider) Name() string { return "fan" }
 func (p *fanoutProvider) Capabilities(context.Context) (router.Caps, error) {
 	return router.Caps{}, nil
 }
+
 func (p *fanoutProvider) Complete(context.Context, []router.Message, router.Options) (*router.Completion, error) {
 	if atomic.AddInt32(&p.n, 1) > 1 {
 		return &router.Completion{Text: "done", Model: "fan"}, nil
 	}
 	c := &router.Completion{Model: "fan"}
-	for i := 0; i < p.calls; i++ {
+	for i := range p.calls {
 		c.ToolCalls = append(c.ToolCalls, router.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "echo", ArgsJSON: `{}`})
 	}
 	return c, nil
@@ -40,8 +41,10 @@ func TestFanoutCapDropsExcessToolCalls(t *testing.T) {
 	}
 	rt := router.NewRouter(router.Profile{Chain: []router.Target{{Provider: sp}}})
 	var warns []string
-	s := &Session{Log: log, Sys: "SYS", Router: rt, MaxToolCalls: limit,
-		Warnf: func(f string, a ...any) { warns = append(warns, fmt.Sprintf(f, a...)) }}
+	s := &Session{
+		Log: log, Sys: "SYS", Router: rt, MaxToolCalls: limit,
+		Warnf: func(f string, a ...any) { warns = append(warns, fmt.Sprintf(f, a...)) },
+	}
 	ran := 0
 	tools := []Tool{{
 		Spec:    router.ToolSpec{Name: "echo", ParamsJSONSchema: `{"type":"object"}`},
