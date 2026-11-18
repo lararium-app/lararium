@@ -781,7 +781,7 @@ func TestLogConcurrentAppendUniqueSeq(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, writers*per)
-	for w := 0; w < writers; w++ {
+	for range writers {
 		// Separate handle per writer, like scheduler vs turn writer.
 		l, err := OpenLog(dir)
 		if err != nil {
@@ -790,7 +790,7 @@ func TestLogConcurrentAppendUniqueSeq(t *testing.T) {
 		wg.Add(1)
 		go func(l *Log) {
 			defer wg.Done()
-			for i := 0; i < per; i++ {
+			for range per {
 				if err := l.Append(Event{T: "msg"}); err != nil {
 					errs <- err
 				}
