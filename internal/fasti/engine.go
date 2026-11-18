@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/loop"
+	"github.com/lararium-app/lararium/internal/router"
 )
 
 // ErrTurnInFlight is returned when a turn is already running for the session.
@@ -1711,6 +1712,14 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 		} else {
 			// Non-concurrency error
 			job.BudgetCounters.TotalFailures++
+			if router.IsContextOverflow(res.err) {
+				job.ConsecutiveContextFailures++
+				if job.ConsecutiveContextFailures >= ContextFailureWarnThreshold {
+					job.Warning = fmt.Sprintf("context overflow on %d consecutive runs; session transcript is too large (archive or compact it)", job.ConsecutiveContextFailures)
+				}
+			} else {
+				job.ConsecutiveContextFailures = 0
+			}
 			_, _ = e.journal.Append(JournalEvent{
 				Type:      "fasti_fired",
 				Status:    "failed",
@@ -1725,6 +1734,8 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 	} else {
 		// Firing successful
 		job.ConsecutiveSkips = 0
+		job.ConsecutiveContextFailures = 0
+		job.Warning = ""
 		job.LastFire = now.Format(time.RFC3339)
 		job.BudgetCounters.TotalRuns++
 
