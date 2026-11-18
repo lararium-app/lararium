@@ -160,7 +160,13 @@ var pathLocks sync.Map // map[string]*sync.Mutex
 
 func lockFor(path string) *sync.Mutex {
 	m, _ := pathLocks.LoadOrStore(path, &sync.Mutex{})
-	return m.(*sync.Mutex)
+	mu, ok := m.(*sync.Mutex)
+	if !ok {
+		// pathLocks is package-private and only ever stores *sync.Mutex;
+		// the fallback is unreachable — return a fresh lock, never panic.
+		mu = &sync.Mutex{}
+	}
+	return mu
 }
 
 // lastSeqOnDisk returns the seq of the last non-empty line in path
