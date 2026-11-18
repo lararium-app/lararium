@@ -1712,14 +1712,7 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 		} else {
 			// Non-concurrency error
 			job.BudgetCounters.TotalFailures++
-			if router.IsContextOverflow(res.err) {
-				job.ConsecutiveContextFailures++
-				if job.ConsecutiveContextFailures >= ContextFailureWarnThreshold {
-					job.Warning = fmt.Sprintf("context overflow on %d consecutive runs; session transcript is too large (archive or compact it)", job.ConsecutiveContextFailures)
-				}
-			} else {
-				job.ConsecutiveContextFailures = 0
-			}
+			noteContextFailure(job, res.err)
 			_, _ = e.journal.Append(JournalEvent{
 				Type:      "fasti_fired",
 				Status:    "failed",
@@ -1890,6 +1883,20 @@ func (e *Engine) calculateNextDue(job *Job, from time.Time) (NextDueResult, erro
 	}
 
 	return res, nil
+}
+
+// noteContextFailure updates a job's consecutive context-overflow counter
+// after a failed run (#292): increments and warns at the threshold on an
+// overflow error, resets on any other failure.
+func noteContextFailure(job *Job, err error) {
+	if router.IsContextOverflow(err) {
+		job.ConsecutiveContextFailures++
+		if job.ConsecutiveContextFailures >= ContextFailureWarnThreshold {
+			job.Warning = fmt.Sprintf("context overflow on %d consecutive runs; session transcript is too large (archive or compact it)", job.ConsecutiveContextFailures)
+		}
+		return
+	}
+	job.ConsecutiveContextFailures = 0
 }
 
 func (e *Engine) findJob(id string) *Job {
