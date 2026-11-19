@@ -74,6 +74,11 @@ type HearthConfig struct {
 	CompactionTriggerPct int `yaml:"compaction_trigger_pct"`
 	// MaxTokens caps each generation (0 = provider default).
 	MaxTokens int `yaml:"max_tokens"`
+	// MaxToolCallsPerTurn caps EXECUTED tool calls per turn (fan-out guard,
+	// #291; default 32 when 0). Sits beside the fixed 12-round loop cap:
+	// rounds bound model calls, this bounds parallel calls inside them.
+	// Excess calls are not run; the model gets a "not executed" result.
+	MaxToolCallsPerTurn int `yaml:"max_tool_calls_per_turn"`
 	// Name is the display name reported on GET /v1/health so clients can show
 	// WHICH hearth they are talking to; empty means default to the machine
 	// hostname at request time.
@@ -623,6 +628,7 @@ func serve(cfgPath string) {
 	ap := surface.NewApprovalHub(cfg.Serve.ApprovalTimeout)
 	hub := surface.NewHub(cfg.Serve, home, cfg.Hearth.MaxTokens, cfg.Hearth.CompactionTriggerPct, tools, rt, ap)
 	hub.AttachKeys(keyReg)
+	hub.MaxToolCalls = cfg.Hearth.MaxToolCallsPerTurn
 
 	attachWakes(hub, sched)
 

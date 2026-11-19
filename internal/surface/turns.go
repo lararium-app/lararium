@@ -39,9 +39,11 @@ type turn struct {
 // Hub runs HTTP-initiated turns through the frozen loop engine, one turn
 // per session at a time (spec §5 concurrency gate).
 type Hub struct {
-	cfg                  ServeConfig
-	hearthHome           string
-	maxTokens            int
+	cfg        ServeConfig
+	hearthHome string
+	maxTokens  int
+	// MaxToolCalls is the per-turn executed tool-call cap (0 = loop default).
+	MaxToolCalls         int
 	compactionTriggerPct int
 	tools                []loop.Tool
 	// toolSource, when set, contributes dynamic tools (MCP rail,
@@ -644,6 +646,7 @@ func (h *Hub) executeTurn(
 	sess := &loop.Session{
 		Secrets:        h.secretsFn(),
 		MaxTokens:      h.maxTokens,
+		MaxToolCalls:   h.MaxToolCalls,
 		OnTool:         onTool,
 		Log:            log,
 		Sys:            sys,
