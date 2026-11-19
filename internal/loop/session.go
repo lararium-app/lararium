@@ -243,6 +243,18 @@ func fanoutDropText(limit int) string {
 	return fmt.Sprintf("not executed: per-turn tool-call fan-out limit (%d) reached", limit)
 }
 
+// tryOverflowRecovery reports whether a failed round should be retried after
+// forcing one compaction pass (context-overflow recovery, #292). It fires at
+// most once per turn: the flag flips the moment recovery is attempted,
+// regardless of whether the compaction itself succeeds.
+func (s *Session) tryOverflowRecovery(ctx context.Context, err error, attempted *bool) bool {
+	if !router.IsContextOverflow(err) || *attempted {
+		return false
+	}
+	*attempted = true
+	return s.Compact(ctx) == nil
+}
+
 func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
 	ctx = withSession(ctx, s)
 	// Turn-pinned key snapshot (KEYS-SPEC K6): one registry read at
@@ -299,11 +311,8 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			// Context overflow: force one compaction pass and retry the
 			// round once. The user message is already logged, so the
 			// retry re-projects messages() without duplicating it.
-			if router.IsContextOverflow(err) && !compactedOnOverflow {
-				compactedOnOverflow = true
-				if cerr := s.Compact(ctx); cerr == nil {
-					continue
-				}
+			if s.tryOverflowRecovery(ctx, err, &compactedOnOverflow) {
+				continue
 			}
 			return final, fmt.Errorf("complete: %w", err)
 		}
