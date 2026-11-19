@@ -278,6 +278,7 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 		limit = DefaultMaxToolCalls
 	}
 	executed, warned := 0, false
+	compactedOnOverflow := false
 	for range maxSteps {
 		msgs := s.messages()
 		opts := router.Options{MaxTokens: s.MaxTokens}
@@ -295,6 +296,15 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			return nil
 		})
 		if err != nil {
+			// Context overflow: force one compaction pass and retry the
+			// round once. The user message is already logged, so the
+			// retry re-projects messages() without duplicating it.
+			if router.IsContextOverflow(err) && !compactedOnOverflow {
+				compactedOnOverflow = true
+				if cerr := s.Compact(ctx); cerr == nil {
+					continue
+				}
+			}
 			return final, fmt.Errorf("complete: %w", err)
 		}
 		s.lastIn, s.lastOut = comp.InTokens, comp.OutTokens
@@ -569,6 +579,12 @@ func (s *Session) Compact(ctx context.Context) error {
 		decodeInto(ev, &f)
 		transcript += fmt.Sprintf("[%s] %s\n", f.Role, f.Text)
 	}
+	// Bound the summarizer's own input so compacting an already-oversized
+	// transcript cannot itself overflow the compact model's window; the
+	// oldest text is dropped first.
+	if len(transcript) > maxCompactInputBytes {
+		transcript = transcript[len(transcript)-maxCompactInputBytes:]
+	}
 
 	req := []router.Message{
 		{Role: router.RoleSystem, Content: compactInstruction},
@@ -599,6 +615,9 @@ func (s *Session) Compact(ctx context.Context) error {
 	}
 	return nil
 }
+
+// maxCompactInputBytes caps the transcript text sent to the summarizer.
+const maxCompactInputBytes = 48 * 1024
 
 const compactInstruction = `Summarize the conversation transcript for continuation as context.
 Preserve VERBATIM: every decision made, every task opened, every named entity

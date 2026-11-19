@@ -108,7 +108,8 @@ func TestTurn_FailedTurnDoesNotCompact(t *testing.T) {
 		return nil, errors.New("connection refused")
 	}
 	hub := compactHub(t, mainSP, okProvider(10, "SUMMARY"))
-	if err := hub.RunHeadlessTurn(context.Background(), "main", "hello", "cron", 0, nil); err == nil {
+	// Interactive channel: only scheduled channels compact pre-turn.
+	if err := hub.RunHeadlessTurn(context.Background(), "main", "hello", "telegram", 0, nil); err == nil {
 		t.Fatal("expected turn error")
 	}
 	if n := countCompacts(t, hub); n != 0 {
@@ -141,5 +142,56 @@ func TestTurn_UnderTriggerNoCompact(t *testing.T) {
 	}
 	if n := countCompacts(t, hub); n != 0 {
 		t.Fatalf("compact events = %d, want 0 under trigger", n)
+	}
+}
+
+// Regression (#292a): a scheduled session whose transcript is already over
+// the trigger is compacted BEFORE the turn, so a turn that would then fail
+// cannot leave the prompt growing.
+func TestTurn_ScheduledSessionCompactsBeforeTurn(t *testing.T) {
+	mainSP := okProvider(10, "")
+	mainSP.replies = func(int, []router.Message) (*router.Completion, error) {
+		return nil, errors.New("connection refused")
+	}
+	hub := compactHub(t, mainSP, okProvider(10, "SUMMARY"))
+	if err := hub.RunHeadlessTurn(context.Background(), "main", "hello", "cron", 0, nil); err == nil {
+		t.Fatal("expected turn error")
+	}
+	if n := countCompacts(t, hub); n != 1 {
+		t.Fatalf("compact events = %d, want 1 (pre-turn) for cron channel", n)
+	}
+}
+
+// Regression (#292b): a provider context-overflow forces a compaction and
+// the turn is retried exactly once.
+func TestTurn_ContextOverflowCompactsAndRetriesOnce(t *testing.T) {
+	overflow := errors.New("HTTP 400: request (65959 tokens) exceeds the available context size (32768 tokens)")
+	mainSP := okProvider(1000000, "")
+	mainSP.replies = func(n int, _ []router.Message) (*router.Completion, error) {
+		if n == 1 {
+			return nil, overflow
+		}
+		return &router.Completion{Text: "recovered", Model: "stub"}, nil
+	}
+	hub := compactHub(t, mainSP, okProvider(1000000, "SUMMARY"))
+	if err := hub.RunHeadlessTurn(context.Background(), "main", "hello", "telegram", 0, nil); err != nil {
+		t.Fatalf("turn should recover, got %v", err)
+	}
+	if n := countCompacts(t, hub); n != 1 {
+		t.Fatalf("compact events = %d, want 1", n)
+	}
+	if mainSP.n != 2 {
+		t.Fatalf("main provider calls = %d, want 2 (one retry)", mainSP.n)
+	}
+
+	// Persistent overflow: only ONE retry, then the turn fails.
+	alwaysSP := okProvider(1000000, "")
+	alwaysSP.replies = func(int, []router.Message) (*router.Completion, error) { return nil, overflow }
+	hub2 := compactHub(t, alwaysSP, okProvider(1000000, "SUMMARY"))
+	if err := hub2.RunHeadlessTurn(context.Background(), "main", "hello", "telegram", 0, nil); err == nil {
+		t.Fatal("expected failure on persistent overflow")
+	}
+	if alwaysSP.n != 2 {
+		t.Fatalf("calls = %d, want exactly 2 (initial + one retry)", alwaysSP.n)
 	}
 }
