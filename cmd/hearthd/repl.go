@@ -96,8 +96,9 @@ func buildRuntime(cfg *Config, chain []string) (*runtime, error) {
 		secrets = v.Needles
 	}
 	sess := &loop.Session{
-		Secrets:   secrets,
-		MaxTokens: cfg.Hearth.MaxTokens,
+		Secrets:      secrets,
+		MaxTokens:    cfg.Hearth.MaxTokens,
+		MaxToolCalls: cfg.Hearth.MaxToolCallsPerTurn,
 		OnTool: func(phase, name, approval string, ok bool) {
 			if phase == "start" {
 				fmt.Printf("\n  ⚙ calling %s (%s)…\n", name, approval)

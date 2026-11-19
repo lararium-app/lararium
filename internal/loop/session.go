@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,6 +58,12 @@ type Session struct {
 	// event at write time (CREDHANDLE-SPEC R3/D3). nil disables. A closure
 	// keeps loop free of any custos import.
 	Secrets func() []string
+	// MaxToolCalls caps EXECUTED tool calls per turn across all rounds
+	// (fan-out guard, #291). 0 = DefaultMaxToolCalls. Calls beyond the cap
+	// are not run; each gets a synthesized tool_result saying so.
+	MaxToolCalls int
+	// Warnf receives the fan-out WARN (nil = standard logger).
+	Warnf func(format string, args ...any)
 
 	// lastUsage carries In/Out tokens from the most recent completion so
 	// the trigger check uses real counts when available.
@@ -226,6 +233,16 @@ func (s *Session) RunTurnTools(ctx context.Context, userText string, onDelta fun
 // maxSteps bounds one user turn's model round-trips (no infinite tool loops).
 const maxSteps = 12
 
+// DefaultMaxToolCalls bounds executed tool calls per turn (config key
+// hearth.max_tool_calls_per_turn). maxSteps bounds rounds; this bounds
+// fan-out inside them.
+const DefaultMaxToolCalls = 32
+
+// fanoutDropText is the tool_result the model sees for a dropped call.
+func fanoutDropText(limit int) string {
+	return fmt.Sprintf("not executed: per-turn tool-call fan-out limit (%d) reached", limit)
+}
+
 func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
 	ctx = withSession(ctx, s)
 	// Turn-pinned key snapshot (KEYS-SPEC K6): one registry read at
@@ -256,6 +273,11 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 	_, _ = penatus.SetTitleIfEmpty(s.Log.Dir(), userText)
 
 	var final string
+	limit := s.MaxToolCalls
+	if limit <= 0 {
+		limit = DefaultMaxToolCalls
+	}
+	executed, warned := 0, false
 	for range maxSteps {
 		msgs := s.messages()
 		opts := router.Options{MaxTokens: s.MaxTokens}
@@ -307,6 +329,8 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 		// Tool round: log the assistant's call turn, then dispatch each.
 		// The messages() projection rebuilds wire shape from these events,
 		// so the log stays the single source of truth.
+		attempted := executed + len(comp.ToolCalls) // cumulative this turn
+		before := executed
 		for _, tc := range comp.ToolCalls {
 			extra := tc.ExtraContent
 			if isExtraEmpty(extra) {
@@ -322,6 +346,30 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			if !json.Valid(args) {
 				args = raw(tc.ArgsJSON)
 			}
+			if executed >= limit {
+				// Fan-out guard: drop BEFORE gating/dispatch, but keep the
+				// call/result pair so the model sees why and can recover.
+				if !warned {
+					warned = true
+					s.warnf("tool-call fan-out limit tripped: session=%s attempted=%d allowed=%d (round attempted %d calls, %d already executed)",
+						filepath.Base(s.Log.Dir()), attempted, limit, len(comp.ToolCalls), before)
+				}
+				if err := s.appendEvent("tool_call", map[string]json.RawMessage{
+					"call_id": raw(tc.ID), "name": raw(tc.Name), "args": args,
+					"approval": raw("denied:fanout-limit"),
+				}); err != nil {
+					return final, fmt.Errorf("log tool_call: %w", err)
+				}
+				if err := s.appendEvent("tool_result", map[string]json.RawMessage{
+					"call_id": raw(tc.ID), "ok": mustJSON(false),
+					"result_digest": raw(digest(tc.ArgsJSON)),
+					"text":          raw(fanoutDropText(limit)),
+				}); err != nil {
+					return final, fmt.Errorf("log tool_result: %w", err)
+				}
+				continue
+			}
+			executed++
 			approval, tool, denyText := eng.Gate(tc)
 			// A5/V7: a cancelled turn commits NOTHING for the gated
 			// call — the tool never ran and the absence of records IS
@@ -377,6 +425,14 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 		final = text
 	}
 	return final, fmt.Errorf("tool loop exceeded %d steps", maxSteps)
+}
+
+func (s *Session) warnf(format string, args ...any) {
+	if s.Warnf != nil {
+		s.Warnf(format, args...)
+		return
+	}
+	log.Printf("WARN "+format, args...)
 }
 
 func (s *Session) appendEvent(t string, fields map[string]json.RawMessage) error {
