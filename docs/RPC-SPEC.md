@@ -1,7 +1,8 @@
 # RPC-SPEC — WebSocket JSON-RPC transport
 
-Status: **DRAFT v0** — proposed 2026-11-20, awaiting PO ratification of the open
-questions in §7. Supersedes `docs/SURFACE-SPEC.md` (FROZEN, ratified
+Status: **RATIFIED v1** — proposed 2026-11-20, all four §7 questions
+ratified by PO 2026-11-20 (following every leaning proposal as drafted —
+see §7 for the ratified text). Supersedes `docs/SURFACE-SPEC.md` (FROZEN, ratified
 2026-10-02) under a **hard-cutover** plan: no REST compatibility shim, no
 parallel-run window. PO decision (2026-11-20): acceptable because current
 usage is single-user testing; both dogfood phones take a fresh APK in the
@@ -87,7 +88,8 @@ Response, error:
 JSON error body (`"invalid_model_pin"`, `"model_catalog_unavailable"`,
 `"policy_corrupt"`, etc.) — nothing in the audit/log/client-handling layer
 that keyed off those strings has to change. `error.code` is informational
-only (§7 open question: exact numbering scheme).
+only — ratified generic/uninformative (always `-32000`), real signal lives
+entirely in `error.data.reason` (§7.1).
 
 Notification (server → client, push, no `id`, no reply):
 ```json
@@ -156,15 +158,30 @@ table does not re-derive rules already frozen in SURFACE-SPEC v1 history.
 | S-RPC-4 | `models.list` + `sessions.configure` (folds #301, incl. the revision-conflict fix) and `profile.describe`/`profile.configure` (folds #302). | `lararium` | M |
 | S-RPC-5 | Android client: OkHttp+SSE → WS client, JSON-RPC envelope, reconnect/backoff, request/notification correlation. | `android-client` | L |
 | S-RPC-6 | Web client: `fetch()` calls in `KeysDrawer.tsx`/`App.tsx`/etc → WS RPC client wrapper. Fill `MemoryViewer.tsx` and `Header.tsx`'s `modelPin` chip against the new methods as part of this slice, not separately. | `android-client`\* | M |
-| S-RPC-7 | Remove every SURFACE-SPEC v1 REST handler, retire `docs/SURFACE-SPEC.md` (mark SUPERSEDED, point at this doc), bump daemon minor version. Ships same release as S-RPC-5/6 — this is the hard-cutover point; there is no intermediate release with both transports live. | `lararium` | S |
+| S-RPC-7 | Remove every SURFACE-SPEC v1 REST handler, retire `docs/SURFACE-SPEC.md` (mark SUPERSEDED, point at this doc), bump daemon to `v2.0.0` (§7.4, major bump — wire-breaking for every existing client). Ships same release as S-RPC-5/6 — this is the hard-cutover point; there is no intermediate release with both transports live. | `lararium` | S |
 
 \* `web/` lives in the daemon repo (`lararium`), not `android-client` — table
 column kept consistent with ASSISTANT-PHASE-SPEC's existing repo-tag
 convention; correcting here: S-RPC-6 touches `lararium` (the `web/` tree).
 
-## 7. Open questions for PO ratification
+## 7. PO ratification (2026-11-20)
 
-1. **Error code numbering.** JSON-RPC reserves -32768..-32000 for protocol-level errors. Proposal: keep `error.code` generic/uninformative (e.g. always `-32000` "application error") and put all the real signal in `error.data.reason` as the exact same string SURFACE-SPEC v1 used in its JSON bodies — minimizes churn in anything downstream that pattern-matches on those strings. Alternative: mint a real per-domain code range (e.g. `-32001` session errors, `-32002` auth, …) for clients that want to switch on an int instead of a string. Leaning proposal (first one) — simpler, nothing new to maintain, confirm or override.
-2. **`sessions.send` back-pressure.** If a client calls `sessions.send` on a session it hasn't subscribed to, this draft says 409 `not_subscribed` rather than auto-subscribing. Confirm that's the right default — auto-subscribing is friendlier but hides a client bug (forgetting to subscribe) behind silently-working behavior.
-3. **Reconnect replay window.** A dropped WS mid-turn needs the client to resume via `sessions.subscribe {after_seq}` on reconnect — same mechanism as catch-up, just also used for reconnection. Confirming that's sufficient and no separate "resume token"/crash-durable create-intent journal concept is needed at this scale — leaning no, flag if you disagree.
-4. **Version bump.** Daemon goes to what — `v1.1.0`? This is a wire-breaking change for every existing client; SemVer argues for a major bump (`v2.0.0`) even pre-1.0-stable-promise, if only so `v1.0.0-betaN` tags unambiguously mean "REST", confirm.
+All four decided by following the leaning proposal as drafted — no overrides.
+
+1. **Error code numbering — RATIFIED generic.** `error.code` stays
+   generic/uninformative (always `-32000`, JSON-RPC's reserved
+   "application error" range); all real signal lives in `error.data.reason`
+   as the exact same string SURFACE-SPEC v1 used in its JSON bodies
+   (`"invalid_model_pin"`, etc.) — minimizes churn in anything downstream
+   that pattern-matches on those strings. No per-domain code range.
+2. **`sessions.send` back-pressure — RATIFIED 409.** Calling `sessions.send`
+   on a session the client hasn't subscribed to returns `409 not_subscribed`.
+   No auto-subscribe — a client that forgot to subscribe gets a loud error,
+   not silently-working behavior that hides the bug.
+3. **Reconnect replay window — RATIFIED sufficient as-is.** Resuming via
+   `sessions.subscribe {after_seq}` on reconnect is sufficient; no separate
+   resume-token / crash-durable create-intent journal concept at this scale.
+4. **Version bump — RATIFIED v2.0.0.** Major bump, not `v1.1.0` — this is a
+   wire-breaking change for every existing client, and a major bump makes
+   every `v1.0.0-betaN` tag unambiguously mean "REST". Applied at S-RPC-7
+   (§6), the hard-cutover slice, not at spec-ratification time.
