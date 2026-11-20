@@ -141,7 +141,11 @@ func TestListSessionsHandler(t *testing.T) {
 func TestCreateSessionHandler(t *testing.T) {
 	store, _ := OpenTokenStore(t.TempDir() + "/tokens.json")
 	sessions := &fakeSessionSource{}
-	srv := &Server{Store: store, Sessions: sessions, Hub: &fakeHub{}}
+	// model_pin is validated offline against the catalog (S-MOD-1a), so the
+	// server needs a catalog that knows the pinned ref.
+	srv := &Server{Store: store, Sessions: sessions, Hub: &fakeHub{}, Models: &fakeCatalog{
+		resp: ModelsResponse{Models: []ModelEntry{{Ref: "model-1", Status: "online"}}},
+	}}
 
 	body := `{"title":"Test","model_pin":"model-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(body))

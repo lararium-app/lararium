@@ -55,6 +55,9 @@ type Server struct {
 	Sessions SessionSource
 	Hub      TurnHub
 	Fasti    *fasti.Engine
+	// Models is the cached model catalog; nil means the catalog is not
+	// configured and model routes answer 503.
+	Models ModelCatalog
 	// HearthName is the display name served on /v1/health; empty resolves to
 	// the hostname label.
 	HearthName string
@@ -321,6 +324,17 @@ func (s *Server) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.error(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+
+	if req.ModelPin != "" {
+		if ok, reason := s.validateModelPin(req.ModelPin); !ok {
+			status := http.StatusBadRequest
+			if reason == "model_catalog_unavailable" {
+				status = http.StatusServiceUnavailable
+			}
+			s.error(w, reason, status)
+			return
+		}
 	}
 
 	session, err := s.Sessions.Create(req.Title, req.ModelPin)
