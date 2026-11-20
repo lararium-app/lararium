@@ -430,7 +430,7 @@ func TestWSHandshake_CloseCodes(t *testing.T) {
 
 		// Case 1: completely invalid token
 		client1 := dialTestWS(t, ts.URL+"/v1/ws")
-		helloBad, err := EncodeRPCRequest(0, "auth.hello", map[string]string{"token": "lar1_invalidtoken00000000000000000000"})
+		helloBad, err := EncodeRPCRequest(0, "auth.hello", map[string]string{"token": "lar1_bad"})
 		if err != nil {
 			t.Fatal(err)
 		}
