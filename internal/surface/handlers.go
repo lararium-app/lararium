@@ -130,6 +130,8 @@ type Server struct {
 	wsAuthTimeout time.Duration
 	rpcMu         sync.RWMutex
 	rpcMethods    map[string]RPCMethodHandler
+	rpcSubsMu     sync.RWMutex
+	rpcSubs       map[string]map[*RPCConn]struct{}
 
 	verdictWg sync.WaitGroup
 }

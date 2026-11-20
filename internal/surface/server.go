@@ -21,6 +21,7 @@ import (
 // never register the mux inside itself (that self-recurses on any
 // unmatched path).
 func NewServer(s *Server) http.Handler {
+	s.registerDefaultRPCMethods()
 	mux := http.NewServeMux()
 
 	// Static routes (no auth; Host gate still applies).

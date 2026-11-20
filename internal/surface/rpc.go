@@ -641,7 +641,10 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	defer func() {
+		cancel()
+		s.unsubscribeAllRPCConn(rc)
+	}()
 
 	var reqWg sync.WaitGroup
 	defer reqWg.Wait()
