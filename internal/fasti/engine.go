@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/loop"
+	"github.com/lararium-app/lararium/internal/router"
 )
 
 // ErrTurnInFlight is returned when a turn is already running for the session.
@@ -1711,6 +1712,7 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 		} else {
 			// Non-concurrency error
 			job.BudgetCounters.TotalFailures++
+			noteContextFailure(job, res.err)
 			_, _ = e.journal.Append(JournalEvent{
 				Type:      "fasti_fired",
 				Status:    "failed",
@@ -1725,6 +1727,8 @@ func (e *Engine) handleWorkerDone(res firingResult) {
 	} else {
 		// Firing successful
 		job.ConsecutiveSkips = 0
+		job.ConsecutiveContextFailures = 0
+		job.Warning = ""
 		job.LastFire = now.Format(time.RFC3339)
 		job.BudgetCounters.TotalRuns++
 
@@ -1879,6 +1883,20 @@ func (e *Engine) calculateNextDue(job *Job, from time.Time) (NextDueResult, erro
 	}
 
 	return res, nil
+}
+
+// noteContextFailure updates a job's consecutive context-overflow counter
+// after a failed run (#292): increments and warns at the threshold on an
+// overflow error, resets on any other failure.
+func noteContextFailure(job *Job, err error) {
+	if router.IsContextOverflow(err) {
+		job.ConsecutiveContextFailures++
+		if job.ConsecutiveContextFailures >= ContextFailureWarnThreshold {
+			job.Warning = fmt.Sprintf("context overflow on %d consecutive runs; session transcript is too large (archive or compact it)", job.ConsecutiveContextFailures)
+		}
+		return
+	}
+	job.ConsecutiveContextFailures = 0
 }
 
 func (e *Engine) findJob(id string) *Job {

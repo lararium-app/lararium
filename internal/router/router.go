@@ -89,6 +89,27 @@ func ProviderErrorReason(err error) (string, bool) {
 	return "", false
 }
 
+// IsContextOverflow reports whether err is a provider rejection because the
+// request exceeded the model's context window (HTTP 400 exceed_context_size /
+// "exceeds the available context size" and common equivalents).
+func IsContextOverflow(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"exceed_context_size",
+		"exceeds the available context size",
+		"context_length_exceeded",
+		"maximum context length",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // NewRouter creates a router with a default "chat" profile.
 func NewRouter(def Profile) *Router {
 	return &Router{

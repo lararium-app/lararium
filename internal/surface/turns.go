@@ -39,9 +39,11 @@ type turn struct {
 // Hub runs HTTP-initiated turns through the frozen loop engine, one turn
 // per session at a time (spec §5 concurrency gate).
 type Hub struct {
-	cfg                  ServeConfig
-	hearthHome           string
-	maxTokens            int
+	cfg        ServeConfig
+	hearthHome string
+	maxTokens  int
+	// MaxToolCalls is the per-turn executed tool-call cap (0 = loop default).
+	MaxToolCalls         int
 	compactionTriggerPct int
 	tools                []loop.Tool
 	// toolSource, when set, contributes dynamic tools (MCP rail,
@@ -644,6 +646,7 @@ func (h *Hub) executeTurn(
 	sess := &loop.Session{
 		Secrets:        h.secretsFn(),
 		MaxTokens:      h.maxTokens,
+		MaxToolCalls:   h.MaxToolCalls,
 		OnTool:         onTool,
 		Log:            log,
 		Sys:            sys,
@@ -664,6 +667,13 @@ func (h *Hub) executeTurn(
 	// acts surface the same approval cards this machinery raises for
 	// untrusted tools.
 	engineCtx = web.ContextWithApprover(engineCtx, approver)
+	// Scheduled sessions are long-lived and tick unattended: bound the
+	// prompt BEFORE the turn too, so a transcript that grew past the
+	// trigger (or whose last turn failed) is compacted instead of failing
+	// every tick forever (issue #292).
+	if isScheduledChannel(srcChannel) {
+		h.maybeCompact(engineCtx, sess, sessionID)
+	}
 	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.currentTools(), approver)
 	if err != nil {
 		if reason, ok := router.ProviderErrorReason(err); ok {
@@ -706,6 +716,12 @@ func (h *Hub) executeTurn(
 	// log meanwhile. Failure is logged and never fails the finished turn.
 	h.maybeCompact(engineCtx, sess, sessionID)
 	return nil
+}
+
+// isScheduledChannel reports whether a turn's source channel is a
+// fasti-scheduled one (cron job, goal, heartbeat).
+func isScheduledChannel(ch string) bool {
+	return ch == "cron" || ch == "goal" || ch == "heartbeat"
 }
 
 // maybeCompact runs the session's post-turn compaction trigger under a
