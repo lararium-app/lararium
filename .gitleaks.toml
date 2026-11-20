@@ -20,8 +20,6 @@ paths = [
   '''internal/surface/tokens\.go$''',
   '''internal/custos/ctl\.go$''',
 ]
-# history predates the local-path rule; history is not rewritten
-commits = ["9b19935f4582929c37bec311fbe1f6906273e769"]
 
 [[rules]]
 id = "local-user-path"
