@@ -229,6 +229,34 @@ func hoistGlobalFlags(args []string) ([]string, error) {
 	return append(hoisted, rest...), nil
 }
 
+// defaultConfigPath resolves the effective config path when -config was
+// not given explicitly: $LARARIUM_CONFIG → ./lararium.yaml (if it
+// exists) → systemPath (if it exists) → "lararium.yaml".
+func defaultConfigPath(systemPath string) string {
+	if e := os.Getenv("LARARIUM_CONFIG"); e != "" {
+		return e
+	}
+	if _, err := os.Stat("lararium.yaml"); err == nil {
+		return "lararium.yaml"
+	}
+	if _, err := os.Stat(systemPath); err == nil {
+		return systemPath
+	}
+	return "lararium.yaml"
+}
+
+// flagWasSet reports whether -name appeared on the command line
+// (call after flag.Parse).
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func main() {
 	// LARARIUM_CONFIG lets container images set the config path once;
 	// the flag still wins when given.
@@ -236,7 +264,7 @@ func main() {
 	if e := os.Getenv("LARARIUM_CONFIG"); e != "" {
 		defaultCfg = e
 	}
-	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml")
+	cfgPath := flag.String("config", defaultCfg, "path to lararium.yaml (default resolves $LARARIUM_CONFIG, ./lararium.yaml, then /etc/lararium/lararium.yaml)")
 	modelFlag := flag.String("model", "", "override: model ref for this run")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: hearthd [options] [command]\n\nCommands:\n  serve\n  setup\n  token create <label> [--expires-in <duration>] | revoke [--by-label] <id-prefix-or-label> | list\n  keys list|set|rm\n  pair\n  backup create|list|verify|extract-config\n  restore <file> --to <dir> | --replace <dir> --yes [--no-safety]\n  job add|list|pause|resume|remove|run|edit\n  goal new|list|pause|resume|cancel|close\n\n%s\n\nOptions:\n", backup.SecretsHonestyLine)
@@ -251,6 +279,13 @@ func main() {
 	}
 	os.Args = append(os.Args[:1], hoisted...)
 	flag.Parse()
+
+	// Subcommands run outside the serve directory (notably docker exec
+	// from WORKDIR /hearth) must resolve the same config serve does;
+	// an explicit -config still wins over the whole chain (#282).
+	if !flagWasSet("config") {
+		*cfgPath = defaultConfigPath("/etc/lararium/lararium.yaml")
+	}
 
 	args := flag.Args()
 	if len(args) > 0 {

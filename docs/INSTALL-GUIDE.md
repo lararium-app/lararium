@@ -70,8 +70,10 @@ Tags are on the releases page; `<version>` below means a pinned tag like
 4. Create a door token — this prints a ready URL, **shown once**:
 
    ```bash
-   docker exec lararium hearthd -config /etc/lararium/lararium.yaml token create me
+   docker exec lararium hearthd token create me
    ```
+
+   Subcommands automatically resolve configuration from `$LARARIUM_CONFIG`, `./lararium.yaml`, then `/etc/lararium/lararium.yaml`, so passing `-config` explicitly is not required.
 
 5. Open the printed URL (`http://127.0.0.1:7717/#<token>`) in a browser on
    the same machine. Verify the daemon answers:
@@ -119,13 +121,13 @@ execution), and `searxng` (local offline search instance, key-free).
 2. For hosted keys, run the wizard explicitly:
 
    ```bash
-   docker compose exec -it hearthd hearthd setup --config /etc/lararium/lararium.yaml
+   docker compose exec -it hearthd hearthd setup
    ```
 
 3. Create a door token:
 
    ```bash
-   docker compose exec hearthd hearthd -config /etc/lararium/lararium.yaml token create me
+   docker compose exec hearthd hearthd token create me
    ```
 
 4. Open `http://127.0.0.1:7717/#<token>` (or `http://127.0.0.1:${LARARIUM_PORT}/#<token>`).
