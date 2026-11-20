@@ -374,11 +374,28 @@ func (m *Manager) Clock() Clock {
 	return m.clock
 }
 
+// Close stops background timers and releases resources.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.liveness != nil {
+		m.liveness.Close()
+	}
+	return nil
+}
+
 // ApplySync processes an incremental or snapshot sync push per DEVICE-RAILS-SPEC D6 & Rail Data At Rest.
 // Enforces monotonic per-rail seq (stale seq returns ErrStaleSeq with no write).
 func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Delta, seq int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// An explicit JSON null snapshot arrives as literal bytes "null" (non-nil RawMessage).
+	// Treat it as an omitted snapshot so delta-only pushes keep the monotonicity guard
+	// instead of silently replacing stored items (#274).
+	if bytes.Equal(bytes.TrimSpace(snapshot), []byte("null")) {
+		snapshot = nil
+	}
 
 	dev, ok := m.devices[deviceID]
 	if !ok || dev.Tombstoned || m.tombstones[deviceID] {
@@ -420,7 +437,7 @@ func (m *Manager) ApplySync(deviceID, rail string, snapshot []byte, deltas []Del
 		}
 	}
 
-	if seq <= curSeq {
+	if snapshot == nil && seq <= curSeq {
 		return &ErrStaleSeq{
 			DeviceID: deviceID,
 			Rail:     rail,

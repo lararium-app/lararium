@@ -1,8 +1,15 @@
 package router
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 )
+
+// isExtraEmpty reports whether extra_content is nil, empty, or JSON null.
+func isExtraEmpty(raw json.RawMessage) bool {
+	return len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
 
 // Role identifies the sender of a message.
 type Role string
@@ -17,27 +24,30 @@ const (
 
 // Message is a single turn in a conversation.
 type Message struct {
-	Role       Role
-	Content    string
-	ToolCallID string
-	ToolCalls  []ToolCall
+	Role         Role
+	Content      string
+	ToolCallID   string
+	ToolCalls    []ToolCall
+	ExtraContent json.RawMessage
 }
 
 // ToolCall represents a single tool invocation requested by the model.
 type ToolCall struct {
-	ID       string
-	Name     string
-	ArgsJSON string
+	ID           string
+	Name         string
+	ArgsJSON     string
+	ExtraContent json.RawMessage
 }
 
 // Completion is the result of a model completion request.
 type Completion struct {
-	Text      string
-	ToolCalls []ToolCall
-	Model     string
-	InTokens  int
-	OutTokens int
-	Probed    bool
+	Text         string
+	ToolCalls    []ToolCall
+	Model        string
+	InTokens     int
+	OutTokens    int
+	Probed       bool
+	ExtraContent json.RawMessage
 }
 
 // Options configures a completion request.

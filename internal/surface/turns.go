@@ -39,9 +39,11 @@ type turn struct {
 // Hub runs HTTP-initiated turns through the frozen loop engine, one turn
 // per session at a time (spec §5 concurrency gate).
 type Hub struct {
-	cfg                  ServeConfig
-	hearthHome           string
-	maxTokens            int
+	cfg        ServeConfig
+	hearthHome string
+	maxTokens  int
+	// MaxToolCalls is the per-turn executed tool-call cap (0 = loop default).
+	MaxToolCalls         int
 	compactionTriggerPct int
 	tools                []loop.Tool
 	// toolSource, when set, contributes dynamic tools (MCP rail,
@@ -212,7 +214,9 @@ func (h *Hub) InFlight(sessionID string) bool {
 // turn commits no partial assistant event, and pending approvals never
 // outlive the process.
 func (h *Hub) Shutdown() {
-	h.ap.DenyAllAll("shutdown", "shutdown")
+	if h.ap != nil {
+		h.ap.Shutdown()
+	}
 	h.mu.Lock()
 	turns := make([]*turn, 0, len(h.running))
 	for _, t := range h.running {
@@ -642,6 +646,7 @@ func (h *Hub) executeTurn(
 	sess := &loop.Session{
 		Secrets:        h.secretsFn(),
 		MaxTokens:      h.maxTokens,
+		MaxToolCalls:   h.MaxToolCalls,
 		OnTool:         onTool,
 		Log:            log,
 		Sys:            sys,
@@ -662,6 +667,13 @@ func (h *Hub) executeTurn(
 	// acts surface the same approval cards this machinery raises for
 	// untrusted tools.
 	engineCtx = web.ContextWithApprover(engineCtx, approver)
+	// Scheduled sessions are long-lived and tick unattended: bound the
+	// prompt BEFORE the turn too, so a transcript that grew past the
+	// trigger (or whose last turn failed) is compacted instead of failing
+	// every tick forever (issue #292).
+	if isScheduledChannel(srcChannel) {
+		h.maybeCompact(engineCtx, sess, sessionID)
+	}
 	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.currentTools(), approver)
 	if err != nil {
 		if reason, ok := router.ProviderErrorReason(err); ok {
@@ -696,7 +708,33 @@ func (h *Hub) executeTurn(
 		InTokens:  inTok,
 		OutTokens: outTok,
 	}))
+
+	// Post-turn compaction check (issue #269; REPL parity, spec §3:
+	// after completed turns only). Runs after the terminal event has left
+	// the stream so the client never waits on it; the running-map slot and
+	// single-writer lock are still held, so no other turn can touch the
+	// log meanwhile. Failure is logged and never fails the finished turn.
+	h.maybeCompact(engineCtx, sess, sessionID)
 	return nil
+}
+
+// isScheduledChannel reports whether a turn's source channel is a
+// fasti-scheduled one (cron job, goal, heartbeat).
+func isScheduledChannel(ch string) bool {
+	return ch == "cron" || ch == "goal" || ch == "heartbeat"
+}
+
+// maybeCompact runs the session's post-turn compaction trigger under a
+// bounded context detached from the turn's cancellation (the turn has
+// already committed; a disconnecting client must not kill the cleanup)
+// while still inheriting the turn's context values. Under-trigger turns
+// return cheaply with no effect.
+func (h *Hub) maybeCompact(parent context.Context, sess *loop.Session, sessionID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 60*time.Second)
+	defer cancel()
+	if _, err := sess.MaybeCompact(ctx); err != nil {
+		stdlog.Printf("hearthd serve: compaction on %s failed: %v", sessionID, err) //nolint:gosec // sessionID is regex-validated (spec §4), err is ours
+	}
 }
 
 // lastAssistantUsage reads seq and token usage off the newest assistant

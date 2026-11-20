@@ -2,6 +2,7 @@ package surface
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -340,4 +341,44 @@ func TestDeleteSessionRoute(t *testing.T) {
 			t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 		}
 	})
+}
+
+func TestHealthHandler_Name(t *testing.T) {
+	tests := []struct {
+		name     string
+		hearth   string
+		hostname func() (string, error)
+		want     string
+	}{
+		{"configured", "zimaboard2", nil, "zimaboard2"},
+		{"hostname label", "", func() (string, error) { return "MyHost.local", nil }, "MyHost"},
+		{"hostname error", "", func() (string, error) { return "", errors.New("boom") }, "hearth"},
+		{"escaped", "Rig \"7\"\nline", nil, "Rig \"7\"\nline"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.hostname != nil {
+				orig := osHostname
+				defer func() { osHostname = orig }()
+				osHostname = tc.hostname
+			}
+			srv := &Server{HearthName: tc.hearth}
+			w := httptest.NewRecorder()
+			srv.healthHandler(w, httptest.NewRequest(http.MethodGet, "/v1/health", nil))
+
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal %q: %v", w.Body.String(), err)
+			}
+			if ok, _ := resp["ok"].(bool); !ok {
+				t.Errorf("ok = false, want true")
+			}
+			if resp["version"] != "1.0.0-beta9" {
+				t.Errorf("version = %v, want 1.0.0-beta9", resp["version"])
+			}
+			if resp["name"] != tc.want {
+				t.Errorf("name = %q, want %q", resp["name"], tc.want)
+			}
+		})
+	}
 }
