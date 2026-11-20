@@ -7,6 +7,9 @@ hearth:
   home: /hearth
   compaction_trigger_pct: 80
   max_tokens: 512
+  # Max executed tool calls per turn (default 32); extras are dropped with a
+  # "not executed" result the model sees. Rounds per turn are fixed at 12.
+  max_tool_calls_per_turn: 32
 
 # Web chat + HTTP API (`hearthd serve`). Inside the container we bind all
 # interfaces; the compose file publishes the port on 127.0.0.1 only, and
