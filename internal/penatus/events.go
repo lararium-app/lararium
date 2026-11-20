@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -152,16 +153,65 @@ func OpenLog(dir string) (*Log, error) {
 	return log, nil
 }
 
+// pathLocks holds one mutex per events.jsonl path so that every Log handle
+// opened on the same session serializes through a single append path, while
+// different sessions never contend.
+var pathLocks sync.Map // map[string]*sync.Mutex
+
+func lockFor(path string) *sync.Mutex {
+	m, _ := pathLocks.LoadOrStore(path, &sync.Mutex{})
+	mu, ok := m.(*sync.Mutex)
+	if !ok {
+		// pathLocks is package-private and only ever stores *sync.Mutex;
+		// the fallback is unreachable — return a fresh lock, never panic.
+		mu = &sync.Mutex{}
+	}
+	return mu
+}
+
+// lastSeqOnDisk returns the seq of the last non-empty line in path
+// (0 if the file is missing or empty).
+func lastSeqOnDisk(path string) (int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\r\n \t"), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return 0, nil
+	}
+	var evt Event
+	if err := json.Unmarshal([]byte(last), &evt); err != nil {
+		return 0, fmt.Errorf("parse last line: %w", err)
+	}
+	return evt.Seq, nil
+}
+
 // Append writes an event to the log with O_APPEND and fsync.
 // Assigns Seq (next) and TS (UTC now, RFC3339Nano) if empty.
+// Appends are serialized per log path, and Seq is reserved under that lock
+// from the on-disk tail, never from a stale in-memory counter. After any
+// failure the baseline is re-read from disk on the next append.
 // Refuses on a read-only (corrupt) log.
 func (l *Log) Append(e Event) error {
+	mu := lockFor(l.path)
+	mu.Lock()
+	defer mu.Unlock()
+
 	if l.readOnly {
 		return fmt.Errorf("log is read-only (corrupt)")
 	}
 
+	last, err := lastSeqOnDisk(l.path)
+	if err != nil {
+		return err
+	}
 	if e.Seq == 0 {
-		e.Seq = l.nextSeq
+		e.Seq = last + 1
 	}
 	if e.TS == "" {
 		e.TS = time.Now().UTC().Format(time.RFC3339Nano)
@@ -178,17 +228,15 @@ func (l *Log) Append(e Event) error {
 	}
 	defer f.Close()
 
-	_, err = f.Write(append(data, '\n'))
-	if err != nil {
+	if _, err = f.Write(append(data, '\n')); err != nil {
 		return err
 	}
-
 	if err := f.Sync(); err != nil {
 		return err
 	}
 
 	l.events = append(l.events, e)
-	l.nextSeq++
+	l.nextSeq = e.Seq + 1
 
 	return nil
 }

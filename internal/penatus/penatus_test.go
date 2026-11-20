@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -772,4 +773,46 @@ func readHeaderForTest(t *testing.T, dir string) (SessionHeader, error) {
 	var h SessionHeader
 	err = json.Unmarshal(data, &h)
 	return h, err
+}
+
+func TestLogConcurrentAppendUniqueSeq(t *testing.T) {
+	dir := t.TempDir()
+	const writers, per = 8, 25
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*per)
+	for range writers {
+		// Separate handle per writer, like scheduler vs turn writer.
+		l, err := OpenLog(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func(l *Log) {
+			defer wg.Done()
+			for range per {
+				if err := l.Append(Event{T: "msg"}); err != nil {
+					errs <- err
+				}
+			}
+		}(l)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("append: %v", err)
+	}
+
+	l, err := OpenLog(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if len(l.events) != writers*per {
+		t.Fatalf("got %d events, want %d", len(l.events), writers*per)
+	}
+	for i, e := range l.events {
+		if e.Seq != int64(i+1) {
+			t.Fatalf("event %d has seq %d", i, e.Seq)
+		}
+	}
 }
