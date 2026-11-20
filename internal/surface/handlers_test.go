@@ -373,8 +373,8 @@ func TestHealthHandler_Name(t *testing.T) {
 			if ok, _ := resp["ok"].(bool); !ok {
 				t.Errorf("ok = false, want true")
 			}
-			if resp["version"] != "1.0.0-beta9" {
-				t.Errorf("version = %v, want 1.0.0-beta9", resp["version"])
+			if resp["version"] != "1.0.0-beta11" {
+				t.Errorf("version = %v, want 1.0.0-beta11", resp["version"])
 			}
 			if resp["name"] != tc.want {
 				t.Errorf("name = %q, want %q", resp["name"], tc.want)
