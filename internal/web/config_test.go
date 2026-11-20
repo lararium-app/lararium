@@ -198,3 +198,26 @@ func TestConfig_DetectChromeEnv(t *testing.T) {
 		t.Errorf("DetectChrome() = %q, want /custom/test/chrome", p)
 	}
 }
+
+func TestConfig_IsolateKnob(t *testing.T) {
+	for name, tc := range map[string]struct {
+		yamlData string
+		want     bool
+	}{
+		"absent defaults true": {"web: {}", true},
+		"explicit false":       {"web:\n  isolate: false", false},
+		"explicit true":        {"web:\n  isolate: true", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var w struct {
+				Web Config `yaml:"web"`
+			}
+			if err := yaml.Unmarshal([]byte(tc.yamlData), &w); err != nil {
+				t.Fatal(err)
+			}
+			if w.Web.Isolate != tc.want {
+				t.Errorf("Isolate = %v, want %v", w.Web.Isolate, tc.want)
+			}
+		})
+	}
+}

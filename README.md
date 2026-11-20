@@ -38,7 +38,7 @@ already carry.
   fail-closed networking, hard resource caps. The threat model assumes prompt
   injection *succeeds*; the cage makes misbehavior physically expensive.
 
-## Status: beta (v1.0.0-beta7)
+## Status: beta (v1.0.0-beta9)
 
 > [!WARNING]
 > Lararium is in **public beta**. File formats are frozen per-component; wire
@@ -103,7 +103,7 @@ First run seeds the persona home and reference config. Attach a TTY
 Then create a door token:
 
 ```bash
-docker exec lararium hearthd token create me   # prints a ready URL (shown once)
+docker exec lararium hearthd -config /etc/lararium/lararium.yaml token create me   # prints a ready URL (shown once)
 ```
 
 ### From source (Docker Compose)
@@ -118,7 +118,7 @@ Reference config points at `http://host.docker.internal:8080/v1`. For a hosted
 endpoint, uncomment a provider block in `docker/config/lararium.yaml` and pass
 the key: `OPENAI_API_KEY=*** docker compose up --build`
 
-Then: `docker compose exec hearthd hearthd token create me`
+Then: `docker compose exec hearthd hearthd -config /etc/lararium/lararium.yaml token create me`
 
 ### Bare host (no Docker)
 

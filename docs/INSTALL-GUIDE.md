@@ -73,6 +73,8 @@ Tags are on the releases page; `<version>` below means a pinned tag like
    docker exec lararium hearthd token create me
    ```
 
+   Subcommands automatically resolve configuration from `$LARARIUM_CONFIG`, `./lararium.yaml`, then `/etc/lararium/lararium.yaml`, so passing `-config` explicitly is not required.
+
 5. Open the printed URL (`http://127.0.0.1:7717/#<token>`) in a browser on
    the same machine. Verify the daemon answers:
 
@@ -97,6 +99,10 @@ its own network namespace, and host exposure stays loopback-only via the
 
 ## 3. Install — Docker Compose from source
 
+Compose starts the full zero-cloud stack: `hearthd` (web chat + API + web
+browsing + guided sign-in), `custosd` (credential vault + MCP connector
+execution), and `searxng` (local offline search instance, key-free).
+
 1. Clone, hand the mounted directories to the daemon's user, and start:
 
    ```bash
@@ -106,10 +112,11 @@ its own network namespace, and host exposure stays loopback-only via the
    docker compose up --build
    ```
 
-   The container runs unprivileged with a read-only rootfs (set
-   `LARARIUM_UID` to override the uid). Attached to a TTY, an unconfigured
-   container runs the setup wizard first; detached starts (`-d`) use the
-   bundled defaults.
+   The daemons run unprivileged with a read-only rootfs (set `LARARIUM_UID`
+   to override the uid). Ports default to `127.0.0.1:7717` (web chat + API)
+   and `127.0.0.1:8888` (SearXNG); override with `LARARIUM_PORT` and
+   `SEARXNG_PORT`. Attached to a TTY, an unconfigured container runs the setup
+   wizard first; detached starts (`-d`) use the bundled defaults.
 
 2. For hosted keys, run the wizard explicitly:
 
@@ -123,11 +130,12 @@ its own network namespace, and host exposure stays loopback-only via the
    docker compose exec hearthd hearthd token create me
    ```
 
-4. Open `http://127.0.0.1:7717/#<token>`.
+4. Open `http://127.0.0.1:7717/#<token>` (or `http://127.0.0.1:${LARARIUM_PORT}/#<token>`).
 
 State lives in the checkout: `docker/config/` is mounted at
 `/etc/lararium` and `docker/hearth/` at `/hearth`, so config and persona
-files stay editable on the host. Provider keys come from your shell
+files stay editable on the host. Sockets and vault live under `/hearth/custos`
+shared between `hearthd` and `custosd`. Provider keys come from your shell
 environment (`.env`-style pass-through is wired for `OPENROUTER_API_KEY`,
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `NOVITA_API_KEY`); nothing secret is
 baked into the image.

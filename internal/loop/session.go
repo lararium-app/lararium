@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,11 +58,26 @@ type Session struct {
 	// event at write time (CREDHANDLE-SPEC R3/D3). nil disables. A closure
 	// keeps loop free of any custos import.
 	Secrets func() []string
+	// MaxToolCalls caps EXECUTED tool calls per turn across all rounds
+	// (fan-out guard, #291). 0 = DefaultMaxToolCalls. Calls beyond the cap
+	// are not run; each gets a synthesized tool_result saying so.
+	MaxToolCalls int
+	// Warnf receives the fan-out WARN (nil = standard logger).
+	Warnf func(format string, args ...any)
 
 	// lastUsage carries In/Out tokens from the most recent completion so
 	// the trigger check uses real counts when available.
 	lastIn  int
 	lastOut int
+
+	// extraContent caches provider extra_content (such as Gemini thought_signatures)
+	// keyed by tool call ID across the live session so follow-up tool turns and
+	// next-turn message reconstruction carry the signatures without polluting events.jsonl.
+	extraContent map[string]json.RawMessage
+}
+
+func isExtraEmpty(raw json.RawMessage) bool {
+	return len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // messages rebuilds the router message slice from the log per the spec §3
@@ -123,9 +139,16 @@ func (s *Session) messages() []router.Message {
 			if f.CallID == "" {
 				continue
 			}
+			var extra json.RawMessage
+			if s.extraContent != nil {
+				if ex, ok := s.extraContent[f.CallID]; ok && !isExtraEmpty(ex) {
+					extra = ex
+				}
+			}
 			msgs = append(msgs, router.Message{
-				Role:      router.RoleAssistant,
-				ToolCalls: []router.ToolCall{{ID: f.CallID, Name: f.Name, ArgsJSON: string(f.Args)}},
+				Role:         router.RoleAssistant,
+				ToolCalls:    []router.ToolCall{{ID: f.CallID, Name: f.Name, ArgsJSON: string(f.Args), ExtraContent: extra}},
+				ExtraContent: extra,
 			})
 		case "tool_result":
 			var f struct {
@@ -210,6 +233,51 @@ func (s *Session) RunTurnTools(ctx context.Context, userText string, onDelta fun
 // maxSteps bounds one user turn's model round-trips (no infinite tool loops).
 const maxSteps = 12
 
+// DefaultMaxToolCalls bounds executed tool calls per turn (config key
+// hearth.max_tool_calls_per_turn). maxSteps bounds rounds; this bounds
+// fan-out inside them.
+const DefaultMaxToolCalls = 32
+
+// fanoutDropText is the tool_result the model sees for a dropped call.
+func fanoutDropText(limit int) string {
+	return fmt.Sprintf("not executed: per-turn tool-call fan-out limit (%d) reached", limit)
+}
+
+// contextBlockHeader mirrors the Android client's ScreenContextPolicy
+// block header: a client may prepend a block of notification summaries
+// to the user's own question ("header line\n- item…\n\nquestion"). The
+// chat list must be titled from the question, not the shared context
+// (#289); the event log keeps the message verbatim.
+const contextBlockHeader = "Context from recent notifications:"
+
+// titleCandidate returns the text auto-titling works from: for a message
+// opening with the notification-context block, everything after the
+// block's first blank line; otherwise the text itself. A context-only
+// message (no question after the block) yields "", so no title is
+// written and the list falls back to its own Untitled rendering.
+func titleCandidate(text string) string {
+	if !strings.HasPrefix(text, contextBlockHeader) {
+		return text
+	}
+	rest := text[len(contextBlockHeader):]
+	if i := strings.Index(rest, "\n\n"); i >= 0 {
+		return rest[i+2:]
+	}
+	return ""
+}
+
+// tryOverflowRecovery reports whether a failed round should be retried after
+// forcing one compaction pass (context-overflow recovery, #292). It fires at
+// most once per turn: the flag flips the moment recovery is attempted,
+// regardless of whether the compaction itself succeeds.
+func (s *Session) tryOverflowRecovery(ctx context.Context, err error, attempted *bool) bool {
+	if !router.IsContextOverflow(err) || *attempted {
+		return false
+	}
+	*attempted = true
+	return s.Compact(ctx) == nil
+}
+
 func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(string), eng *toolEngine) (string, error) {
 	ctx = withSession(ctx, s)
 	// Turn-pinned key snapshot (KEYS-SPEC K6): one registry read at
@@ -237,9 +305,15 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 	// created chats are listable by name (titles are display metadata;
 	// a header that already names itself is never touched). A failure
 	// here is cosmetic — the turn must not die over a label.
-	_, _ = penatus.SetTitleIfEmpty(s.Log.Dir(), userText)
+	_, _ = penatus.SetTitleIfEmpty(s.Log.Dir(), titleCandidate(userText))
 
 	var final string
+	limit := s.MaxToolCalls
+	if limit <= 0 {
+		limit = DefaultMaxToolCalls
+	}
+	executed, warned := 0, false
+	compactedOnOverflow := false
 	for range maxSteps {
 		msgs := s.messages()
 		opts := router.Options{MaxTokens: s.MaxTokens}
@@ -257,6 +331,12 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			return nil
 		})
 		if err != nil {
+			// Context overflow: force one compaction pass and retry the
+			// round once. The user message is already logged, so the
+			// retry re-projects messages() without duplicating it.
+			if s.tryOverflowRecovery(ctx, err, &compactedOnOverflow) {
+				continue
+			}
 			return final, fmt.Errorf("complete: %w", err)
 		}
 		s.lastIn, s.lastOut = comp.InTokens, comp.OutTokens
@@ -291,11 +371,47 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 		// Tool round: log the assistant's call turn, then dispatch each.
 		// The messages() projection rebuilds wire shape from these events,
 		// so the log stays the single source of truth.
+		attempted := executed + len(comp.ToolCalls) // cumulative this turn
+		before := executed
 		for _, tc := range comp.ToolCalls {
+			extra := tc.ExtraContent
+			if isExtraEmpty(extra) {
+				extra = comp.ExtraContent
+			}
+			if !isExtraEmpty(extra) && tc.ID != "" {
+				if s.extraContent == nil {
+					s.extraContent = make(map[string]json.RawMessage)
+				}
+				s.extraContent[tc.ID] = extra
+			}
 			args := json.RawMessage(tc.ArgsJSON)
 			if !json.Valid(args) {
 				args = raw(tc.ArgsJSON)
 			}
+			if executed >= limit {
+				// Fan-out guard: drop BEFORE gating/dispatch, but keep the
+				// call/result pair so the model sees why and can recover.
+				if !warned {
+					warned = true
+					s.warnf("tool-call fan-out limit tripped: session=%s attempted=%d allowed=%d (round attempted %d calls, %d already executed)",
+						filepath.Base(s.Log.Dir()), attempted, limit, len(comp.ToolCalls), before)
+				}
+				if err := s.appendEvent("tool_call", map[string]json.RawMessage{
+					"call_id": raw(tc.ID), "name": raw(tc.Name), "args": args,
+					"approval": raw("denied:fanout-limit"),
+				}); err != nil {
+					return final, fmt.Errorf("log tool_call: %w", err)
+				}
+				if err := s.appendEvent("tool_result", map[string]json.RawMessage{
+					"call_id": raw(tc.ID), "ok": mustJSON(false),
+					"result_digest": raw(digest(tc.ArgsJSON)),
+					"text":          raw(fanoutDropText(limit)),
+				}); err != nil {
+					return final, fmt.Errorf("log tool_result: %w", err)
+				}
+				continue
+			}
+			executed++
 			approval, tool, denyText := eng.Gate(tc)
 			// A5/V7: a cancelled turn commits NOTHING for the gated
 			// call — the tool never ran and the absence of records IS
@@ -351,6 +467,14 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 		final = text
 	}
 	return final, fmt.Errorf("tool loop exceeded %d steps", maxSteps)
+}
+
+func (s *Session) warnf(format string, args ...any) {
+	if s.Warnf != nil {
+		s.Warnf(format, args...)
+		return
+	}
+	log.Printf("WARN "+format, args...)
 }
 
 func (s *Session) appendEvent(t string, fields map[string]json.RawMessage) error {
@@ -487,6 +611,12 @@ func (s *Session) Compact(ctx context.Context) error {
 		decodeInto(ev, &f)
 		transcript += fmt.Sprintf("[%s] %s\n", f.Role, f.Text)
 	}
+	// Bound the summarizer's own input so compacting an already-oversized
+	// transcript cannot itself overflow the compact model's window; the
+	// oldest text is dropped first.
+	if len(transcript) > maxCompactInputBytes {
+		transcript = transcript[len(transcript)-maxCompactInputBytes:]
+	}
 
 	req := []router.Message{
 		{Role: router.RoleSystem, Content: compactInstruction},
@@ -517,6 +647,9 @@ func (s *Session) Compact(ctx context.Context) error {
 	}
 	return nil
 }
+
+// maxCompactInputBytes caps the transcript text sent to the summarizer.
+const maxCompactInputBytes = 48 * 1024
 
 const compactInstruction = `Summarize the conversation transcript for continuation as context.
 Preserve VERBATIM: every decision made, every task opened, every named entity

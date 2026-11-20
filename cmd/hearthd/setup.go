@@ -1033,6 +1033,8 @@ hearth:
   home: hearth
   compaction_trigger_pct: 80
   max_tokens: 512
+  # Display name paired devices show for this hearth ("" = machine hostname).
+  name: ""
 
 # Web chat + HTTP API (` + "`hearthd serve`" + `). Inside the container we bind all
 # interfaces; the compose file publishes the port on 127.0.0.1 only, and
@@ -1241,6 +1243,8 @@ hearth:
   home: %s
   compaction_trigger_pct: 80
   max_tokens: 512
+  # Display name paired devices show for this hearth ("" = machine hostname).
+  name: ""
 
 serve:
   listen: "%s"

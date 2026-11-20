@@ -308,7 +308,9 @@ func (s *Server) deviceRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	s.devicePendingMu.Unlock()
 
 	// 6. Await verdict in background
+	s.verdictWg.Add(1)
 	go func() {
+		defer s.verdictWg.Done()
 		allow := false
 		select {
 		case allow = <-decision:
@@ -470,7 +472,7 @@ func (s *Server) deviceSyncHandler(w http.ResponseWriter, r *http.Request, id st
 		case errors.Is(err, ErrRailDisabled):
 			writeJSONAny(w, http.StatusConflict, map[string]string{"error": err.Error(), "reason": "rail_disabled"})
 		case errors.As(err, &staleSeq):
-			writeJSONAny(w, http.StatusConflict, map[string]string{"error": err.Error(), "reason": "stale_seq"})
+			writeJSONAny(w, http.StatusConflict, map[string]any{"error": err.Error(), "reason": "stale_seq", "current_seq": staleSeq.Current})
 		default:
 			writeJSONAny(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "reason": "sync_failed"})
 		}
@@ -536,7 +538,9 @@ func (s *Server) deviceRailsPatchHandler(w http.ResponseWriter, r *http.Request,
 	hold := s.connectorCardHold()
 	cardID, decision := hub.registerCustosNamed("", "", label, "", review, hold, nil)
 
+	s.verdictWg.Add(1)
 	go func() {
+		defer s.verdictWg.Done()
 		allow := false
 		select {
 		case allow = <-decision:

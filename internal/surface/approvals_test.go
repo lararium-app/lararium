@@ -289,3 +289,131 @@ func TestApprovalHub_SettleAttributionConcurrentRace(t *testing.T) {
 		t.Fatalf("recorded via = %q, want winner %q", gotVia, winnerVia)
 	}
 }
+
+func TestHub_RegisterRefusedAfterShutdown(t *testing.T) {
+	h := NewApprovalHub(5 * time.Minute)
+
+	// Mint before shutdown -> normal card
+	idPre, chPre := h.Register("s_pre", "echo", `{"v":"1"}`, func(string) {})
+	if idPre == "" {
+		t.Fatal("expected non-empty id before shutdown")
+	}
+	select {
+	case <-chPre:
+		t.Fatal("decision channel should not be ready before resolve/shutdown")
+	default:
+	}
+	if len(h.Pending()) != 1 {
+		t.Fatalf("pending before shutdown = %d, want 1", len(h.Pending()))
+	}
+	if len(h.PendingTurnCards()) != 1 {
+		t.Fatalf("pending turn cards before shutdown = %d, want 1", len(h.PendingTurnCards()))
+	}
+	if h.PendingCount("s_pre") != 1 {
+		t.Fatalf("pending count before shutdown = %d, want 1", h.PendingCount("s_pre"))
+	}
+
+	// Call hub Shutdown
+	h.Shutdown()
+
+	// Pre-shutdown card settles as denied
+	select {
+	case d := <-chPre:
+		if d {
+			t.Fatal("pre-shutdown card should settle as false (denied)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pre-shutdown decision channel should settle immediately on shutdown")
+	}
+	if r := h.Reason("s_pre", idPre); r != "shutdown" {
+		t.Fatalf("pre-shutdown card reason = %q, want shutdown", r)
+	}
+
+	// Every mint method -> immediate deny (decision channel delivers false with no blocking)
+	// 1. Register
+	id1, ch1 := h.Register("s_post1", "tool1", "args1", func(string) {
+		t.Fatal("onEvent fired after shutdown for Register")
+	})
+	if id1 == "" {
+		t.Fatal("expected non-empty id from Register after shutdown")
+	}
+	select {
+	case d := <-ch1:
+		if d {
+			t.Fatal("Register decision should be false")
+		}
+	default:
+		t.Fatal("Register decision channel blocked")
+	}
+
+	// 2. RegisterOn
+	id2, ch2 := h.RegisterOn("s_post2", "tool2", "args2", true, func(string) {
+		t.Fatal("onEvent fired after shutdown for RegisterOn")
+	})
+	if id2 == "" {
+		t.Fatal("expected non-empty id from RegisterOn after shutdown")
+	}
+	select {
+	case d := <-ch2:
+		if d {
+			t.Fatal("RegisterOn decision should be false")
+		}
+	default:
+		t.Fatal("RegisterOn decision channel blocked")
+	}
+
+	// 3. RegisterCustos
+	id3, ch3 := h.RegisterCustos("cell3", "cred3", "dest3", "args3", 0, func(string) {
+		t.Fatal("onEvent fired after shutdown for RegisterCustos")
+	})
+	if id3 == "" {
+		t.Fatal("expected non-empty id from RegisterCustos after shutdown")
+	}
+	select {
+	case d := <-ch3:
+		if d {
+			t.Fatal("RegisterCustos decision should be false")
+		}
+	default:
+		t.Fatal("RegisterCustos decision channel blocked")
+	}
+
+	// 4. RegisterCustosNamed
+	id4, ch4 := h.RegisterCustosNamed("cell4", "cred4", "name4", "dest4", "args4", 0, func(string) {
+		t.Fatal("onEvent fired after shutdown for RegisterCustosNamed")
+	})
+	if id4 == "" {
+		t.Fatal("expected non-empty id from RegisterCustosNamed after shutdown")
+	}
+	select {
+	case d := <-ch4:
+		if d {
+			t.Fatal("RegisterCustosNamed decision should be false")
+		}
+	default:
+		t.Fatal("RegisterCustosNamed decision channel blocked")
+	}
+
+	// Assert no card listed in any GET view, zero goroutines still waiting
+	if pending := h.Pending(); len(pending) != 0 {
+		t.Fatalf("pending cards = %d, want 0", len(pending))
+	}
+	if cards := h.PendingTurnCards(); len(cards) != 0 {
+		t.Fatalf("pending turn cards = %d, want 0", len(cards))
+	}
+	if h.PendingCount("s_pre") != 0 {
+		t.Fatalf("pending count s_pre = %d, want 0", h.PendingCount("s_pre"))
+	}
+	if h.PendingCount("s_post1") != 0 {
+		t.Fatalf("pending count s_post1 = %d, want 0", h.PendingCount("s_post1"))
+	}
+	if h.PendingCount("s_post2") != 0 {
+		t.Fatalf("pending count s_post2 = %d, want 0", h.PendingCount("s_post2"))
+	}
+	if h.PendingCount("cell3") != 0 {
+		t.Fatalf("pending count cell3 = %d, want 0", h.PendingCount("cell3"))
+	}
+	if h.PendingCount("cell4") != 0 {
+		t.Fatalf("pending count cell4 = %d, want 0", h.PendingCount("cell4"))
+	}
+}

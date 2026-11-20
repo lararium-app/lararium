@@ -84,6 +84,8 @@ type FastiVerdictHook func(id string, allow, timedOut bool, source, via string)
 // NUNTIUS-SPEC §7 amendments A1/A5/A6/A7: first-wins, mutex-guarded).
 type ApprovalHub struct {
 	mu                       sync.Mutex
+	closed                   bool
+	closeNotify              chan struct{}
 	bySession                map[string]map[string]*approval
 	timeout                  time.Duration
 	bridgeTimeout            time.Duration
@@ -233,6 +235,7 @@ func NewApprovalHub(timeout time.Duration) *ApprovalHub {
 		bySession:     make(map[string]map[string]*approval),
 		timeout:       timeout,
 		bridgeTimeout: timeout,
+		closeNotify:   make(chan struct{}),
 	}
 }
 
@@ -294,12 +297,33 @@ func (h *ApprovalHub) RegisterCustosNamed(cell, cred, name, dest, argsSummary st
 	return h.registerCustosNamed(cell, cred, name, dest, argsSummary, timeout, onEvent)
 }
 
+// mintRefusedLocked implements the issue #259 shutdown latch chokepoint.
+// When the hub is closed by Shutdown, every mint method funnels through
+// this chokepoint and returns an already-denied decision pair: a non-empty
+// approval ID plus a buffered 1-element channel pre-loaded with false (deny).
+// This shape ensures existing waiter code settles immediately and writes its
+// normal denied audit path without needing new code paths in handlers, while
+// strictly guaranteeing that no card is created in bySession, no timer is armed,
+// and no live waiter remains in the hub. Callers must hold h.mu.
+func (h *ApprovalHub) mintRefusedLocked() (id string, decision <-chan bool, refused bool) {
+	if !h.closed {
+		return "", nil, false
+	}
+	ch := make(chan bool, 1)
+	ch <- false
+	return generateApprovalID(), ch, true
+}
+
 // registerCustosNamed is the RegisterCustos body with the card's tool/name
 // label split from cred. RegisterCustos passes name == cred (unchanged
 // behaviour); the connector-lifecycle gate (connectors_crud.go) passes an
 // empty cell/cred so the card rides the phone custody stream and a label.
 func (h *ApprovalHub) registerCustosNamed(cell, cred, name, dest, argsSummary string, timeout time.Duration, onEvent func(approvalID string)) (id string, decision <-chan bool) {
 	h.mu.Lock()
+	if id, decision, refused := h.mintRefusedLocked(); refused {
+		h.mu.Unlock()
+		return id, decision
+	}
 	h.registerCustosNamedCalls++
 	id = generateApprovalID()
 	ch := make(chan bool, 1)
@@ -398,6 +422,10 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 		channels |= ChannelWeb
 	}
 	h.mu.Lock()
+	if id, decision, refused := h.mintRefusedLocked(); refused {
+		h.mu.Unlock()
+		return id, decision
+	}
 	if h.bridgeLive != nil && h.bridgeLive() {
 		channels |= ChannelTelegram
 	}
@@ -895,6 +923,43 @@ func (h *ApprovalHub) MarkUndeliverable(id string) {
 	sid := ap.sessionID
 	h.mu.Unlock()
 	h.fanTerminal(id, sid, "denied", "undeliverable", "hub")
+}
+
+// Closed reports whether the approval hub has been closed by Shutdown (issue #259).
+func (h *ApprovalHub) Closed() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.closed
+}
+
+// ClosedNotify returns a channel that is closed when the hub is shut down (issue #259).
+func (h *ApprovalHub) ClosedNotify() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closeNotify == nil {
+		h.closeNotify = make(chan struct{})
+		if h.closed {
+			close(h.closeNotify)
+		}
+	}
+	return h.closeNotify
+}
+
+// Shutdown closes the approval hub against further registrations (issue #259)
+// and denies every pending approval across all sessions.
+func (h *ApprovalHub) Shutdown() {
+	h.mu.Lock()
+	h.closed = true
+	if h.closeNotify == nil {
+		h.closeNotify = make(chan struct{})
+	}
+	select {
+	case <-h.closeNotify:
+	default:
+		close(h.closeNotify)
+	}
+	h.mu.Unlock()
+	h.DenyAllAll("shutdown", "shutdown")
 }
 
 // DenyAllAll denies every pending approval across all sessions

@@ -63,3 +63,7 @@ reason = "Dev-only build dependency; no shipped code path. Closed by the web too
 id = "GHSA-v6wh-96g9-6wx3"  # vite 5.4.21 (dev)
 reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
 
+
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"  # picomatch 2.3.2 / 4.0.7 (dev, transitive via vite toolchain)
+reason = "Dev-only build dependency; no shipped code path. Upstream has NO patched release yet (worst case through 4.0.7, fix unmerged upstream), so nothing to bump to. Review by 2026-12-31 together with the web toolchain upgrade."

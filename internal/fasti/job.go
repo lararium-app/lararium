@@ -39,7 +39,16 @@ type Job struct {
 	NextDue          string         `json:"next_due,omitempty"`
 	ConsecutiveSkips int            `json:"consecutive_skips"`
 	BudgetCounters   BudgetCounters `json:"budget_counters,omitempty"`
+	// ConsecutiveContextFailures counts back-to-back ticks that failed with a
+	// provider context-overflow error; Warning is set persistently once it
+	// reaches ContextFailureWarnThreshold and cleared by the next success.
+	ConsecutiveContextFailures int    `json:"consecutive_context_failures,omitempty"`
+	Warning                    string `json:"warning,omitempty"`
 }
+
+// ContextFailureWarnThreshold is the number of consecutive context-overflow
+// failures after which a job carries a persistent warning.
+const ContextFailureWarnThreshold = 3
 
 // NewJobID generates a k-sortable ULID-style ID ("j_" + 26 Crockford base32 chars)
 // using the provided timestamp (spec D5, penatus/session.go:19).
