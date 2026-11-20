@@ -354,7 +354,7 @@ func TestHealthHandler_Name(t *testing.T) {
 		hostname func() (string, error)
 		want     string
 	}{
-		{"configured", "zimaboard2", nil, "zimaboard2"},
+		{"configured", "workshop", nil, "workshop"},
 		{"hostname label", "", func() (string, error) { return "MyHost.local", nil }, "MyHost"},
 		{"hostname error", "", func() (string, error) { return "", errors.New("boom") }, "hearth"},
 		{"escaped", "Rig \"7\"\nline", nil, "Rig \"7\"\nline"},
