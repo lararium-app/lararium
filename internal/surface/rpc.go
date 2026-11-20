@@ -25,20 +25,29 @@ const (
 	// All domain signal lives in error.data.reason.
 	RPCErrorCodeGeneric = -32000
 
-	// WebSocket close codes for the auth.hello handshake (RPC-SPEC §2).
-	WSCloseNormal               uint16 = 1000
-	WSCloseProtocolError        uint16 = 1002
-	WSCloseUnsupportedData      uint16 = 1003
-	WSClosePolicyViolation      uint16 = 1008
-	WSCloseMessageTooBig        uint16 = 1009
-	WSCloseAuthTimeout          uint16 = 4001
+	// WSCloseNormal is the standard RFC 6455 normal-closure code (1000).
+	WSCloseNormal uint16 = 1000
+	// WSCloseProtocolError is the RFC 6455 protocol-error close code (1002).
+	WSCloseProtocolError uint16 = 1002
+	// WSCloseUnsupportedData is the RFC 6455 unsupported-data close code (1003).
+	WSCloseUnsupportedData uint16 = 1003
+	// WSClosePolicyViolation is the RFC 6455 policy-violation close code (1008).
+	WSClosePolicyViolation uint16 = 1008
+	// WSCloseMessageTooBig is the RFC 6455 message-too-big close code (1009).
+	WSCloseMessageTooBig uint16 = 1009
+	// WSCloseAuthTimeout is the RPC-SPEC §2 close code for a missing auth.hello within the handshake deadline (4001).
+	WSCloseAuthTimeout uint16 = 4001
+	// WSCloseAlreadyAuthenticated is the RPC-SPEC §2 close code for a second auth.hello on an already-authenticated connection (4002).
 	WSCloseAlreadyAuthenticated uint16 = 4002
-	WSCloseUnauthorized         uint16 = 4003
+	// WSCloseUnauthorized is the RPC-SPEC §2 close code for a bad/revoked token or a pre-auth method call (4003).
+	WSCloseUnauthorized uint16 = 4003
 
-	// WebSocket close reason strings (RPC-SPEC §2).
-	WSReasonAuthTimeout          = "auth_timeout"
+	// WSReasonAuthTimeout is the close reason string paired with WSCloseAuthTimeout.
+	WSReasonAuthTimeout = "auth_timeout"
+	// WSReasonAlreadyAuthenticated is the close reason string paired with WSCloseAlreadyAuthenticated.
 	WSReasonAlreadyAuthenticated = "already_authenticated"
-	WSReasonUnauthorized         = "unauthorized"
+	// WSReasonUnauthorized is the close reason string paired with WSCloseUnauthorized.
+	WSReasonUnauthorized = "unauthorized"
 
 	// DefaultWSAuthTimeout is the 5s deadline for the initial auth.hello frame (RPC-SPEC §2).
 	DefaultWSAuthTimeout = 5 * time.Second
