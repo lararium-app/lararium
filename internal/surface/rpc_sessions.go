@@ -50,6 +50,21 @@ func (s *Server) isRPCSessionSubscribed(sessionID string, conn *RPCConn) bool {
 	return ok
 }
 
+// unsubscribeRPCSession removes one connection's subscription to one session only,
+// leaving its subscriptions to other sessions intact (unlike unsubscribeAllRPCConn).
+func (s *Server) unsubscribeRPCSession(sessionID string, conn *RPCConn) {
+	s.rpcSubsMu.Lock()
+	defer s.rpcSubsMu.Unlock()
+	conns := s.rpcSubs[sessionID]
+	if conns == nil {
+		return
+	}
+	delete(conns, conn)
+	if len(conns) == 0 {
+		delete(s.rpcSubs, sessionID)
+	}
+}
+
 func (s *Server) unsubscribeAllRPCConn(conn *RPCConn) {
 	s.rpcSubsMu.Lock()
 	defer s.rpcSubsMu.Unlock()
@@ -243,9 +258,18 @@ func (s *Server) rpcSessionsSubscribe(_ context.Context, conn *RPCConn, req *RPC
 		_ = conn.SendError(*req.ID, "internal error", "internal_error", nil)
 		return
 	}
+	// Register the live-notification subscription BEFORE reading catch-up events, not just before
+	// sending the response: an event committed between an Events() read and subscribing would
+	// otherwise be silently dropped (past the catch-up cursor, not yet live-forwarded) — realistic
+	// whenever another device already has a turn in flight on this session. Subscribing first means
+	// the same event can at worst arrive twice (once in catch-up, once live) — a safe duplicate,
+	// never a drop. ErrNoSession below unsubscribes again so a not-found reply leaves no orphan entry.
+	s.subscribeRPCSession(id, conn)
+
 	events, inFlight, err := s.Sessions.Events(id, afterSeq, limit)
 	if err != nil {
 		if errors.Is(err, ErrNoSession) {
+			s.unsubscribeRPCSession(id, conn)
 			_ = conn.SendError(*req.ID, "not found", "not_found", nil)
 			return
 		}
@@ -256,9 +280,6 @@ func (s *Server) rpcSessionsSubscribe(_ context.Context, conn *RPCConn, req *RPC
 	if events == nil {
 		events = []json.RawMessage{}
 	}
-
-	// Register subscription before sending catch-up response so no subsequent live events are missed.
-	s.subscribeRPCSession(id, conn)
 
 	_ = conn.SendResult(*req.ID, map[string]any{
 		"events":    events,
