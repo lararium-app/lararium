@@ -321,6 +321,7 @@ type turnStream struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
 	quiet   bool
+	onEvent func(event, data string)
 
 	writeMu      sync.Mutex
 	started      bool
@@ -341,6 +342,15 @@ type turnStream struct {
 func newQuietTurnStream(denyAll func()) *turnStream {
 	return &turnStream{
 		quiet:   true,
+		denyAll: denyAll,
+	}
+}
+
+// newRPCTurnStream builds a turnStream that forwards live turn events to onEvent
+// (used by RPC session.event notifications) and runs denyAll once on disconnect.
+func newRPCTurnStream(onEvent func(event, data string), denyAll func()) *turnStream {
+	return &turnStream{
+		onEvent: onEvent,
 		denyAll: denyAll,
 	}
 }
@@ -390,12 +400,16 @@ func newTurnStream(w http.ResponseWriter, flusher http.Flusher, denyAll func()) 
 	return ts
 }
 
-// writeEvent emits one SSE frame.
+// writeEvent emits one SSE frame or invokes the RPC event sink.
 func (ts *turnStream) writeEvent(event, data string) {
 	ts.writeMu.Lock()
 	defer ts.writeMu.Unlock()
 	ts.started = true
 	if ts.quiet {
+		return
+	}
+	if ts.onEvent != nil {
+		ts.onEvent(event, data)
 		return
 	}
 	_, _ = ts.w.Write([]byte("event: " + event + "\n"))
@@ -438,7 +452,7 @@ func (ts *turnStream) disconnected() {
 
 // end stops the heartbeat and waits for the writer goroutine to drain.
 func (ts *turnStream) end() {
-	if ts.quiet {
+	if ts.quiet || ts.hbStop == nil {
 		return
 	}
 	ts.stopHBOnce.Do(func() { close(ts.hbStop) })
@@ -554,6 +568,56 @@ func (h *Hub) RunHeadlessTurn(ctx context.Context, sessionID, text, channel stri
 	defer ts.end()
 
 	return h.executeTurn(engineCtx, reqCtx, nil, ts, t, sessionID, text, channel, channel, updateID, onDelta)
+}
+
+// StartRPCTurn validates and starts an asynchronous turn initiated by sessions.send over WebSocket RPC (RPC-SPEC §4, §7.2).
+// connCtx is the long-lived connection context of the originating RPCConn (Translation note #1):
+// if the WebSocket connection closes mid-turn, pending approvals are denied immediately via DisconnectFor,
+// whereas the turn engine itself persists bounded only by turn_timeout.
+func (h *Hub) StartRPCTurn(connCtx context.Context, sessionID, text string, onEvent func(event, data string)) error {
+	timeout := h.cfg.TurnTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	engineCtx, cancelEngine := context.WithTimeout(context.Background(), timeout)
+	reqCtx, cancelReq := context.WithCancel(connCtx)
+	t := &turn{cancel: func() { cancelReq(); cancelEngine() }}
+
+	h.mu.Lock()
+	if _, ok := h.running[sessionID]; ok {
+		h.mu.Unlock()
+		cancelEngine()
+		cancelReq()
+		return ErrTurnInFlight
+	}
+	h.running[sessionID] = t
+	h.mu.Unlock()
+
+	ts := newRPCTurnStream(onEvent, func() {
+		h.ap.DisconnectFor(sessionID)
+	})
+
+	go func() {
+		defer func() {
+			ts.end()
+			h.mu.Lock()
+			delete(h.running, sessionID)
+			h.mu.Unlock()
+			cancelReq()
+			cancelEngine()
+		}()
+
+		go func() {
+			<-reqCtx.Done()
+			if connCtx.Err() != nil {
+				ts.disconnected()
+			}
+		}()
+
+		_ = h.executeTurn(engineCtx, reqCtx, nil, ts, t, sessionID, text, "api", "web", 0, nil)
+	}()
+
+	return nil
 }
 
 // runTurn executes one engine loop and streams its events; when it
