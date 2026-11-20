@@ -92,7 +92,7 @@ ensure_target() {
   if [ -z "${TO_BINARY}" ]; then
     echo "No TO_TAG or TO_BINARY specified; building target hearthd from current workspace..."
     mkdir -p "${REPO_ROOT}/bin"
-    (cd "${REPO_ROOT}" && CGO_ENABLED=0 go build -o bin/hearthd ./cmd/hearthd)
+    (cd "${REPO_ROOT}" && CGO_ENABLED=0 go build -trimpath -o bin/hearthd ./cmd/hearthd)
     TO_BINARY="${REPO_ROOT}/bin/hearthd"
   fi
 

@@ -39,7 +39,7 @@ const (
 	// RequestPhaseTimeout bounds the whole request-line+headers
 	// read: a guest that opens the door and then sends TLS
 	// records or garbage must be refused in seconds, not held
-	// for the idle window (agy F11).
+	// for the idle window.
 	RequestPhaseTimeout = 10 * time.Second
 
 	// maxRequestLine bounds one request/header line.
@@ -49,8 +49,8 @@ const (
 	maxTotalHeaders = 64 * 1024
 	// copyBufSize per spec: 32 KiB relay buffers.
 	copyBufSize = 32 * 1024
-	// maxRelayBody bounds a single request body's stream (agy r2
-	// F7's chunked-path cap).
+	// maxRelayBody bounds a single request body's stream
+	// (chunked-path cap).
 	maxRelayBody = 16 << 20
 )
 
@@ -72,18 +72,18 @@ var ErrFloor = errors.New("refused by proxy floor")
 func forbiddenDest(ip net.IP) bool {
 	// IsPrivate covers RFC 1918 v4 and RFC 4193 ULA v6: the AWS
 	// IPv6 IMDS endpoint (fd00:ec2::254) is ULA, not link-local, so
-	// the link-local check alone left instance-credential theft open
-	// (agy r3 F7). Cells reach the internet, not the host's backyard.
+	// the link-local check alone left instance-credential theft open.
+	// Cells reach the internet, not the host's backyard.
 	return ip.IsLoopback() || ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
 		ip.IsMulticast() || ip.IsPrivate() || cellMesh.Contains(ip)
 }
 
 // HostInterfaceAddrs returns every address currently assigned to a
-// host interface (agy r2 F2: the floor must cover the host's OWN
-// non-loopback addresses — dialing the box's LAN IP, docker0 bridge,
-// or tailscale address from a cell reaches the same daemons loopback
-// was blocked for; bench-verified escape class). Enumerated per
+// host interface (the floor must cover the host's OWN non-loopback
+// addresses — dialing the box's LAN IP, docker0 bridge, or tailscale
+// address from a cell reaches the same daemons loopback was blocked
+// for; bench-verified escape class). Enumerated per
 // request, not cached: interfaces churn (tunnels up/down) and a stale
 // allow-set is exactly the bypass. Failure is fatal for the request —
 // if we cannot enumerate, we cannot certify the destination.
@@ -220,7 +220,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	// blank line, and those bytes must be consumed from br BEFORE
 	// any tunneling/relay starts, or they leak into the relayed
 	// stream (TLS records corrupted by ASCII) while br's buffered
-	// tail gets orphaned (agy F1/F2, live-breach class).
+	// tail gets orphaned (live-breach class).
 	headers, err := readHeaders(br)
 	if err != nil {
 		rstHangup(conn)
@@ -257,8 +257,8 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 // ParseRequestLine splits "METHOD SP TARGET SP HTTP/x.y" and enforces
 // the printable-ASCII floor: the first byte of anything the proxy
-// speaks is an HTTP method letter (agy F11: a TLS ClientHello starts
-// 0x16 and must be refused instantly, not hang on a newline).
+// speaks is an HTTP method letter (a TLS ClientHello starts 0x16 and
+// must be refused instantly, not hang on a newline).
 func ParseRequestLine(line string) (method, target, version string, ok bool) {
 	line = strings.TrimRight(line, "\r\n")
 	if line == "" || line[0] < 'A' || line[0] > 'Z' {
@@ -279,9 +279,9 @@ func parseRequestLine(line string) (method, target, version string, ok bool) {
 }
 
 // ReadLineLimited reads one \n-terminated line, failing past max bytes
-// BEFORE the bytes hit memory (agy r2 F3: ReadString('\n') returns only
-// at the newline, so an endless body without one accumulated
-// unbounded — the size check after return was too late). ReadSlice
+// BEFORE the bytes hit memory (ReadString('\n') returns only at the
+// newline, so an endless body without one accumulated unbounded — the
+// size check after return was too late). ReadSlice
 // parks at the buffer boundary; we accumulate in explicit chunks and
 // refuse the moment the budget trips.
 func ReadLineLimited(br *bufio.Reader) (string, error) {
@@ -358,7 +358,7 @@ func validHostPort(target string) bool {
 // (minus hop-by-hop noise), and streams the response back byte-for-byte.
 // The client->upstream relay MUST start from io.MultiReader(br, conn):
 // br holds the body bytes the client pipelined behind the headers
-// (agy F2 — reading raw conn orphans them and the upstream hangs on
+// (reading raw conn orphans them and the upstream hangs on
 // Content-Length forever).
 func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reader, u *url.URL, method string, headers []string) {
 	upstream, err := dialUpstreamFn(ctx, withDefaultPort(u))
@@ -394,10 +394,10 @@ func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reade
 			return
 		}
 	}
-	// Connection: close upstream (agy r3 F2): HTTP/1.1 defaults to
-	// keep-alive — without it the upstream holds the socket after the
-	// response, relayOneWay blocks on Read until its 5-minute idle,
-	// and every request leaks a MaxConnsPerCell slot. One-shot upstream
+	// Connection: close upstream: HTTP/1.1 defaults to keep-alive —
+	// without it the upstream holds the socket after the response,
+	// relayOneWay blocks on Read until its 5-minute idle, and every
+	// request leaks a MaxConnsPerCell slot. One-shot upstream
 	// connections are the proxy's model anyway (one request, one
 	// relay, close both).
 	if _, err := upstream.Write([]byte("Connection: close\r\n\r\n")); err != nil {
@@ -405,11 +405,10 @@ func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reade
 	}
 
 	// Client -> upstream: exactly this request's body bytes,
-	// br's buffered tail FIRST (agy F2), then only up to
-	// Content-Length of what remains on the wire. NEVER a blind
-	// io.Copy: that forwards pipelined second requests straight to
-	// THIS upstream, bypassing floor + log per request
-	// (agy r2 F7, smuggling class).
+	// br's buffered tail FIRST, then only up to Content-Length
+	// of what remains on the wire. NEVER a blind io.Copy: that
+	// forwards pipelined second requests straight to THIS upstream,
+	// bypassing floor + log per request (smuggling class).
 	s.logEntry(conn.RemoteAddr(), method, u.Host, "proxied")
 	if err := copyRequestBody(conn, br, upstream, headers); err != nil {
 		// The upstream may have ALREADY answered the request line
@@ -426,7 +425,7 @@ func (s *Server) forwardHTTP(ctx context.Context, conn net.Conn, br *bufio.Reade
 		return
 	}
 
-	// Upstream -> client only (agy r2 F7; body already streamed).
+	// Upstream -> client only (body already streamed).
 	relayOneWay(ctx, conn, upstream)
 }
 
@@ -469,8 +468,8 @@ func CopyRequestBody(conn net.Conn, br *bufio.Reader, upstream io.Writer, header
 		// Chunk framing must be PARSED, not streamed blind:
 		// io.Copy over the raw wire waits for 16 MiB or EOF,
 		// but a well-behaved client finishes at the zero-size
-		// chunk and waits for OUR response (agy r3 F1: blind
-		// copy = guaranteed deadlock on every chunked POST).
+		// chunk and waits for OUR response (blind copy = guaranteed
+		// deadlock on every chunked POST).
 		return copyChunked(conn, br, upstream)
 	default:
 		// No Content-Length, not chunked: no body on the wire.
@@ -487,7 +486,7 @@ func copyRequestBody(conn net.Conn, br *bufio.Reader, upstream io.Writer, header
 // forwardCONNECT establishes the TLS tunnel: destination floor + dial,
 // 200, raw copy. Headers were already drained from br in handle; the
 // client side of the relay is io.MultiReader(br, conn) so any
-// ClientHello bytes br had already buffered reach upstream (agy F1).
+// ClientHello bytes br had already buffered reach upstream.
 func (s *Server) forwardCONNECT(ctx context.Context, conn net.Conn, br *bufio.Reader, target string) {
 	upstream, err := dialUpstreamFn(ctx, target)
 	if err != nil {
@@ -565,8 +564,7 @@ func CopyChunked(conn net.Conn, br *bufio.Reader, upstream io.Writer) error {
 					// A truncated or overlong trailer is a
 					// framing error: committing with our
 					// synthesized terminator would hand the
-					// upstream an aborted-but-final request
-					// (agy r4 F2).
+					// upstream an aborted-but-final request.
 					return fmt.Errorf("chunk trailer: %w", terr)
 				}
 				if t == "\r\n" || t == "\n" {
@@ -578,7 +576,7 @@ func CopyChunked(conn net.Conn, br *bufio.Reader, upstream io.Writer) error {
 		}
 		// Budget check in int64 BEFORE accumulating: a declared
 		// chunk near MaxInt64 would wrap any fixed-width sum
-		// negative and sail past the ceiling (agy r4 F1).
+		// negative and sail past the ceiling.
 		// Invariant: total <= maxRelayBody here, so if size is
 		// within range the sum cannot overflow.
 		if size > int64(maxRelayBody)-total {
@@ -612,11 +610,11 @@ func copyChunked(conn net.Conn, br *bufio.Reader, upstream io.Writer) error {
 }
 
 // RelayOneWay streams the upstream's response back to the client
-// only. forwardHTTP uses this (agy r2 F7): the request body was
-// already copied exactly, so keeping the client->upstream direction
-// open would hand any pipelined second request to THIS upstream —
-// unlogged, unfloored. Closing after the response gives Connection:
-// close semantics on both hops.
+// only. forwardHTTP uses this: the request body was already copied
+// exactly, so keeping the client->upstream direction open would hand
+// any pipelined second request to THIS upstream — unlogged,
+// unfloored. Closing after the response gives Connection: close
+// semantics on both hops.
 func RelayOneWay(ctx context.Context, hostSide net.Conn, upstream net.Conn) {
 	done := make(chan struct{}, 1)
 	go func() {
@@ -640,7 +638,7 @@ func relayOneWay(ctx context.Context, hostSide net.Conn, upstream net.Conn) {
 // appended when the URL omits it (net.Dial refuses bare "example.com").
 // Hostname() is mandatory, not Host: for IPv6 literals Host carries
 // brackets, and JoinHostPort would double-wrap them into
-// "[[::1]]:80" — unparseable downstream (agy r2 F4).
+// "[[::1]]:80" — unparseable downstream.
 func WithDefaultPort(u *url.URL) string {
 	if u.Port() != "" {
 		return u.Host
@@ -732,7 +730,7 @@ func resolveFloor(ctx context.Context, host string) (string, error) {
 	if err != nil {
 		// Resolution failed (NXDOMAIN, timeout, ...): fail closed
 		// by propagating — dialing on a failed answer would skip
-		// the floor check (agy F4 fail-open review).
+		// the floor check (fail-open risk).
 		return "", err
 	}
 	for _, a := range ips {
@@ -747,10 +745,10 @@ func resolveFloor(ctx context.Context, host string) (string, error) {
 }
 
 // SkipHopByHop drops headers that must not cross a proxy.
-// Transfer-Encoding is deliberately NOT on this list (agy F7): this is
-// a stream relay, not a message re-encoder — stripping chunked framing
-// turns a chunked POST into an upstream-smuggled pipeline (RFC 9112
-// §6.3 forbids exactly this).
+// Transfer-Encoding is deliberately NOT on this list: this is a stream
+// relay, not a message re-encoder — stripping chunked framing turns a
+// chunked POST into an upstream-smuggled pipeline (RFC 9112 §6.3
+// forbids exactly this).
 func SkipHopByHop(name string) bool {
 	switch name {
 	case "proxy-connection", "proxy-authorization", "keep-alive",

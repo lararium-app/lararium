@@ -151,7 +151,7 @@ To prefer a hosted endpoint: uncomment a provider block in
 1. Build the daemon (Go 1.26+):
 
    ```bash
-   go build -o hearthd ./cmd/hearthd
+   go build -trimpath -o hearthd ./cmd/hearthd
    ```
 
 2. Run the interactive setup wizard (writes providers + a starter
@@ -179,7 +179,7 @@ To prefer a hosted endpoint: uncomment a provider block in
 6. Optional but recommended on Linux/WSL2 — check the sandbox host:
 
    ```bash
-   go build -o cell ./cmd/cell
+   go build -trimpath -o cell ./cmd/cell
    ./cell doctor
    ```
 
@@ -279,8 +279,8 @@ independent daemons; neither launches the other.
 Build them alongside `hearthd`:
 
 ```bash
-go build -o custos ./cmd/custos
-go build -o custosd ./cmd/custosd
+go build -trimpath -o custos ./cmd/custos
+go build -trimpath -o custosd ./cmd/custosd
 ```
 
 ### Set up

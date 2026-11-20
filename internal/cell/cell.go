@@ -80,9 +80,9 @@ type Cell struct {
 	Created     time.Time `json:"created"`
 	SubUIDCount int       `json:"subuid_count"`
 	// GuestRootFixed records that fixGuestRootFiles has been applied
-	// for this cell (agy round-3 F6): without it, a crash between
-	// recordUIDMap and the first-boot restart would leave every later
-	// idempotent Start short-circuiting on isActive with a broken sudo.
+	// for this cell: without it, a crash between recordUIDMap and the
+	// first-boot restart would leave every later idempotent Start
+	// short-circuiting on isActive with a broken sudo.
 	GuestRootFixed bool `json:"guest_root_fixed,omitempty"`
 	// Limits overrides spec §5 per-cell: any non-zero/non-empty
 	// field replaces the lararium.yaml global at start; nil/zero
@@ -164,7 +164,7 @@ func (s *Store) SetRunner(r Runner) {
 // [A-Za-z0-9._-], not starting with "." or "-". A leading dash turns
 // into a bogus --machine=-- flag; "." passes prefix/separators checks
 // yet CellDir(".") = cells/ itself, so Destroy(".") would wipe every
-// cell (agy round-2 F3). Anything else is ErrInvalidID.
+// cell. Anything else is ErrInvalidID.
 func validateID(id string) error {
 	if id == "" || len(id) > 64 {
 		return ErrInvalidID

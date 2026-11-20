@@ -81,7 +81,7 @@ func (s *Store) Doctor() ([]CheckResult, error) {
 		results = append(results, CheckResult{"cgroup2", "OK", "cgroup2 unified hierarchy"})
 	}
 
-	// Check: systemd >= 254 (spec §1 prerequisite; agy review F11).
+	// Check: systemd >= 254 (spec §1 prerequisite).
 	if ok, detail := checkSystemdVersion(); ok {
 		results = append(results, CheckResult{"systemd", "OK", detail})
 	} else {
@@ -286,7 +286,7 @@ func (s *Store) probeRootWritable() (bool, string) {
 	return true, s.Root + " exists and is writable"
 }
 
-// checkSubUID verifies the subordinate uid/gid setup (agy round-2 F12).
+// checkSubUID verifies the subordinate uid/gid setup.
 // Two distinct failure modes:
 //  1. /etc/subuid AND /etc/subgid must EXIST. systemd's auto-ownership
 //     machinery (chown-recursive, uid map for binds) reads both; a
@@ -363,7 +363,7 @@ func subRangesFor(path, username string) (int, error) {
 func (s *Store) probeOverlay() (bool, string) {
 	// Probe the CELLS filesystem (spec §1: overlay upperdir support is
 	// a property of s.Root — a /tmp tmpfs probe would falsely pass on
-	// NFS cells dirs; agy review F11).
+	// NFS cells dirs).
 	probeRoot := filepath.Join(s.Root, ".doctor-probe")
 	os.RemoveAll(probeRoot)
 	if err := os.MkdirAll(probeRoot, 0o755); err != nil {
@@ -440,7 +440,7 @@ func (s *Store) probeUserNS() (bool, string) {
 	// Run throwaway nspawn with --private-users=pick, and a bind we
 	// can assert write-ownership on (spec §1: idmapped-bind probe =
 	// throwaway cell, /workspace write lands owned by the MAPPED uid,
-	// never host root — agy review F11).
+	// never host root).
 	wsDir, wErr := os.MkdirTemp("", "lararium-doctor-ws-*")
 	if wErr != nil {
 		return false, fmt.Sprintf("cannot create probe workspace: %v", wErr)
@@ -529,7 +529,7 @@ func parseKernelVersion(major, minor, patch string) (bool, string) {
 	maj, _ := strconv.Atoi(major)
 	minV, _ := strconv.Atoi(minor)
 	// Two-component kernels exist (e.g. "7.2" — an explicitly
-	// targeted bench); patch is optional in the regex (agy F11).
+	// targeted bench); patch is optional in the regex.
 	if patch == "" {
 		patch = "0"
 	}
