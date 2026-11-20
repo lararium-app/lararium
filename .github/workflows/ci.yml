@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # builds and tests never embed runner-local paths.
+  GOFLAGS: -trimpath
+
 jobs:
   go:
     strategy:
@@ -68,6 +72,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: No executables in the tree
         run: |
@@ -96,6 +102,8 @@ jobs:
           # with: gh secret set NEUTRALITY_DENYLIST --repo <repo>
           # (value: one regex, e.g. 'name1|host1|/home/user1').
           DENYLIST: ${{ secrets.NEUTRALITY_DENYLIST }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           # Product repo: zero personal identifiers, hostnames, home
           # paths, or hardware specifics in tracked files. (grep -I
@@ -111,6 +119,45 @@ jobs:
           if [ -n "$hits" ]; then
             echo "$hits"
             echo "personal identifiers found in tracked files (list above)"; exit 1
+          fi
+          if [ -n "$BASE" ]; then
+            msg_hits=0
+            while read -r sha; do
+              [ -z "$sha" ] && continue
+              if git log -1 --format=%B "$sha" | grep -i -q -E "$DENYLIST"; then
+                echo "$sha"
+                msg_hits=1
+              fi
+            done < <(git log --format='%H' "$BASE..$HEAD")
+            if [ "$msg_hits" -ne 0 ]; then
+              echo "personal identifiers found in commit messages"; exit 1
+            fi
+          fi
+
+      - name: Conventional Commits
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          regex='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test|security)(\([a-z0-9._/-]+\))?!?: .+'
+          bad=0
+          if ! printf '%s\n' "$TITLE" | grep -q -E "$regex"; then
+            echo "PR title does not match conventional commits: $TITLE"
+            bad=1
+          fi
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            sha="${line%% *}"
+            subject="${line#* }"
+            if ! printf '%s\n' "$subject" | grep -q -E "$regex"; then
+              echo "$line"
+              bad=1
+            fi
+          done < <(git log --no-merges --format='%h %s' "$BASE..$HEAD")
+          if [ "$bad" -ne 0 ]; then
+            exit 1
           fi
 
       - name: Secrets scan

@@ -93,17 +93,17 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 		"--property=WorkingDirectory=" + cwd,
 	}
 	// Host-enforced timeout belongs to the in-guest unit: systemd
-	// kills the exec scope when RuntimeMaxSec expires. (agy review
-	// F2: opts.Timeout was parsed but never enforced anywhere.)
+	// kills the exec scope when RuntimeMaxSec expires (opts.Timeout
+	// was parsed but never enforced anywhere).
 	if opts.Timeout > 0 {
 		execArgs = append(execArgs,
 			fmt.Sprintf("--property=RuntimeMaxSec=%d", opts.Timeout))
 	}
 	// Env reaches the in-guest unit via --setenv (spec §4 proxy vars
 	// depend on it; round-2 F9: RunOpts.Env was silently dropped).
-	// Order matters (agy r2 F8): defaults FIRST so an explicit
-	// --env from the caller wins the duplicate -- the cage env is a
-	// default, not an override.
+	// Order matters: defaults FIRST so an explicit --env from the
+	// caller wins the duplicate -- the cage env is a default, not
+	// an override.
 	for _, kv := range s.proxyEnvForRun(id) {
 		execArgs = append(execArgs, "--setenv="+kv)
 	}
@@ -141,7 +141,7 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 	// If the LAST failure is still the machine bus being unreachable,
 	// that is a transport failure, NOT the command's exit code —
 	// returning ExitCode 1 with nil error made an unreachable cell
-	// indistinguishable from `false` (agy round-2 F4).
+	// indistinguishable from `false`.
 	if err != nil && isBusTransportError(stderr) {
 		return res0(stdout, stderr), fmt.Errorf(
 			"machine bus unreachable for %s: %w", id, ErrNotRunning)
@@ -149,8 +149,8 @@ func (s *Store) Run(id string, cmd string, opts RunOpts) (*ExecResult, error) {
 	if err != nil && opts.Timeout > 0 {
 		// Safety net: stop THE EXACT unit we launched (not a glob —
 		// a wildcard stop killed concurrent exec jobs in the same
-		// cell on any non-zero exit; agy round-2 F5). If the command
-		// already exited, stopping its collected unit is a no-op.
+		// cell on any non-zero exit). If the command already exited,
+		// stopping its collected unit is a no-op.
 		//nolint:errcheck // already-exited units stop cleanly; nothing to undo
 		s.runner.Run("systemctl", "--machine="+id, "stop", unit)
 	}

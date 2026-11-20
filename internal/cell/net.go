@@ -76,8 +76,8 @@ func renderFilterNft(proxyPort int) string {
   table inet lararium_filter {
     chain input {
       type filter hook input priority filter; policy accept;
-      # Un-caged boot window (agy r2 F1): nspawn creates the host end
-      # as ve-* (systemd >= 254 naming) and it is UP before we rename
+      # Un-caged boot window: nspawn creates the host end as ve-*
+      # (systemd >= 254 naming) and it is UP before we rename
       # it to v-lar-*. Until rename+address land, nothing from those
       # names may reach the host except neighbor discovery and ping
       # (no ports exposed; forward path stays fully closed). Syntax
@@ -95,9 +95,9 @@ func renderFilterNft(proxyPort int) string {
       type filter hook forward priority filter; policy accept;
       iifname { "ve-*", "veth-*", "vb-*" } drop
       iifname "v-lar-*" drop
-      # No external ingress toward cells (agy r2 F6): with
-      # ip_forward=1 an outside host could otherwise route straight
-      # to 10.91.<n>.2. Cells are egress-only.
+      # No external ingress toward cells: with ip_forward=1 an outside
+      # host could otherwise route straight to 10.91.<n>.2. Cells are
+      # egress-only.
       oifname "v-lar-*" drop
     }
   }
@@ -528,14 +528,13 @@ func (s *Store) configureHostVeth(id string, subnet int) error {
 	target := vethHostName(id)
 
 	if resolved != target {
-		// Stale host-end from a crashed start (agy r2 F5): if the
-		// target name already exists the rename below fails with
-		// EEXIST. A host-side v-lar-* interface with no live cell
-		// claiming it is ours to delete (cell netns owns the peer;
-		// deleting the host end tears the pair down wholesale).
-		// ONLY in this branch: when resolved == target the name is
-		// the live link itself — deleting it would tear down our own
-		// veth (agy r3 F3).
+		// Stale host-end from a crashed start: if the target name
+		// already exists the rename below fails with EEXIST. A
+		// host-side v-lar-* interface with no live cell claiming it
+		// is ours to delete (cell netns owns the peer; deleting the
+		// host end tears the pair down wholesale). ONLY in this branch:
+		// when resolved == target the name is the live link itself —
+		// deleting it would tear down our own veth.
 		if _, _, err := s.runner.Run("ip", "link", "show", target); err == nil {
 			if _, stderr, derr := s.runner.Run("ip", "link", "delete", target); derr != nil {
 				return fmt.Errorf("clear stale %s: %s", target, strings.TrimSpace(string(stderr)))
@@ -554,9 +553,9 @@ func (s *Store) configureHostVeth(id string, subnet int) error {
 	}
 	// Per-veth values cannot exist at net-install time (spec §4;
 	// review finding) — set them at start, BEFORE link up: IPv6
-	// disabled kills the fe80 surface (agy F10: a host process on
-	// :::3128 could otherwise be reached through the coop accept's
-	// fib-local match); rp_filter loose (2) makes the cage not care
+	// disabled kills the fe80 surface (a host process on :::3128
+	// could otherwise be reached through the coop accept's fib-local
+	// match); rp_filter loose (2) makes the cage not care
 	// what the host's global rp_filter says (bench #2: a host-wide
 	// rp_filter=1 must not become a coop-path dependency);
 	// accept_source_route off. Global default.disable_ipv6 is
@@ -602,7 +601,7 @@ func (s *Store) teardownHostVeth(id string) {
 // cells' rules vanish on the next churn). Filter table is NEVER touched
 // here — full-flush churn would disturb live conntrack for running cells.
 //
-// The ENTIRE read-build-apply runs under the flock (agy F4: an
+// The ENTIRE read-build-apply runs under the flock (an
 // enumerate-then-locked-apply window lets a concurrent starter's newer
 // view be overwritten by a stale one — lost DNAT rules).
 func (s *Store) ReconcileNat() error {
@@ -728,7 +727,7 @@ func (s *Store) installIptablesInterop() error {
 		// DNAT-accepted flows are only OURS when they arrive on a
 		// cell interface; unscoped, an operator port-forward's DNAT
 		// traffic on eth0 sailed through position 1 before UFW ever
-		// saw it (agy r3 F6).
+		// saw it.
 		{[]string{
 			"-A", iptablesInteropChain, "-i", "v-lar-+", "-m", "conntrack",
 			"--ctstate", "DNAT", "-m", "comment", "--comment", iptablesInteropTag, "-j", "ACCEPT",
@@ -787,7 +786,7 @@ func (s *Store) RemoveNetwork() error {
 				continue
 			}
 			// veth lines read "12: v-lar-ab12@if34:" — the @peer
-			// suffix must go or iproute2 rejects the name (agy r3 F5).
+			// suffix must go or iproute2 rejects the name.
 			name := strings.TrimSuffix(fields[1], ":")
 			if at := strings.IndexByte(name, '@'); at >= 0 {
 				name = name[:at]
@@ -851,10 +850,10 @@ func (s *Store) bringUpNetwork(id string) error {
 		if err := s.startProxyUnit(id, c); err != nil {
 			return err
 		}
-		// Settle-wait (agy F9; brief §1 mandates it): a proxy that
-		// fails to bind or crash-loops must unwind the boot — a
-		// "running" cell whose door is dead hands every guest
-		// client a refused connection and breaks C1's contract.
+		// Settle-wait (required): a proxy that fails to bind or
+		// crash-loops must unwind the boot — a "running" cell whose
+		// door is dead hands every guest client a refused connection
+		// and breaks C1's contract.
 		if err := s.waitProxyListening(c); err != nil {
 			return err
 		}
@@ -949,7 +948,7 @@ func (s *Store) startProxyUnit(id string, c *Cell) error {
 		"--property=NoNewPrivileges=yes",
 		// The proxy runs OUTSIDE the cell's cgroup: cap it so a
 		// hostile guest cannot lean on host memory/tasks through
-		// the door (agy F6).
+		// the door.
 		"--property=MemoryMax=128M",
 		"--property=TasksMax=64",
 		exe,
@@ -991,10 +990,10 @@ func (s *Store) proxyActive() bool { return s.ProxyGlobal }
 // sentinel: fillNetworkState stamps it on every post-T5 record (a zero
 // SubnetIndex is a legitimate index, so it cannot serve).
 func (s *Store) migrateLegacyNetwork(id string, rec *Cell) error {
-	// Allocation THROUGH save under one flock (agy r3 F4): releasing
-	// after allocateSubnetIndex leaves the claim invisible until Save
-	// lands, so a concurrent Create/migrate can take the same index.
-	// Same lock-through-commit invariant as Create.
+	// Allocation THROUGH save under one flock: releasing after
+	// allocateSubnetIndex leaves the claim invisible until Save lands,
+	// so a concurrent Create/migrate can take the same index. Same
+	// lock-through-commit invariant as Create.
 	return s.withCellLock(func() error {
 		n, err := s.allocateSubnetIndex()
 		if err != nil {

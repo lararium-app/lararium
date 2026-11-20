@@ -32,7 +32,7 @@ jobs:
       - name: Build current main
         run: |
           mkdir -p bin
-          CGO_ENABLED=0 go build -o bin/hearthd ./cmd/hearthd
+          CGO_ENABLED=0 go build -trimpath -o bin/hearthd ./cmd/hearthd
 
       - name: Run upgrade drill
         run: bash scripts/upgrade-drill.sh

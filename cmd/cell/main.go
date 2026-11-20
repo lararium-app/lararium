@@ -27,8 +27,8 @@ func runSystem(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// shellJoin prepares argv for the in-cell /bin/sh -c (agy review
-// F8). Two documented forms:
+// shellJoin prepares argv for the in-cell /bin/sh -c. Two documented
+// forms:
 //   - single part  -> passed through verbatim: a deliberate shell
 //     string ("echo hi; id", pipes, redirects keep working —
 //     live-verified usage).
@@ -84,7 +84,7 @@ func main() {
 	// Parse: strip global --config [PATH] BEFORE the subcommand only.
 	// Everything from the subcommand onward passes through untouched —
 	// scanning past it let `cell run c -- curl --config f` have its
-	// guest argv eaten and parsed as our config path (agy round-2 F6).
+	// guest argv eaten and parsed as our config path.
 	args := os.Args[1:]
 	stripped := make([]string, 0, len(args))
 	i := 0
@@ -336,10 +336,10 @@ func runCmd(store *cell.Store, args []string) {
 	}
 
 	// Quote each argv part for the in-cell /bin/sh -c so word
-	// boundaries survive (agy review F8: a bare join mangled
-	// `ls "my dir"` into two args). Single quotes make the parts
-	// literal; '|'/'>' typed by the user stay OUTSIDE quotes as the
-	// spec's shell-string form intends.
+	// boundaries survive (a bare join mangled `ls "my dir"` into
+	// two args). Single quotes make the parts literal; '|'/'>' typed
+	// by the user stay OUTSIDE quotes as the spec's shell-string
+	// form intends.
 	cmdStr := shellJoinQuoted(cmdParts)
 	// Spec §6: stdin is piped through. Read it only when not a TTY
 	// (a pipe/heredoc/daemon hand-off); an interactive TTY means the
@@ -459,9 +459,9 @@ func restoreCmd(store *cell.Store, args []string) {
 	ts := args[1]
 
 	// id/ts both feed filesystem paths: ts must parse as the exact
-	// snapshot layout (rejects "../evil", globs; agy round-2 F7 —
-	// validateID inside store methods covers id at use, but the
-	// snapshot path here is built in main).
+	// snapshot layout (rejects "../evil", globs; validateID inside
+	// store methods covers id at use, but the snapshot path here is
+	// built in main).
 	if _, err := time.Parse("20060102T150405Z", ts); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid snapshot timestamp %q\n", ts)
 		os.Exit(1)
@@ -494,11 +494,11 @@ func restoreCmd(store *cell.Store, args []string) {
 	}
 
 	// The snapshot must SURVIVE the restore (spec §2: "historical
-	// uppers kept for restore" — agy review F4: a rename consumed it,
-	// so re-restoring the same ts failed). Copy the snapshot tree
-	// (cp -a: mode/ownership/xattrs), then drop the old upper only
-	// after the copy completed, via an out-of-the-way rename so a
-	// crash mid-delete never leaves upper/ half-removed.
+	// uppers kept for restore" — a rename consumed it, so re-restoring
+	// the same ts failed). Copy the snapshot tree (cp -a:
+	// mode/ownership/xattrs), then drop the old upper only after
+	// the copy completed, via an out-of-the-way rename so a crash
+	// mid-delete never leaves upper/ half-removed.
 	staging := currentUpper + ".restoring"
 	oldUpper := currentUpper + ".old"
 	os.RemoveAll(staging)                          //nolint:gosec // G703: validated id+ts derived path
@@ -531,8 +531,7 @@ func restoreCmd(store *cell.Store, args []string) {
 
 	// work/ holds index whiteouts tied to the REPLACED upper —
 	// remounting it against the restored tree risks overlayfs index
-	// inconsistency (same reasoning as snapshot's work/ reset; agy
-	// round-2 F7).
+	// inconsistency (same reasoning as snapshot's work/ reset).
 	if err := os.RemoveAll(store.WorkDir(id)); err != nil { //nolint:gosec // G703: validated id path
 		fmt.Fprintf(os.Stderr, "error: clean work dir: %v\n", err)
 		os.Exit(1)

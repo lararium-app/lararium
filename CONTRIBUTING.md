@@ -16,8 +16,9 @@ contributions work here.
 3. **One concern per PR.** Conventional Commit titles
    (`feat: …`, `fix(cell): …`, `docs: …`). The PR title becomes the merge
    commit subject.
-4. **CI must be green:** `go vet ./... && go build ./... && go test -race
-   ./...`, and `gofmt -l` must report nothing on the files you touched.
+4. **CI must be green:** `go vet ./... && go build -trimpath ./... &&
+   go test -race ./...`, and `gofmt -l` must report nothing on the
+   files you touched.
 
 ## Development setup
 
@@ -27,6 +28,10 @@ contributions work here.
 - No secrets, endpoints, or personal infrastructure in tests — unit tests
   run hermetically with fake runners; anything needing a real hypervisor-
   class kernel is gated behind the cage suite and clearly marked
+- No machine-specific data anywhere in the tree or in commit messages
+  — no absolute home paths, local usernames, or hostnames. Keep
+  editor, OS, and tool scratch ignores in your global gitignore
+  (`git config --global core.excludesFile`), not in `.gitignore`.
 
 ## Pull request checklist
 

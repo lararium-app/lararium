@@ -106,9 +106,8 @@ func (s *Store) BuildTemplate() error {
 	s.runInTemplate(dst, "usermod", "-aG", "sudo", "keeper")
 	// Spec §2 intent — "lets the agent install a package" — requires
 	// non-interactive sudo: keeper has no password and cell run is
-	// non-TTY, so plain sudo group membership fails at the prompt
-	// (agy round-2 F10). NOPASSWD drop-in is in-guest only; §1's
-	// userns keeps it harmless.
+	// non-TTY, so plain sudo group membership fails at the prompt.
+	// NOPASSWD drop-in is in-guest only; §1's userns keeps it harmless.
 	if err := os.MkdirAll(filepath.Join(dst, "etc", "sudoers.d"), 0o755); err != nil {
 		return fmt.Errorf("mkdir sudoers.d: %w", err)
 	}
@@ -134,8 +133,8 @@ func (s *Store) BuildTemplate() error {
 	for _, unit := range []string{"systemd-networkd.service", "dbus.service"} {
 		// The link TARGET must be guest-root-relative ("/lib/..."),
 		// not the host path — a host-absolute target dangles inside
-		// the booted guest and the unit never starts (agy review F1,
-		// confirmed on the built template).
+		// the booted guest and the unit never starts (confirmed on
+		// the built template).
 		unitPath := filepath.Join(dst, "lib", "systemd", "system", unit)
 		if _, err := os.Stat(unitPath); err != nil {
 			continue

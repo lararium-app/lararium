@@ -12,9 +12,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/hearthd ./cmd/hearthd \
- && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/custosd ./cmd/custosd \
- && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/custos ./cmd/custos
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/hearthd ./cmd/hearthd \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/custosd ./cmd/custosd \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/custos ./cmd/custos
 
 # debian-slim (not distroless): the entrypoint shim is POSIX sh and needs
 # coreutils (cp/grep/sed) for first-run seeding, so the runtime image carries

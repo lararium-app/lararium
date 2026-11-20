@@ -37,7 +37,7 @@ When running `hearthd` directly on the host:
 
 ```bash
 # Rebuild from release or source and restart the daemon
-git pull && CGO_ENABLED=0 go build -o /usr/local/bin/hearthd ./cmd/hearthd && systemctl restart hearthd
+git pull && CGO_ENABLED=0 go build -trimpath -o /usr/local/bin/hearthd ./cmd/hearthd && systemctl restart hearthd
 ```
 
 Or when running manually under a process manager:
