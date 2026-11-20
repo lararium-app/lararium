@@ -57,18 +57,18 @@ func chunkWire(payload string, chunkSize int) string {
 	return b.String()
 }
 
-// TestCopyRequestBodyChunkedReframes is the regression for the F1 fix
-// round (agy r3 F1) ITSELF: the first cut of copyChunked forgot the
-// CRLF terminating each chunk's data, so every chunked POST with a
-// body died mid-stream (live bench: "Recv failure: Connection reset
-// by peer" after the last chunk). The output must be byte-identical
-// chunk framing that net/http's own reader accepts.
+// TestCopyRequestBodyChunkedReframes verifies chunked reframing:
+// the first cut of copyChunked forgot the CRLF terminating each
+// chunk's data, so every chunked POST with a body died mid-stream
+// (live bench: "Recv failure: Connection reset by peer" after the last
+// chunk). The output must be byte-identical chunk framing that
+// net/http's own reader accepts.
 func TestCopyRequestBodyChunkedReframes(t *testing.T) {
 	payload := strings.Repeat("Lararium-Chunk-Payload-0123456789-", 5000) // ~175 KiB
 	wire := chunkWire(payload, 65536)
 
 	// Split the wire across the br/conn seam to prove the buffered
-	// tail is drained first (agy r1 F2 invariant).
+	// tail is drained first (buffered-tail invariant).
 	br := bufio.NewReader(strings.NewReader(wire[:70000]))
 	rest := strings.NewReader(wire[70000:])
 
@@ -181,7 +181,7 @@ func TestCopyRequestBodyContentLength(t *testing.T) {
 }
 
 // TestReadLineLimitedBounded: oversized lines error instead of
-// growing memory without limit (agy r2 F3).
+// growing memory without limit.
 func TestReadLineLimitedBounded(t *testing.T) {
 	br := bufio.NewReader(strings.NewReader(strings.Repeat("A", maxRequestLine+10)))
 	if _, err := readLineLimited(br); err == nil {
@@ -194,11 +194,11 @@ func TestReadLineLimitedBounded(t *testing.T) {
 	}
 }
 
-// TestCopyRequestBodyChunkedDeclaredOverflow is the regression for
-// agy r4 F1: a declared chunk near MaxInt64 used to wrap the int
-// accumulator negative (reachable with real data on 32-bit, and it
-// also let the copy block waiting for exabytes of data). The budget
-// check must fire on the DECLARATION, in int64, before any copy.
+// TestCopyRequestBodyChunkedDeclaredOverflow verifies that a declared
+// chunk near MaxInt64 does not wrap the int accumulator negative
+// (reachable with real data on 32-bit, and it also let the copy block
+// waiting for exabytes of data). The budget check must fire on the
+// DECLARATION, in int64, before any copy.
 func TestCopyRequestBodyChunkedDeclaredOverflow(t *testing.T) {
 	framing := "1\r\nA\r\n7FFFFFFFFFFFFFFF\r\n" // 1 byte, then 8 EiB declared
 	done := make(chan error, 1)
@@ -218,11 +218,10 @@ func TestCopyRequestBodyChunkedDeclaredOverflow(t *testing.T) {
 	}
 }
 
-// TestCopyRequestBodyChunkedTrailerTruncated is the regression for
-// agy r4 F2: EOF mid-trailer used to break the trailer loop and
-// commit the request upstream with a synthesized terminator,
-// delivering an aborted-but-final request. Truncation is a framing
-// error and must propagate.
+// TestCopyRequestBodyChunkedTrailerTruncated verifies that EOF mid-trailer
+// does not break the trailer loop and commit the request upstream with
+// a synthesized terminator, delivering an aborted-but-final request.
+// Truncation is a framing error and must propagate.
 func TestCopyRequestBodyChunkedTrailerTruncated(t *testing.T) {
 	framing := "3\r\nabc\r\n0\r\n" // zero chunk, then EOF inside trailers
 	var out bytes.Buffer

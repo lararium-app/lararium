@@ -62,10 +62,10 @@ func (s *Store) Start(id string) error {
 	// Refuse to double-start: an active unit would create a second
 	// supervisor competing for the machine name. Spec §6: start is
 	// idempotent — already-running is a no-op, not an error.
-	// Exception (agy round-3 F6): a first boot that recorded its uid
-	// base but crashed before the guest-root fix + restart leaves a
-	// live container with a broken sudo — treat that as incomplete,
-	// not idempotent: stop it and boot properly below.
+	// Exception: a first boot that recorded its uid base but crashed
+	// before the guest-root fix + restart leaves a live container
+	// with a broken sudo — treat that as incomplete, not idempotent:
+	// stop it and boot properly below.
 	if s.isActive(id) {
 		if !basePinned || rec0.GuestRootFixed {
 			return nil
@@ -105,10 +105,10 @@ func (s *Store) Start(id string) error {
 	// first boot the base is unknown until nspawn picks one, so we
 	// fix after recording it and restart once.
 	//
-	// Snapshot/Restore may leave the overlay mounted while stopped
-	// (agy round-3 F3). Any mount here means no live guest uses it —
-	// drop it so the pre-boot fix never mutates a live upper, then
-	// remount fresh below.
+	// Snapshot/Restore may leave the overlay mounted while stopped.
+	// Any mount here means no live guest uses it — drop it so the
+	// pre-boot fix never mutates a live upper, then remount fresh
+	// below.
 	if s.isMounted(s.MergedDir(id)) {
 		if err := s.UnmountOverlay(id); err != nil {
 			return fmt.Errorf("unmount stale overlay before start: %w", err)
@@ -154,7 +154,7 @@ func (s *Store) Start(id string) error {
 	// Build systemd-run command.
 	unit := UnitName(id)
 	// Limits: globals from lararium.yaml with per-cell overrides from
-	// cell.json (spec §5; agy round-2 F14).
+	// cell.json (spec §5).
 	rec, _ := s.Load(id)
 	lim := s.effectiveLimits(rec)
 	// NOTE: --keep-unit belongs to systemd-nspawn (it keeps the
@@ -205,7 +205,7 @@ func (s *Store) Start(id string) error {
 	// 46s worst case with margin).
 	if err := s.waitForHealthy(id, 120*time.Second); err != nil {
 		// Cell failed to start — stop the unit and drop the overlay
-		// so no stale mount survives a failed boot (agy round-3 F7).
+		// so no stale mount survives a failed boot.
 		//nolint:errcheck // cleanup after failed boot; primary error wins
 		s.runner.Run("systemctl", "stop", unit)
 		//nolint:errcheck // cleanup after failed boot; primary error wins
@@ -248,8 +248,7 @@ func (s *Store) Start(id string) error {
 			// Record the fix BEFORE restarting: if this process
 			// dies right here, the next Start sees the incomplete
 			// first boot and repeats it instead of short-circuiting
-			// idempotently on the active broken-sudo container
-			// (agy round-3 F6).
+			// idempotently on the active broken-sudo container.
 			c.GuestRootFixed = true
 			if err := s.Save(c); err != nil {
 				return fmt.Errorf("record guest-root fix: %w", err)
@@ -274,8 +273,8 @@ func (s *Store) Start(id string) error {
 	if err := s.bringUpNetwork(id); err != nil {
 		//nolint:errcheck // unwind after failed boot; primary error wins
 		s.runner.Run("systemctl", "stop", unit)
-		// F8 (agy): partial bring-up must not leak the renamed
-		// veth, a half-lived proxy unit, or this cell's DNAT rule.
+		// Partial bring-up must not leak the renamed veth, a
+		// half-lived proxy unit, or this cell's DNAT rule.
 		// netDown is best-effort and idempotent by design.
 		s.netDown(id)
 		//nolint:errcheck // unwind after failed boot; primary error wins
@@ -304,25 +303,25 @@ func (s *Store) Start(id string) error {
 // the setuid bit is re-asserted here at copy time; the mapped uid-0
 // setuid exec is how rootless podman runs sudo in containers.
 //
-// Guest sovereignty (agy round-3 F8): once a target exists in upper,
-// the guest owns it — we do NOT clobber guest apt upgrades or custom
-// sudoers on every start. Exception: a sudo binary that lost its
-// required state (owner, setuid, non-empty) is repaired, since a
-// broken sudo breaks the entire keep promise.
+// Guest sovereignty: once a target exists in upper, the guest owns
+// it — we do NOT clobber guest apt upgrades or custom sudoers on
+// every start. Exception: a sudo binary that lost its required state
+// (owner, setuid, non-empty) is repaired, since a broken sudo breaks
+// the entire keep promise.
 //
-// Hardening (agy round-3 F1/F5, round-4 F1/F2): the guest can write
-// upper freely (in-cell root), so ancestors are sanitized FIRST —
-// each path component under upper is checked with Lstat and replaced
-// by a real directory if the guest planted a symlink or file there.
-// Only then is the target inspected (Lstat/RemoveAll never follow a
-// FINAL symlink, but DO resolve ancestors — inspecting dst before
-// sanitizing let `upper/usr -> /usr` escape to the host root fs and
-// RemoveAll delete the host's /usr/bin/sudo, live-found by review).
-// Copies go through a temp file + fchown/fchmod + atomic rename with
-// full error propagation; a swallowed copy failure once recorded
-// GuestRootFixed=true over a broken sudo. Safe against guest
-// interference because this runs only while the cell is stopped
-// (overlay unmounted) and upper sits under cells/<id> at 0700.
+// Hardening: the guest can write upper freely (in-cell root), so
+// ancestors are sanitized FIRST — each path component under upper is
+// checked with Lstat and replaced by a real directory if the guest
+// planted a symlink or file there. Only then is the target inspected
+// (Lstat/RemoveAll never follow a FINAL symlink, but DO resolve
+// ancestors — inspecting dst before sanitizing let `upper/usr -> /usr`
+// escape to the host root fs and RemoveAll delete the host's
+// /usr/bin/sudo, live-found by review). Copies go through a temp file
+// + fchown/fchmod + atomic rename with full error propagation; a
+// swallowed copy failure once recorded GuestRootFixed=true over a
+// broken sudo. Safe against guest interference because this runs only
+// while the cell is stopped (overlay unmounted) and upper sits under
+// cells/<id> at 0700.
 func (s *Store) fixGuestRootFiles(id string, base int) error {
 	for _, rel := range []string{"usr/bin/sudo", "etc/sudoers", "etc/sudoers.d/keeper"} {
 		src := filepath.Join(s.TemplateDir(), rel)
@@ -343,8 +342,7 @@ func (s *Store) fixGuestRootFiles(id string, base int) error {
 		// do not follow a final symlink, so only the link dies,
 		// never the escape target. Newly created dirs are chowned
 		// to base: host root 0:0 maps to nobody in-guest and would
-		// lock the cell's root out of creating files there (agy
-		// round-3 F2).
+		// lock the cell's root out of creating files there.
 		upper := s.UpperDir(id)
 		walk := upper
 		for _, part := range strings.Split(filepath.Dir(rel), "/") {
@@ -370,11 +368,11 @@ func (s *Store) fixGuestRootFiles(id string, base int) error {
 		}
 
 		// 2) Inspect the target (ancestors are verified real dirs).
-		// Guest-ownership policy (agy round-3 F8): an existing
-		// healthy target stays untouched. A sudo that is EMPTY, not
-		// owned by the cell's root, or missing its setuid bit
-		// cannot work — repair it. A guest apt upgrade changes size
-		// but keeps owner+setuid: that survives.
+		// Guest-ownership policy: an existing healthy target stays
+		// untouched. A sudo that is EMPTY, not owned by the cell's
+		// root, or missing its setuid bit cannot work — repair it.
+		// A guest apt upgrade changes size but keeps owner+setuid:
+		// that survives.
 		dst := filepath.Join(upper, rel)
 		if dfi, err := os.Lstat(dst); err == nil {
 			needsRepair := false
@@ -400,8 +398,8 @@ func (s *Store) fixGuestRootFiles(id string, base int) error {
 		}
 
 		// 3) Copy via temp + atomic rename with real error
-		// propagation (agy round-4 F2: a swallowed failure here
-		// recorded the cell fixed while sudo stayed broken).
+		// propagation (a swallowed failure here recorded the cell
+		// fixed while sudo stayed broken).
 		tmp, err := os.CreateTemp(filepath.Dir(dst), ".fixroot-")
 		if err != nil {
 			return err
@@ -635,7 +633,7 @@ func (s *Store) waitForHealthy(id string, timeout time.Duration) error {
 		if _, _, err := s.runner.Run("systemctl", "is-active", "--quiet", unit); err == nil {
 			// Spec §6: Healthy = unit active AND machine registered
 			// with machined. Without the second half, `cell run`
-			// racing Start hits "cell not running" (agy review F3).
+			// racing Start hits "cell not running".
 			if _, _, err := s.runner.Run("machinectl", "show", id); err == nil {
 				// Third gate: the machine bus must answer. This is
 				// the exact call `cell run` makes; if it works here,
@@ -781,7 +779,7 @@ func (s *Store) findNspawnPID(id string) (int, error) {
 		}
 		// Match --machine=<id> as a WHOLE token: substring match
 		// let id "c1" match "--machine=c10", so pruneStaleMachined
-		// SIGKILLed the wrong container (agy round-2 F2).
+		// SIGKILLed the wrong container.
 		for _, f := range fields[1:] {
 			if f == "--machine="+id {
 				return pid, nil
@@ -856,7 +854,7 @@ func (s *Store) findMappedPID(parentPID int) (int, error) {
 
 	// Fallback: check the given PID itself — but only if it is a
 	// real mapped process; the supervisor is host-root (identity
-	// map -> 0,nil) and /proc/0 does not exist (agy review F9).
+	// map -> 0,nil) and /proc/0 does not exist.
 	pid, err := s.checkPIDMapped(parentPID)
 	if err != nil {
 		return 0, err
@@ -1018,7 +1016,7 @@ func (s *Store) Create(id string, noProxy ...bool) error {
 
 	// Spec §6: create is idempotent — an existing cell is a no-op.
 	// Must NOT fall through: re-running the create path would reset
-	// cell.json and lose the pinned uid base. (agy review F6.)
+	// cell.json and lose the pinned uid base.
 	if _, err := s.Load(id); err == nil {
 		return nil
 	}
@@ -1032,7 +1030,7 @@ func (s *Store) Create(id string, noProxy ...bool) error {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
-	// Owner-only on the CELL DIRECTORY (agy round-3 F4): upper/ holds
+	// Owner-only on the CELL DIRECTORY: upper/ holds
 	// guest-controlled setuid binaries; a world-traversable path lets
 	// any unprivileged host user EXEC them (host kernel evaluates
 	// host uids — execve is not blocked by the userns mapping).
@@ -1050,8 +1048,8 @@ func (s *Store) Create(id string, noProxy ...bool) error {
 	}
 
 	// T5 (spec §4): the flock covers the WHOLE scan-allocate-...
-	//-commit cycle THROUGH the cell.json write (agy F3: releasing
-	// after allocation let a concurrent create scan a cell.json-less
+	//-commit cycle THROUGH the cell.json write (releasing after
+	// allocation let a concurrent create scan a cell.json-less
 	// subnet and double-claim it). Everything between alloc and Save
 	// is local fs work — bounded hold time, no external calls.
 	if err := s.withCellLock(func() error {

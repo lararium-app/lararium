@@ -19,9 +19,9 @@ This walkthrough connects a Model Context Protocol (MCP) server to Lararium over
   ```bash
   cd "$REPO"
   (cd web && npm ci && npm run build)   # web chat + approval-card assets
-  go build -o bin/custos  ./cmd/custos
-  go build -o bin/custosd ./cmd/custosd
-  go build -o bin/hearthd ./cmd/hearthd
+  go build -trimpath -o bin/custos  ./cmd/custos
+  go build -trimpath -o bin/custosd ./cmd/custosd
+  go build -trimpath -o bin/hearthd ./cmd/hearthd
   ```
 
   Skipping the npm step yields a `hearthd` whose served page references a

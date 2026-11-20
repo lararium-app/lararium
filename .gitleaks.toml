@@ -20,3 +20,18 @@ paths = [
   '''internal/surface/tokens\.go$''',
   '''internal/custos/ctl\.go$''',
 ]
+# history predates the local-path rule; history is not rewritten
+commits = ["9b19935f4582929c37bec311fbe1f6906273e769"]
+
+[[rules]]
+id = "local-user-path"
+description = "Absolute path into a local user home directory (machine-specific; use $HOME, ~, or a repo-relative path)"
+regex = '''(/home/[a-z_][a-z0-9_.-]*/|/Users/[A-Za-z][A-Za-z0-9_.-]*/|[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+)'''
+keywords = ["/home/", "/users/", "\\users\\"]
+
+[rules.allowlist]
+description = "generic placeholder accounts used in docs, specs and fixtures"
+regexes = [
+  '''^/home/(user|test|runner|keeper|ubuntu|example|me|nonroot|app|lararium|hearth|guest)/$''',
+  '''^/Users/(user|example|me|test)/$''',
+]
