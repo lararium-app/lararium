@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/lararium-app/lararium/internal/penatus"
 )
@@ -21,7 +22,10 @@ var ErrNoSession = errors.New("no such session")
 type PenatusSource struct {
 	root string
 	hub  TurnHub
+	mu   sync.Mutex
 }
+
+var _ ModelPinSetter = (*PenatusSource)(nil)
 
 // NewPenatusSource roots the source at the hearth home; hub supplies
 // the in_flight flag for catch-up (may be nil in tests).
@@ -200,6 +204,58 @@ func (p *PenatusSource) Create(title string, modelPin string) (SessionInfo, erro
 	}
 
 	return p.headerToInfo(header), nil
+}
+
+// SetModelPin updates model_pin in the session's session.json header.
+// A nil (or empty) pin clears header.ModelPin. Unknown or invalid ids
+// return ErrNoSession.
+func (p *PenatusSource) SetModelPin(id string, pin *string) error {
+	if !ValidSessionID(id) {
+		return ErrNoSession
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Validated above: id matches ^(s_[0-9A-Z]{26}|main)$ — no traversal
+	// is possible.
+	sessionDir := filepath.Join(p.root, "sessions", id)                // #nosec G703
+	if info, err := os.Stat(sessionDir); err != nil || !info.IsDir() { //nolint:gosec // regex-validated id
+		return ErrNoSession
+	}
+
+	sessionPath := filepath.Join(sessionDir, "session.json") // #nosec G304
+	var header penatus.SessionHeader
+	data, err := os.ReadFile(sessionPath) // #nosec G703 -- id is regex-validated above
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrNoSession
+		}
+		return err
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return err
+	}
+
+	if pin == nil || *pin == "" {
+		header.ModelPin = nil
+	} else {
+		v := *pin
+		header.ModelPin = &v
+	}
+
+	newData, err := json.MarshalIndent(header, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmpPath := sessionPath + ".tmp"
+	if err := os.WriteFile(tmpPath, newData, 0o600); err != nil { //nolint:gosec // regex-validated id
+		return err
+	}
+	if err := os.Rename(tmpPath, sessionPath); err != nil { //nolint:gosec // regex-validated id
+		return err
+	}
+	return nil
 }
 
 func (p *PenatusSource) headerToInfo(h penatus.SessionHeader) SessionInfo {

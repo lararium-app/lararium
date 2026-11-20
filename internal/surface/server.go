@@ -100,6 +100,14 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 		s.dispatchFasti(w, r)
 		return
 	}
+	if r.URL.Path == "/v1/models" {
+		if r.Method != http.MethodGet {
+			s.error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.modelsHandler(w)
+		return
+	}
 	if r.URL.Path == "/v1/sessions" {
 		switch r.Method {
 		case http.MethodGet:
@@ -128,6 +136,8 @@ func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
 		s.error(w, "not found", http.StatusNotFound)
 	case !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
 		s.deleteSessionHandler(w, rest)
+	case !strings.Contains(rest, "/") && r.Method == http.MethodPatch:
+		s.patchSessionHandler(w, r, rest)
 	case strings.HasSuffix(rest, "/events") && r.Method == http.MethodGet:
 		s.eventsHandler(w, r)
 	case strings.HasSuffix(rest, "/cancel") && r.Method == http.MethodPost:
