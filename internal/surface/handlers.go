@@ -126,6 +126,11 @@ type Server struct {
 	webCfg      web.Config
 	webHome     string
 
+	// wsAuthTimeout overrides the 5s auth.hello handshake timeout in tests.
+	wsAuthTimeout time.Duration
+	rpcMu         sync.RWMutex
+	rpcMethods    map[string]RPCMethodHandler
+
 	verdictWg sync.WaitGroup
 }
 
