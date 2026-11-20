@@ -186,6 +186,13 @@ func (s *Server) dispatchCustos(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) custosCardsHandler(w http.ResponseWriter, _ *http.Request) {
+	writeJSONAny(w, http.StatusOK, map[string]any{"cards": s.custosCardsSnapshot()})
+}
+
+// custosCardsSnapshot is the custody card list shared by GET /v1/custos/cards
+// and the custos.cards.subscribe RPC method: door-registry cards merged with
+// pending turn-approval cards, de-duplicated by id, sorted by id. Never nil.
+func (s *Server) custosCardsSnapshot() []CustosCard {
 	reg := s.getCustosRegistry()
 	var cards []CustosCard
 	if reg != nil {
@@ -210,7 +217,7 @@ func (s *Server) custosCardsHandler(w http.ResponseWriter, _ *http.Request) {
 		cards = []CustosCard{}
 	}
 	sort.Slice(cards, func(i, j int) bool { return cards[i].ID < cards[j].ID })
-	writeJSONAny(w, http.StatusOK, map[string]any{"cards": cards})
+	return cards
 }
 
 // approvalsViaRegistry returns the bridged ApprovalHub when the door
@@ -223,6 +230,7 @@ func (s *Server) approvalsViaRegistry() *ApprovalHub {
 }
 
 func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id string) {
+	// Gate order is v1's: id shape before the body is even decoded.
 	if !ValidApprovalID(id) {
 		s.error(w, "not found", http.StatusNotFound)
 		return
@@ -236,50 +244,67 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	if req.Verdict != "once" && req.Verdict != "always" && req.Verdict != "deny" {
-		s.error(w, "invalid verdict", http.StatusBadRequest)
+	out := s.resolveCustosCard(id, req.Verdict)
+	if out.status != http.StatusOK {
+		s.error(w, out.reason, out.status)
 		return
+	}
+	writeJSONAny(w, http.StatusOK, map[string]string{"state": out.state})
+}
+
+// custosResolveOutcome is the transport-neutral result of resolving a custody
+// card. On success status is 200 and state is the settled state; otherwise
+// status is the v1 HTTP status and reason is the exact v1 error body string.
+type custosResolveOutcome struct {
+	state  string
+	status int
+	reason string
+}
+
+// resolveCustosCard is the single decision path behind POST
+// /v1/custos/cards/{id}/resolve and the custos.cards.resolve RPC method.
+// Order is frozen: id gate, verdict gate, door registry first, then the
+// turn-approval hub fallback for ids the registry never saw (issue #128).
+func (s *Server) resolveCustosCard(id, verdict string) custosResolveOutcome {
+	if !ValidApprovalID(id) {
+		return custosResolveOutcome{status: http.StatusNotFound, reason: "not found"}
+	}
+	if verdict != "once" && verdict != "always" && verdict != "deny" {
+		return custosResolveOutcome{status: http.StatusBadRequest, reason: "invalid verdict"}
 	}
 
 	reg := s.getCustosRegistry()
 	if reg != nil {
-		state, err := reg.Resolve(id, req.Verdict)
+		state, err := reg.Resolve(id, verdict)
 		switch {
 		case err == nil:
 			if state == "" {
-				state = registryAnswerState(req.Verdict)
+				state = registryAnswerState(verdict)
 			}
-			writeJSONAny(w, http.StatusOK, map[string]string{"state": state})
-			return
+			return custosResolveOutcome{state: state, status: http.StatusOK}
 		case errors.Is(err, ErrNoSuchCard) || err.Error() == "no_such_card":
 			// Fall through to the turn-approval hub (issue #128).
+		case errors.Is(err, ErrCardAnswered) || err.Error() == "already_answered":
+			return custosResolveOutcome{status: http.StatusConflict, reason: "already_answered"}
+		case errors.Is(err, ErrStaleVerdict) || err.Error() == "stale_verdict":
+			return custosResolveOutcome{status: http.StatusConflict, reason: "stale_verdict"}
+		case errors.Is(err, ErrLocked) || err.Error() == "locked":
+			return custosResolveOutcome{status: http.StatusLocked, reason: "locked"}
+		case errors.Is(err, ErrIPAskOnly) || err.Error() == "ip_ask_only":
+			return custosResolveOutcome{status: http.StatusBadRequest, reason: "ip_ask_only"}
+		case errors.Is(err, ErrBadSource) || err.Error() == "bad_source":
+			return custosResolveOutcome{status: http.StatusBadRequest, reason: "bad_source"}
 		default:
-			switch {
-			case errors.Is(err, ErrCardAnswered) || err.Error() == "already_answered":
-				s.error(w, "already_answered", http.StatusConflict)
-				return
-			case errors.Is(err, ErrStaleVerdict) || err.Error() == "stale_verdict":
-				s.error(w, "stale_verdict", http.StatusConflict)
-				return
-			case errors.Is(err, ErrLocked) || err.Error() == "locked":
-				s.error(w, "locked", http.StatusLocked)
-				return
-			case errors.Is(err, ErrIPAskOnly) || err.Error() == "ip_ask_only":
-				s.error(w, "ip_ask_only", http.StatusBadRequest)
-				return
-			case errors.Is(err, ErrBadSource) || err.Error() == "bad_source":
-				s.error(w, "bad_source", http.StatusBadRequest)
-				return
-			default:
-				if hub := s.approvalsViaRegistry(); hub != nil {
-					if _, ok := hub.SessionOf(id); ok {
-						break
-					}
-				}
+			// An unknown registry error still falls through when the hub
+			// owns the id; otherwise it is ours to report.
+			hubOwns := false
+			if hub := s.approvalsViaRegistry(); hub != nil {
+				_, hubOwns = hub.SessionOf(id)
+			}
+			if !hubOwns {
 				// #nosec G706 -- id is shape-validated by the card ID gate, logSanitize strips control chars
 				stdlog.Printf("surface: custos card resolve %s failed: %v", logSanitize(id), err)
-				s.error(w, "internal error", http.StatusInternalServerError)
-				return
+				return custosResolveOutcome{status: http.StatusInternalServerError, reason: "internal error"}
 			}
 		}
 	}
@@ -291,25 +316,23 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 		// mint sees the card's own tool even if terminal entries are
 		// pruned later.
 		toolName := ""
-		if req.Verdict == "always" {
+		if verdict == "always" {
 			toolName, _ = hub.NameOf(id)
 		}
-		allow := req.Verdict != "deny"
+		allow := verdict != "deny"
 		switch hub.ResolveFromVia("", id, allow, "custos", "web") {
-		case 200:
-			if req.Verdict == "always" {
+		case http.StatusOK:
+			if verdict == "always" {
 				s.mintTurnAlwaysRule(id, toolName)
 			}
-			writeJSONAny(w, http.StatusOK, map[string]string{"state": registryAnswerState(req.Verdict)})
-			return
-		case 410:
-			s.error(w, "already_answered", http.StatusConflict)
-			return
+			return custosResolveOutcome{state: registryAnswerState(verdict), status: http.StatusOK}
+		case http.StatusGone:
+			return custosResolveOutcome{status: http.StatusConflict, reason: "already_answered"}
 		}
 	}
 
 	// Spec ambiguity resolution: nothing knows this id → 404 no_such_card.
-	s.error(w, "no_such_card", http.StatusNotFound)
+	return custosResolveOutcome{status: http.StatusNotFound, reason: "no_such_card"}
 }
 
 // logSanitize removes control characters (newlines included) from
