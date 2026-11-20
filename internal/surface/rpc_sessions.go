@@ -20,6 +20,14 @@ func (s *Server) registerDefaultRPCMethods() {
 		"sessions.send":              s.rpcSessionsSend,
 		"sessions.cancel":            s.rpcSessionsCancel,
 		"sessions.approvals.resolve": s.rpcSessionsApprovalsResolve,
+		"keys.list":                  s.rpcKeysList,
+		"keys.set":                   s.rpcKeysSet,
+		"keys.remove":                s.rpcKeysRemove,
+		"policy.rules.list":          s.rpcPolicyRulesList,
+		"policy.rules.set":           s.rpcPolicyRulesSet,
+		"policy.rules.remove":        s.rpcPolicyRulesRemove,
+		"custos.cards.subscribe":     s.rpcCustosCardsSubscribe,
+		"custos.cards.resolve":       s.rpcCustosCardsResolve,
 	}
 	for name, h := range defaults {
 		if _, ok := s.lookupRPCMethod(name); !ok {
@@ -67,13 +75,14 @@ func (s *Server) unsubscribeRPCSession(sessionID string, conn *RPCConn) {
 
 func (s *Server) unsubscribeAllRPCConn(conn *RPCConn) {
 	s.rpcSubsMu.Lock()
-	defer s.rpcSubsMu.Unlock()
 	for sid, conns := range s.rpcSubs {
 		delete(conns, conn)
 		if len(conns) == 0 {
 			delete(s.rpcSubs, sid)
 		}
 	}
+	s.rpcSubsMu.Unlock()
+	s.unsubscribeCustosRPCConn(conn)
 }
 
 func (s *Server) notifyRPCSessionEvent(sessionID string, event json.RawMessage) {

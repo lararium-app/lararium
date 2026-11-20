@@ -132,6 +132,8 @@ type Server struct {
 	rpcMethods    map[string]RPCMethodHandler
 	rpcSubsMu     sync.RWMutex
 	rpcSubs       map[string]map[*RPCConn]struct{}
+	rpcCustosMu   sync.Mutex
+	rpcCustosSubs map[*RPCConn]*custosRPCSub
 
 	verdictWg sync.WaitGroup
 }
