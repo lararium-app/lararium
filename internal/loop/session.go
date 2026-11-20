@@ -243,6 +243,29 @@ func fanoutDropText(limit int) string {
 	return fmt.Sprintf("not executed: per-turn tool-call fan-out limit (%d) reached", limit)
 }
 
+// contextBlockHeader mirrors the Android client's ScreenContextPolicy
+// block header: a client may prepend a block of notification summaries
+// to the user's own question ("header line\n- item…\n\nquestion"). The
+// chat list must be titled from the question, not the shared context
+// (#289); the event log keeps the message verbatim.
+const contextBlockHeader = "Context from recent notifications:"
+
+// titleCandidate returns the text auto-titling works from: for a message
+// opening with the notification-context block, everything after the
+// block's first blank line; otherwise the text itself. A context-only
+// message (no question after the block) yields "", so no title is
+// written and the list falls back to its own Untitled rendering.
+func titleCandidate(text string) string {
+	if !strings.HasPrefix(text, contextBlockHeader) {
+		return text
+	}
+	rest := text[len(contextBlockHeader):]
+	if i := strings.Index(rest, "\n\n"); i >= 0 {
+		return rest[i+2:]
+	}
+	return ""
+}
+
 // tryOverflowRecovery reports whether a failed round should be retried after
 // forcing one compaction pass (context-overflow recovery, #292). It fires at
 // most once per turn: the flag flips the moment recovery is attempted,
@@ -282,7 +305,7 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 	// created chats are listable by name (titles are display metadata;
 	// a header that already names itself is never touched). A failure
 	// here is cosmetic — the turn must not die over a label.
-	_, _ = penatus.SetTitleIfEmpty(s.Log.Dir(), userText)
+	_, _ = penatus.SetTitleIfEmpty(s.Log.Dir(), titleCandidate(userText))
 
 	var final string
 	limit := s.MaxToolCalls
