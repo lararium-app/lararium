@@ -29,6 +29,9 @@ func NewServer(s *Server) http.Handler {
 	// Health endpoint (no auth).
 	mux.HandleFunc("/v1/health", s.healthHandler)
 
+	// WebSocket JSON-RPC transport endpoint (auth happens in-band via auth.hello; RPC-SPEC §2).
+	mux.HandleFunc("/v1/ws", s.wsHandler)
+
 	// Pairing endpoint (no auth; issue #184).
 	mux.HandleFunc("/v1/pair", s.pairHandler)
 
