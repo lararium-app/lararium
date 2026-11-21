@@ -133,7 +133,7 @@ type Server struct {
 	rpcMu          sync.RWMutex
 	rpcMethods     map[string]RPCMethodHandler
 	rpcSubsMu      sync.RWMutex
-	rpcSubs        map[string]map[*RPCConn]struct{}
+	rpcSubs        map[string]map[*RPCConn]*rpcSessionSub
 	rpcCustosMu    sync.Mutex
 	rpcCustosSubs  map[*RPCConn]*custosRPCSub
 
