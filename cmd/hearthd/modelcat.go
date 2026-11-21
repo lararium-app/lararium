@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -251,7 +252,7 @@ func (c *capsCatalog) Refresh(ctx context.Context) {
 	}
 
 	c.mu.Lock()
-	oldJSON, oldErr := json.Marshal(c.cache)
+	oldContent := cacheContentKey(c.cache)
 	if c.cache.Providers == nil {
 		c.cache.Providers = map[string]providerCapsRow{}
 	}
@@ -259,14 +260,35 @@ func (c *capsCatalog) Refresh(ctx context.Context) {
 	for name, row := range results {
 		c.cache.Providers[name] = row
 	}
+	newContent := cacheContentKey(c.cache)
+	changed := oldContent != newContent
 	newJSON, newErr := json.Marshal(c.cache)
-	changed := newErr == nil && (oldErr != nil || !bytes.Equal(oldJSON, newJSON))
+	if newErr != nil {
+		changed = false
+	}
 	c.mu.Unlock()
 
 	if changed {
 		c.saveCache(newJSON)
 	}
 	c.ApplyPinProfiles()
+}
+
+// cacheContentKey renders a comparison key for the cache that excludes
+// probed_at timestamps: a periodic re-probe of unchanged providers must not
+// rewrite caps.json every refresh interval.
+func cacheContentKey(cache capsCache) string {
+	keys := make([]string, 0, len(cache.Providers))
+	for name, row := range cache.Providers {
+		for _, m := range row.Models {
+			keys = append(keys, fmt.Sprintf("%s|%s|%d|%v|%v", name, m.ID, m.ContextWindow, m.Vision, m.Tools))
+		}
+		if len(row.Models) == 0 {
+			keys = append(keys, fmt.Sprintf("%s|ok=%v", name, row.OK))
+		}
+	}
+	slices.Sort(keys)
+	return strings.Join(keys, "\n")
 }
 
 func (c *capsCatalog) saveCache(data []byte) {

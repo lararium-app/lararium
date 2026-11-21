@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -49,8 +51,8 @@ func TestCapsCatalogOnlineOfflineNoKeyAndPinProfiles(t *testing.T) {
 	cfg := &Config{
 		Hearth: HearthConfig{Home: home},
 		Providers: []ProviderConf{
-			{Name: "online", BaseURL: onlineSrv.URL + "/v1", APIKey: "k-online", Think: &thinkFalse},
-			{Name: "offline", BaseURL: offlineSrv.URL + "/v1", APIKey: "k-offline"},
+			{Name: "online", BaseURL: onlineSrv.URL + "/v1", APIKey: "fake-online-key", Think: &thinkFalse},
+			{Name: "offline", BaseURL: offlineSrv.URL + "/v1", APIKey: "fake-offline-key"},
 			{Name: "nokey", BaseURL: noKeySrv.URL + "/v1"},
 		},
 		Models: ModelsConfig{
@@ -246,4 +248,69 @@ func TestCapsCatalogRefresherStopsOnCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("refresher goroutine did not stop after ctx cancel")
 	}
+}
+
+// TestCapsCatalogRefreshNoChurnOnUnchangedCaps pins the change-detection
+// contract: re-probing providers whose caps did not change must NOT rewrite
+// caps.json (probed_at moves every refresh; it is not a content change),
+// while a real capability change must rewrite it.
+func TestCapsCatalogRefreshNoChurnOnUnchangedCaps(t *testing.T) {
+	var extraModel atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := `{"data":[{"id":"m1","context_length":8192}]}`
+		if extraModel.Load() {
+			body = `{"data":[{"id":"m1","context_length":8192},{"id":"m2"}]}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	capsPath := filepath.Join(home, "caps.json")
+	cat := &capsCatalog{
+		cachePath:    capsPath,
+		providers:    []ProviderConf{{Name: "p", BaseURL: srv.URL + "/v1", APIKey: "k"}},
+		defaultChain: []string{"p/m1"},
+		resolveKey:   func(ProviderConf) string { return "k" },
+		probeTimeout: 2 * time.Second,
+		stderr:       &bytes.Buffer{},
+		cache:        capsCache{Version: 1, Providers: map[string]providerCapsRow{}},
+	}
+
+	ctx := context.Background()
+	cat.Refresh(ctx)
+	ino1 := capsInode(t, capsPath)
+
+	// Identical probe results: inode must be untouched (no rewrite).
+	cat.Refresh(ctx)
+	if ino2 := capsInode(t, capsPath); ino2 != ino1 {
+		t.Fatalf("caps.json rewritten on unchanged refresh (inode %d -> %d)", ino1, ino2)
+	}
+
+	// Real capability change: rewrite required.
+	extraModel.Store(true)
+	cat.Refresh(ctx)
+	if ino3 := capsInode(t, capsPath); ino3 == ino1 {
+		t.Fatalf("caps.json not rewritten after capability change")
+	}
+	if chain := cat.Catalog().Defaults.ChatChain; len(chain) != 1 || chain[0] != "p/m1" {
+		t.Fatalf("catalog defaults lost after refresh: %+v", chain)
+	}
+	if len(cat.Catalog().Models) != 2 {
+		t.Fatalf("catalog models = %d, want 2 after change", len(cat.Catalog().Models))
+	}
+}
+
+func capsInode(t *testing.T, path string) uint64 {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	sx, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("no Stat_t for %s", path)
+	}
+	return sx.Ino
 }
