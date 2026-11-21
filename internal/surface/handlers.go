@@ -319,7 +319,7 @@ func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
 	// that must always be JSON-escaped.
 	writeJSONAny(w, http.StatusOK, map[string]any{
 		"ok":      true,
-		"version": "1.0.0-beta11",
+		"version": "1.0.0-beta12",
 		"name":    resolveHearthName(s),
 	})
 }

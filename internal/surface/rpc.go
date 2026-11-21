@@ -664,10 +664,10 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handshake succeeded: reply {"jsonrpc":"2.0","id":<id>,"result":{"ok":true,"version":"1.0.0-beta11"}}
+	// Handshake succeeded: reply {"jsonrpc":"2.0","id":<id>,"result":{"ok":true,"version":"1.0.0-beta12"}}
 	if err := rc.SendResult(*req.ID, map[string]any{
 		"ok":      true,
-		"version": "1.0.0-beta11",
+		"version": "1.0.0-beta12",
 	}); err != nil {
 		return
 	}
