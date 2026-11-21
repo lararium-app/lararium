@@ -148,10 +148,32 @@ func (p *PenatusSource) Delete(id string) error {
 }
 
 // Create makes a side chat branched from main: header with parent,
-// optional title/model_pin, and the branch event (PENATUS §2).
+// optional title/model_pin, and the branch event (PENATUS §2). It carries
+// no audience record; CreateWith is the audience-aware form.
 func (p *PenatusSource) Create(title string, modelPin string) (SessionInfo, error) {
+	return p.CreateWith(SessionCreateRequest{Title: title, ModelPin: modelPin})
+}
+
+// CreateWith makes a side chat like Create and records its audience:
+// req.Creator (when set) as the creator, and — when req.Private — an
+// audience of the creator alone. A private request without a creator is
+// rejected before anything is written.
+func (p *PenatusSource) CreateWith(req SessionCreateRequest) (SessionInfo, error) {
+	if req.Private && req.Creator == "" {
+		return SessionInfo{}, errPrivateNeedsIdentity
+	}
+	title, modelPin := req.Title, req.ModelPin
+	var creator *string
+	var audience []string
+	if req.Creator != "" {
+		c := req.Creator
+		creator = &c
+		if req.Private {
+			audience = []string{c}
+		}
+	}
 	id := penatus.NewID()
-	log, err := penatus.CreateSession(p.root, id, "side")
+	log, err := penatus.CreateSessionFor(p.root, id, "side", creator, audience)
 	if err != nil {
 		return SessionInfo{}, err
 	}
@@ -220,8 +242,21 @@ func (p *PenatusSource) Create(title string, modelPin string) (SessionInfo, erro
 //
 // For the main session, if sessions/main/ exists without a session.json header,
 // a minimal header is synthesized and written. Any applied change increments
-// header.Revision by 1 before writing atomically.
+// header.Revision by 1 before writing atomically. Configure carries no caller,
+// so it acts as an anonymous caller: a scoped session answers ErrNoSession.
 func (p *PenatusSource) Configure(id string, modelPin *string, expectedRevision *int64) (SessionInfo, error) {
+	return p.ConfigureWith(id, SessionConfigureRequest{ModelPin: modelPin, ExpectedRevision: expectedRevision})
+}
+
+// ConfigureWith is Configure for req.Caller, plus an optional audience
+// change (req.Private) applied under the same lock and revision
+// compare-and-swap. A session req.Caller may not see answers ErrNoSession,
+// checked under the lock so a concurrent scope-down cannot be raced. An
+// audience change on the main session answers ErrSharedSession; from anyone
+// but the session's creator it answers ErrNotCreator. Both are checked
+// before the revision, and nothing is written when either fails.
+func (p *PenatusSource) ConfigureWith(id string, req SessionConfigureRequest) (SessionInfo, error) {
+	modelPin, expectedRevision := req.ModelPin, req.ExpectedRevision
 	if !ValidSessionID(id) {
 		return SessionInfo{}, ErrNoSession
 	}
@@ -259,6 +294,18 @@ func (p *PenatusSource) Configure(id string, modelPin *string, expectedRevision 
 		return SessionInfo{}, err
 	}
 
+	if !audienceAllows(header.Audience, req.Caller) {
+		return SessionInfo{}, ErrNoSession
+	}
+	if req.Private != nil {
+		if id == "main" || header.Kind == "main" {
+			return SessionInfo{}, ErrSharedSession
+		}
+		if req.Caller == "" || header.Creator == nil || *header.Creator != req.Caller {
+			return SessionInfo{}, ErrNotCreator
+		}
+	}
+
 	if expectedRevision != nil && *expectedRevision != header.Revision {
 		return SessionInfo{}, ErrRevisionConflict
 	}
@@ -270,6 +317,14 @@ func (p *PenatusSource) Configure(id string, modelPin *string, expectedRevision 
 		} else {
 			v := *modelPin
 			header.ModelPin = &v
+		}
+		changed = true
+	}
+	if req.Private != nil {
+		if *req.Private {
+			header.Audience = []string{req.Caller}
+		} else {
+			header.Audience = nil
 		}
 		changed = true
 	}
@@ -358,7 +413,34 @@ func (p *PenatusSource) headerToInfo(h penatus.SessionHeader) SessionInfo {
 		Parent:   h.Parent,
 		ModelPin: h.ModelPin,
 		Revision: h.Revision,
+		Private:  len(h.Audience) > 0,
+		audience: h.Audience,
 	}
+}
+
+// SessionAudience returns the audience recorded in session id's header (nil
+// = every device). The main session is always shared with every device.
+// Unknown sessions answer ErrNoSession.
+func (p *PenatusSource) SessionAudience(id string) ([]string, error) {
+	if !ValidSessionID(id) {
+		return nil, ErrNoSession
+	}
+	if id == "main" {
+		return nil, nil
+	}
+	// Validated above: id matches ^s_[0-9A-Z]{26}$ — no traversal is possible.
+	data, err := os.ReadFile(filepath.Join(p.root, "sessions", id, "session.json")) // #nosec G304 G703 -- id is regex-validated above
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNoSession
+		}
+		return nil, err
+	}
+	var header penatus.SessionHeader
+	if err := json.Unmarshal(data, &header); err != nil {
+		return nil, err
+	}
+	return header.Audience, nil
 }
 
 // Events replays the session log after afterSeq (clamped by limit)

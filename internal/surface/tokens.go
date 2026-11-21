@@ -232,9 +232,26 @@ func (s *TokenStore) RevokeHashPrefix(prefix string) (int, error) {
 // Verify constant-time compares SHA-256(token) against every stored
 // hash, re-reading the file each call (revoke = effective immediately).
 func (s *TokenStore) Verify(token string) bool {
+	_, ok := s.VerifyIdentity(token)
+	return ok
+}
+
+// tokenIDHexLen is how many hex characters of a token's stored SHA-256
+// hash form its caller identity (40 bits of a hash over a ~190-bit secret:
+// stable and collision-free at hearth scale, and no aid to recovering the
+// token).
+const tokenIDHexLen = 10
+
+// VerifyIdentity checks token like Verify and, on success, also returns the
+// caller identity bound to it: "t_" followed by the first tokenIDHexLen hex
+// characters of the stored hash. The identity is derived, never stored, so
+// it is stable across restarts and changes only when the token is replaced
+// (re-pairing mints a new one). It is used for session audience checks and
+// is never returned in any response body.
+func (s *TokenStore) VerifyIdentity(token string) (string, bool) {
 	entries, err := s.readEntries()
 	if err != nil {
-		return false
+		return "", false
 	}
 
 	candidateHash := sha256.Sum256([]byte(token))
@@ -255,11 +272,11 @@ func (s *TokenStore) Verify(token string) bool {
 			continue
 		}
 		if subtle.ConstantTimeCompare(candidateBytes, storedBytes) == 1 {
-			return true
+			return "t_" + hex.EncodeToString(storedBytes)[:tokenIDHexLen], true
 		}
 	}
 
-	return false
+	return "", false
 }
 
 func (s *TokenStore) readEntries() ([]tokenEntry, error) {

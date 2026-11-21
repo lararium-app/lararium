@@ -117,7 +117,7 @@ table does not re-derive rules already frozen in SURFACE-SPEC v1 history.
 | v1 route | v2 method | params | result | notes |
 |---|---|---|---|---|
 | GET /v1/sessions | `sessions.list` | `{}` | `{"sessions":[…]}` | same header shape, newest-first |
-| POST /v1/sessions | `sessions.create` | `{title?, model_pin?}` | session header | same validation as v1 (incl. the model_pin 400 fix from #301) |
+| POST /v1/sessions | `sessions.create` | `{title?, model_pin?, private?}` | session header | same validation as v1 (incl. the model_pin 400 fix from #301); `private` per SURFACE-SPEC §4b, reason `private_requires_identity` when the connection's token names no caller |
 | GET /v1/sessions/{id}/events + implicit SSE | `sessions.subscribe` | `{id, after_seq?, limit?}` | `{"events":[…],"in_flight":bool}` then live `session.event` notifications `{"session_id","event":{…}}` | collapses catch-up GET and the open-ended SSE stream into one call; default/cap M=200/1000 unchanged. Ordering: no `session.event` for that id is written to the connection before the subscribe result. Events emitted while the call is between registering and replying are held and written right after the result, in emit order, so none is lost and none arrives first. Live events can overlap the catch-up array (a turn whose persisted message is already in it may still be streaming); `turn_done.seq` names that persisted message |
 | POST /v1/sessions/{id}/messages | `sessions.send` | `{id, text}` | `{"accepted":true}` immediately | turn output arrives as `session.event` notifications on the id's existing `sessions.subscribe`, not inline in the response — a session must be subscribed before `sessions.send`, else 409 `not_subscribed` |
 | POST /v1/sessions/{id}/cancel | `sessions.cancel` | `{id}` | `{"ok":true}` | 404 `no_turn_in_flight` unchanged |
@@ -137,7 +137,7 @@ table does not re-derive rules already frozen in SURFACE-SPEC v1 history.
 | v2 method | params | result | notes |
 |---|---|---|---|
 | `models.list` | `{}` | `{"models":[{"ref","provider","status","probed_at"}]}` | replaces the never-shipped `GET /v1/models`; backed by the caps.json probe cache (S-MOD-1b scope — cmd/hearthd catalog wiring, 60s refresh — unchanged engineering, just exposed over RPC instead of REST) |
-| `sessions.configure` | `{id, model_pin?, expected_revision?}` | `{"ok":true, "applied":{"model_pin":"ok"}, "session":{…}}` | folds the pin set/clear from the never-shipped `PATCH /v1/sessions/{id}`; **fixes the CAS gap found on #301** — `expected_revision` is checked against the session header's revision counter, mismatch → error `reason:"revision_conflict"`, no silent clobber between two paired devices |
+| `sessions.configure` | `{id, model_pin?, private?, expected_revision?}` | `{"ok":true, "applied":{"model_pin":"ok","private":"ok"}, "session":{…}}` | folds the pin set/clear from the never-shipped `PATCH /v1/sessions/{id}`; **fixes the CAS gap found on #301** — `expected_revision` is checked against the session header's revision counter, mismatch → error `reason:"revision_conflict"`, no silent clobber between two paired devices. `private` (bool) changes the session audience per SURFACE-SPEC §4b: creator only (`not_creator`), fixed on main (`session_shared`), non-boolean → `invalid_request`; checked before the revision, nothing written on failure |
 
 ### 4b. Folded in from #302 (persona/profile API — never built as REST)
 
@@ -145,6 +145,19 @@ table does not re-derive rules already frozen in SURFACE-SPEC v1 history.
 |---|---|---|---|
 | `profile.describe` | `{}` | `{"soul","soul_bytes","soul_budget","identity","identity_bytes","identity_budget","user","user_bytes","user_budget","memory","memory_bytes","revisions":{"soul":int,…}}` | single read, everything the editor needs, following the single-read/single-write profile-editor pattern established in prior art (see issue #302 discussion) |
 | `profile.configure` | `{soul?, identity?, user?, memory?, expected_revisions?:{field:int}}` | `{"ok":true,"applied":{"soul":"ok",…}}` | any subset, per-field apply report, per-field CAS via `expected_revisions` — same pattern. `applied[field]` can be `"ok"` / `"over_budget"` / `"invalid"` / `"revision_conflict"` — a bad field doesn't fail the whole call. Budgets unchanged from `internal/loop/prompt.go` (SOUL 4096B / IDENTITY 2048B / USER 4096B / MEMORY ~8192B). Audit: actor=web, which fields changed, byte deltas — same discipline as `policy.rules.set`. |
+
+### 4c. Session audience (SURFACE-SPEC §4b)
+
+The caller id is bound once, from the token accepted by `auth.hello`, and
+applies to every method on that connection. `sessions.list` omits sessions the
+caller may not see. A hidden session answers as an unknown id:
+`sessions.subscribe` / `sessions.send` / `sessions.approvals.resolve` →
+`not_found`, `sessions.cancel` → `no_turn_in_flight`, `sessions.delete` /
+`sessions.configure` → `no_such_session`. `sessions.subscribe` checks the
+audience after registering, and a scope-down writes the header before
+withdrawing registrations, so a subscribe racing a scope-down either sees the
+new audience or is withdrawn by it; events held for a withdrawn subscription
+are discarded.
 
 ## 5. What explicitly does NOT move
 

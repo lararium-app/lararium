@@ -160,7 +160,7 @@ must amend, not creep.
 |---|---|---|
 | GET  | /v1/health | 200 `{"ok":true,"version":…}` — the only unauthenticated `/v1/` route |
 | GET  | /v1/sessions | list session.json headers, newest first |
-| POST | /v1/sessions | create side chat `{title?, model_pin?}` → header |
+| POST | /v1/sessions | create side chat `{title?, model_pin?, private?}` → header (`private`: §4b) |
 | GET  | /v1/sessions/{id}/events?after_seq=N&limit=M | `{"events":[…], "in_flight":bool}` (§5 catch-up); default M=200, hard cap M=1000 (clamp); invalid limit/after_seq → 400 |
 | POST | /v1/sessions/{id}/messages | `{text}` → SSE stream (§5) |
 | POST | /v1/sessions/{id}/cancel | abort the in-flight turn: engine stops, gate released, NO assistant event persisted; 404 if none in flight |
@@ -192,6 +192,85 @@ must amend, not creep.
   rename, PENATUS §2, out of scope here).
 - Errors: `{"error": string}` + correct status (400/401/404/409/413/500).
   500 never echoes internals: 500-class responses carry a short generic reason (`internal error`, `delete failed`, `key store write failed`); the full failure detail goes to the daemon-side log only and never echoes internal strings (L-15).
+
+## 4b. Session audience (amendment SA-1, 2026-11-21)
+
+One hearth serves several paired devices; some conversations should stay on
+the device that started them. A session's **audience** is the set of callers
+that may see it.
+
+**Threat model.** Audience is cross-device privacy among one operator's own
+paired devices — a glance-guard, not a hostile-tenant boundary. The hearth
+operator can always read the session files directly; anything stronger is
+multi-user work and out of scope here.
+
+**Caller identity.** Every bearer token (§3) names one caller: `t_` followed
+by the first 10 hex characters of the token's stored SHA-256 hash. The id is
+derived, never stored, stable across restarts, changes only when the token is
+replaced, and never appears in any response body. Every token is a caller —
+tokens minted by pairing, tokens minted by `hearthd token create`, and the
+embedded page's token alike. There is no unfiltered owner view over the API;
+the operator's view is the session files and the CLI.
+
+**Record.** The audience lives in the session header (PENATUS §2: `creator`,
+`audience`). An absent or empty audience means every device. Sessions created
+over the API record the creating caller as `creator`. The main session,
+scheduled and bridge sessions, and every session written before this
+amendment carry no creator and are shared with every device — no migration.
+
+**Create.** `POST /v1/sessions` and `sessions.create` accept `private: bool`
+(default `false`). `true` records an audience of the creator alone. A caller
+without an identity cannot create a private session (400 / reason
+`private_requires_identity`).
+
+**Wire.** A session header served to a client carries `"private": true` when
+its audience is scoped and omits the key otherwise, so existing clients see
+an unchanged shape. The audience and creator themselves never leave the
+server.
+
+**Enforcement.** Session listings omit every session the caller is not in the
+audience of. Every path that names a session id answers a session the caller
+may not see exactly as it answers an unknown id on that path, never 403 —
+existence is itself the leak:
+
+| Path | Reply for a hidden session |
+|---|---|
+| `GET /v1/sessions/{id}/events`, `POST …/approvals/{approval_id}`, `PATCH /v1/sessions/{id}` | 404 `{"error":"not found"}` |
+| `POST /v1/sessions/{id}/cancel` | 404 `{"error":"no turn in flight"}` |
+| `DELETE /v1/sessions/{id}` | 404 `{"error":"no such session"}` |
+| `POST /v1/sessions/{id}/messages` | 404 `{"error":"not found"}`; no turn starts |
+| `sessions.subscribe`, `sessions.send`, `sessions.approvals.resolve` | reason `not_found` |
+| `sessions.cancel` | reason `no_turn_in_flight` |
+| `sessions.delete`, `sessions.configure` | reason `no_such_session` |
+
+The gate runs right after id validation, before the handler acts. Session ids
+carry about 128 random bits, so the few parameter checks some handlers run
+before their own existence check are not a discovery oracle. A session whose
+header cannot be read or parsed is hidden from every caller (fail closed).
+
+**Changing the audience.** `sessions.configure` accepts `private: bool`:
+`true` scopes the session to the caller, `false` shares it with every device
+again. Only the session's creator may change it (reason `not_creator`); the
+main session's audience is fixed (reason `session_shared`); a non-boolean
+value is `invalid_request`. The change rides the same `expected_revision`
+compare-and-swap as `model_pin` and bumps the revision. `PATCH
+/v1/sessions/{id}` does not change the audience. When a session is scoped
+down, the new header is written first, then every live `sessions.subscribe`
+held by a caller outside the new audience is withdrawn: frames emitted
+concurrently with the change may still arrive, later ones never do. Events
+held for a subscription that is withdrawn are discarded, never written.
+Widening shows the session in other devices' next listing without a
+reconnect.
+
+**Accepted v1 edges.** Re-pairing replaces the token, so the device gets a
+new caller id; private sessions recorded under the old id become unreachable
+over the API (the entry is inert and matches no future token) and stay
+readable through the files. Sessions with no creator cannot be scoped in v1.
+
+**Not covered by this amendment.** Turn-approval cards on the custody card
+plane (§4 `/v1/custos/cards*`, `custos.cards.*`) and on the bridge channel
+carry the session id and tool name and are not yet audience-filtered; that is
+an open decision tracked on the audience design issue.
 
 ## 5. Streaming protocol (SSE)
 
@@ -364,6 +443,11 @@ S8. The page never sends the token to any origin but its own (no absolute
 S9. A session is never frozen: pending approvals resolve on disconnect
     (≤2 s), turns end by `turn_timeout` or `POST …/cancel`, and a reloaded
     client always learns the truth via `in_flight` (§5 catch-up).
+S10. A session scoped to an audience (§4b) is never listed to, served to,
+    or streamed to a caller outside it: every session-id path answers such a
+    caller as it answers an unknown id, an unreadable header hides the
+    session from everyone, and the audience record never appears in a
+    response body.
 
 ## 9. Verification suite (numbered; CI + live)
 
@@ -472,6 +556,14 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5.5 (amendment SA-1, 2026-11-21).** Session audience: new §4b (caller
+identity derived from the token hash, `creator`/`audience` header record,
+`private` on create and on `sessions.configure`, hidden-session replies per
+path, creator-only changes, scope-down withdraws live subscriptions), §4
+create row gains `private?`, §8 gains S10. Additive: sessions and clients
+that predate it are unaffected (absent audience = every device). No frozen
+turn-stream behavior changed.
 
 **v5.4 (amendment CA-7, 2026-10-12).** Ratified CA-7 (policy rules
 on the surface): §4 route table gains `GET /v1/policy/rules`,

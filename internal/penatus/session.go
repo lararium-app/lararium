@@ -92,20 +92,36 @@ func SetTitleIfEmpty(sessDir, title string) (bool, error) {
 }
 
 // SessionHeader represents the session.json file per spec §2.
+//
+// Creator and Audience are the session audience record (additive; absent on
+// sessions written before it existed). Creator is the caller identity that
+// created the session, nil for sessions with no creating device (the main
+// session, scheduled and bridge sessions). Audience lists the caller
+// identities that may see the session; nil or empty means every paired
+// device.
 type SessionHeader struct {
-	Penatus  int     `json:"penatus"`
-	ID       string  `json:"id"`
-	Created  string  `json:"created"`
-	Kind     string  `json:"kind"`
-	Title    *string `json:"title"`
-	Parent   *string `json:"parent"`
-	ModelPin *string `json:"model_pin"`
-	Revision int64   `json:"revision,omitempty"`
+	Penatus  int      `json:"penatus"`
+	ID       string   `json:"id"`
+	Created  string   `json:"created"`
+	Kind     string   `json:"kind"`
+	Title    *string  `json:"title"`
+	Parent   *string  `json:"parent"`
+	ModelPin *string  `json:"model_pin"`
+	Revision int64    `json:"revision,omitempty"`
+	Creator  *string  `json:"creator,omitempty"`
+	Audience []string `json:"audience,omitempty"`
 }
 
 // CreateSession creates a new session directory with session.json.
 // kind must be "main" or "side". Returns the Log for the session.
 func CreateSession(root, id, kind string) (*Log, error) {
+	return CreateSessionFor(root, id, kind, nil, nil)
+}
+
+// CreateSessionFor is CreateSession with the audience record (creator and
+// audience, §2) included in the header's first and only creation write, so
+// a scoped session is never on disk, even briefly, without its audience.
+func CreateSessionFor(root, id, kind string, creator *string, audience []string) (*Log, error) {
 	if kind != "main" && kind != "side" {
 		return nil, fmt.Errorf("invalid session kind %q: must be 'main' or 'side'", kind)
 	}
@@ -128,6 +144,8 @@ func CreateSession(root, id, kind string) (*Log, error) {
 		Title:    nil,
 		Parent:   nil,
 		ModelPin: nil,
+		Creator:  creator,
+		Audience: audience,
 	}
 
 	data, err := json.MarshalIndent(header, "", "  ")

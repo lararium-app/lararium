@@ -57,10 +57,25 @@ func (s *Server) registerDefaultRPCMethods() {
 // catch-up read. The queue only grows while a window is open, which lasts one
 // catch-up read plus one result write; the streamed text it can hold is also
 // capped per turn by the turn's runaway-output limit.
+//
+// closed marks a subscription withdrawn because its session is no longer
+// visible to this connection's caller (audience gate): nothing more is
+// written, queued events are discarded instead of drained.
 type rpcSessionSub struct {
 	mu      sync.Mutex
 	pending int
 	queued  []json.RawMessage
+	closed  bool
+}
+
+// close withdraws the subscription: later deliveries are dropped and any
+// queued events are discarded. The caller must already have removed it from
+// Server.rpcSubs, and must not hold Server.rpcSubsMu.
+func (sub *rpcSessionSub) close() {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	sub.closed = true
+	sub.queued = nil
 }
 
 // deliver writes one live event for sessionID to conn, or queues it while a
@@ -68,6 +83,9 @@ type rpcSessionSub struct {
 func (sub *rpcSessionSub) deliver(conn *RPCConn, sessionID string, event json.RawMessage) {
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
+	if sub.closed {
+		return
+	}
 	if sub.pending > 0 {
 		sub.queued = append(sub.queued, event)
 		return
@@ -226,11 +244,8 @@ func (s *Server) rpcSessionsList(_ context.Context, conn *RPCConn, req *RPCReque
 		_ = conn.SendError(*req.ID, "internal error", "internal_error", nil)
 		return
 	}
-	if sessions == nil {
-		sessions = []SessionInfo{}
-	}
 	_ = conn.SendResult(*req.ID, map[string]any{
-		"sessions": sessions,
+		"sessions": visibleSessions(sessions, conn.caller),
 	})
 }
 
@@ -239,6 +254,7 @@ func (s *Server) rpcSessionsCreate(_ context.Context, conn *RPCConn, req *RPCReq
 	var params struct {
 		Title    string `json:"title,omitempty"`
 		ModelPin string `json:"model_pin,omitempty"`
+		Private  bool   `json:"private,omitempty"`
 	}
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -258,8 +274,15 @@ func (s *Server) rpcSessionsCreate(_ context.Context, conn *RPCConn, req *RPCReq
 		_ = conn.SendError(*req.ID, "internal error", "internal_error", nil)
 		return
 	}
-	session, err := s.Sessions.Create(params.Title, params.ModelPin)
-	if err != nil {
+	session, err := s.createSession(conn.caller, params.Title, params.ModelPin, params.Private)
+	switch {
+	case errors.Is(err, errPrivateNeedsIdentity):
+		_ = conn.SendError(*req.ID, "private session requires a caller identity", "private_requires_identity", nil)
+		return
+	case errors.Is(err, errAudienceUnsupported):
+		_ = conn.SendError(*req.ID, "not implemented", "not_implemented", nil)
+		return
+	case err != nil:
 		log.Printf("surface: rpc sessions.create failed: %v", err)
 		_ = conn.SendError(*req.ID, "internal error", "internal_error", nil)
 		return
@@ -278,7 +301,7 @@ func (s *Server) rpcSessionsDelete(_ context.Context, conn *RPCConn, req *RPCReq
 		return
 	}
 
-	if !ValidSessionID(params.ID) {
+	if !ValidSessionID(params.ID) || !s.sessionVisibleTo(conn.caller, params.ID) {
 		_ = conn.SendError(*req.ID, "no such session", "no_such_session", nil)
 		return
 	}
@@ -363,6 +386,17 @@ func (s *Server) rpcSessionsSubscribe(_ context.Context, conn *RPCConn, req *RPC
 	sub := s.beginRPCSessionSubscribe(id, conn)
 	defer sub.endSubscribe(conn, id)
 
+	// Audience gate, checked AFTER registering: a concurrent scope-down
+	// writes the header before dropping registrations outside the new
+	// audience, so either that drop sees this registration or this read sees
+	// the new audience. A hidden session answers like an unknown one.
+	if !s.sessionVisibleTo(conn.caller, id) {
+		s.unsubscribeRPCSession(id, conn)
+		sub.close()
+		_ = conn.SendError(*req.ID, "not found", "not_found", nil)
+		return
+	}
+
 	events, inFlight, err := s.Sessions.Events(id, afterSeq, limit)
 	if err != nil {
 		if errors.Is(err, ErrNoSession) {
@@ -395,7 +429,7 @@ func (s *Server) rpcSessionsSend(connCtx context.Context, conn *RPCConn, req *RP
 		_ = conn.SendError(*req.ID, "invalid request body", "invalid_request_body", nil)
 		return
 	}
-	if !ValidSessionID(params.ID) {
+	if !ValidSessionID(params.ID) || !s.sessionVisibleTo(conn.caller, params.ID) {
 		_ = conn.SendError(*req.ID, "not found", "not_found", nil)
 		return
 	}
@@ -450,6 +484,10 @@ func (s *Server) rpcSessionsCancel(_ context.Context, conn *RPCConn, req *RPCReq
 		_ = conn.SendError(*req.ID, "not found", "not_found", nil)
 		return
 	}
+	if !s.sessionVisibleTo(conn.caller, params.ID) {
+		_ = conn.SendError(*req.ID, "no turn in flight", "no_turn_in_flight", nil)
+		return
+	}
 	if s.Hub != nil && s.Hub.Cancel(params.ID) {
 		_ = conn.SendResult(*req.ID, map[string]any{"ok": true})
 		return
@@ -469,7 +507,8 @@ func (s *Server) rpcSessionsApprovalsResolve(_ context.Context, conn *RPCConn, r
 		_ = conn.SendError(*req.ID, "invalid request body", "invalid_request", nil)
 		return
 	}
-	if !ValidSessionID(params.SessionID) || !ValidApprovalID(params.ApprovalID) {
+	if !ValidSessionID(params.SessionID) || !ValidApprovalID(params.ApprovalID) ||
+		!s.sessionVisibleTo(conn.caller, params.SessionID) {
 		_ = conn.SendError(*req.ID, "not found", "not_found", nil)
 		return
 	}

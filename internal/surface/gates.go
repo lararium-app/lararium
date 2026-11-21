@@ -120,10 +120,19 @@ type Verifier interface {
 	Verify(token string) bool
 }
 
+// IdentityVerifier is a Verifier that also names the caller a token belongs
+// to (TokenStore implements it). BearerAuth binds that identity into the
+// request context for session audience checks; a plain Verifier leaves the
+// caller anonymous, which sees only sessions shared with every device.
+type IdentityVerifier interface {
+	VerifyIdentity(token string) (string, bool)
+}
+
 // BearerAuth gates /v1/ behind a bearer token verified by v (the
 // TokenStore). Static routes are registered outside this middleware
 // (spec §4: the page itself carries no secret).
 func BearerAuth(v Verifier) func(http.Handler) http.Handler {
+	iv, _ := v.(IdentityVerifier)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -139,6 +148,15 @@ func BearerAuth(v Verifier) func(http.Handler) http.Handler {
 			}
 
 			token := auth[len(prefix):]
+			if iv != nil {
+				caller, ok := iv.VerifyIdentity(token)
+				if !ok {
+					writeJSONBody(w, http.StatusUnauthorized, `{"error":"unauthorized"}`)
+					return
+				}
+				next.ServeHTTP(w, r.WithContext(withCaller(r.Context(), caller)))
+				return
+			}
 			if !v.Verify(token) {
 				writeJSONBody(w, http.StatusUnauthorized, `{"error":"unauthorized"}`)
 				return
