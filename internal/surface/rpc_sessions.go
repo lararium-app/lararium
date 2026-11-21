@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -36,16 +37,96 @@ func (s *Server) registerDefaultRPCMethods() {
 	}
 }
 
-func (s *Server) subscribeRPCSession(sessionID string, conn *RPCConn) {
+// rpcSessionSub is one connection's live subscription to one session.
+//
+// While any sessions.subscribe call on this (connection, session) pair sits
+// between registering the subscription and writing its result frame
+// (pending > 0), live events are appended to queued instead of written, so
+// no session.event can overtake that result. The last call to write its
+// result drains the queue in order while holding mu. Live writes also hold
+// mu, so a live event can never overtake a queued one.
+//
+// Lock rule: mu is never held together with Server.rpcSubsMu, and nothing
+// that calls into the session source or the turn hub runs under mu. The
+// turn goroutine that emits an event therefore only ever waits on this
+// connection's socket write (bounded by the write deadline), never on a
+// catch-up read. The queue only grows while a window is open, which lasts one
+// catch-up read plus one result write; the streamed text it can hold is also
+// capped per turn by the turn's runaway-output limit.
+type rpcSessionSub struct {
+	mu      sync.Mutex
+	pending int
+	queued  []json.RawMessage
+}
+
+// deliver writes one live event for sessionID to conn, or queues it while a
+// subscribe call on this pair is still open.
+func (sub *rpcSessionSub) deliver(conn *RPCConn, sessionID string, event json.RawMessage) {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if sub.pending > 0 {
+		sub.queued = append(sub.queued, event)
+		return
+	}
+	_ = conn.Notify("session.event", rpcSessionEventParams(sessionID, event))
+}
+
+func rpcSessionEventParams(sessionID string, event json.RawMessage) map[string]any {
+	return map[string]any{
+		"session_id": sessionID,
+		"event":      event,
+	}
+}
+
+// beginRPCSessionSubscribe registers conn for live events on sessionID and
+// opens one hold-back window on that subscription. Every call must be paired
+// with exactly one endSubscribe on the returned subscription.
+func (s *Server) beginRPCSessionSubscribe(sessionID string, conn *RPCConn) *rpcSessionSub {
 	s.rpcSubsMu.Lock()
-	defer s.rpcSubsMu.Unlock()
 	if s.rpcSubs == nil {
-		s.rpcSubs = make(map[string]map[*RPCConn]struct{})
+		s.rpcSubs = make(map[string]map[*RPCConn]*rpcSessionSub)
 	}
-	if s.rpcSubs[sessionID] == nil {
-		s.rpcSubs[sessionID] = make(map[*RPCConn]struct{})
+	conns := s.rpcSubs[sessionID]
+	if conns == nil {
+		conns = make(map[*RPCConn]*rpcSessionSub)
+		s.rpcSubs[sessionID] = conns
 	}
-	s.rpcSubs[sessionID][conn] = struct{}{}
+	sub := conns[conn]
+	if sub == nil {
+		// Created with its window already open while the map lock is held,
+		// so no notifier can reach it with the window closed.
+		sub = &rpcSessionSub{pending: 1}
+		conns[conn] = sub
+		s.rpcSubsMu.Unlock()
+		return sub
+	}
+	s.rpcSubsMu.Unlock()
+
+	// Existing subscription (a re-subscribe): open the window under the
+	// subscription's own lock, after releasing the map lock. Removal from the
+	// map only happens at connection teardown or when the session does not
+	// exist, so a window opened on a just-removed entry is harmless.
+	sub.mu.Lock()
+	sub.pending++
+	sub.mu.Unlock()
+	return sub
+}
+
+// endSubscribe closes one hold-back window after that subscribe call has
+// written its reply. When the last open window closes, queued events are
+// written in emit order.
+func (sub *rpcSessionSub) endSubscribe(conn *RPCConn, sessionID string) {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	sub.pending--
+	if sub.pending > 0 {
+		return
+	}
+	queued := sub.queued
+	sub.queued = nil
+	for _, ev := range queued {
+		_ = conn.Notify("session.event", rpcSessionEventParams(sessionID, ev))
+	}
 }
 
 func (s *Server) isRPCSessionSubscribed(sessionID string, conn *RPCConn) bool {
@@ -86,24 +167,24 @@ func (s *Server) unsubscribeAllRPCConn(conn *RPCConn) {
 }
 
 func (s *Server) notifyRPCSessionEvent(sessionID string, event json.RawMessage) {
+	type target struct {
+		conn *RPCConn
+		sub  *rpcSessionSub
+	}
 	s.rpcSubsMu.RLock()
 	connsMap := s.rpcSubs[sessionID]
 	if len(connsMap) == 0 {
 		s.rpcSubsMu.RUnlock()
 		return
 	}
-	conns := make([]*RPCConn, 0, len(connsMap))
-	for c := range connsMap {
-		conns = append(conns, c)
+	targets := make([]target, 0, len(connsMap))
+	for c, sub := range connsMap {
+		targets = append(targets, target{conn: c, sub: sub})
 	}
 	s.rpcSubsMu.RUnlock()
 
-	params := map[string]any{
-		"session_id": sessionID,
-		"event":      event,
-	}
-	for _, c := range conns {
-		_ = c.Notify("session.event", params)
+	for _, tg := range targets {
+		tg.sub.deliver(tg.conn, sessionID, event)
 	}
 }
 
@@ -267,13 +348,16 @@ func (s *Server) rpcSessionsSubscribe(_ context.Context, conn *RPCConn, req *RPC
 		_ = conn.SendError(*req.ID, "internal error", "internal_error", nil)
 		return
 	}
-	// Register the live-notification subscription BEFORE reading catch-up events, not just before
-	// sending the response: an event committed between an Events() read and subscribing would
-	// otherwise be silently dropped (past the catch-up cursor, not yet live-forwarded) — realistic
-	// whenever another device already has a turn in flight on this session. Subscribing first means
-	// the same event can at worst arrive twice (once in catch-up, once live) — a safe duplicate,
-	// never a drop. ErrNoSession below unsubscribes again so a not-found reply leaves no orphan entry.
-	s.subscribeRPCSession(id, conn)
+	// Register the live subscription BEFORE the catch-up read: an event committed between an
+	// Events() read and registering would otherwise be lost (past the catch-up cursor, not yet
+	// forwarded live), which is realistic whenever another device already has a turn in flight on
+	// this session. Registering opens a hold-back window: events emitted until this call has
+	// written its reply are queued and written right after it, in emit order, so no
+	// session.event overtakes the result (issue #310). Live events can overlap the catch-up
+	// array (a turn already persisted there may still be streaming), but none is lost or arrives
+	// first. ErrNoSession below unsubscribes again so a not-found reply leaves no orphan entry.
+	sub := s.beginRPCSessionSubscribe(id, conn)
+	defer sub.endSubscribe(conn, id)
 
 	events, inFlight, err := s.Sessions.Events(id, afterSeq, limit)
 	if err != nil {

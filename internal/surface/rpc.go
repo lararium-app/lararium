@@ -52,6 +52,14 @@ const (
 	// DefaultWSAuthTimeout is the 5s deadline for the initial auth.hello frame (RPC-SPEC §2).
 	DefaultWSAuthTimeout = 5 * time.Second
 
+	// DefaultWSWriteTimeout bounds every server frame write (RPC-SPEC §2). A write blocks only
+	// once the peer has stopped reading and both socket buffers are full; at the deadline the
+	// connection is closed and torn down like any other disconnect.
+	DefaultWSWriteTimeout = 10 * time.Second
+
+	// wsCloseWriteTimeout bounds the best-effort close-frame write in CloseWithCode.
+	wsCloseWriteTimeout = 2 * time.Second
+
 	// maxWSFramePayload caps incoming WebSocket frame payloads at 1 MiB (SURFACE-SPEC §2 body limit).
 	maxWSFramePayload = 1 << 20
 
@@ -275,18 +283,20 @@ func (s *Server) lookupRPCMethod(method string) (RPCMethodHandler, bool) {
 // RPCConn represents one authenticated-or-handshaking WebSocket client connection.
 // A client holds one socket and multiplexes concurrent requests by request id (RPC-SPEC §0, §2).
 type RPCConn struct {
-	conn      net.Conn
-	br        *bufio.Reader
-	bw        *bufio.Writer
-	writeMu   sync.Mutex
-	closeOnce sync.Once
+	conn         net.Conn
+	br           *bufio.Reader
+	bw           *bufio.Writer
+	writeMu      sync.Mutex
+	closeOnce    sync.Once
+	writeTimeout time.Duration
 }
 
 func newRPCConn(conn net.Conn, br *bufio.Reader, bw *bufio.Writer) *RPCConn {
 	return &RPCConn{
-		conn: conn,
-		br:   br,
-		bw:   bw,
+		conn:         conn,
+		br:           br,
+		bw:           bw,
+		writeTimeout: DefaultWSWriteTimeout,
 	}
 }
 
@@ -329,8 +339,7 @@ func (c *RPCConn) CloseWithCode(code uint16, reason string) error {
 		payload := make([]byte, 2+len(reasonBytes))
 		binary.BigEndian.PutUint16(payload[:2], code)
 		copy(payload[2:], reasonBytes)
-		_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		writeErr = c.writeFrame(wsOpClose, payload)
+		writeErr = c.writeFrameWithin(wsOpClose, payload, wsCloseWriteTimeout)
 		_ = c.conn.Close()
 	})
 	return writeErr
@@ -342,9 +351,29 @@ func (c *RPCConn) Close() error {
 }
 
 func (c *RPCConn) writeFrame(opcode byte, payload []byte) error {
+	return c.writeFrameWithin(opcode, payload, c.writeTimeout)
+}
+
+// writeFrameWithin writes one frame under a write deadline of d. Any write
+// error, including the deadline, closes the connection: the frame may have
+// been cut off mid-write, which corrupts the stream for every later frame.
+// Closing also ends the read loop, so the connection is torn down like any
+// other disconnect instead of leaving a writer blocked forever.
+func (c *RPCConn) writeFrameWithin(opcode byte, payload []byte, d time.Duration) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
+	if d > 0 {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(d))
+	}
+	if err := c.writeFrameLocked(opcode, payload); err != nil {
+		_ = c.conn.Close()
+		return err
+	}
+	return nil
+}
+
+func (c *RPCConn) writeFrameLocked(opcode byte, payload []byte) error {
 	var header [10]byte
 	header[0] = 0x80 | (opcode & 0x0f) // FIN=1
 	n := len(payload)
@@ -582,6 +611,9 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
+	if s.wsWriteTimeout > 0 {
+		rc.writeTimeout = s.wsWriteTimeout
+	}
 
 	authTimeout := s.wsAuthTimeout
 	if authTimeout <= 0 {

@@ -1680,7 +1680,12 @@ func TestVT3e(t *testing.T) {
 		t.Fatalf("sync after re-enable failed: code=%d %s", syncCode2, syncBody2)
 	}
 
-	// 5. Both toggles audited device_rail_toggled
+	// 5. Both toggles audited device_rail_toggled. The surface writes that
+	// record on a background goroutine after the rail flips, so the catalog
+	// wait above does not imply it has landed yet: wait for it explicitly.
+	waitFor(t, "both device_rail_toggled audit records", func() bool {
+		return countCompleteAuditKind(w.stateDir, surface.AuditKindDeviceRailToggled) >= 2
+	})
 	toggledAudits := auditByKind(t, w.stateDir, surface.AuditKindDeviceRailToggled)
 	if len(toggledAudits) < 2 {
 		t.Fatalf("expected at least 2 device_rail_toggled records, got %d", len(toggledAudits))
@@ -2143,4 +2148,28 @@ func waitFor(t *testing.T, label string, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", label)
+}
+
+// countCompleteAuditKind counts audit records of kind without failing the
+// test, so it is safe to poll while records are still being appended: a line
+// that does not parse yet (a torn, in-progress append) is skipped, not fatal.
+func countCompleteAuditKind(stateDir, kind string) int {
+	files, err := filepath.Glob(filepath.Join(stateDir, "audit", "*.jsonl"))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, l := range strings.Split(string(b), "\n") {
+			var r custos.AuditRecord
+			if l != "" && json.Unmarshal([]byte(l), &r) == nil && r.Kind == kind {
+				n++
+			}
+		}
+	}
+	return n
 }
