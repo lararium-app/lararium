@@ -678,6 +678,7 @@ func serve(cfgPath string) {
 		DeviceAutoApprove: cfg.Devices.IsAutoApprove(),
 		HearthName:        cfg.Hearth.Name,
 	}
+	stopModelCat := wireModelCatalogAndProfile(srv, home, cfg, kp, rt, byName)
 	// Issue #128: turn-approval cards (web chat + MCP rail) become visible
 	// and resolvable through the custody card surface.
 	signinSrv = srv
@@ -688,7 +689,6 @@ func serve(cfgPath string) {
 		Providers: kp.ProviderInfos,
 		Reload:    reloadKeys,
 	})
-	srv.SetWebHome(home)
 	attachBackup(srv, cfg, home, cfgPath, hub)
 
 	fastiAnnouncer, stopFasti := mustWireFasti(context.Background(), cfg.Fasti, home, srv, hub)
@@ -717,6 +717,7 @@ func serve(cfgPath string) {
 	// custos.doors_sock and custos.door_token are set.
 	stopDoor := startCustosAndDevices(context.Background(), cfg.Custos, home, bridge, srv, hub)
 	stopBridge := func() {
+		stopModelCat()
 		sched.Stop()
 		if stopFasti != nil {
 			stopFasti()
@@ -741,6 +742,29 @@ func serve(cfgPath string) {
 	}
 	sock.Close()
 	stopBridge()
+}
+
+func newProfileAuditHook(home string) func(actor string, changes []surface.ProfileAuditChange) {
+	auditDir := filepath.Join(home, "custos")
+	al := custos.NewAuditLogger(auditDir)
+	return func(actor string, changes []surface.ProfileAuditChange) {
+		if len(changes) == 0 {
+			return
+		}
+		names := make([]string, 0, len(changes))
+		deltas := make([]string, 0, len(changes))
+		for _, ch := range changes {
+			names = append(names, ch.Field)
+			deltas = append(deltas, fmt.Sprintf("%s:%d->%d", ch.Field, ch.OldBytes, ch.NewBytes))
+		}
+		_ = al.Append(custos.AuditRecord{
+			Kind:   "profile_configured",
+			Actor:  actor,
+			Via:    "web",
+			Names:  names,
+			Reason: strings.Join(deltas, ","),
+		})
+	}
 }
 
 func attachBackup(srv *surface.Server, cfg *Config, home, cfgPath string, hub *surface.Hub) {

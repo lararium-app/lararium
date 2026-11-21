@@ -17,7 +17,7 @@ import (
 )
 
 // SessionInfo is the wire shape of one session in GET /v1/sessions
-// (spec §5: id, created, kind, optional title/parent/model_pin).
+// (spec §5: id, created, kind, optional title/parent/model_pin, revision).
 type SessionInfo struct {
 	ID       string  `json:"id"`
 	Created  string  `json:"created"`
@@ -25,16 +25,18 @@ type SessionInfo struct {
 	Title    *string `json:"title,omitempty"`
 	Parent   *string `json:"parent,omitempty"`
 	ModelPin *string `json:"model_pin,omitempty"`
+	Revision int64   `json:"revision"`
 }
 
 // SessionSource is the storage view the handlers need: list, create,
-// and replay session logs. PenatusSource implements it over the frozen
-// Penatus file layer.
+// configure, delete, and replay session logs. PenatusSource implements it
+// over the frozen Penatus file layer.
 type SessionSource interface {
 	List() ([]SessionInfo, error)
 	Create(title string, modelPin string) (SessionInfo, error)
 	Events(id string, afterSeq int64, limit int) (events []json.RawMessage, inFlight bool, err error)
 	Delete(id string) error
+	Configure(id string, modelPin *string, expectedRevision *int64) (SessionInfo, error)
 }
 
 // TurnHub is the live-turn view the handlers need: the in_flight flag
@@ -58,6 +60,13 @@ type Server struct {
 	// Models is the cached model catalog; nil means the catalog is not
 	// configured and model routes answer 503.
 	Models ModelCatalog
+	// PersonaHome is the hearth home directory holding SOUL.md, IDENTITY.md,
+	// USER.md, and MEMORY.md for profile.describe / profile.configure.
+	PersonaHome string
+	// ProfileAudit is an optional audit callback invoked after profile.configure
+	// applies one or more persona file edits (actor, field names, byte deltas only).
+	ProfileAudit func(actor string, changes []ProfileAuditChange)
+	profileMu    sync.Mutex
 	// HearthName is the display name served on /v1/health; empty resolves to
 	// the hostname label.
 	HearthName string

@@ -84,6 +84,71 @@ func ProbeOpenAI(ctx context.Context, baseURL, apiKey, wanted string) (Caps, err
 	return parseModelEntry(first), nil
 }
 
+// ModelProbe holds one model ID and its probed capabilities returned by ListModels.
+type ModelProbe struct {
+	ID   string
+	Caps Caps
+}
+
+// ListModels queries the provider's /models endpoint once and returns every
+// listed model with its parsed capabilities. If any entry lacks a context
+// window, llama.cpp's /props endpoint is probed once as a fallback.
+func ListModels(ctx context.Context, baseURL, apiKey string) ([]ModelProbe, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := providerClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d from /models", resp.StatusCode)
+	}
+
+	var body struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	probes := make([]ModelProbe, 0, len(body.Data))
+	needsProps := false
+	for _, raw := range body.Data {
+		entry, err := unmarshalModelEntry(raw)
+		if err != nil || entry.ID == "" {
+			continue
+		}
+		caps := parseModelEntry(entry)
+		if caps.ContextLength == 0 {
+			needsProps = true
+		}
+		probes = append(probes, ModelProbe{
+			ID:   entry.ID,
+			Caps: caps,
+		})
+	}
+
+	if needsProps {
+		if n := probeLlamaProps(ctx, baseURL); n > 0 {
+			for i := range probes {
+				if probes[i].Caps.ContextLength == 0 {
+					probes[i].Caps.ContextLength = n
+				}
+			}
+		}
+	}
+
+	return probes, nil
+}
+
 type modelEntry struct {
 	ID     string `json:"id"`
 	Object string `json:"object"`

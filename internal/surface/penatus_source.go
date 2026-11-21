@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/lararium-app/lararium/internal/penatus"
 )
@@ -15,6 +16,10 @@ func strPtr(s string) *string { return &s }
 // ErrNoSession means the session does not exist on disk; handlers map it
 // to 404 (spec: unknown session id → 404, never a phantom empty 200).
 var ErrNoSession = errors.New("no such session")
+
+// ErrRevisionConflict means expected_revision did not match the session's
+// current header revision counter (RPC-SPEC §4a sessions.configure CAS).
+var ErrRevisionConflict = errors.New("revision conflict")
 
 // PenatusSource is the SessionSource over the Penatus file layer:
 // sessions live at <root>/sessions/<id>/ exactly where repl.go and
@@ -61,16 +66,24 @@ func (p *PenatusSource) List() ([]SessionInfo, error) {
 				continue
 			}
 			created := ""
+			var title, modelPin *string
+			var revision int64
 			if data, rerr := os.ReadFile(filepath.Join(sessionsDir, "main", "session.json")); rerr == nil {
 				var h penatus.SessionHeader
 				if json.Unmarshal(data, &h) == nil {
 					created = h.Created
+					title = h.Title
+					modelPin = h.ModelPin
+					revision = h.Revision
 				}
 			}
 			sessions = append(sessions, SessionInfo{
-				ID:      "main",
-				Created: created,
-				Kind:    "main",
+				ID:       "main",
+				Created:  created,
+				Kind:     "main",
+				Title:    title,
+				ModelPin: modelPin,
+				Revision: revision,
 			})
 			continue
 		}
@@ -86,14 +99,7 @@ func (p *PenatusSource) List() ([]SessionInfo, error) {
 			continue
 		}
 
-		sessions = append(sessions, SessionInfo{
-			ID:       header.ID,
-			Created:  header.Created,
-			Kind:     header.Kind,
-			Title:    header.Title,
-			Parent:   header.Parent,
-			ModelPin: header.ModelPin,
-		})
+		sessions = append(sessions, p.headerToInfo(header))
 	}
 
 	// newest first by created (string-comparable RFC3339Nano); entries
@@ -206,9 +212,93 @@ func (p *PenatusSource) Create(title string, modelPin string) (SessionInfo, erro
 	return p.headerToInfo(header), nil
 }
 
+// Configure updates session configuration fields (currently model_pin) with
+// optional compare-and-swap via expectedRevision.
+//   - modelPin == nil: field absent (leave header.ModelPin unchanged).
+//   - modelPin != nil && *modelPin == "": clear header.ModelPin.
+//   - modelPin != nil && *modelPin != "": set header.ModelPin to *modelPin.
+//
+// For the main session, if sessions/main/ exists without a session.json header,
+// a minimal header is synthesized and written. Any applied change increments
+// header.Revision by 1 before writing atomically.
+func (p *PenatusSource) Configure(id string, modelPin *string, expectedRevision *int64) (SessionInfo, error) {
+	if !ValidSessionID(id) {
+		return SessionInfo{}, ErrNoSession
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Validated above: id matches ^(s_[0-9A-Z]{26}|main)$ — no traversal
+	// is possible.
+	sessionDir := filepath.Join(p.root, "sessions", id) // #nosec G703
+	dirInfo, err := os.Stat(sessionDir)
+	if err != nil || !dirInfo.IsDir() {
+		return SessionInfo{}, ErrNoSession
+	}
+
+	sessionPath := filepath.Join(sessionDir, "session.json") // #nosec G304
+	var header penatus.SessionHeader
+	synthesized := false
+	data, err := os.ReadFile(sessionPath) // #nosec G703 -- id is regex-validated above
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return SessionInfo{}, err
+		}
+		if id != "main" {
+			return SessionInfo{}, ErrNoSession
+		}
+		header = penatus.SessionHeader{
+			Penatus: 1,
+			ID:      "main",
+			Kind:    "main",
+			Created: dirInfo.ModTime().UTC().Format(time.RFC3339),
+		}
+		synthesized = true
+	} else if err := json.Unmarshal(data, &header); err != nil {
+		return SessionInfo{}, err
+	}
+
+	if expectedRevision != nil && *expectedRevision != header.Revision {
+		return SessionInfo{}, ErrRevisionConflict
+	}
+
+	changed := false
+	if modelPin != nil {
+		if *modelPin == "" {
+			header.ModelPin = nil
+		} else {
+			v := *modelPin
+			header.ModelPin = &v
+		}
+		changed = true
+	}
+
+	if changed {
+		header.Revision++
+	}
+
+	if changed || synthesized {
+		newData, err := json.MarshalIndent(header, "", "  ")
+		if err != nil {
+			return SessionInfo{}, err
+		}
+		tmpPath := sessionPath + ".tmp"
+		if err := os.WriteFile(tmpPath, newData, 0o600); err != nil {
+			return SessionInfo{}, err
+		}
+		if err := os.Rename(tmpPath, sessionPath); err != nil {
+			return SessionInfo{}, err
+		}
+	}
+
+	return p.headerToInfo(header), nil
+}
+
 // SetModelPin updates model_pin in the session's session.json header.
 // A nil (or empty) pin clears header.ModelPin. Unknown or invalid ids
-// return ErrNoSession.
+// return ErrNoSession. Bumps header.Revision so paired devices share one
+// monotonic revision counter across REST and RPC mutations.
 func (p *PenatusSource) SetModelPin(id string, pin *string) error {
 	if !ValidSessionID(id) {
 		return ErrNoSession
@@ -243,6 +333,7 @@ func (p *PenatusSource) SetModelPin(id string, pin *string) error {
 		v := *pin
 		header.ModelPin = &v
 	}
+	header.Revision++
 
 	newData, err := json.MarshalIndent(header, "", "  ")
 	if err != nil {
@@ -266,6 +357,7 @@ func (p *PenatusSource) headerToInfo(h penatus.SessionHeader) SessionInfo {
 		Title:    h.Title,
 		Parent:   h.Parent,
 		ModelPin: h.ModelPin,
+		Revision: h.Revision,
 	}
 }
 

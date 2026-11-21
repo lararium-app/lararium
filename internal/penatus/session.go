@@ -100,6 +100,7 @@ type SessionHeader struct {
 	Title    *string `json:"title"`
 	Parent   *string `json:"parent"`
 	ModelPin *string `json:"model_pin"`
+	Revision int64   `json:"revision,omitempty"`
 }
 
 // CreateSession creates a new session directory with session.json.

@@ -707,6 +707,8 @@ func (h *Hub) executeTurn(
 
 	sys, _, _ := loop.SystemPrompt(h.hearthHome)
 
+	chatProfile := h.resolveSessionChatProfile(sessDir, sessionID)
+
 	sess := &loop.Session{
 		Secrets:        h.secretsFn(),
 		MaxTokens:      h.maxTokens,
@@ -715,6 +717,7 @@ func (h *Hub) executeTurn(
 		Log:            log,
 		Sys:            sys,
 		Router:         h.router,
+		ChatProfile:    chatProfile,
 		CompactProfile: "compact",
 		TriggerPct:     h.compactionTriggerPct,
 		Keys:           h.keys,
@@ -944,4 +947,29 @@ func (h *Hub) HandleApproval(w http.ResponseWriter, r *http.Request, sessionID, 
 		}
 		writeJSONAny(w, code, map[string]string{"error": errMsg})
 	}
+}
+
+// resolveSessionChatProfile reads <sessDir>/session.json and returns
+// "pin:<ref>" when the session pins a model whose profile is registered on
+// h.router. Missing/corrupt headers or unregistered profiles fall back to ""
+// (default "chat" profile) so a turn never fails due to config drift.
+func (h *Hub) resolveSessionChatProfile(sessDir, sessionID string) string {
+	data, err := os.ReadFile(filepath.Join(sessDir, "session.json"))
+	if err != nil {
+		return ""
+	}
+	var header penatus.SessionHeader
+	if err := json.Unmarshal(data, &header); err != nil {
+		return ""
+	}
+	if header.ModelPin == nil || *header.ModelPin == "" {
+		return ""
+	}
+	ref := *header.ModelPin
+	profile := "pin:" + ref
+	if h.router != nil && h.router.HasProfile(profile) {
+		return profile
+	}
+	stdlog.Printf("hearthd serve: session %s pinned to %q but profile %q is not registered; falling back to default chat profile", sessionID, ref, profile) //nolint:gosec // sessionID is regex-validated
+	return ""
 }

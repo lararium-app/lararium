@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type Target struct {
 
 // Router manages named profiles and executes completions with failover.
 type Router struct {
+	mu       sync.RWMutex
 	profiles map[string]Profile
 }
 
@@ -124,7 +126,9 @@ func NewRouter(def Profile) *Router {
 // fallback chain beyond the head is invisible there by design). ok is
 // false for an unknown or empty profile.
 func (r *Router) ActiveTarget(profile string) (string, bool) {
+	r.mu.RLock()
 	p, ok := r.profiles[profile]
+	r.mu.RUnlock()
 	if !ok || len(p.Chain) == 0 {
 		return "", false
 	}
@@ -137,14 +141,26 @@ func (r *Router) ActiveTarget(profile string) (string, bool) {
 
 // SetProfile adds or replaces a named profile.
 func (r *Router) SetProfile(name string, p Profile) {
+	r.mu.Lock()
 	r.profiles[name] = p
+	r.mu.Unlock()
+}
+
+// HasProfile reports whether a named profile is registered with at least one target.
+func (r *Router) HasProfile(name string) bool {
+	r.mu.RLock()
+	p, ok := r.profiles[name]
+	r.mu.RUnlock()
+	return ok && len(p.Chain) > 0
 }
 
 // Probe returns the capabilities of the profile's FIRST target (the primary).
 // The context window that governs compaction is the primary's; if the
 // primary is down the compaction trigger simply doesn't fire (conservative).
 func (r *Router) Probe(ctx context.Context, profile string) (Caps, error) {
+	r.mu.RLock()
 	p, ok := r.profiles[profile]
+	r.mu.RUnlock()
 	if !ok {
 		return Caps{}, fmt.Errorf("unknown profile: %s", profile)
 	}
@@ -158,7 +174,9 @@ func (r *Router) Probe(ctx context.Context, profile string) (Caps, error) {
 // and advancing on non-retryable ones. Returns *ChainError only if the
 // entire chain fails.
 func (r *Router) Complete(ctx context.Context, profile string, msgs []Message, opts Options) (*Completion, error) {
+	r.mu.RLock()
 	p, ok := r.profiles[profile]
+	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown profile: %s", profile)
 	}
@@ -170,7 +188,9 @@ func (r *Router) Complete(ctx context.Context, profile string, msgs []Message, o
 // Fallback on same chain rules BEFORE first delta arrives.
 // After first delta, error is returned immediately.
 func (r *Router) CompleteStream(ctx context.Context, profile string, msgs []Message, opts Options, onDelta StreamHandler) (*Completion, error) {
+	r.mu.RLock()
 	p, ok := r.profiles[profile]
+	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown profile: %s", profile)
 	}
