@@ -67,6 +67,12 @@ Handshake:
 - Exactly one live `auth.hello` per connection; a second one closes `4002`
   (`already_authenticated`) — reconnect for a new token instead of
   re-authing in place.
+- Every server frame write has a 10s deadline. A write only blocks once the
+  client has stopped reading and the socket buffers on both ends are full;
+  when the deadline passes the server closes the connection (no close frame,
+  since the stream may hold a partial frame) and tears it down exactly like a
+  client disconnect. Without the deadline, one stalled client could block
+  the turn that is emitting to it.
 
 ## 3. Envelope
 

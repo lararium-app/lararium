@@ -128,12 +128,14 @@ type Server struct {
 
 	// wsAuthTimeout overrides the 5s auth.hello handshake timeout in tests.
 	wsAuthTimeout time.Duration
-	rpcMu         sync.RWMutex
-	rpcMethods    map[string]RPCMethodHandler
-	rpcSubsMu     sync.RWMutex
-	rpcSubs       map[string]map[*RPCConn]struct{}
-	rpcCustosMu   sync.Mutex
-	rpcCustosSubs map[*RPCConn]*custosRPCSub
+	// wsWriteTimeout overrides the per-frame WebSocket write deadline in tests.
+	wsWriteTimeout time.Duration
+	rpcMu          sync.RWMutex
+	rpcMethods     map[string]RPCMethodHandler
+	rpcSubsMu      sync.RWMutex
+	rpcSubs        map[string]map[*RPCConn]struct{}
+	rpcCustosMu    sync.Mutex
+	rpcCustosSubs  map[*RPCConn]*custosRPCSub
 
 	verdictWg sync.WaitGroup
 }
