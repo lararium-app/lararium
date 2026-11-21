@@ -71,7 +71,7 @@ func TestRPCEnvelopeCodecRoundTrip(t *testing.T) {
 	t.Run("response success", func(t *testing.T) {
 		raw, err := EncodeRPCResponse(7, map[string]any{
 			"ok":      true,
-			"version": "1.0.0-beta11",
+			"version": "1.0.0-beta12",
 		})
 		if err != nil {
 			t.Fatalf("EncodeRPCResponse: %v", err)
@@ -108,8 +108,8 @@ func TestRPCEnvelopeCodecRoundTrip(t *testing.T) {
 		if err := json.Unmarshal(dec.Result, &res); err != nil {
 			t.Fatalf("unmarshal result: %v", err)
 		}
-		if !res.OK || res.Version != "1.0.0-beta11" {
-			t.Errorf("result = %+v, want {ok:true version:1.0.0-beta11}", res)
+		if !res.OK || res.Version != "1.0.0-beta12" {
+			t.Errorf("result = %+v, want {ok:true version:1.0.0-beta12}", res)
 		}
 	})
 
