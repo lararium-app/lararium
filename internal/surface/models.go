@@ -1,6 +1,9 @@
 package surface
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 // ModelCapabilities describes the cached capability flags for a model entry
 // returned by GET /v1/models (ASSISTANT-PHASE-SPEC §2.1).
@@ -12,8 +15,9 @@ type ModelCapabilities struct {
 	ContextWindow int  `json:"context_window"`
 }
 
-// ModelEntry is one configured model row in GET /v1/models.
+// ModelEntry is one configured model row in GET /v1/models and models.list.
 // Status is one of "online", "no_key", or "offline".
+// ProbedAt is the RFC3339 timestamp of the last probe attempt, or nil if never probed.
 type ModelEntry struct {
 	Ref          string            `json:"ref"`
 	Provider     string            `json:"provider"`
@@ -23,6 +27,7 @@ type ModelEntry struct {
 	Status       string            `json:"status"`
 	IsDefault    bool              `json:"is_default"`
 	IsCompact    bool              `json:"is_compact"`
+	ProbedAt     *string           `json:"probed_at"`
 }
 
 // ModelDefaults reports the active default fallback chains.
@@ -54,6 +59,26 @@ func (s *Server) modelsHandler(w http.ResponseWriter) {
 		resp.Models = []ModelEntry{}
 	}
 	writeJSONAny(w, http.StatusOK, resp)
+}
+
+// rpcModelsList implements models.list (RPC-SPEC §4a). It serves only the
+// cached catalog view and performs no network I/O on the request path.
+func (s *Server) rpcModelsList(_ context.Context, conn *RPCConn, req *RPCRequest) {
+	if s.Models == nil {
+		_ = conn.SendError(*req.ID, "model catalog unavailable", "model_catalog_unavailable", nil)
+		return
+	}
+	resp := s.Models.Catalog()
+	if resp.Models == nil {
+		resp.Models = []ModelEntry{}
+	}
+	if resp.Defaults.ChatChain == nil {
+		resp.Defaults.ChatChain = []string{}
+	}
+	if resp.Defaults.CompactChain == nil {
+		resp.Defaults.CompactChain = []string{}
+	}
+	_ = conn.SendResult(*req.ID, resp)
 }
 
 // validateModelPin resolves ref against the cached catalog. It performs no

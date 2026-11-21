@@ -32,6 +32,9 @@ type Session struct {
 	Log    *penatus.Log
 	Sys    string // assembled system prompt
 	Router *router.Router
+	// ChatProfile is the router profile used for chat completions and context
+	// probing (empty defaults to "chat").
+	ChatProfile string
 	// CompactProfile is the router profile used for summarization.
 	CompactProfile string
 	// TriggerPct: compact when assembled prompt exceeds this % of the
@@ -74,6 +77,13 @@ type Session struct {
 	// keyed by tool call ID across the live session so follow-up tool turns and
 	// next-turn message reconstruction carry the signatures without polluting events.jsonl.
 	extraContent map[string]json.RawMessage
+}
+
+func (s *Session) chatProfile() string {
+	if s.ChatProfile != "" {
+		return s.ChatProfile
+	}
+	return "chat"
 }
 
 func isExtraEmpty(raw json.RawMessage) bool {
@@ -321,7 +331,7 @@ func (s *Session) runTurn(ctx context.Context, userText string, onDelta func(str
 			opts.Tools = eng.specs()
 		}
 		var streamed string
-		comp, err := s.Router.CompleteStream(ctx, "chat", msgs, opts, func(d string) error {
+		comp, err := s.Router.CompleteStream(ctx, s.chatProfile(), msgs, opts, func(d string) error {
 			// Stream everything: we can't know mid-stream whether this
 			// round ends in a tool call; visible preambles are fine.
 			if onDelta != nil {
@@ -563,7 +573,7 @@ func redactValue(v any, rp *strings.Replacer) (any, bool) {
 func (s *Session) MaybeCompact(ctx context.Context) (bool, error) {
 	// Trigger per spec: prompt tokens > triggerPct% of probed window,
 	// using the real completion usage when the provider reports it.
-	caps, err := s.Router.Probe(ctx, "chat")
+	caps, err := s.Router.Probe(ctx, s.chatProfile())
 	if err != nil || caps.ContextLength <= 0 {
 		//nolint:nilerr // can't trigger what we can't measure; probe failure is not the caller's error
 		return false, nil

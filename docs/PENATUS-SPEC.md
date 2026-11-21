@@ -178,10 +178,12 @@ Opening a session tightens any looser mode left by an older build.
   "kind": "main | side",
   "title": "string | null",
   "parent": "session-id | null",
-  "model_pin": "router-profile-name | null"
+  "model_pin": "router-profile-name | null",
+  "revision": 0
 }
 ```
 
+`revision` is an optional monotonic CAS counter (additive; absent = `0`), incremented on every client-driven pin mutation (REST `PATCH` or `sessions.configure`); automatic title backfill never bumps it.
 `id` is an k-sortable unique id (`s_` + ULID) so directory listing = chronology.
 
 **events.jsonl** — one event per line, append-only, fsync on every line that isn't
