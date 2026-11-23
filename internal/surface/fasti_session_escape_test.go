@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lararium-app/lararium/internal/fasti"
 )
 
 // badSessionRefs are caller-supplied session values that must never reach
@@ -54,7 +56,7 @@ func TestFastiJobCreateRejectsEscapingSession(t *testing.T) {
 			t.Errorf("session %q: got %d (%s), want 400", sess, code, resp)
 		}
 	}
-	if raw, err := os.ReadFile(filepath.Join(env.home, "jobs.json")); err == nil && strings.Contains(string(raw), "escape") {
+	if raw, err := os.ReadFile(fasti.JobsFilePath(env.home)); err == nil && len(strings.TrimSpace(string(raw))) > 2 {
 		t.Fatalf("a rejected job was persisted: %s", raw)
 	}
 
@@ -66,6 +68,12 @@ func TestFastiJobCreateRejectsEscapingSession(t *testing.T) {
 		if code, resp := env.do(http.MethodPost, "/v1/fasti/jobs", body); code != http.StatusCreated {
 			t.Fatalf("valid job rejected: %d %s", code, resp)
 		}
+	}
+	// Positive control: the path read above is where jobs really land, so
+	// the "nothing persisted" check before it is not vacuous.
+	raw, err := os.ReadFile(fasti.JobsFilePath(env.home))
+	if err != nil || !strings.Contains(string(raw), "ops-nightly") {
+		t.Fatalf("accepted job not found at %s (err=%v): %s", fasti.JobsFilePath(env.home), err, raw)
 	}
 }
 
@@ -80,9 +88,16 @@ func TestFastiGoalCreateRejectsEscapingSession(t *testing.T) {
 			t.Errorf("session %q: got %d (%s), want 400", sess, code, resp)
 		}
 	}
+	if raw, err := os.ReadFile(fasti.GoalsFilePath(env.home)); err == nil && len(strings.TrimSpace(string(raw))) > 2 {
+		t.Fatalf("a rejected goal was persisted: %s", raw)
+	}
 	body := `{"title":"t","requirements":["r"],"session":"goal-ok"}`
 	if code, resp := env.do(http.MethodPost, "/v1/fasti/goals", body); code != http.StatusCreated {
 		t.Fatalf("valid goal rejected: %d %s", code, resp)
+	}
+	raw, err := os.ReadFile(fasti.GoalsFilePath(env.home))
+	if err != nil || !strings.Contains(string(raw), "goal-ok") {
+		t.Fatalf("accepted goal not found at %s (err=%v): %s", fasti.GoalsFilePath(env.home), err, raw)
 	}
 }
 
@@ -92,8 +107,19 @@ func TestFastiGoalCreateRejectsEscapingSession(t *testing.T) {
 func TestRunHeadlessTurnRejectsEscapingSession(t *testing.T) {
 	hub := setupHub(t, &stubProvider{})
 	home := hub.hearthHome
-	outside := filepath.Join(filepath.Dir(home), "escaped-by-headless")
-	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	// Every place a hostile id could materialise a directory: above the
+	// hearth, directly under it, beside the sessions root, and as a nested
+	// path inside the sessions root.
+	probes := []string{
+		filepath.Join(filepath.Dir(home), "escaped-by-headless"),
+		filepath.Join(home, "escaped-by-headless"),
+		filepath.Join(home, "sessions", "a"),
+	}
+	t.Cleanup(func() {
+		for _, p := range probes[:2] {
+			_ = os.RemoveAll(p)
+		}
+	})
 
 	for _, sess := range []string{"../../escaped-by-headless", "../escaped-by-headless", "a/b", "..", ""} {
 		err := hub.RunHeadlessTurn(context.Background(), sess, "hi", "cron", 0, nil)
@@ -101,7 +127,9 @@ func TestRunHeadlessTurnRejectsEscapingSession(t *testing.T) {
 			t.Errorf("session %q: got %v, want ErrInvalidSessionID", sess, err)
 		}
 	}
-	if _, err := os.Stat(outside); !os.IsNotExist(err) {
-		t.Fatalf("a directory was created outside the sessions root (stat err=%v)", err)
+	for _, p := range probes {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("hostile session id materialised %s (stat err=%v)", p, err)
+		}
 	}
 }

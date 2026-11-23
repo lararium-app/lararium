@@ -139,7 +139,7 @@ func (j *Job) Validate() error {
 // refused at the door and can never land in jobs.json or goals.json.
 func ValidateSessionRef(session string) error {
 	if !penatus.ValidSessionDirName(session) {
-		return fmt.Errorf("invalid session %q: want 1-128 letters, digits, '_' or '-'", truncateForError(session))
+		return fmt.Errorf("invalid session %q: want 1-128 ASCII letters, digits, '_' or '-', not starting with '-'", truncateForError(session))
 	}
 	return nil
 }

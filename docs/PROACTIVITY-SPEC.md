@@ -340,7 +340,7 @@ next_hint, created_at, created_seq}`.
 Lifecycle: `hearthd goal new "<title>" [--session S] --requirement "<r>" [--budget
 N turns] [--step-after dur]` — `turn_budget` defaults **25**, `step_after` 15m
 — session defaults to `goal-<id>` and MUST be a plain session name (same shape as a job's
-session: 1–128 letters, digits, `_` or `-`; anything else is refused with `ERR`) and MUST be dedicated: `--session S` is refused
+session: 1–128 ASCII letters, digits, `_` or `-`, not starting with `-`; anything else is refused with `ERR`) and MUST be dedicated: `--session S` is refused
 (`ERR`) if S is held by another goal or by a user-facing session, because a shared
 session lets an ordinary chat turn mint goal evidence outside any step window and
 makes two goals sharing S unresolvable; a session is "held" only while its goal is

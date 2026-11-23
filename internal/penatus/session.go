@@ -57,7 +57,7 @@ const maxSessionDirName = 128
 // sessions ("cron-<job>", "goal-<id>") are legal directories even though
 // the REST surface does not address them.
 func ValidSessionDirName(id string) bool {
-	if id == "" || len(id) > maxSessionDirName || id[0] == '-' {
+	if id == "" || len(id) > maxSessionDirName || id[0] == '-' || windowsReservedName(id) {
 		return false
 	}
 	for i := range len(id) {
@@ -69,6 +69,18 @@ func ValidSessionDirName(id string) bool {
 		}
 	}
 	return true
+}
+
+// windowsReservedName reports whether id is a DOS device name (any case),
+// which Windows resolves to a device rather than a directory entry.
+func windowsReservedName(id string) bool {
+	switch strings.ToUpper(id) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	}
+	return false
 }
 
 // maxAutoTitle caps back-filled titles (display width, in runes).

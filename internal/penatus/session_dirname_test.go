@@ -13,6 +13,8 @@ func TestValidSessionDirName(t *testing.T) {
 		"goal-g_1",
 		"a",
 		"A-b_c-9",
+		"console", // a reserved name only as a whole, not as a prefix
+		"COM10",
 		strings.Repeat("a", 128),
 	}
 	for _, id := range ok {
@@ -41,6 +43,10 @@ func TestValidSessionDirName(t *testing.T) {
 		"unicode":          "séance",
 		"fullwidth dot":    "a\uff0eb",
 		"too long":         strings.Repeat("a", 129),
+		"device CON":       "CON",
+		"device nul":       "nul",
+		"device com1":      "Com1",
+		"device LPT9":      "LPT9",
 	}
 	for name, id := range bad {
 		if ValidSessionDirName(id) {
