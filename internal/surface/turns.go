@@ -886,7 +886,7 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 					source = turnFallback
 				}
 				if mapped := mapAuditSource(source); mapped != source {
-					stdlog.Printf("surface: audit source %q outside frozen §6 enum mapped to hub (session=%s approval=%s)", logSanitize(source), logSanitize(sessionID), logSanitize(id)) //nolint:gosec // logSanitize neutralizes control chars
+					stdlog.Printf("surface: audit source %q outside frozen §6 enum mapped to hub (session=%s approval=%s)", logSanitize(source), logSanitize(sessionID), logSanitize(id))
 					source = mapped
 				}
 				if decision != prefixDecision {
