@@ -22,6 +22,7 @@ import (
 // audienceFixture is one hearth with two paired devices (A and B) over the
 // real token store, Penatus source, and turn hub.
 type audienceFixture struct {
+	sp         *stubProvider
 	srv        *Server
 	hub        *Hub
 	ts         *httptest.Server
@@ -57,7 +58,7 @@ func newAudienceFixture(t *testing.T) *audienceFixture {
 	ts.Start()
 	t.Cleanup(ts.Close)
 
-	f := &audienceFixture{srv: srv, hub: hub, ts: ts, store: store}
+	f := &audienceFixture{sp: sp, srv: srv, hub: hub, ts: ts, store: store}
 	if f.tokA, err = store.Create("device-a"); err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +273,7 @@ func TestAudience_RESTMatrix(t *testing.T) {
 			t.Errorf("%s …%s hidden=%d %s unknown=%d %s, want identical 404s", p.method, p.suffix, code, body, ucode, ubody)
 		}
 	}
-	// messages: an unknown id does not 404 today, so pin the hidden reply.
+	// messages: a hidden session answers as an unknown id does, with no turn.
 	if code, body := f.do(t, f.tokB, http.MethodPost, "/v1/sessions/"+priv.ID+"/messages", `{"text":"hi"}`); code != http.StatusNotFound || body != `{"error":"not found"}` {
 		t.Errorf("messages hidden = %d %s, want 404 not found", code, body)
 	}

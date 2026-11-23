@@ -162,7 +162,7 @@ must amend, not creep.
 | GET  | /v1/sessions | list session.json headers, newest first |
 | POST | /v1/sessions | create side chat `{title?, model_pin?, private?}` → header (`private`: §4b) |
 | GET  | /v1/sessions/{id}/events?after_seq=N&limit=M | `{"events":[…], "in_flight":bool}` (§5 catch-up); default M=200, hard cap M=1000 (clamp); invalid limit/after_seq → 400 |
-| POST | /v1/sessions/{id}/messages | `{text}` → SSE stream (§5) |
+| POST | /v1/sessions/{id}/messages | `{text}` → SSE stream (§5); 404 `{"error":"not found"}` for an id that names no session (`main` excepted: its first turn creates it), before any turn starts or SSE byte is written |
 | POST | /v1/sessions/{id}/cancel | abort the in-flight turn: engine stops, gate released, NO assistant event persisted; 404 if none in flight |
 | POST | /v1/sessions/{id}/approvals/{approval_id} | `{decision:"allow"|"deny"}` → 200; 410 if already resolved/expired |
 | GET  | /v1/keys | `[{"name","status","sha256_8"}]` — provider-key inventory; names = config ∪ keys.json computed at request time (K-A1, KEYS-SPEC K4) |

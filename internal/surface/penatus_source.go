@@ -32,6 +32,10 @@ type PenatusSource struct {
 
 var _ ModelPinSetter = (*PenatusSource)(nil)
 
+// The messages existence gate (Server.sessionExists) fails open for sources
+// that do not implement SessionExistenceChecker: pin that this source does.
+var _ SessionExistenceChecker = (*PenatusSource)(nil)
+
 // NewPenatusSource roots the source at the hearth home; hub supplies
 // the in_flight flag for catch-up (may be nil in tests).
 func NewPenatusSource(root string, hub TurnHub) *PenatusSource {
@@ -418,6 +422,28 @@ func (p *PenatusSource) headerToInfo(h penatus.SessionHeader) SessionInfo {
 	}
 }
 
+// SessionExists reports whether id names a session on disk: its directory
+// exists and, for a side chat, so does its header. A directory without a
+// header is not a session (an interrupted create, or a stray turn log), the
+// same rule Events applies. Invalid ids do not exist.
+func (p *PenatusSource) SessionExists(id string) bool {
+	if !ValidSessionID(id) {
+		return false
+	}
+	// Validated above: id matches ^(s_[0-9A-Z]{26}|main)$ — no traversal is
+	// possible.
+	sessionDir := filepath.Join(p.root, "sessions", id)
+	if info, err := os.Stat(sessionDir); err != nil || !info.IsDir() { //nolint:gosec // regex-validated id
+		return false
+	}
+	if id != "main" {
+		if _, err := os.Stat(filepath.Join(sessionDir, "session.json")); err != nil { //nolint:gosec // regex-validated id
+			return false
+		}
+	}
+	return true
+}
+
 // SessionAudience returns the audience recorded in session id's header (nil
 // = every device). The main session is always shared with every device.
 // Unknown sessions answer ErrNoSession.
@@ -456,13 +482,8 @@ func (p *PenatusSource) Events(id string, afterSeq int64, limit int) ([]json.Raw
 	// Existence gate: OpenLog happily opens a missing log, which would
 	// answer 200-empty for sessions that never existed. Require the
 	// session dir (and, for side chats, the header) before serving.
-	if info, err := os.Stat(sessionDir); err != nil || !info.IsDir() { //nolint:gosec // regex-validated id
+	if !p.SessionExists(id) {
 		return nil, false, ErrNoSession
-	}
-	if id != "main" {
-		if _, err := os.Stat(filepath.Join(sessionDir, "session.json")); err != nil { //nolint:gosec // regex-validated id
-			return nil, false, ErrNoSession
-		}
 	}
 
 	log, err := penatus.OpenLog(sessionDir)
