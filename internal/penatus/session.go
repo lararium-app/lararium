@@ -46,6 +46,31 @@ func NewID() string {
 	return sb.String()
 }
 
+// maxSessionDirName bounds a session directory name.
+const maxSessionDirName = 128
+
+// ValidSessionDirName reports whether id is safe to use as a single path
+// component under <home>/sessions: 1..128 ASCII letters, digits, '_' or
+// '-', not starting with '-'. It carries no separators and no dots, so a
+// join under the sessions root can never leave it. It is deliberately
+// wider than the REST session-id shape: scheduler-minted headless
+// sessions ("cron-<job>", "goal-<id>") are legal directories even though
+// the REST surface does not address them.
+func ValidSessionDirName(id string) bool {
+	if id == "" || len(id) > maxSessionDirName || id[0] == '-' {
+		return false
+	}
+	for i := range len(id) {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // maxAutoTitle caps back-filled titles (display width, in runes).
 const maxAutoTitle = 64
 

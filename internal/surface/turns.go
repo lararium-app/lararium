@@ -25,6 +25,10 @@ import (
 // session (spec §5 concurrency gate).
 var ErrTurnInFlight = errors.New("turn in flight")
 
+// ErrInvalidSessionID reports a headless turn requested for a session id
+// that is not a safe session directory name.
+var ErrInvalidSessionID = errors.New("invalid session id")
+
 // runawayCapBytes aborts a turn that generates this many streamed bytes
 // (spec §5: cap enforced engine-side so a disconnected client cannot let
 // a runaway loop burn tokens forever).
@@ -538,6 +542,13 @@ func (h *Hub) HandleMessage(w http.ResponseWriter, r *http.Request, sessionID st
 // engine like turn_timeout does for web (use min of ctx and
 // h.cfg.TurnTimeout).
 func (h *Hub) RunHeadlessTurn(ctx context.Context, sessionID, text, channel string, updateID int64, onDelta func(string)) error {
+	// Sink guard: the session id becomes a directory under <home>/sessions.
+	// The scheduler's create paths validate it, but a row already on disk
+	// (or any future caller) must not be able to steer the join out of
+	// the sessions root.
+	if !penatus.ValidSessionDirName(sessionID) {
+		return ErrInvalidSessionID
+	}
 	timeout := h.cfg.TurnTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
