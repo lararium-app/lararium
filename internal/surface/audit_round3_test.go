@@ -15,6 +15,18 @@ import (
 	"github.com/lararium-app/lararium/internal/loop"
 )
 
+// terminalState and terminalSettledAt narrow Terminal's five-value return
+// to the fields a test asserts on.
+func terminalState(ap *ApprovalHub, sessionID, id string) (string, bool) {
+	state, _, _, _, found := ap.Terminal(sessionID, id) //nolint:dogsled // Terminal is a five-value atomic snapshot; this helper narrows it
+	return state, found
+}
+
+func terminalSettledAt(ap *ApprovalHub, sessionID, id string) (time.Time, bool) {
+	_, _, _, settledAt, found := ap.Terminal(sessionID, id) //nolint:dogsled // Terminal is a five-value atomic snapshot; this helper narrows it
+	return settledAt, found
+}
+
 func TestAuditSourceConfinedOnEveryPath(t *testing.T) {
 	cases := []struct {
 		name, approval, fallback string
@@ -132,7 +144,7 @@ func TestMintCommitRestampsSettledAt(t *testing.T) {
 	if code, err := hub.ap.ResolveScopeVia("main", id, true, "cli", "phone", "connector"); code != 200 || err != nil {
 		t.Fatalf("resolve = (%d, %v), want 200", code, err)
 	}
-	_, _, _, settledAt, found := hub.ap.Terminal("main", id)
+	settledAt, found := terminalSettledAt(hub.ap, "main", id)
 	if !found || !settledAt.Equal(clk.Now()) {
 		t.Fatalf("settledAt = %v (found=%v), want commit time %v", settledAt, found, clk.Now())
 	}
@@ -180,7 +192,7 @@ func TestPruneSkipsMintingCard(t *testing.T) {
 	if c := <-code; c != 200 {
 		t.Fatalf("mint commit = %d, want 200", c)
 	}
-	state, _, _, _, found := hub.ap.Terminal("main", mintID)
+	state, found := terminalState(hub.ap, "main", mintID)
 	if !found || state != "approved" {
 		t.Fatalf("mid-mint card was evicted by prune (found=%v state=%q)", found, state)
 	}
