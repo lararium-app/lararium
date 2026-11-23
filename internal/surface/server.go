@@ -167,6 +167,14 @@ func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
 			s.error(w, "not found", http.StatusNotFound)
 			return
 		}
+		// A turn creates its session directory on demand, so an id that
+		// names no session must be refused here, before the turn gate and
+		// before any SSE bytes. main is the exception: the first turn on
+		// a fresh hearth creates it.
+		if id != "main" && !s.sessionExists(id) {
+			s.error(w, "not found", http.StatusNotFound)
+			return
+		}
 		hub, ok := s.Hub.(*Hub)
 		if !ok {
 			s.error(w, "not implemented", http.StatusNotImplemented)

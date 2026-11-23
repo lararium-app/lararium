@@ -100,6 +100,23 @@ func (s *Server) sessionVisibleTo(caller, id string) bool {
 	return audienceAllows(audience, caller)
 }
 
+// SessionExistenceChecker is implemented by session sources that can say
+// whether a session id names a stored session (PenatusSource). Sources
+// without it are not asked: every well-formed id is taken to exist.
+type SessionExistenceChecker interface {
+	SessionExists(id string) bool
+}
+
+// sessionExists reports whether id names a stored session, true when the
+// source cannot tell.
+func (s *Server) sessionExists(id string) bool {
+	src, ok := s.Sessions.(SessionExistenceChecker)
+	if !ok {
+		return true
+	}
+	return src.SessionExists(id)
+}
+
 // visibleSessions drops the sessions caller may not see, keeping order.
 func visibleSessions(sessions []SessionInfo, caller string) []SessionInfo {
 	out := make([]SessionInfo, 0, len(sessions))
