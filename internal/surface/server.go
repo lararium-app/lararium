@@ -135,6 +135,21 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
 
+	// Audience gate (SURFACE-SPEC §4b): a session the caller may not see
+	// answers exactly what this path answers for an unknown id, before any
+	// handler acts on it.
+	if id, _, _ := strings.Cut(rest, "/"); ValidSessionID(id) && !s.sessionVisibleTo(callerFrom(r.Context()), id) {
+		switch {
+		case id == rest && r.Method == http.MethodDelete:
+			s.error(w, "no such session", http.StatusNotFound)
+		case strings.HasSuffix(rest, "/cancel") && r.Method == http.MethodPost:
+			s.error(w, "no turn in flight", http.StatusNotFound)
+		default:
+			s.error(w, "not found", http.StatusNotFound)
+		}
+		return
+	}
+
 	switch {
 	case rest == "":
 		s.error(w, "not found", http.StatusNotFound)

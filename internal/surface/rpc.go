@@ -289,6 +289,10 @@ type RPCConn struct {
 	writeMu      sync.Mutex
 	closeOnce    sync.Once
 	writeTimeout time.Duration
+	// caller is the identity of the token this connection authenticated
+	// with (TokenStore.VerifyIdentity), set once by auth.hello before any
+	// method runs and read-only afterwards; "" until then.
+	caller string
 }
 
 func newRPCConn(conn net.Conn, br *bufio.Reader, bw *bufio.Writer) *RPCConn {
@@ -659,10 +663,16 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Store == nil || !s.Store.Verify(helloParams.Token) {
+	if s.Store == nil {
 		_ = rc.CloseWithCode(WSCloseUnauthorized, WSReasonUnauthorized)
 		return
 	}
+	caller, ok := s.Store.VerifyIdentity(helloParams.Token)
+	if !ok {
+		_ = rc.CloseWithCode(WSCloseUnauthorized, WSReasonUnauthorized)
+		return
+	}
+	rc.caller = caller
 
 	// Handshake succeeded: reply {"jsonrpc":"2.0","id":<id>,"result":{"ok":true,"version":"1.0.0-beta12"}}
 	if err := rc.SendResult(*req.ID, map[string]any{

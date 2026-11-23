@@ -179,11 +179,15 @@ Opening a session tightens any looser mode left by an older build.
   "title": "string | null",
   "parent": "session-id | null",
   "model_pin": "router-profile-name | null",
-  "revision": 0
+  "revision": 0,
+  "creator": "t_… (optional)",
+  "audience": ["t_…"]
 }
 ```
 
-`revision` is an optional monotonic CAS counter (additive; absent = `0`), incremented on every client-driven pin mutation (REST `PATCH` or `sessions.configure`); automatic title backfill never bumps it.
+`revision` is an optional monotonic CAS counter (additive; absent = `0`), incremented on every client-driven pin or audience mutation (REST `PATCH` or `sessions.configure`); automatic title backfill never bumps it.
+
+`creator` and `audience` are the session audience record (SURFACE-SPEC §4b; additive, both optional). `creator` is the caller id that created the session over the API, absent for sessions no device created (main, scheduled, bridge, and every session written before the record existed). `audience` lists the caller ids that may see the session; absent or empty means every paired device. A scoped session's header is written with its audience in the session's first creation write, never added afterwards. Every writer of `session.json` must round-trip both fields; dropping `audience` silently shares a private session.
 `id` is an k-sortable unique id (`s_` + ULID) so directory listing = chronology.
 
 **events.jsonl** — one event per line, append-only, fsync on every line that isn't

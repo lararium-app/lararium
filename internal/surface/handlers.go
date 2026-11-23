@@ -18,6 +18,9 @@ import (
 
 // SessionInfo is the wire shape of one session in GET /v1/sessions
 // (spec §5: id, created, kind, optional title/parent/model_pin, revision).
+// Private is true when the session's audience is scoped (not shared with
+// every device); it is omitted otherwise, so clients that predate it see
+// an unchanged shape. The audience itself never leaves the server.
 type SessionInfo struct {
 	ID       string  `json:"id"`
 	Created  string  `json:"created"`
@@ -26,6 +29,9 @@ type SessionInfo struct {
 	Parent   *string `json:"parent,omitempty"`
 	ModelPin *string `json:"model_pin,omitempty"`
 	Revision int64   `json:"revision"`
+	Private  bool    `json:"private,omitempty"`
+
+	audience []string
 }
 
 // SessionSource is the storage view the handlers need: list, create,
@@ -324,7 +330,7 @@ func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.Sessions.List()
 	if err != nil {
 		log.Printf("surface: list sessions failed: %v", err)
@@ -332,13 +338,14 @@ func (s *Server) listSessionsHandler(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	writeJSONAny(w, http.StatusOK, sessions)
+	writeJSONAny(w, http.StatusOK, visibleSessions(sessions, callerFrom(r.Context())))
 }
 
 func (s *Server) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Title    string `json:"title,omitempty"`
 		ModelPin string `json:"model_pin,omitempty"`
+		Private  bool   `json:"private,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -357,8 +364,15 @@ func (s *Server) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	session, err := s.Sessions.Create(req.Title, req.ModelPin)
-	if err != nil {
+	session, err := s.createSession(callerFrom(r.Context()), req.Title, req.ModelPin, req.Private)
+	switch {
+	case errors.Is(err, errPrivateNeedsIdentity):
+		s.error(w, "private_requires_identity", http.StatusBadRequest)
+		return
+	case errors.Is(err, errAudienceUnsupported):
+		s.error(w, "not implemented", http.StatusNotImplemented)
+		return
+	case err != nil:
 		log.Printf("surface: create session failed: %v", err)
 		s.error(w, "internal error", http.StatusInternalServerError)
 		return
