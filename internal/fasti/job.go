@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/lararium-app/lararium/internal/penatus"
 )
 
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -127,7 +129,28 @@ func (j *Job) Validate() error {
 	if strings.TrimSpace(j.Session) == "" {
 		j.Session = "cron-" + j.ID
 	}
+	return ValidateSessionRef(j.Session)
+}
+
+// ValidateSessionRef rejects a session reference that is not a safe
+// session directory name. The session of a job or goal becomes a path
+// component under <home>/sessions when it fires, so anything that is not a
+// single plain component ("..", separators, dots, control bytes) must be
+// refused at the door and can never land in jobs.json or goals.json.
+func ValidateSessionRef(session string) error {
+	if !penatus.ValidSessionDirName(session) {
+		return fmt.Errorf("invalid session %q: want 1-128 ASCII letters, digits, '_' or '-', not starting with '-'", truncateForError(session))
+	}
 	return nil
+}
+
+// truncateForError bounds a caller-supplied string echoed in an error.
+func truncateForError(s string) string {
+	const limit = 48
+	if r := []rune(s); len(r) > limit {
+		return string(r[:limit]) + "…"
+	}
+	return s
 }
 
 // JobsFilePath returns the standard path to jobs.json under the daemon home directory.

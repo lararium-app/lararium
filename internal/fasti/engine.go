@@ -2032,6 +2032,10 @@ func (e *Engine) handleAddGoal(cmd cmdAddGoal) {
 	if sess == "" {
 		sess = "goal-" + id
 	}
+	if err := ValidateSessionRef(sess); err != nil {
+		cmd.resp <- addGoalResp{err: err}
+		return
+	}
 
 	// Refused if held by another non-terminal goal (active|paused|stale hold; done|failed release)
 	for _, existing := range e.goals {

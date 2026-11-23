@@ -46,6 +46,43 @@ func NewID() string {
 	return sb.String()
 }
 
+// maxSessionDirName bounds a session directory name.
+const maxSessionDirName = 128
+
+// ValidSessionDirName reports whether id is safe to use as a single path
+// component under <home>/sessions: 1..128 ASCII letters, digits, '_' or
+// '-', not starting with '-'. It carries no separators and no dots, so a
+// join under the sessions root can never leave it. It is deliberately
+// wider than the REST session-id shape: scheduler-minted headless
+// sessions ("cron-<job>", "goal-<id>") are legal directories even though
+// the REST surface does not address them.
+func ValidSessionDirName(id string) bool {
+	if id == "" || len(id) > maxSessionDirName || id[0] == '-' || windowsReservedName(id) {
+		return false
+	}
+	for i := range len(id) {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// windowsReservedName reports whether id is a DOS device name (any case),
+// which Windows resolves to a device rather than a directory entry.
+func windowsReservedName(id string) bool {
+	switch strings.ToUpper(id) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	}
+	return false
+}
+
 // maxAutoTitle caps back-filled titles (display width, in runes).
 const maxAutoTitle = 64
 

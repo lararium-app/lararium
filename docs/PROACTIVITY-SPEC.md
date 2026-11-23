@@ -161,7 +161,10 @@ the interval grammar on their own. Borrowing a cron lib is rejected under the bu
 **D5 — job store is the source of truth; the model creates jobs only through a card.**
 `<hearth>/fasti/jobs.json` (0600, `writeSyncTempNamed`, single writer = the fasti
 engine goroutine). Job row: `{id (fasti NewID, crockford ULID-style, penatus/session.go:19),
-name, schedule, prompt, session (new-per-run "cron-<id>" or bound session id),
+name, schedule, prompt, session (new-per-run "cron-<id>" or bound session id; it
+becomes a directory name under `<hearth>/sessions`, so it MUST be a single plain
+component — 1–128 ASCII letters, digits, `_` or `-`, not starting with `-` — and a job
+whose session is anything else is refused at create/propose time, never persisted),
 announce (channel target, D7), quiet (object override: `{window,
 mode}` — window `"HH:MM-HH:MM"` local, inclusive start, exclusive end, may span
 midnight; mode `defers` (no firing during window; firings collapse per D7) or
@@ -336,7 +339,8 @@ session_id,
 next_hint, created_at, created_seq}`.
 Lifecycle: `hearthd goal new "<title>" [--session S] --requirement "<r>" [--budget
 N turns] [--step-after dur]` — `turn_budget` defaults **25**, `step_after` 15m
-— session defaults to `goal-<id>` and MUST be dedicated: `--session S` is refused
+— session defaults to `goal-<id>` and MUST be a plain session name (same shape as a job's
+session: 1–128 ASCII letters, digits, `_` or `-`, not starting with `-`; anything else is refused with `ERR`) and MUST be dedicated: `--session S` is refused
 (`ERR`) if S is held by another goal or by a user-facing session, because a shared
 session lets an ordinary chat turn mint goal evidence outside any step window and
 makes two goals sharing S unresolvable; a session is "held" only while its goal is
