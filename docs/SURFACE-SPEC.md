@@ -14,7 +14,10 @@ ratified 2026-10-09) adds §3A — whole-hearth backup/restore CLI shapes,
 the control-socket `backup` verb, and the explicit no-REST-verb stance —
 see changelog v5.3; CA-7 (policy rules on the surface: three
 /v1/policy/rules routes, V17; CUSTOS-SPEC amendment v11) applied
-2026-10-12 — see changelog v5.4.
+2026-10-12 — see changelog v5.4; A8 (hub terminal record as audit
+authority, `reason:"cancelled"` with the custody family
+`custos_locked`/`credential_revoked`, `source:"custos"`, fail-safe reason
+and source mapping) applied 2026-11-23 — see changelog v5.6.
 Companion specs: PENATUS-SPEC (the file layer — this API never contradicts
 it), ARCHITECTURE §2.7 (surfaces), CELL-SPEC (execution stays sandboxed).
 
@@ -377,17 +380,44 @@ restart kills the turn; the log shows the tool never ran).
 
 **Audit schema (frozen):** every tool_result event carries
 `"approval": {"decision": "allowed"|"denied", "reason": "ok"|"timeout"|
-"disconnected"|"shutdown"|"undeliverable"|"not_required", "source":
-"repl"|"web"|"telegram"|"ctl"|"timer"|"shutdown"|"hub"}` (A2: `timer` and
-`shutdown` are hub-caused terminal states, not client surfaces; `hub`
-covers hub-initiated denials with a policy cause, e.g. `undeliverable`.
-A4: `reason:"undeliverable"` pairs with `source:"hub"` so a delivery-
-failure denial is schema-valid and self-describing. CA-5 (CUSTOS-SPEC
-amendment v8): `ctl` is a verdict delivered through custos' control
-socket — the standalone approval door, CUSTOS-SPEC §6.4a). Both
-clients write through the same engine; verification diffs each client's
-log lines against THIS schema (field set + types), not against each
-other's bytes — `source` is the only field allowed to differ.
+"disconnected"|"shutdown"|"undeliverable"|"cancelled"|"custos_locked"|
+"credential_revoked"|"not_required",
+"source": "repl"|"web"|"telegram"|"ctl"|"custos"|"timer"|"shutdown"|
+"hub"|"cron"|"goal"|"heartbeat"}` (A2: `timer` and `shutdown` are hub-caused terminal states, not
+client surfaces; `hub` covers hub-initiated denials with a policy cause,
+e.g. `undeliverable`. A4: `reason:"undeliverable"` pairs with
+`source:"hub"` so a delivery-failure denial is schema-valid and
+self-describing. CA-5 (CUSTOS-SPEC amendment v8): `ctl` is a verdict
+delivered through custos' control socket — the standalone approval door,
+CUSTOS-SPEC §6.4a). Both clients write through the same engine;
+verification diffs each client's log lines against THIS schema (field
+set + types), not against each other's bytes — `source` is the only
+field allowed to differ.
+
+**Hub terminal authority (A8):** (i) when a hub terminal record exists
+for the approval id, `decision`, `reason`, and `source` are taken
+atomically from that record — the engine approval-string prefix
+(`approved:`/`denied:`) is a fallback only for approvals settled outside
+a hub (REPL prompts, `no-approver`, or unknown/unsettled ids); if a
+hub-derived decision disagrees with the engine prefix, the hub record
+wins and the daemon logs a mismatch warning; (ii) `reason:"cancelled"`
+records a terminal denial stamped without an explicit user verdict (turn
+cancellation, custody flow teardown), with the settling mechanism
+distinguished by `source`; vault lock and credential revocation keep
+their own members (`custos_locked`, `credential_revoked`) so a reader —
+and the model-facing denial guidance — can name the custos door;
+(iii) `source:"custos"` attributes a decision or settlement delivered via
+the custody bridge; (iv) fail-safe mapping: any unmapped or unknown hub
+terminal cause surfaces as `reason:"cancelled"`, never `"ok"` and never
+as a raw unenumerated string; verdict-shaped reasons (`ok`, `denied`) map
+to `"ok"` only when they agree with the record state (`approved`/`denied`
+respectively), and `source` is confined to its enum — hub-internal
+settlement causes (e.g. `listener_closed`, `server_closed`) map to `hub`
+with the raw value logged, while `cron`, `goal`, and `heartbeat` are
+hereby ratified as source members for headless turns, as the wire has
+carried them since headless turns shipped; (v) a malformed engine
+approval string audits fail-closed as `denied`/`cancelled`, never as
+`allowed`/`not_required`.
 
 **Custody cards on the page (CA-6, CUSTOS-SPEC §6.4b).** Custody cards
 render on the main chat page in a distinct card style (one place to
@@ -556,6 +586,23 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5.6 (amendment A8, 2026-11-23).** §6 audit schema ratified for hub
+authority: `reason` enum gains `cancelled`, `custos_locked`, and
+`credential_revoked`, `source` enum gains `custos`, and new A8 paragraph
+specifies that a hub terminal record is authoritative for
+`decision`/`reason`/`source` (engine prefix is fallback-only outside a
+hub), `cancelled` represents non-verdict terminal denials distinguished
+by `source` while vault lock and credential revocation keep dedicated
+members, `custos` attributes custody bridge settlements, and unmapped hub
+causes fail safe to `cancelled` (never `ok`). Also ratified in A8(iv)/(v):
+verdict-shaped reasons require state agreement, hub-internal `source`
+values map to `hub` (raw value logged) while `cron`, `goal`, and
+`heartbeat` join the `source` enum as pre-existing headless channels, and
+malformed approval strings audit fail-closed as `denied`/`cancelled`.
+Hub behavior hardened to match: one atomic terminal snapshot accessor
+hides provisional mid-mint claims from audit, and terminal retention
+evicts by settle time rather than creation time.
 
 **v5.5 (amendment SA-1, 2026-11-21).** Session audience: new §4b (caller
 identity derived from the token hash, `creator`/`audience` header record,

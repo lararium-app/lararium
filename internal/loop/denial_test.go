@@ -19,6 +19,7 @@ func TestDenialGuidanceTable(t *testing.T) {
 		{gateNoChannel, "approval policy", "tap Allow"},
 		{gateTimeout, "timed out", "serve.approval_timeout"},
 		{gateCustos, "custos door", "custos -config ./lararium.yaml unlock"},
+		{gateCancelled, "cancelled", "Allow on the approval card"},
 	}
 	for _, c := range cases {
 		got := denialGuidance(c.gate, "web_fetch")
@@ -66,5 +67,25 @@ func TestDeniedToolResultCarriesGuidance(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no tool result")
+	}
+}
+
+func TestDenialGateCancelledReason(t *testing.T) {
+	audit := func(string) (json.RawMessage, bool) {
+		return json.RawMessage(`{"decision":"denied","reason":"cancelled","source":"custos"}`), true
+	}
+	if got := denialGate("denied:a_1", audit); got != gateCancelled {
+		t.Fatalf("denialGate = %q, want %q", got, gateCancelled)
+	}
+}
+
+func TestDenialGateCustodyReasons(t *testing.T) {
+	for _, reason := range []string{"custos_locked", "credential_revoked"} {
+		audit := func(string) (json.RawMessage, bool) {
+			return json.RawMessage(`{"decision":"denied","reason":"` + reason + `","source":"custos"}`), true
+		}
+		if got := denialGate("denied:a_1", audit); got != gateCustos {
+			t.Fatalf("denialGate(%q) = %q, want %q", reason, got, gateCustos)
+		}
 	}
 }

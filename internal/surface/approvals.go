@@ -68,6 +68,8 @@ type approval struct {
 	cell        string     // CUSTOS CA-3: requesting cell id
 	createdAt   time.Time  // issue #128: registry-card age/expiry display
 	expiresAt   time.Time  // issue #128: registry-card age/expiry display
+	settledAt   time.Time  // terminal timestamp stamped under h.mu
+	minting     bool       // #320: mid-connector-mint claim (A8: invisible to Terminal, not prunable)
 }
 
 // StaleVerdictHook is invoked when an Allow verdict arrives for an already settled/dead approval.
@@ -448,8 +450,7 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 	h.pruneTerminalLocked(sessionID)
 
 	if channels == 0 {
-		ap.state, ap.reason, ap.source = "denied", "disconnected", "hub"
-		ch <- false
+		ap.settle("denied", "disconnected", "hub", ap.createdAt)
 		h.mu.Unlock()
 		h.fanTerminal(id, sessionID, "denied", "disconnected", "hub")
 		return id, ch
@@ -517,8 +518,8 @@ func (h *ApprovalHub) fanTerminalVia(id, sessionID, state, reason, source, via s
 
 // settle applies a terminal transition under the caller's lock and
 // reports whether it changed state (first-wins).
-func (ap *approval) settle(state, reason, source string) bool {
-	if !ap.stamp(state, reason, source) {
+func (ap *approval) settle(state, reason, source string, now time.Time) bool {
+	if !ap.stamp(state, reason, source, now) {
 		return false
 	}
 	allow := state == "approved"
@@ -532,16 +533,31 @@ func (ap *approval) settle(state, reason, source string) bool {
 // stamp marks a resolution WITHOUT releasing the parked waiter: the
 // cancel path uses it so the engine's select cannot wake with a bogus
 // user decision; it exits via its context (V-suite: no tool_result).
-func (ap *approval) stamp(state, reason, source string) bool {
+func (ap *approval) stamp(state, reason, source string, now time.Time) bool {
 	if ap.state != "pending" {
 		return false
 	}
-	ap.state, ap.reason, ap.source = state, reason, source
+	ap.state, ap.reason, ap.source, ap.settledAt = state, reason, source, now
 	if ap.timer != nil {
 		ap.timer.Stop()
 		ap.timer = nil
 	}
 	return true
+}
+
+// runTrustHook runs the connector trust-mint hook and converts a panic
+// into an error so the mid-mint claim is always rolled back (or settled)
+// and never left minting forever. The panic payload is logged (sanitized)
+// server-side and never returned: callers echo err.Error() in HTTP/RPC
+// 500 bodies.
+func runTrustHook(hook func(string) error, tool string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			stdlog.Printf("surface: connector trust hook for %s panicked: %s", logSanitize(tool), logSanitize(fmt.Sprint(r)))
+			err = errors.New("connector trust hook panicked")
+		}
+	}()
+	return hook(tool)
 }
 
 func (h *ApprovalHub) resolveTimeout(id string) {
@@ -551,7 +567,7 @@ func (h *ApprovalHub) resolveTimeout(id string) {
 	if ap != nil && ap.source == "custos" {
 		reason = "timeout"
 	}
-	if !ok || !ap.settle("timed_out", reason, "timer") {
+	if !ok || !ap.settle("timed_out", reason, "timer", h.nowLocked()) {
 		h.mu.Unlock()
 		return
 	}
@@ -588,15 +604,38 @@ func (h *ApprovalHub) pruneTerminalLocked(sessionID string) {
 	}
 	var terminals []*approval
 	for _, ap := range session {
-		if ap.state != "pending" {
+		// A minting card only looks terminal because of its pre-mint
+		// stamp; it can still roll back to pending, so it is not history
+		// yet and must not be eviction fodder.
+		if ap.state != "pending" && !ap.minting {
 			terminals = append(terminals, ap)
 		}
 	}
 	if len(terminals) <= maxTerminalEntriesPerSession {
 		return
 	}
+	// #320: evict by settle time, not creation time — a card parked long
+	// before its verdict is the newest history, not the oldest. (settledAt
+	// is always stamped on a committed terminal record; createdAt only
+	// backstops pre-#320 in-flight records.)
 	sort.Slice(terminals, func(i, j int) bool {
-		return terminals[i].createdAt.Before(terminals[j].createdAt)
+		a, b := terminals[i], terminals[j]
+		ki, kj := a.settledAt, b.settledAt
+		if ki.IsZero() {
+			ki = a.createdAt
+		}
+		if kj.IsZero() {
+			kj = b.createdAt
+		}
+		if !ki.Equal(kj) {
+			return ki.Before(kj)
+		}
+		// Batch settlements (disconnect, custody lock, hub close) stamp
+		// one instant on many cards; break the tie deterministically.
+		if !a.createdAt.Equal(b.createdAt) {
+			return a.createdAt.Before(b.createdAt)
+		}
+		return a.id < b.id
 	})
 	excess := len(terminals) - maxTerminalEntriesPerSession
 	for i := range excess {
@@ -700,15 +739,31 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 			return 500, errors.New("connector trust hook unavailable")
 		}
 		prevReason, prevSource, prevTimer := ap.reason, ap.source, ap.timer
-		if !ap.stamp(state, reason, source) {
+		if !ap.stamp(state, reason, source, h.nowLocked()) {
 			return h.lateResolveLocked(id, sessionID, via, ap, allow)
 		}
 		ap.via = via
+		ap.minting = true
 		h.mu.Unlock()
-		err := trustHook(toolName)
+		err := runTrustHook(trustHook, toolName)
 		h.mu.Lock()
+		if err != nil && h.closed {
+			// The hub closed while the mint ran: DenyAllAll skipped this
+			// claimed card, so settle it here. Rolling it back to pending
+			// would park a waiter and re-arm a timer on a closed hub.
+			ap.minting = false
+			ap.state, ap.reason, ap.source, ap.via, ap.settledAt = "denied", "shutdown", "shutdown", "", h.nowLocked()
+			select {
+			case ap.ch <- false:
+			default:
+			}
+			h.mu.Unlock()
+			h.fanTerminal(id, sessionID, "denied", "shutdown", "shutdown")
+			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
+		}
 		if err != nil {
-			ap.state, ap.reason, ap.source, ap.via = "pending", prevReason, prevSource, ""
+			ap.minting = false
+			ap.state, ap.reason, ap.source, ap.via, ap.settledAt = "pending", prevReason, prevSource, "", time.Time{}
 			if prevTimer != nil {
 				if d := ap.expiresAt.Sub(h.nowLocked()); d > 0 {
 					ap.timer = h.afterFuncLocked(d, func() { h.resolveTimeout(id) })
@@ -719,6 +774,11 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 			h.mu.Unlock()
 			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
 		}
+		ap.minting = false
+		// The claim stamped settledAt before the (possibly slow) mint; the
+		// terminal record becomes real now, so retention and audit order
+		// by commit time.
+		ap.settledAt = h.nowLocked()
 		select {
 		case ap.ch <- true:
 		default:
@@ -728,7 +788,7 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 		return 200, nil
 	}
 
-	if !ap.settle(state, reason, source) {
+	if !ap.settle(state, reason, source, h.nowLocked()) {
 		return h.lateResolveLocked(id, sessionID, via, ap, allow)
 	}
 	ap.via = via
@@ -763,6 +823,7 @@ func (h *ApprovalHub) lateResolveLocked(id, sessionID, via string, ap *approval,
 // Cancel, not settle: no user verdict is implied.
 func (h *ApprovalHub) CancelByCredential(cred, cell string) int {
 	h.mu.Lock()
+	now := h.nowLocked()
 	var cancelled []*approval
 	for _, session := range h.bySession {
 		for _, ap := range session {
@@ -775,7 +836,7 @@ func (h *ApprovalHub) CancelByCredential(cred, cell string) int {
 			if cell != "" && ap.cell != "" && ap.cell != cell {
 				continue
 			}
-			if ap.settle("denied", "credential_revoked", "custos") {
+			if ap.settle("denied", "credential_revoked", "custos", now) {
 				cancelled = append(cancelled, ap)
 			}
 		}
@@ -791,7 +852,7 @@ func (h *ApprovalHub) CancelByCredential(cred, cell string) int {
 func (h *ApprovalHub) CancelCard(id, reason, source string) bool {
 	h.mu.Lock()
 	ap, ok := h.findLocked(id)
-	if !ok || !ap.settle("denied", reason, source) {
+	if !ok || !ap.settle("denied", reason, source, h.nowLocked()) {
 		h.mu.Unlock()
 		return false
 	}
@@ -804,6 +865,7 @@ func (h *ApprovalHub) CancelCard(id, reason, source string) bool {
 // SettleCustosLocked settles every pending card for custos with reason custos_locked per CUSTOS §C3, CA-3.
 func (h *ApprovalHub) SettleCustosLocked(source string) int {
 	h.mu.Lock()
+	now := h.nowLocked()
 	var settled []*approval
 	for _, session := range h.bySession {
 		for _, ap := range session {
@@ -813,7 +875,7 @@ func (h *ApprovalHub) SettleCustosLocked(source string) int {
 			if ap.cred == "" && ap.source != "custos" {
 				continue
 			}
-			if ap.settle("denied", "custos_locked", source) {
+			if ap.settle("denied", "custos_locked", source, now) {
 				settled = append(settled, ap)
 			}
 		}
@@ -853,13 +915,14 @@ func (h *ApprovalHub) MarkCancelledFor(sessionID, source string) {
 
 func (h *ApprovalHub) denyAllFor(sessionID, reason, source string, release bool) {
 	h.mu.Lock()
+	now := h.nowLocked()
 	var fired [][3]string
 	for _, ap := range h.bySession[sessionID] {
 		var ok bool
 		if release {
-			ok = ap.settle("denied", reason, source)
+			ok = ap.settle("denied", reason, source, now)
 		} else {
-			ok = ap.stamp("denied", reason, source)
+			ok = ap.stamp("denied", reason, source, now)
 		}
 		if ok {
 			fired = append(fired, [3]string{ap.id, ap.state, reason})
@@ -878,6 +941,7 @@ func (h *ApprovalHub) denyAllFor(sessionID, reason, source string, release bool)
 // approver resolve denied:disconnected immediately — never a freeze.
 func (h *ApprovalHub) DisconnectFor(sessionID string) {
 	h.mu.Lock()
+	now := h.nowLocked()
 	bridgeUp := h.bridgeLive != nil && h.bridgeLive()
 	var fired [][3]string
 	for _, ap := range h.bySession[sessionID] {
@@ -888,7 +952,7 @@ func (h *ApprovalHub) DisconnectFor(sessionID string) {
 		if bridgeUp && !ap.cardDead {
 			continue // the Telegram card is the live approver for this one
 		}
-		if ap.settle("denied", "disconnected", "web") {
+		if ap.settle("denied", "disconnected", "web", now) {
 			fired = append(fired, [3]string{ap.id, "denied", "disconnected"})
 		}
 	}
@@ -916,7 +980,7 @@ func (h *ApprovalHub) MarkUndeliverable(id string) {
 		h.mu.Unlock()
 		return
 	}
-	if !ap.settle("denied", "undeliverable", "hub") {
+	if !ap.settle("denied", "undeliverable", "hub", h.nowLocked()) {
 		h.mu.Unlock()
 		return
 	}
@@ -966,10 +1030,11 @@ func (h *ApprovalHub) Shutdown() {
 // (shutdown path: reason "shutdown", source "shutdown").
 func (h *ApprovalHub) DenyAllAll(reason, source string) {
 	h.mu.Lock()
+	now := h.nowLocked()
 	var fired [][4]string
 	for sid, session := range h.bySession {
 		for id, ap := range session {
-			if ap.settle("denied", reason, source) {
+			if ap.settle("denied", reason, source, now) {
 				fired = append(fired, [4]string{id, sid, ap.state, reason})
 			}
 		}
@@ -1039,8 +1104,28 @@ func (h *ApprovalHub) PendingSnapshot(beforeRead func()) []ApprovalCard {
 	return h.pendingLocked()
 }
 
-// Reason is why an approval resolved (ok|denied|timed_out|disconnected|
-// cancelled|shutdown|undeliverable).
+// Terminal atomically snapshots the hub's terminal record for (sessionID, id)
+// under a single lock. Returns found=false for an unknown id or while the
+// approval is still pending.
+func (h *ApprovalHub) Terminal(sessionID, id string) (state, reason, source string, settledAt time.Time, found bool) {
+	if h == nil {
+		return "", "", "", time.Time{}, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	ap, ok := h.bySession[sessionID][id]
+	if !ok || ap.state == "pending" || ap.minting {
+		return "", "", "", time.Time{}, false
+	}
+	return ap.state, ap.reason, ap.source, ap.settledAt, true
+}
+
+// Reason is the raw hub cause an approval resolved with (ok|denied|
+// timed_out|timeout|disconnected|cancelled|shutdown|undeliverable|
+// custos_locked|credential_revoked|...). It is not the §6 audit enum;
+// audit callers use Terminal, which snapshots the whole record
+// atomically, and map it through mapAuditReason.
 func (h *ApprovalHub) Reason(sessionID, id string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1053,8 +1138,10 @@ func (h *ApprovalHub) Reason(sessionID, id string) string {
 }
 
 // Source is which surface or hub mechanism caused the terminal
-// transition (web|telegram|timer|shutdown|hub) — audit attribution A2.
-// Empty while pending.
+// transition (web|telegram|ctl|custos|timer|shutdown|hub|...) — audit
+// attribution A2. Custody cards carry "custos" from registration; other
+// cards are empty while pending. Raw hub values may fall outside the §6
+// enum; audit callers map them through mapAuditSource.
 func (h *ApprovalHub) Source(sessionID, id string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
