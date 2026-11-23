@@ -50,13 +50,15 @@ function formatEventTime(ev: SurfaceEvent): string {
 
 function getToolStateLabel(call: SurfaceEvent, result?: SurfaceEvent): string {
   if (result) {
-    if (result.ok === false) return "failed";
+    // Approval state first: a denied execution always carries ok=false, so
+    // checking ok here would flatten every door denial into "failed".
     const resApproval = (result as any)?.approval;
     if (resApproval?.decision === "denied") {
       if (resApproval.reason === "timeout") return "timed out";
       if (resApproval.reason === "cancelled") return "denied (cancelled)";
       return "denied at door";
     }
+    if (result.ok === false) return "failed";
     return "approved at door";
   }
   const rawApproval = (call as any).approval;

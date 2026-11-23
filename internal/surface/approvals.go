@@ -69,6 +69,7 @@ type approval struct {
 	createdAt   time.Time  // issue #128: registry-card age/expiry display
 	expiresAt   time.Time  // issue #128: registry-card age/expiry display
 	settledAt   time.Time  // terminal timestamp stamped under h.mu
+	minting     bool       // #320: mid-connector-mint claim (A8: invisible to Terminal, not prunable)
 }
 
 // StaleVerdictHook is invoked when an Allow verdict arrives for an already settled/dead approval.
@@ -588,15 +589,29 @@ func (h *ApprovalHub) pruneTerminalLocked(sessionID string) {
 	}
 	var terminals []*approval
 	for _, ap := range session {
-		if ap.state != "pending" {
+		// A minting card only looks terminal because of its pre-mint
+		// stamp; it can still roll back to pending, so it is not history
+		// yet and must not be eviction fodder.
+		if ap.state != "pending" && !ap.minting {
 			terminals = append(terminals, ap)
 		}
 	}
 	if len(terminals) <= maxTerminalEntriesPerSession {
 		return
 	}
+	// #320: evict by settle time, not creation time — a card parked long
+	// before its verdict is the newest history, not the oldest. (settledAt
+	// is always stamped on a committed terminal record; createdAt only
+	// backstops pre-#320 in-flight records.)
 	sort.Slice(terminals, func(i, j int) bool {
-		return terminals[i].createdAt.Before(terminals[j].createdAt)
+		ki, kj := terminals[i].settledAt, terminals[j].settledAt
+		if ki.IsZero() {
+			ki = terminals[i].createdAt
+		}
+		if kj.IsZero() {
+			kj = terminals[j].createdAt
+		}
+		return ki.Before(kj)
 	})
 	excess := len(terminals) - maxTerminalEntriesPerSession
 	for i := range excess {
@@ -704,10 +719,12 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 			return h.lateResolveLocked(id, sessionID, via, ap, allow)
 		}
 		ap.via = via
+		ap.minting = true
 		h.mu.Unlock()
 		err := trustHook(toolName)
 		h.mu.Lock()
 		if err != nil {
+			ap.minting = false
 			ap.state, ap.reason, ap.source, ap.via, ap.settledAt = "pending", prevReason, prevSource, "", time.Time{}
 			if prevTimer != nil {
 				if d := ap.expiresAt.Sub(h.nowLocked()); d > 0 {
@@ -719,6 +736,7 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 			h.mu.Unlock()
 			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
 		}
+		ap.minting = false
 		select {
 		case ap.ch <- true:
 		default:
@@ -1055,7 +1073,7 @@ func (h *ApprovalHub) Terminal(sessionID, id string) (state, reason, source stri
 	defer h.mu.Unlock()
 
 	ap, ok := h.bySession[sessionID][id]
-	if !ok || ap.state == "pending" {
+	if !ok || ap.state == "pending" || ap.minting {
 		return "", "", "", time.Time{}, false
 	}
 	return ap.state, ap.reason, ap.source, ap.settledAt, true

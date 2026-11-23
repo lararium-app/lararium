@@ -535,10 +535,38 @@ func (b *Browser) enforceActsGate(ctx context.Context, origin, targetURL, today 
 	ok, approvalID := approver("web_browse", summary)
 	if !ok {
 		gate := "denied"
-		if strings.Contains(strings.ToLower(approvalID), "timeout") {
-			gate = "timeout"
-		} else if strings.Contains(strings.ToLower(approvalID), "disconnected") {
-			gate = "disconnected"
+		if audit := DenialAuditFromContext(ctx); audit != nil {
+			// Same routing as loop.denialGate: the hub terminal record
+			// names the cause, so a cancelled/timed-out/custody-blocked
+			// act never blames the user.
+			if obj, auditOK := audit("denied:" + approvalID); auditOK {
+				var f struct {
+					Reason string `json:"reason"`
+				}
+				if json.Unmarshal(obj, &f) == nil {
+					switch f.Reason {
+					case "timeout", "timed_out":
+						gate = "timeout"
+					case "disconnected", "undeliverable":
+						gate = "disconnected"
+					case "custos_locked", "credential_revoked":
+						gate = "custos_locked"
+					case "cancelled":
+						gate = "cancelled"
+					}
+				}
+			}
+		} else if low := strings.ToLower(approvalID); true {
+			switch {
+			case strings.Contains(low, "timeout"):
+				gate = "timeout"
+			case strings.Contains(low, "disconnected"):
+				gate = "disconnected"
+			case strings.Contains(low, "custos_locked"), strings.Contains(low, "credential_revoked"):
+				gate = "custos_locked"
+			case strings.Contains(low, "cancelled"):
+				gate = "cancelled"
+			}
 		}
 		_ = b.activity.Append(ActivityRecord{
 			Origin:  origin,

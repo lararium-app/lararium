@@ -734,6 +734,9 @@ func (h *Hub) executeTurn(
 	// acts surface the same approval cards this machinery raises for
 	// untrusted tools.
 	engineCtx = web.ContextWithApprover(engineCtx, approver)
+	engineCtx = web.ContextWithDenialAudit(engineCtx, func(approval string) (json.RawMessage, bool) {
+		return auditApprovalFor(h.ap, sessionID, approval, turnFallback)
+	})
 	// Scheduled sessions are long-lived and tick unattended: bound the
 	// prompt BEFORE the turn too, so a transcript that grew past the
 	// trigger (or whose last turn failed) is compacted instead of failing
@@ -860,6 +863,11 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 		prefixDecision = "denied"
 		id = strings.TrimPrefix(approval, "denied:")
 		hasPrefix = true
+	default:
+		// A8 fail-closed: a malformed approval string is not evidence that
+		// no approval was required; audit it as a cancelled denial instead
+		// of failing open as allowed/not_required.
+		decision, reason = "denied", "cancelled"
 	}
 
 	if hasPrefix {
@@ -872,10 +880,14 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 				if hubState == "approved" {
 					decision = "allowed"
 				}
-				reason = mapAuditReason(hubReason)
+				reason = mapAuditReason(hubState, hubReason)
 				source = hubSource
 				if source == "" {
 					source = turnFallback
+				}
+				if mapped := mapAuditSource(source); mapped != source {
+					stdlog.Printf("surface: audit source %q outside frozen §6 enum mapped to hub (session=%s approval=%s)", logSanitize(source), logSanitize(sessionID), logSanitize(id)) //nolint:gosec // logSanitize neutralizes control chars
+					source = mapped
 				}
 				if decision != prefixDecision {
 					stdlog.Printf("surface: audit authority mismatch session=%s approval=%s engine=%s hub=%s", logSanitize(sessionID), logSanitize(id), prefixDecision, decision) //nolint:gosec // logSanitize neutralizes control chars
@@ -903,16 +915,26 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 	return obj, true
 }
 
-// mapAuditReason maps a hub terminal reason onto the frozen SURFACE-SPEC §6
-// audit reason enum (including amendment A8). Explicit verdicts ("ok",
-// "denied") map to "ok" (A2/V7); the custody lock/revoke family keeps its
-// own members so the model-facing denial guidance can name the custos door;
-// any other unmapped or non-verdict hub cause fails safe to "cancelled" and
-// never surfaces as "ok" or leaks a raw string.
-func mapAuditReason(hubReason string) string {
+// mapAuditReason maps a hub terminal (state, reason) pair onto the frozen
+// SURFACE-SPEC §6 audit reason enum (including amendment A8). Explicit
+// verdicts map to "ok" only when state and reason agree (approved/ok,
+// denied/denied — A2/V7); a verdict-shaped reason on a state that cannot
+// carry one fails safe to "cancelled", never "ok". The custody lock/revoke
+// family keeps its own members so the model-facing denial guidance can name
+// the custos door; any other unmapped or non-verdict hub cause fails safe to
+// "cancelled" and never leaks a raw string.
+func mapAuditReason(state, hubReason string) string {
 	switch hubReason {
-	case "ok", "denied":
-		return "ok"
+	case "ok":
+		if state == "approved" {
+			return "ok"
+		}
+		return "cancelled"
+	case "denied":
+		if state == "denied" {
+			return "ok"
+		}
+		return "cancelled"
 	case "timed_out", "timeout":
 		return "timeout"
 	case "shutdown":
@@ -928,6 +950,27 @@ func mapAuditReason(hubReason string) string {
 	default:
 		return "cancelled"
 	}
+}
+
+// auditSourceEnum is the frozen SURFACE-SPEC §6 source enum plus the three
+// headless-turn channels (cron, goal, heartbeat) that the wire has carried
+// since headless turns shipped; A8 ratifies them explicitly.
+var auditSourceEnum = map[string]bool{
+	"repl": true, "web": true, "telegram": true, "ctl": true,
+	"custos": true, "timer": true, "shutdown": true, "hub": true,
+	"cron": true, "goal": true, "heartbeat": true,
+}
+
+// mapAuditSource keeps the §6 source field inside its enum: enumerated
+// values pass through, everything else (hub-internal causes such as
+// "listener_closed", "server_closed", "surface") fails safe to "hub". The
+// caller logs the raw value before mapping so the ledger line stays
+// attributable.
+func mapAuditSource(source string) string {
+	if auditSourceEnum[source] {
+		return source
+	}
+	return "hub"
 }
 
 // SetConnectorTrustHook registers the minter hook called when an approval card

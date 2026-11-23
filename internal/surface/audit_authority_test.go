@@ -6,6 +6,7 @@ import (
 	stdlog "log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,6 +246,9 @@ func TestAuditApprovalForHubAuthority(t *testing.T) {
 			defer stdlog.SetOutput(origOut)
 
 			ap, sessionID, approval := tc.setup(t)
+			if ap != nil {
+				t.Cleanup(ap.Shutdown)
+			}
 			got := decodeAuditEnvelope(t, ap, sessionID, approval, "web")
 			if got != tc.want {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
@@ -289,9 +293,16 @@ func TestMapAuditReasonFrozenEnum(t *testing.T) {
 		"arbitrary_cause":    "cancelled",
 	}
 	for in, want := range cases {
-		got := mapAuditReason(in)
+		// #320: verdict-shaped reasons ("ok", "denied") map to "ok" only
+		// when they agree with the record state; every other member is a
+		// terminal cause carried on a denied record.
+		state := "denied"
+		if in == "ok" {
+			state = "approved"
+		}
+		got := mapAuditReason(state, in)
 		if got != want {
-			t.Errorf("mapAuditReason(%q) = %q, want %q", in, got, want)
+			t.Errorf("mapAuditReason(%q, %q) = %q, want %q", state, in, got, want)
 		}
 		if !allowed[got] {
 			t.Errorf("mapAuditReason(%q) = %q, not in frozen enum", in, got)
@@ -384,6 +395,7 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
+	var observed atomic.Int64
 	for range 8 {
 		wg.Add(1)
 		go func() {
@@ -394,6 +406,7 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 				if !found {
 					continue
 				}
+				observed.Add(1)
 				if state != "approved" || reason != "ok" || source != "telegram" || !settledAt.Equal(wantTime) {
 					t.Errorf("torn Terminal snapshot: (%q,%q,%q,%v)", state, reason, source, settledAt)
 					return
@@ -407,4 +420,7 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 		t.Fatalf("ResolveFrom = %d, want 200", code)
 	}
 	wg.Wait()
+	if observed.Load() == 0 {
+		t.Fatal("no reader ever observed the terminal snapshot; test was vacuous")
+	}
 }

@@ -15,8 +15,9 @@ the control-socket `backup` verb, and the explicit no-REST-verb stance —
 see changelog v5.3; CA-7 (policy rules on the surface: three
 /v1/policy/rules routes, V17; CUSTOS-SPEC amendment v11) applied
 2026-10-12 — see changelog v5.4; A8 (hub terminal record as audit
-authority, `reason:"cancelled"`, `source:"custos"`, fail-safe reason
-mapping) applied 2026-11-23 — see changelog v5.6.
+authority, `reason:"cancelled"` with the custody family
+`custos_locked`/`credential_revoked`, `source:"custos"`, fail-safe reason
+and source mapping) applied 2026-11-23 — see changelog v5.6.
 Companion specs: PENATUS-SPEC (the file layer — this API never contradicts
 it), ARCHITECTURE §2.7 (surfaces), CELL-SPEC (execution stays sandboxed).
 
@@ -408,7 +409,15 @@ and the model-facing denial guidance — can name the custos door;
 (iii) `source:"custos"` attributes a decision or settlement delivered via
 the custody bridge; (iv) fail-safe mapping: any unmapped or unknown hub
 terminal cause surfaces as `reason:"cancelled"`, never `"ok"` and never
-as a raw unenumerated string.
+as a raw unenumerated string; verdict-shaped reasons (`ok`, `denied`) map
+to `"ok"` only when they agree with the record state (`approved`/`denied`
+respectively), and `source` is confined to its enum — hub-internal
+settlement causes (e.g. `listener_closed`, `server_closed`) map to `hub`
+with the raw value logged, while `cron`, `goal`, and `heartbeat` are
+hereby ratified as source members for headless turns, as the wire has
+carried them since headless turns shipped; (v) a malformed engine
+approval string audits fail-closed as `denied`/`cancelled`, never as
+`allowed`/`not_required`.
 
 **Custody cards on the page (CA-6, CUSTOS-SPEC §6.4b).** Custody cards
 render on the main chat page in a distinct card style (one place to
@@ -586,7 +595,14 @@ specifies that a hub terminal record is authoritative for
 hub), `cancelled` represents non-verdict terminal denials distinguished
 by `source` while vault lock and credential revocation keep dedicated
 members, `custos` attributes custody bridge settlements, and unmapped hub
-causes fail safe to `cancelled` (never `ok`).
+causes fail safe to `cancelled` (never `ok`). Also ratified in A8(iv)/(v):
+verdict-shaped reasons require state agreement, hub-internal `source`
+values map to `hub` (raw value logged) while `cron`, `goal`, and
+`heartbeat` join the `source` enum as pre-existing headless channels, and
+malformed approval strings audit fail-closed as `denied`/`cancelled`.
+Hub behavior hardened to match: one atomic terminal snapshot accessor
+hides provisional mid-mint claims from audit, and terminal retention
+evicts by settle time rather than creation time.
 
 **v5.5 (amendment SA-1, 2026-11-21).** Session audience: new §4b (caller
 identity derived from the token hash, `creator`/`audience` header record,

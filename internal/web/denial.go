@@ -33,6 +33,11 @@ func denialGuidance(gate string) string {
 			"so tool " + tool + " could not get approval.")
 		b.WriteString(" Allowing it would let " + tool + " use its credential.")
 		b.WriteString(" The user can run `custos -config ./lararium.yaml unlock`, then tap Allow once/Allow on the card.")
+	case "cancelled":
+		b.WriteString("Blocked by the approval policy: the approval card for tool " + tool +
+			" was cancelled before a user verdict was recorded, so it was denied.")
+		b.WriteString(" Allowing it would let " + tool + " run.")
+		b.WriteString(" The user can allow it by tapping Allow on the approval card (web UI or phone).")
 	default:
 		b.WriteString("Blocked by the approval policy: the user denied tool " + tool + " on its approval card.")
 		b.WriteString(" Allowing it would let " + tool + " run.")

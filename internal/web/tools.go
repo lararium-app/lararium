@@ -13,6 +13,27 @@ import (
 
 type approverCtxKey struct{}
 
+// DenialAudit maps an engine approval string ("denied:<id>") to the frozen
+// SURFACE-SPEC §6 audit object, mirroring loop.Session.AuditApproval. The
+// web browse tool uses it to name the real denial cause when the hub holds
+// the terminal record; nil falls back to approvalID substring heuristics.
+type DenialAudit func(approval string) (json.RawMessage, bool)
+
+type denialAuditCtxKey struct{}
+
+// ContextWithDenialAudit stores a DenialAudit in ctx.
+func ContextWithDenialAudit(ctx context.Context, fn DenialAudit) context.Context {
+	return context.WithValue(ctx, denialAuditCtxKey{}, fn)
+}
+
+// DenialAuditFromContext extracts a DenialAudit from ctx, if present.
+func DenialAuditFromContext(ctx context.Context) DenialAudit {
+	if fn, ok := ctx.Value(denialAuditCtxKey{}).(DenialAudit); ok {
+		return fn
+	}
+	return nil
+}
+
 // ContextWithApprover stores an Approver in ctx.
 func ContextWithApprover(ctx context.Context, ap loop.Approver) context.Context {
 	return context.WithValue(ctx, approverCtxKey{}, ap)
