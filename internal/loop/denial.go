@@ -89,7 +89,7 @@ func denialGate(approval string, audit func(string) (json.RawMessage, bool)) str
 		return gateNoChannel
 	case "custos_locked", "credential_revoked":
 		return gateCustos
-	case "cancelled":
+	case "cancelled", "shutdown":
 		return gateCancelled
 	}
 	return gateDenied

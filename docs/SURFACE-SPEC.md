@@ -383,7 +383,7 @@ restart kills the turn; the log shows the tool never ran).
 "disconnected"|"shutdown"|"undeliverable"|"cancelled"|"custos_locked"|
 "credential_revoked"|"not_required",
 "source": "repl"|"web"|"telegram"|"ctl"|"custos"|"timer"|"shutdown"|
-"hub"}` (A2: `timer` and `shutdown` are hub-caused terminal states, not
+"hub"|"cron"|"goal"|"heartbeat"}` (A2: `timer` and `shutdown` are hub-caused terminal states, not
 client surfaces; `hub` covers hub-initiated denials with a policy cause,
 e.g. `undeliverable`. A4: `reason:"undeliverable"` pairs with
 `source:"hub"` so a delivery-failure denial is schema-valid and

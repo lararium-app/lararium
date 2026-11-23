@@ -495,6 +495,52 @@ func (b *Browser) prepareSession(origin string) (bool, func(browseErr error), st
 	return false, nil, "", nil
 }
 
+// browseDenialGate maps a refused act approval onto a denialGuidance gate
+// identifier. It mirrors loop.denialGate: the hub terminal record (via the
+// DenialAudit hook) names the real cause so a cancelled, timed-out,
+// shut-down, or custody-blocked act never blames the user; without the
+// hook it falls back to substring heuristics on the approval id.
+func browseDenialGate(ctx context.Context, approvalID string) string {
+	if approvalID == "no-approver" {
+		return "no-approver"
+	}
+	if audit := DenialAuditFromContext(ctx); audit != nil {
+		obj, ok := audit("denied:" + approvalID)
+		if !ok {
+			return "denied"
+		}
+		var f struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(obj, &f) != nil {
+			return "denied"
+		}
+		switch f.Reason {
+		case "timeout", "timed_out":
+			return "timeout"
+		case "disconnected", "undeliverable":
+			return "disconnected"
+		case "custos_locked", "credential_revoked":
+			return "custos_locked"
+		case "cancelled", "shutdown":
+			return "cancelled"
+		}
+		return "denied"
+	}
+	low := strings.ToLower(approvalID)
+	switch {
+	case strings.Contains(low, "timeout"), strings.Contains(low, "timed_out"):
+		return "timeout"
+	case strings.Contains(low, "disconnected"), strings.Contains(low, "undeliverable"):
+		return "disconnected"
+	case strings.Contains(low, "custos_locked"), strings.Contains(low, "credential_revoked"):
+		return "custos_locked"
+	case strings.Contains(low, "cancelled"), strings.Contains(low, "shutdown"):
+		return "cancelled"
+	}
+	return "denied"
+}
+
 func (b *Browser) enforceActsGate(ctx context.Context, origin, targetURL, today string, acts []Act) (string, bool) {
 	var intents []string
 	for _, a := range acts {
@@ -534,40 +580,7 @@ func (b *Browser) enforceActsGate(ctx context.Context, origin, targetURL, today 
 
 	ok, approvalID := approver("web_browse", summary)
 	if !ok {
-		gate := "denied"
-		if audit := DenialAuditFromContext(ctx); audit != nil {
-			// Same routing as loop.denialGate: the hub terminal record
-			// names the cause, so a cancelled/timed-out/custody-blocked
-			// act never blames the user.
-			if obj, auditOK := audit("denied:" + approvalID); auditOK {
-				var f struct {
-					Reason string `json:"reason"`
-				}
-				if json.Unmarshal(obj, &f) == nil {
-					switch f.Reason {
-					case "timeout", "timed_out":
-						gate = "timeout"
-					case "disconnected", "undeliverable":
-						gate = "disconnected"
-					case "custos_locked", "credential_revoked":
-						gate = "custos_locked"
-					case "cancelled":
-						gate = "cancelled"
-					}
-				}
-			}
-		} else if low := strings.ToLower(approvalID); true {
-			switch {
-			case strings.Contains(low, "timeout"):
-				gate = "timeout"
-			case strings.Contains(low, "disconnected"):
-				gate = "disconnected"
-			case strings.Contains(low, "custos_locked"), strings.Contains(low, "credential_revoked"):
-				gate = "custos_locked"
-			case strings.Contains(low, "cancelled"):
-				gate = "cancelled"
-			}
-		}
+		gate := browseDenialGate(ctx, approvalID)
 		_ = b.activity.Append(ActivityRecord{
 			Origin:  origin,
 			URL:     targetURL,

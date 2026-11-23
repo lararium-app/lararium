@@ -885,10 +885,6 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 				if source == "" {
 					source = turnFallback
 				}
-				if mapped := mapAuditSource(source); mapped != source {
-					stdlog.Printf("surface: audit source %q outside frozen §6 enum mapped to hub (session=%s approval=%s)", logSanitize(source), logSanitize(sessionID), logSanitize(id))
-					source = mapped
-				}
 				if decision != prefixDecision {
 					stdlog.Printf("surface: audit authority mismatch session=%s approval=%s engine=%s hub=%s", logSanitize(sessionID), logSanitize(id), prefixDecision, decision) //nolint:gosec // logSanitize neutralizes control chars
 				}
@@ -902,6 +898,17 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 				reason = "disconnected"
 			}
 		}
+	}
+
+	// A8(iv): every path (hub record, engine-prefix fallback, trusted
+	// tool, malformed string) confines source to the frozen enum; the
+	// turn channel is caller-supplied (headless task kinds) and is not
+	// trusted to be an enum member.
+	if mapped := mapAuditSource(source); mapped != source {
+		if source != "" {
+			stdlog.Printf("surface: audit source %q outside frozen §6 enum mapped to hub (session=%s approval=%s)", logSanitize(source), logSanitize(sessionID), logSanitize(id))
+		}
+		source = mapped
 	}
 
 	obj, err := json.Marshal(struct {

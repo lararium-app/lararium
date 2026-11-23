@@ -545,6 +545,18 @@ func (ap *approval) stamp(state, reason, source string, now time.Time) bool {
 	return true
 }
 
+// runTrustHook runs the connector trust-mint hook and converts a panic
+// into an error so the mid-mint claim is always rolled back (or settled)
+// and never left minting forever.
+func runTrustHook(hook func(string) error, tool string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("connector trust hook panicked: %v", r)
+		}
+	}()
+	return hook(tool)
+}
+
 func (h *ApprovalHub) resolveTimeout(id string) {
 	h.mu.Lock()
 	ap, ok := h.findLocked(id)
@@ -604,14 +616,23 @@ func (h *ApprovalHub) pruneTerminalLocked(sessionID string) {
 	// is always stamped on a committed terminal record; createdAt only
 	// backstops pre-#320 in-flight records.)
 	sort.Slice(terminals, func(i, j int) bool {
-		ki, kj := terminals[i].settledAt, terminals[j].settledAt
+		a, b := terminals[i], terminals[j]
+		ki, kj := a.settledAt, b.settledAt
 		if ki.IsZero() {
-			ki = terminals[i].createdAt
+			ki = a.createdAt
 		}
 		if kj.IsZero() {
-			kj = terminals[j].createdAt
+			kj = b.createdAt
 		}
-		return ki.Before(kj)
+		if !ki.Equal(kj) {
+			return ki.Before(kj)
+		}
+		// Batch settlements (disconnect, custody lock, hub close) stamp
+		// one instant on many cards; break the tie deterministically.
+		if !a.createdAt.Equal(b.createdAt) {
+			return a.createdAt.Before(b.createdAt)
+		}
+		return a.id < b.id
 	})
 	excess := len(terminals) - maxTerminalEntriesPerSession
 	for i := range excess {
@@ -721,8 +742,22 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 		ap.via = via
 		ap.minting = true
 		h.mu.Unlock()
-		err := trustHook(toolName)
+		err := runTrustHook(trustHook, toolName)
 		h.mu.Lock()
+		if err != nil && h.closed {
+			// The hub closed while the mint ran: DenyAllAll skipped this
+			// claimed card, so settle it here. Rolling it back to pending
+			// would park a waiter and re-arm a timer on a closed hub.
+			ap.minting = false
+			ap.state, ap.reason, ap.source, ap.via, ap.settledAt = "denied", "shutdown", "shutdown", "", h.nowLocked()
+			select {
+			case ap.ch <- false:
+			default:
+			}
+			h.mu.Unlock()
+			h.fanTerminal(id, sessionID, "denied", "shutdown", "shutdown")
+			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
+		}
 		if err != nil {
 			ap.minting = false
 			ap.state, ap.reason, ap.source, ap.via, ap.settledAt = "pending", prevReason, prevSource, "", time.Time{}
@@ -737,6 +772,10 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
 		}
 		ap.minting = false
+		// The claim stamped settledAt before the (possibly slow) mint; the
+		// terminal record becomes real now, so retention and audit order
+		// by commit time.
+		ap.settledAt = h.nowLocked()
 		select {
 		case ap.ch <- true:
 		default:
@@ -1079,8 +1118,11 @@ func (h *ApprovalHub) Terminal(sessionID, id string) (state, reason, source stri
 	return ap.state, ap.reason, ap.source, ap.settledAt, true
 }
 
-// Reason is why an approval resolved (ok|denied|timed_out|disconnected|
-// cancelled|shutdown|undeliverable).
+// Reason is the raw hub cause an approval resolved with (ok|denied|
+// timed_out|timeout|disconnected|cancelled|shutdown|undeliverable|
+// custos_locked|credential_revoked|...). It is not the §6 audit enum;
+// audit callers use Terminal, which snapshots the whole record
+// atomically, and map it through mapAuditReason.
 func (h *ApprovalHub) Reason(sessionID, id string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1093,8 +1135,10 @@ func (h *ApprovalHub) Reason(sessionID, id string) string {
 }
 
 // Source is which surface or hub mechanism caused the terminal
-// transition (web|telegram|timer|shutdown|hub) — audit attribution A2.
-// Empty while pending.
+// transition (web|telegram|ctl|custos|timer|shutdown|hub|...) — audit
+// attribution A2. Custody cards carry "custos" from registration; other
+// cards are empty while pending. Raw hub values may fall outside the §6
+// enum; audit callers map them through mapAuditSource.
 func (h *ApprovalHub) Source(sessionID, id string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()

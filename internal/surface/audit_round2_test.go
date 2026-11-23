@@ -90,6 +90,7 @@ func TestAuditApprovalForMalformedStringFailsClosed(t *testing.T) {
 // no speculative terminal state in the ledger).
 func TestTerminalHidesMidMintClaim(t *testing.T) {
 	hub := setupHub(t, raceStub())
+	t.Cleanup(hub.ap.Shutdown)
 	id, _ := hub.ap.RegisterOn("main", "mcp__tool__vis", `{}`, true, func(string) {})
 
 	entered := make(chan struct{})

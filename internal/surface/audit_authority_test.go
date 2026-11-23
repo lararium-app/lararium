@@ -394,6 +394,7 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 	wantTime := clk.Now()
 
 	start := make(chan struct{})
+	resolved := make(chan struct{})
 	var wg sync.WaitGroup
 	var observed atomic.Int64
 	for range 8 {
@@ -401,15 +402,32 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			for range 200 {
+			check := func() bool {
 				state, reason, source, settledAt, found := ap.Terminal("s1", id)
 				if !found {
-					continue
+					return true
 				}
 				observed.Add(1)
 				if state != "approved" || reason != "ok" || source != "telegram" || !settledAt.Equal(wantTime) {
 					t.Errorf("torn Terminal snapshot: (%q,%q,%q,%v)", state, reason, source, settledAt)
+					return false
+				}
+				return true
+			}
+			// Hammer the accessor until the verdict has landed, then take
+			// one guaranteed post-resolve read so the test cannot pass
+			// vacuously on a scheduler that finishes the readers early.
+			for {
+				select {
+				case <-resolved:
+					if !check() {
+						return
+					}
 					return
+				default:
+					if !check() {
+						return
+					}
 				}
 			}
 		}()
@@ -419,8 +437,9 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 	if code := ap.ResolveFrom("s1", id, true, "telegram"); code != 200 {
 		t.Fatalf("ResolveFrom = %d, want 200", code)
 	}
+	close(resolved)
 	wg.Wait()
-	if observed.Load() == 0 {
-		t.Fatal("no reader ever observed the terminal snapshot; test was vacuous")
+	if observed.Load() < 8 {
+		t.Fatalf("only %d post-resolve observations, want at least one per reader", observed.Load())
 	}
 }
