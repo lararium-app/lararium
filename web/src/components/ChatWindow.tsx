@@ -53,7 +53,9 @@ function getToolStateLabel(call: SurfaceEvent, result?: SurfaceEvent): string {
     if (result.ok === false) return "failed";
     const resApproval = (result as any)?.approval;
     if (resApproval?.decision === "denied") {
-      return resApproval.reason === "timeout" ? "timed out" : "denied at door";
+      if (resApproval.reason === "timeout") return "timed out";
+      if (resApproval.reason === "cancelled") return "denied (cancelled)";
+      return "denied at door";
     }
     return "approved at door";
   }

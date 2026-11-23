@@ -834,28 +834,64 @@ func lastAssistantUsage(log *penatus.Log) (seq int64, inTok, outTok int) {
 
 // auditApprovalFor maps the engine approval string ("auto" |
 // "approved:<id>" | "denied:<id>") to the frozen SURFACE-SPEC §6 audit
-// object. decision/reason/source come from the hub's terminal record
-// (A2 attribution), never from the caller: explicit decisions carry
-// reason "ok" with the deciding surface as source; timer/shutdown/hub
-// causes carry their own. turnFallback names the turn's channel
-// ("web" here, "telegram" for nuntius, "repl" for the REPL) and covers
-// trusted tools (reason "not_required").
+// object. When a hub terminal record exists for the approval id,
+// decision, reason, and source come exclusively from that record
+// (A2/A8 authority); the engine prefix is a fallback only for approvals
+// settled outside a hub (REPL nick, no-approver). Explicit decisions
+// carry reason "ok" with the deciding surface as source; non-verdict
+// terminal causes map onto the frozen enum (fail-safe to "cancelled").
+// turnFallback names the turn's channel ("web" here, "telegram" for
+// nuntius, "repl" for the REPL) and covers trusted tools (reason
+// "not_required").
 func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string) (json.RawMessage, bool) {
 	decision, reason, source := "allowed", "not_required", turnFallback
+	var (
+		prefixDecision string
+		id             string
+		hasPrefix      bool
+	)
 	switch {
 	case approval == "auto" || approval == "":
 	case strings.HasPrefix(approval, "approved:"):
-		reason, source = auditHubPair(ap, sessionID, strings.TrimPrefix(approval, "approved:"), turnFallback)
-		if reason == "" { // approved outside a hub (REPL nick): explicit allow
-			reason = "ok"
-		}
+		prefixDecision = "allowed"
+		id = strings.TrimPrefix(approval, "approved:")
+		hasPrefix = true
 	case strings.HasPrefix(approval, "denied:"):
-		decision = "denied"
-		reason, source = auditHubPair(ap, sessionID, strings.TrimPrefix(approval, "denied:"), turnFallback)
-		if reason == "" { // no hub record: "no-approver" and friends
-			reason = "disconnected"
+		prefixDecision = "denied"
+		id = strings.TrimPrefix(approval, "denied:")
+		hasPrefix = true
+	}
+
+	if hasPrefix {
+		var found bool
+		if id != "" && id != "none" && ap != nil {
+			var hubState, hubReason, hubSource string
+			hubState, hubReason, hubSource, _, found = ap.Terminal(sessionID, id)
+			if found {
+				decision = "denied"
+				if hubState == "approved" {
+					decision = "allowed"
+				}
+				reason = mapAuditReason(hubReason)
+				source = hubSource
+				if source == "" {
+					source = turnFallback
+				}
+				if decision != prefixDecision {
+					stdlog.Printf("surface: audit authority mismatch session=%s approval=%s engine=%s hub=%s", logSanitize(sessionID), logSanitize(id), prefixDecision, decision) //nolint:gosec // logSanitize neutralizes control chars
+				}
+			}
+		}
+		if !found {
+			decision = prefixDecision
+			if prefixDecision == "allowed" {
+				reason = "ok"
+			} else {
+				reason = "disconnected"
+			}
 		}
 	}
+
 	obj, err := json.Marshal(struct {
 		Decision string `json:"decision"`
 		Reason   string `json:"reason"`
@@ -867,26 +903,31 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 	return obj, true
 }
 
-// auditHubPair reads the hub's terminal attribution for an approval id
-// and maps it onto the frozen reason enum (V7: explicit decisions —
-// allow or deny — carry reason "ok"; the timer carries "timeout").
-func auditHubPair(ap *ApprovalHub, sessionID, id, turnFallback string) (string, string) {
-	hubReason := ap.Reason(sessionID, id)
-	if hubReason == "" {
-		return "", turnFallback
-	}
-	reason := hubReason
+// mapAuditReason maps a hub terminal reason onto the frozen SURFACE-SPEC §6
+// audit reason enum (including amendment A8). Explicit verdicts ("ok",
+// "denied") map to "ok" (A2/V7); the custody lock/revoke family keeps its
+// own members so the model-facing denial guidance can name the custos door;
+// any other unmapped or non-verdict hub cause fails safe to "cancelled" and
+// never surfaces as "ok" or leaks a raw string.
+func mapAuditReason(hubReason string) string {
 	switch hubReason {
-	case "ok", "denied", "cancelled":
-		reason = "ok"
-	case "timed_out":
-		reason = "timeout"
+	case "ok", "denied":
+		return "ok"
+	case "timed_out", "timeout":
+		return "timeout"
+	case "shutdown":
+		return "shutdown"
+	case "undeliverable":
+		return "undeliverable"
+	case "disconnected":
+		return "disconnected"
+	case "custos_locked":
+		return "custos_locked"
+	case "credential_revoked":
+		return "credential_revoked"
+	default:
+		return "cancelled"
 	}
-	source := ap.Source(sessionID, id)
-	if source == "" {
-		source = turnFallback
-	}
-	return reason, source
 }
 
 // SetConnectorTrustHook registers the minter hook called when an approval card
