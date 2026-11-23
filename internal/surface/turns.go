@@ -906,7 +906,7 @@ func auditApprovalFor(ap *ApprovalHub, sessionID, approval, turnFallback string)
 	// trusted to be an enum member.
 	if mapped := mapAuditSource(source); mapped != source {
 		if source != "" {
-			stdlog.Printf("surface: audit source %q outside frozen §6 enum mapped to hub (session=%s approval=%s)", logSanitize(source), logSanitize(sessionID), logSanitize(id))
+			stdlog.Printf("surface: audit source %q outside frozen §6 enum mapped to hub (session=%s approval=%s)", logSanitize(source), logSanitize(sessionID), logSanitize(approval))
 		}
 		source = mapped
 	}

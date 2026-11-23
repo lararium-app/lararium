@@ -110,10 +110,15 @@ func TestPanickingTrustHookRollsBack(t *testing.T) {
 	t.Cleanup(hub.ap.Shutdown)
 	id, _ := hub.ap.RegisterOn("main", "mcp__tool__panic", `{}`, true, func(string) {})
 
-	hub.SetConnectorTrustHook(func(string) error { panic("boom") })
+	hub.SetConnectorTrustHook(func(string) error { panic("boom-secret-payload") })
 	code, err := hub.ap.ResolveScopeVia("main", id, true, "cli", "phone", "connector")
 	if code != 500 || err == nil || !strings.Contains(err.Error(), "panicked") {
 		t.Fatalf("panicking hook = (%d, %v), want 500 with a panicked error", code, err)
+	}
+	// Callers echo err.Error() in HTTP/RPC 500 bodies, so the payload must
+	// stay server-side.
+	if strings.Contains(err.Error(), "boom-secret-payload") {
+		t.Fatalf("panic payload leaked into the returned error: %v", err)
 	}
 	if n := hub.ap.PendingCount("main"); n != 1 {
 		t.Fatalf("PendingCount = %d after panic rollback, want 1", n)

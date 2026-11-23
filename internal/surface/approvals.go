@@ -547,11 +547,14 @@ func (ap *approval) stamp(state, reason, source string, now time.Time) bool {
 
 // runTrustHook runs the connector trust-mint hook and converts a panic
 // into an error so the mid-mint claim is always rolled back (or settled)
-// and never left minting forever.
+// and never left minting forever. The panic payload is logged (sanitized)
+// server-side and never returned: callers echo err.Error() in HTTP/RPC
+// 500 bodies.
 func runTrustHook(hook func(string) error, tool string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("connector trust hook panicked: %v", r)
+			stdlog.Printf("surface: connector trust hook for %s panicked: %s", logSanitize(tool), logSanitize(fmt.Sprint(r)))
+			err = errors.New("connector trust hook panicked")
 		}
 	}()
 	return hook(tool)

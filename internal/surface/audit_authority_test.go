@@ -397,6 +397,12 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 	resolved := make(chan struct{})
 	var wg sync.WaitGroup
 	var observed atomic.Int64
+	// Registered before the readers start so an early t.Fatalf cannot
+	// strand them spinning: release them, then wait for them to drain.
+	var resolvedOnce sync.Once
+	closeResolved := func() { resolvedOnce.Do(func() { close(resolved) }) }
+	defer wg.Wait()
+	defer closeResolved()
 	for range 8 {
 		wg.Add(1)
 		go func() {
@@ -420,9 +426,7 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 			for {
 				select {
 				case <-resolved:
-					if !check() {
-						return
-					}
+					check()
 					return
 				default:
 					if !check() {
@@ -437,7 +441,7 @@ func TestApprovalHubTerminalAtomicConcurrentRead(t *testing.T) {
 	if code := ap.ResolveFrom("s1", id, true, "telegram"); code != 200 {
 		t.Fatalf("ResolveFrom = %d, want 200", code)
 	}
-	close(resolved)
+	closeResolved()
 	wg.Wait()
 	if observed.Load() < 8 {
 		t.Fatalf("only %d post-resolve observations, want at least one per reader", observed.Load())
