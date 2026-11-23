@@ -115,6 +115,10 @@ func loginDenialGuidance(gate string) string {
 		b.WriteString("Blocked by the approval policy: tool " + tool + " requires approval and no approver is wired.")
 	case "disconnected":
 		b.WriteString("Blocked by the approval policy: tool " + tool + " needs approval but no approver channel was connected to answer it.")
+	case "custos_locked":
+		b.WriteString("Blocked at the custos door: credential custody is locked or the credential was revoked, so tool " + tool + " could not get approval.")
+	case "cancelled":
+		b.WriteString("Blocked by the approval policy: the approval card for tool " + tool + " was cancelled before a user verdict was recorded, so it was denied.")
 	default:
 		b.WriteString("Blocked by the approval policy: the user denied tool " + tool + " on its approval card.")
 	}
@@ -302,13 +306,9 @@ func SessionLoginTool(home string, cfg Config, opts ...LoginOption) loop.Tool {
 			ok, approvalID := approver(cardTitle, summary)
 			if !ok {
 				mgr.ClearViewToken()
-				gate := "denied"
-				if strings.Contains(strings.ToLower(approvalID), "timeout") {
-					gate = "timeout"
-				} else if strings.Contains(strings.ToLower(approvalID), "disconnected") {
-					gate = "disconnected"
-				}
-				return loginDenialGuidance(gate), nil
+				// The hub terminal record (DenialAudit) names the real
+				// cause; only an explicit verdict may blame the user.
+				return loginDenialGuidance(browseDenialGate(ctx, approvalID)), nil
 			}
 
 			// When the user taps Done/Cancel the HTTP route resolves this
