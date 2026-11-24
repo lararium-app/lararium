@@ -180,7 +180,14 @@ func (s *Server) dispatchSession(w http.ResponseWriter, r *http.Request) {
 			s.error(w, "not implemented", http.StatusNotImplemented)
 			return
 		}
-		hub.HandleMessage(w, r, id)
+		// The check above only fails fast: the gate is re-run inside the
+		// hub's registration step, after the body is read, so a delete in
+		// between cannot let this turn recreate the session.
+		var exists func() bool
+		if id != "main" {
+			exists = func() bool { return s.sessionExists(id) }
+		}
+		hub.HandleMessageGated(w, r, id, exists)
 	case strings.Contains(rest, "/approvals/") && r.Method == http.MethodPost:
 		parts := strings.SplitN(rest, "/approvals/", 2)
 		if len(parts) != 2 || parts[1] == "" {

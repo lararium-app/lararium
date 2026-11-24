@@ -433,15 +433,19 @@ func (p *PenatusSource) SessionExists(id string) bool {
 	// Validated above: id matches ^(s_[0-9A-Z]{26}|main)$ — no traversal is
 	// possible.
 	sessionDir := filepath.Join(p.root, "sessions", id)
-	if info, err := os.Stat(sessionDir); err != nil || !info.IsDir() { //nolint:gosec // regex-validated id
+	if id == "main" {
+		info, err := os.Stat(sessionDir) //nolint:gosec // regex-validated id
+		return err == nil && info.IsDir()
+	}
+	// A side session is a real directory holding a regular-file header. Lstat
+	// (not Stat) so a symlinked directory or header, or a directory named
+	// session.json, does not pass for a session the rest of the surface
+	// cannot read.
+	if info, err := os.Lstat(sessionDir); err != nil || !info.IsDir() { //nolint:gosec // regex-validated id
 		return false
 	}
-	if id != "main" {
-		if _, err := os.Stat(filepath.Join(sessionDir, "session.json")); err != nil { //nolint:gosec // regex-validated id
-			return false
-		}
-	}
-	return true
+	info, err := os.Lstat(filepath.Join(sessionDir, "session.json")) //nolint:gosec // regex-validated id
+	return err == nil && info.Mode().IsRegular()
 }
 
 // SessionAudience returns the audience recorded in session id's header (nil

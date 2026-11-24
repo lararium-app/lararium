@@ -75,6 +75,13 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
   concurrently. A stalled turn cannot hold a session forever:
   `serve.turn_timeout` (default 10 min) aborts the turn (engine `error`,
   gate released), and `POST …/cancel` (§4) ends it on demand.
+- **Delete vs. turn:** deleting a side session and registering a turn on it
+  are mutually exclusive under the same lock. A delete finding a running
+  turn answers 409 `session busy` (RPC `session_busy`); a turn registering
+  on a session that is gone, or being deleted, answers 404 (RPC
+  `not_found`) before any SSE bytes and creates nothing on disk. The
+  existence check runs after the gate is taken, so a delete landing while
+  the request body is still being read cannot be undone by the turn.
 - All bodies ≤ 1 MiB (413 otherwise); JSON `application/json` UTF-8.
 - **Timeouts:** `http.Server` `ReadTimeout` is 60 s and `ReadHeaderTimeout` is 10 s to bound slow-body and slow-header requests; `WriteTimeout` is left zero because Go's `http.Server` lacks `WriteIdleTimeout` and global `WriteTimeout` terminates long-lived SSE streams (M17).
 - **Shutdown:** SIGTERM stops accepting, lets in-flight turns reach their
