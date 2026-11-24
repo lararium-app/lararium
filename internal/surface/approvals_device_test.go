@@ -425,7 +425,7 @@ func TestDeviceApprover_T5_TimerRankRegressions(t *testing.T) {
 // - two subscribers, first drops -> probe still true, card survives
 // - resubscribe on sole subscriber -> card survives (no transient drop)
 // - last subscriber disconnects -> probe false, orphan settles denied:disconnected
-// - overflow teardown on last subscriber (removeCustosRPCSub) -> settles orphan
+// - overflow teardown on last subscriber (removeCustosRPCSub) -> settles orphan.
 func TestDeviceApprover_T6_ServerPresenceAccounting(t *testing.T) {
 	t.Run("subscribe, multi-client, resubscribe, and last disconnect", func(t *testing.T) {
 		srv, tokStore, ts := newTestRPCServer(t, 2*time.Second)
