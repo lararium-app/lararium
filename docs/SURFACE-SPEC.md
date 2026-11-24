@@ -255,7 +255,11 @@ existence is itself the leak:
 
 The gate runs right after id validation, before the handler acts. Session ids
 carry about 128 random bits, so the few parameter checks some handlers run
-before their own existence check are not a discovery oracle. A session whose
+before their own existence check are not a discovery oracle. `sessions.send`
+is stricter: it answers a malformed, hidden and unknown id with the same
+`not_found`, ahead of its text and subscription checks. Deleting a session
+withdraws every `sessions.subscribe` registration on it, so a stale
+subscription cannot outlive the session. A session whose
 header cannot be read or parsed is hidden from every caller (fail closed).
 
 **Changing the audience.** `sessions.configure` accepts `private: bool`:
