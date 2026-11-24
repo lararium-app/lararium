@@ -17,7 +17,10 @@ see changelog v5.3; CA-7 (policy rules on the surface: three
 2026-10-12 — see changelog v5.4; A8 (hub terminal record as audit
 authority, `reason:"cancelled"` with the custody family
 `custos_locked`/`credential_revoked`, `source:"custos"`, fail-safe reason
-and source mapping) applied 2026-11-23 — see changelog v5.6.
+and source mapping) applied 2026-11-23 — see changelog v5.6; A9 (device
+approver channel for `custos.cards.subscribe` presence, web > device >
+telegram timer rank, and last-subscriber disconnect) applied 2026-11-24
+— see changelog v5.7.
 Companion specs: PENATUS-SPEC (the file layer — this API never contradicts
 it), ARCHITECTURE §2.7 (surfaces), CELL-SPEC (execution stays sandboxed).
 
@@ -320,14 +323,20 @@ event is `event: <type>` + `data: <json>`. Types (frozen):
   Approval ids are session-scoped: `{id}` in the URL must belong to the
   session in the URL — unknown or foreign → 404; known-but-resolved →
   410 (no double-resolve, no false 200). Timeout is chosen at creation
-  from the live approver channel set (A6): a web SSE listener is live →
+  from the live approver channel set (A6/A9, rank **web > device >
+  telegram**): a web SSE listener or a live paired-device custody
+  subscription (`custos.cards.subscribe`) is live →
   `serve.approval_timeout` (web wins ties); a paired nuntius bridge is the
   only live channel → `nuntius.approval_timeout` (default 5 min, same
-  bounds and test-shortening rule). (A1: "live approver channel"
-  generalizes "SSE listener" — a paired nuntius bridge counts, unless
+  bounds and test-shortening rule). (A1/A9: "live approver channel"
+  generalizes "SSE listener" — a paired nuntius bridge counts unless
   that approval's card was marked undeliverable (`card_dead`,
-  NUNTIUS-SPEC §7.1); web-only behavior is unchanged when nuntius is
-  disabled.) Timeout → `timed_out` (logged `denied:timeout`).
+  NUNTIUS-SPEC §7.1), and a live paired-device `custos.cards.subscribe`
+  connection counts while attached, settling orphaned pending approvals
+  `denied:disconnected` (internal source `device`, confined to `hub` on
+  the §6 audit wire per A8) when the last subscription detaches; web-only
+  behavior is unchanged when nuntius and paired devices are absent.)
+  Timeout → `timed_out` (logged `denied:timeout`).
   Terminal entries (settled/denied/expired/cancelled) are pruned on insert,
   keeping at most 50 most-recent terminal entries per session (M19); pending
   entries are never pruned. First settle wins (L-6): once an approval is
@@ -597,6 +606,16 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5.7 (amendment A9, 2026-11-24).** §5 approval state machine extended
+for the device approver channel (NUNTIUS-SPEC §7.4 A9): a live
+paired-device `custos.cards.subscribe` connection counts as a live
+approver channel alongside SSE listeners and a paired nuntius bridge
+(A1/A9), timeout rank is `web > device > telegram` (web and device bind
+`serve.approval_timeout`, bridge-only keeps `nuntius.approval_timeout`),
+and detaching the last custody subscription settles orphaned pending
+approvals `denied:disconnected` (internal source `device`, confined to
+`hub` on the §6 audit wire per A8).
 
 **v5.6 (amendment A8, 2026-11-23).** §6 audit schema ratified for hub
 authority: `reason` enum gains `cancelled`, `custos_locked`, and
