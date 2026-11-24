@@ -299,7 +299,7 @@ func (s *Server) rpcCustosCardsResolve(_ context.Context, conn *RPCConn, req *RP
 		return
 	}
 
-	out := s.resolveCustosCard(params.ID, params.Verdict)
+	out := s.resolveCustosCard(params.ID, params.Verdict, viaForKind(conn.callerKind))
 	if out.status != http.StatusOK {
 		reason := strings.ReplaceAll(out.reason, " ", "_")
 		_ = conn.SendError(*req.ID, out.reason, reason, nil)

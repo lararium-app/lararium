@@ -106,6 +106,16 @@ type CustosRegistry interface {
 	Attach() (cards []CustosCard, cancel func(), events <-chan CustosEvent)
 }
 
+// CustosRegistryVia is a CustosRegistry that can attribute a verdict to
+// the channel it arrived on. Implemented by the door client; declared as
+// an optional extension so existing implementations (and test doubles)
+// keep satisfying CustosRegistry unchanged. When a registry does not
+// implement it, the door applies its own default attribution.
+type CustosRegistryVia interface {
+	CustosRegistry
+	ResolveVia(id, verdict, via string) (state string, err error)
+}
+
 // SetCustosRegistry attaches a CustosRegistry to the server.
 // Safe for concurrent use and nil-safe.
 func (s *Server) SetCustosRegistry(r CustosRegistry) {
@@ -247,7 +257,7 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	out := s.resolveCustosCard(id, req.Verdict)
+	out := s.resolveCustosCard(id, req.Verdict, viaForKind(callerKindFrom(r.Context())))
 	if out.status != http.StatusOK {
 		s.error(w, out.reason, out.status)
 		return
@@ -268,7 +278,13 @@ type custosResolveOutcome struct {
 // /v1/custos/cards/{id}/resolve and the custos.cards.resolve RPC method.
 // Order is frozen: id gate, verdict gate, door registry first, then the
 // turn-approval hub fallback for ids the registry never saw (issue #128).
-func (s *Server) resolveCustosCard(id, verdict string) custosResolveOutcome {
+//
+// via is the channel the verdict arrived on (CUSTOS-SPEC §6.4b: "web",
+// "telegram" or, since amendment v14, "device"). It is derived from the
+// kind of credential the caller authenticated with, never from anything
+// the caller sends in the request, and is stamped on both the door wire
+// and the hub fallback so the audit ledger names the real channel.
+func (s *Server) resolveCustosCard(id, verdict, via string) custosResolveOutcome {
 	if !ValidApprovalID(id) {
 		return custosResolveOutcome{status: http.StatusNotFound, reason: "not found"}
 	}
@@ -278,7 +294,13 @@ func (s *Server) resolveCustosCard(id, verdict string) custosResolveOutcome {
 
 	reg := s.getCustosRegistry()
 	if reg != nil {
-		state, err := reg.Resolve(id, verdict)
+		var state string
+		var err error
+		if rv, ok := reg.(CustosRegistryVia); ok {
+			state, err = rv.ResolveVia(id, verdict, via)
+		} else {
+			state, err = reg.Resolve(id, verdict)
+		}
 		switch {
 		case err == nil:
 			if state == "" {
@@ -323,7 +345,7 @@ func (s *Server) resolveCustosCard(id, verdict string) custosResolveOutcome {
 			toolName, _ = hub.NameOf(id)
 		}
 		allow := verdict != "deny"
-		switch hub.ResolveFromVia("", id, allow, "custos", "web") {
+		switch hub.ResolveFromVia("", id, allow, "custos", via) {
 		case http.StatusOK:
 			if verdict == "always" {
 				s.mintTurnAlwaysRule(id, toolName)

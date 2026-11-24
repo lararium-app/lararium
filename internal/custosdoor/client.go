@@ -547,10 +547,11 @@ func (c *Client) Resolve(id, verdict string) (string, error) {
 	return c.ResolveVia(id, verdict, ViaWeb)
 }
 
-// ResolveVia settles a card, attributing via ("web" or "telegram").
-// It returns the synchronous door ack mapped to a state or sentinel.
+// ResolveVia settles a card, attributing via ("web", "telegram" or
+// "device"). It returns the synchronous door ack mapped to a state or
+// sentinel.
 func (c *Client) ResolveVia(id, verdict, via string) (string, error) {
-	if via != ViaWeb && via != ViaTelegram {
+	if via != ViaWeb && via != ViaTelegram && via != ViaDevice {
 		return "", fmt.Errorf("custos: unknown via %q", via)
 	}
 	if !idRe.MatchString(id) {

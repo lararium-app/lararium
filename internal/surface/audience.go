@@ -71,6 +71,43 @@ func callerFrom(ctx context.Context) string {
 	return caller
 }
 
+type callerKindKey struct{}
+
+// withCallerKind binds the kind of credential the request authenticated
+// with (see TokenKindDevice) into ctx, alongside the caller identity.
+func withCallerKind(ctx context.Context, kind string) context.Context {
+	return context.WithValue(ctx, callerKindKey{}, kind)
+}
+
+// callerKindFrom returns the credential kind bound by BearerAuth, or ""
+// when the credential carries none — which is the case for every
+// operator-minted credential and for anything authenticated by a plain
+// Verifier.
+func callerKindFrom(ctx context.Context) string {
+	kind, _ := ctx.Value(callerKindKey{}).(string)
+	return kind
+}
+
+// Channel names on the verdict wire (CUSTOS-SPEC §6.4b). Declared here
+// rather than imported from the door client so the surface layer does not
+// depend on it for two string constants.
+const (
+	viaWeb    = "web"
+	viaDevice = "device"
+)
+
+// viaForKind maps a credential kind to the channel a verdict from it must
+// be attributed to. Only a credential the daemon itself minted for a
+// paired device yields the device channel; everything else — including
+// every credential minted before the kind field existed — is the web
+// channel, which preserves the pre-existing meaning of those records.
+func viaForKind(kind string) string {
+	if kind == TokenKindDevice {
+		return viaDevice
+	}
+	return viaWeb
+}
+
 // audienceAllows reports whether caller may see a session with audience.
 func audienceAllows(audience []string, caller string) bool {
 	if len(audience) == 0 {

@@ -192,9 +192,14 @@ func (s *Server) pairHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch res {
 	case RedeemPaired:
-		// Mint API token with label "paired:" + userID
+		// Mint API token with label "paired:" + userID, marked as a
+		// device credential so a verdict from this device is attributed
+		// to the device channel rather than to the web dashboard
+		// (CUSTOS-SPEC §6.4b amendment v14). The marker is set here, by
+		// the daemon, precisely because the label is partly caller-
+		// supplied and so must never be the thing attribution keys on.
 		label := "paired:" + userID
-		token, err := s.Store.Create(label)
+		token, err := s.Store.CreateKind(label, TokenKindDevice)
 		if err != nil {
 			writeJSONBody(w, http.StatusInternalServerError, fmt.Sprintf(`{"error":"pairing succeeded but token mint failed; run: hearthd unpair %s and create a new code"}`, userID))
 			return

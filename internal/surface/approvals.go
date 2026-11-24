@@ -975,13 +975,13 @@ func (h *ApprovalHub) DisconnectFor(sessionID string) {
 		if (bridgeUp && !ap.cardDead) || deviceUp {
 			continue // another live approver (Telegram card or paired device) covers this one (A1/A9)
 		}
-		if ap.settle("denied", "disconnected", "web", now) {
+		if ap.settle("denied", "disconnected", "listener_closed", now) {
 			fired = append(fired, [3]string{ap.id, "denied", "disconnected"})
 		}
 	}
 	h.mu.Unlock()
 	for _, f := range fired {
-		h.fanTerminal(f[0], sessionID, f[1], f[2], "web")
+		h.fanTerminal(f[0], sessionID, f[1], f[2], "listener_closed")
 	}
 }
 

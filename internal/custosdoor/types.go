@@ -66,9 +66,13 @@ const (
 	StateDenied    = "denied"
 	ViaWeb         = "web"
 	ViaTelegram    = "telegram"
-	VerdictOnce    = "once"
-	VerdictAlways  = "always"
-	VerdictDeny    = "deny"
+	// ViaDevice attributes a verdict to a paired device rather than the
+	// web dashboard (CUSTOS-SPEC §6.4b amendment v14). Unknown values are
+	// still rejected: the enum stays closed, it is only wider.
+	ViaDevice     = "device"
+	VerdictOnce   = "once"
+	VerdictAlways = "always"
+	VerdictDeny   = "deny"
 )
 
 const defaultDoorName = "hearthd"

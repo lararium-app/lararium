@@ -155,8 +155,12 @@ func TestDeviceApprover_T3_DisconnectForSurvival(t *testing.T) {
 		default:
 			t.Fatal("expected immediate denial on DisconnectFor with no remaining approver")
 		}
-		if r, s := ap.Reason("s1", id), ap.Source("s1", id); r != "disconnected" || s != "web" {
-			t.Fatalf("reason/source = %q/%q, want disconnected/web", r, s)
+		// A connection-loss denial is machine-caused: the source must name the
+		// cause, not a human channel, or the ledger reads as if the dashboard
+		// user pressed Deny (#338). "listener_closed" folds to hub on the
+		// frozen §6 audit wire, matching its A9 device-channel-loss twin.
+		if r, s := ap.Reason("s1", id), ap.Source("s1", id); r != "disconnected" || s != "listener_closed" {
+			t.Fatalf("reason/source = %q/%q, want disconnected/listener_closed", r, s)
 		}
 	})
 }
@@ -629,8 +633,12 @@ func TestDeviceApprover_T7_NilDeviceProbeRegression(t *testing.T) {
 	if <-dec2 {
 		t.Fatal("decision = true, want false")
 	}
-	if r, s := ap.Reason("s2", id2), ap.Source("s2", id2); r != "disconnected" || s != "web" {
-		t.Fatalf("reason/source = %q/%q, want disconnected/web", r, s)
+	// A connection-loss denial is machine-caused: the source must name the
+	// cause, not a human channel, or the ledger reads as if the dashboard
+	// user pressed Deny (#338). "listener_closed" folds to hub on the
+	// frozen §6 audit wire, matching its A9 device-channel-loss twin.
+	if r, s := ap.Reason("s2", id2), ap.Source("s2", id2); r != "disconnected" || s != "listener_closed" {
+		t.Fatalf("reason/source = %q/%q, want disconnected/listener_closed", r, s)
 	}
 
 	// SetApprovalHub(nil) stays nil-safe.
