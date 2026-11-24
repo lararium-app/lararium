@@ -381,6 +381,32 @@ func (s *Server) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSONAny(w, http.StatusCreated, session)
 }
 
+// errSessionBusy reports a delete refused because a turn is running.
+var errSessionBusy = errors.New("session busy")
+
+// sessionDeleteGuard is implemented by the live hub: it makes "no turn is
+// running" and "the session is being removed" one atomic claim, so a turn
+// cannot register between the in-flight check and the removal.
+type sessionDeleteGuard interface {
+	BeginDelete(sessionID string) (end func(), ok bool)
+}
+
+// deleteSessionExclusive removes session id while holding the hub's delete
+// claim, or answers errSessionBusy when a turn is running. A hub without the
+// claim (test doubles) falls back to the plain in-flight check.
+func (s *Server) deleteSessionExclusive(id string) error {
+	if g, ok := s.Hub.(sessionDeleteGuard); ok {
+		end, free := g.BeginDelete(id)
+		if !free {
+			return errSessionBusy
+		}
+		defer end()
+	} else if s.Hub != nil && s.Hub.InFlight(id) {
+		return errSessionBusy
+	}
+	return s.Sessions.Delete(id)
+}
+
 // deleteSessionHandler removes a side chat (DELETE /v1/sessions/{id}).
 // A turn in flight answers 409 busy; the main session is protected;
 // unknown ids are a plain 404.
@@ -389,12 +415,10 @@ func (s *Server) deleteSessionHandler(w http.ResponseWriter, id string) {
 		s.error(w, "no such session", http.StatusNotFound)
 		return
 	}
-	if s.Hub != nil && s.Hub.InFlight(id) {
-		s.error(w, "session busy", http.StatusConflict)
-		return
-	}
-	err := s.Sessions.Delete(id)
+	err := s.deleteSessionExclusive(id)
 	switch {
+	case errors.Is(err, errSessionBusy):
+		s.error(w, "session busy", http.StatusConflict)
 	case errors.Is(err, ErrNoSession):
 		s.error(w, "no such session", http.StatusNotFound)
 	case errors.Is(err, ErrProtectedSession):

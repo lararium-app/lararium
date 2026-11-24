@@ -29,6 +29,11 @@ var ErrTurnInFlight = errors.New("turn in flight")
 // that is not a safe session directory name.
 var ErrInvalidSessionID = errors.New("invalid session id")
 
+// ErrSessionGone reports a turn requested for a session that was deleted (or
+// is being deleted) between the caller's existence check and the turn's
+// registration.
+var ErrSessionGone = errors.New("session gone")
+
 // runawayCapBytes aborts a turn that generates this many streamed bytes
 // (spec §5: cap enforced engine-side so a disconnected client cannot let
 // a runaway loop burn tokens forever).
@@ -59,9 +64,14 @@ type Hub struct {
 	keys *keystore.Registry
 	// secrets is the R3 redaction-needle closure handed to every Session
 	// (nil = disabled). Surface never imports custos; hearthd supplies it.
-	secrets        atomic.Pointer[func() []string]
-	mu             sync.Mutex
-	running        map[string]*turn
+	secrets atomic.Pointer[func() []string]
+	mu      sync.Mutex
+	running map[string]*turn
+	// deleting counts session deletions in progress per id. A deletion
+	// claims its id under mu (BeginDelete) only while no turn is running,
+	// and a turn registers under mu only while no deletion is in progress,
+	// so a delete and a turn on the same session never overlap.
+	deleting       map[string]int
 	singleWriterMu sync.RWMutex
 }
 
@@ -211,6 +221,64 @@ func (h *Hub) InFlight(sessionID string) bool {
 	defer h.mu.Unlock()
 	_, ok := h.running[sessionID]
 	return ok
+}
+
+// BeginDelete claims sessionID for deletion. It reports false while a turn
+// is registered for the session; otherwise it returns end, which the caller
+// must run once the deletion has finished. Between the two calls no turn can
+// register on the session (acquire answers ErrSessionGone), so the
+// in-flight check and the removal are one atomic step with respect to turns.
+func (h *Hub) BeginDelete(sessionID string) (end func(), ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, busy := h.running[sessionID]; busy {
+		return nil, false
+	}
+	if h.deleting == nil {
+		h.deleting = make(map[string]int)
+	}
+	h.deleting[sessionID]++
+	return func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.deleting[sessionID]--; h.deleting[sessionID] <= 0 {
+			delete(h.deleting, sessionID)
+		}
+	}, true
+}
+
+// acquire registers t as the running turn for sessionID. exists, when
+// non-nil, confirms the session is still stored. It runs after t is
+// registered: a deletion cannot start while a turn is registered, and one
+// already underway is refused here, so a session that passes the check
+// cannot be deleted under the turn, and one that fails it is never
+// recreated by the turn. ErrTurnInFlight and ErrSessionGone leave nothing
+// registered.
+func (h *Hub) acquire(sessionID string, t *turn, exists func() bool) error {
+	h.mu.Lock()
+	if _, ok := h.running[sessionID]; ok {
+		h.mu.Unlock()
+		return ErrTurnInFlight
+	}
+	if h.deleting[sessionID] > 0 {
+		h.mu.Unlock()
+		return ErrSessionGone
+	}
+	h.running[sessionID] = t
+	h.mu.Unlock()
+
+	if exists != nil && !exists() {
+		h.release(sessionID)
+		return ErrSessionGone
+	}
+	return nil
+}
+
+// release drops the running-turn registration for sessionID.
+func (h *Hub) release(sessionID string) {
+	h.mu.Lock()
+	delete(h.running, sessionID)
+	h.mu.Unlock()
 }
 
 // Shutdown resolves every pending approval denied:shutdown (source
@@ -467,6 +535,14 @@ func (ts *turnStream) end() {
 // turn ending in exactly one terminal event (delta*/tool_*/
 // approval_request/turn_done|error), per spec §5.
 func (h *Hub) HandleMessage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	h.HandleMessageGated(w, r, sessionID, nil)
+}
+
+// HandleMessageGated is HandleMessage with a session-existence gate: exists
+// is consulted after the turn is registered (see acquire), and a session it
+// reports gone answers 404 before any SSE bytes. nil skips the check — the
+// main session, which its first turn creates, passes nil.
+func (h *Hub) HandleMessageGated(w http.ResponseWriter, r *http.Request, sessionID string, exists func() bool) {
 	// Body first: a bad request must fail as plain JSON before any SSE
 	// bytes exist.
 	var req struct {
@@ -489,21 +565,21 @@ func (h *Hub) HandleMessage(w http.ResponseWriter, r *http.Request, sessionID st
 	engineCtx, cancelEngine := context.WithTimeout(context.Background(), h.cfg.TurnTimeout)
 	reqCtx, cancelReq := context.WithCancel(r.Context())
 	t := &turn{cancel: func() { cancelReq(); cancelEngine() }}
-	h.mu.Lock()
-	if _, ok := h.running[sessionID]; ok {
-		h.mu.Unlock()
+	switch err := h.acquire(sessionID, t, exists); {
+	case errors.Is(err, ErrSessionGone):
+		cancelEngine()
+		cancelReq()
+		writeJSONBody(w, http.StatusNotFound, `{"error":"not found"}`)
+		return
+	case err != nil:
 		cancelEngine()
 		cancelReq()
 		writeJSONBody(w, http.StatusConflict, `{"error":"turn in flight"}`)
 		return
 	}
-	h.running[sessionID] = t
-	h.mu.Unlock()
 
 	defer func() {
-		h.mu.Lock()
-		delete(h.running, sessionID)
-		h.mu.Unlock()
+		h.release(sessionID)
 		cancelEngine()
 	}()
 
@@ -559,19 +635,12 @@ func (h *Hub) RunHeadlessTurn(ctx context.Context, sessionID, text, channel stri
 	reqCtx := engineCtx
 	t := &turn{cancel: cancelEngine}
 
-	h.mu.Lock()
-	if _, ok := h.running[sessionID]; ok {
-		h.mu.Unlock()
-		return ErrTurnInFlight
+	// No existence gate: a headless turn creates its own session directory
+	// on demand (cron-<id>, goal-<id>), and those ids are never deletable.
+	if err := h.acquire(sessionID, t, nil); err != nil {
+		return err
 	}
-	h.running[sessionID] = t
-	h.mu.Unlock()
-
-	defer func() {
-		h.mu.Lock()
-		delete(h.running, sessionID)
-		h.mu.Unlock()
-	}()
+	defer h.release(sessionID)
 
 	ts := newQuietTurnStream(func() {
 		h.ap.DisconnectFor(sessionID)
@@ -586,6 +655,13 @@ func (h *Hub) RunHeadlessTurn(ctx context.Context, sessionID, text, channel stri
 // if the WebSocket connection closes mid-turn, pending approvals are denied immediately via DisconnectFor,
 // whereas the turn engine itself persists bounded only by turn_timeout.
 func (h *Hub) StartRPCTurn(connCtx context.Context, sessionID, text string, onEvent func(event, data string)) error {
+	return h.StartRPCTurnGated(connCtx, sessionID, text, onEvent, nil)
+}
+
+// StartRPCTurnGated is StartRPCTurn with the session-existence gate of
+// HandleMessageGated; a session it reports gone returns ErrSessionGone and
+// starts nothing.
+func (h *Hub) StartRPCTurnGated(connCtx context.Context, sessionID, text string, onEvent func(event, data string), exists func() bool) error {
 	timeout := h.cfg.TurnTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
@@ -594,15 +670,11 @@ func (h *Hub) StartRPCTurn(connCtx context.Context, sessionID, text string, onEv
 	reqCtx, cancelReq := context.WithCancel(connCtx)
 	t := &turn{cancel: func() { cancelReq(); cancelEngine() }}
 
-	h.mu.Lock()
-	if _, ok := h.running[sessionID]; ok {
-		h.mu.Unlock()
+	if err := h.acquire(sessionID, t, exists); err != nil {
 		cancelEngine()
 		cancelReq()
-		return ErrTurnInFlight
+		return err
 	}
-	h.running[sessionID] = t
-	h.mu.Unlock()
 
 	ts := newRPCTurnStream(onEvent, func() {
 		h.ap.DisconnectFor(sessionID)
@@ -611,9 +683,7 @@ func (h *Hub) StartRPCTurn(connCtx context.Context, sessionID, text string, onEv
 	go func() {
 		defer func() {
 			ts.end()
-			h.mu.Lock()
-			delete(h.running, sessionID)
-			h.mu.Unlock()
+			h.release(sessionID)
 			cancelReq()
 			cancelEngine()
 		}()

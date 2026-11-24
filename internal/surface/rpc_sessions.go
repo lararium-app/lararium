@@ -305,16 +305,14 @@ func (s *Server) rpcSessionsDelete(_ context.Context, conn *RPCConn, req *RPCReq
 		_ = conn.SendError(*req.ID, "no such session", "no_such_session", nil)
 		return
 	}
-	if s.Hub != nil && s.Hub.InFlight(params.ID) {
-		_ = conn.SendError(*req.ID, "session busy", "session_busy", nil)
-		return
-	}
 	if s.Sessions == nil {
 		_ = conn.SendError(*req.ID, "delete failed", "delete_failed", nil)
 		return
 	}
-	err := s.Sessions.Delete(params.ID)
+	err := s.deleteSessionExclusive(params.ID)
 	switch {
+	case errors.Is(err, errSessionBusy):
+		_ = conn.SendError(*req.ID, "session busy", "session_busy", nil)
 	case errors.Is(err, ErrNoSession):
 		_ = conn.SendError(*req.ID, "no such session", "no_such_session", nil)
 	case errors.Is(err, ErrProtectedSession):
@@ -453,12 +451,23 @@ func (s *Server) rpcSessionsSend(connCtx context.Context, conn *RPCConn, req *RP
 	}
 
 	sessionID := params.ID
-	err := hub.StartRPCTurn(connCtx, sessionID, params.Text, func(eventType, dataJSON string) {
+	// A turn creates its session directory on demand, so a session deleted
+	// since this connection subscribed must not be revived by a send. main
+	// is exempt: the first turn on a fresh hearth creates it.
+	var exists func() bool
+	if sessionID != "main" {
+		exists = func() bool { return s.sessionExists(sessionID) }
+	}
+	err := hub.StartRPCTurnGated(connCtx, sessionID, params.Text, func(eventType, dataJSON string) {
 		ev := buildRPCSessionEventJSON(eventType, dataJSON)
 		s.notifyRPCSessionEvent(sessionID, ev)
-	})
+	}, exists)
 	if errors.Is(err, ErrTurnInFlight) {
 		_ = conn.SendError(*req.ID, "turn in flight", "turn_in_flight", nil)
+		return
+	}
+	if errors.Is(err, ErrSessionGone) {
+		_ = conn.SendError(*req.ID, "not found", "not_found", nil)
 		return
 	}
 	if err != nil {
