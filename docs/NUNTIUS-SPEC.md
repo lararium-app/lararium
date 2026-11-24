@@ -5,8 +5,9 @@ Status: **APPROVED (v1.0.0-beta1).** Specifies the first channel bridge
 approval hub as the web chat. Every behavior statement is a requirement,
 not an observation.
 Companion specs: SURFACE-SPEC (the HTTP/SSE door this one parallels; this
-spec carries seven explicit amendments, §7.4 A1–A7 — six to
-SURFACE-SPEC (A1, A2, A4–A7) and one to PENATUS-SPEC (A3)),
+spec carries eight explicit amendments, §7.4 A1–A7 and A9 — seven to
+SURFACE-SPEC (A1, A2, A4–A7, A9; A8 is ratified directly in SURFACE-SPEC
+§6) and one to PENATUS-SPEC (A3)),
 ARCHITECTURE §2.7, CELL-SPEC, PENATUS-SPEC (nuntius adds no shadow
 state; amendment A3 touches its msg-event table).
 
@@ -380,24 +381,27 @@ mutex-guarded, unchanged.
 
 - **Presence rule, generalized:** an approval is created only if at
   least one approver channel is live — an open SSE listener (web rule,
-  unchanged) **or** a paired-and-polling nuntius bridge. Neither →
-  `denied:disconnected` immediately, exactly as SURFACE-SPEC S6/V6b
-  freeze for the web-only case. A Telegram bridge has no "disconnect"
-  concept: it is live while the daemon polls; when the daemon dies,
-  approvals resolve `denied:shutdown` as today.
+  unchanged), a paired-and-polling nuntius bridge, **or** a live
+  paired-device custody subscription (`custos.cards.subscribe`, A9).
+  None live → `denied:disconnected` immediately, exactly as SURFACE-SPEC
+  S6/V6b freeze for the web-only case. A Telegram bridge has no
+  "disconnect" concept: it is live while the daemon polls; when the
+  daemon dies, approvals resolve `denied:shutdown` as today.
 - **Timer rule (deterministic, no causality violation):** the timeout is
   chosen at creation from the channel set, not from delivery order.
-  Both channels live → `serve.approval_timeout` (web wins ties).
-  Telegram-only → `nuntius.approval_timeout`. The timer is bound at
-  creation and never re-attributed; the state machine is indifferent to
-  which surface resolves it.
+  Timeout rank is **web > device > telegram** (A6/A9): web or device
+  live → `serve.approval_timeout` (web wins ties); Telegram-only →
+  `nuntius.approval_timeout`. The timer is bound at creation and never
+  re-attributed; the state machine is indifferent to which surface
+  resolves it.
 - **Attribution:** `timed_out` and `shutdown` record
   `source: "timer"` / `source: "shutdown"` (see amendment §7.4) — the
   question "which surface caused the denial" has a truthful answer:
   neither did.
 
 ### 7.4 Amendments to companion specs (carried here; ratified;
-SURFACE-SPEC cites A1, A2, A4–A7 and PENATUS-SPEC cites A3)
+SURFACE-SPEC cites A1, A2, A4–A7, A9 — with A8 ratified directly in
+SURFACE-SPEC §6 — and PENATUS-SPEC cites A3)
 
 - **A1 — §5 presence rule** generalizes from "SSE listener" to "at least
   one live approver channel (SSE listener or paired nuntius bridge)".
@@ -453,6 +457,29 @@ SURFACE-SPEC cites A1, A2, A4–A7 and PENATUS-SPEC cites A3)
   for that approval, or sets `card_dead` and leaves the state pending.
   `denied:undeliverable` is terminal like every denial; the mutex and
   first-wins rules are unchanged.
+- **A9 — §5 device approver channel** extends A1 and A6 for paired
+  devices on the custody card stream:
+  (a) the presence rule generalizes to an open SSE listener, a
+  paired-and-polling nuntius bridge, **or** a live paired-device custody
+  subscription (an authenticated RPC connection with an active
+  `custos.cards.subscribe`);
+  (b) timeout rank is **web > device > telegram** — web wins ties, a
+  live device subscription without web uses `serve.approval_timeout`,
+  and bridge-only keeps `nuntius.approval_timeout` unchanged;
+  (c) symmetric disconnect: when the last custody subscription detaches,
+  pending approvals across all sessions with no other live approver
+  (no attached web SSE listener and no live bridge with a non-`card_dead`
+  card) resolve immediately `denied:disconnected` with internal source
+  `device` (confined to `hub` on the §6 audit wire per SURFACE-SPEC A8)
+  — never a freeze;
+  (d) fail-closed preserved: with no live approver at all, approval
+  creation still denies immediately `denied:disconnected`
+  (SURFACE-SPEC S6/V6b);
+  (e) A7 interop: a live paired-device subscription counts as another
+  live approver for undeliverable resolution — an undeliverable
+  Telegram send sets `card_dead` instead of resolving
+  `denied:undeliverable` while a device still holds the card
+  (evaluated live, like every A1 survival).
 
 ### 7.5 Terminal cleanup (no stale buttons)
 
@@ -475,14 +502,16 @@ channel set:
   `reason:"undeliverable"` per A2/A4) and the turn proceeds with the
   denial — the session is never frozen for 5 minutes waiting on a card
   nobody can see.
-- **An SSE listener is also live** → the hub sets the per-approval
-  `card_dead` flag and the approval rides its normal timer on the web
-  channel. A degraded convenience door must never cancel a turn the
-  owner is reviewing on the private one (P1/P3 ordering). If the SSE
-  listener then drops, presence for **this approval** re-evaluates
-  under A1's extension: the web listener is gone and the bridge counts
-  as dead for a `card_dead` approval, so no live approver remains and
-  it resolves `denied:disconnected` within the frozen ≤2 s disconnect
+- **An SSE listener or a live paired-device custody subscription is
+  also live (A9)** → the hub sets the per-approval
+  `card_dead` flag and the approval rides its normal timer on the
+  remaining channel. A degraded convenience door must never cancel a
+  turn the owner is reviewing on the private one (P1/P3 ordering). If
+  the SSE listener then drops, presence for **this approval**
+  re-evaluates under A1's extension: the web listener is gone, the
+  bridge counts as dead for a `card_dead` approval, and no live
+  paired-device subscription remains, so it resolves
+  `denied:disconnected` within the frozen ≤2 s disconnect
   budget — never a freeze, never a silent 5-minute hostage. (A reloaded
   web client cannot discover pending approvals in v1 —
   `approval_request` is stream-only and SURFACE-SPEC §4 has no list
@@ -679,6 +708,16 @@ Q4. Timer attribution — resolved: chosen at creation from the live
 ---
 
 ## Changelog
+
+**v9 (amendment A9).** Device approver channel: appended amendment A9 to
+§7.4 (generalizing the §7.3 presence rule and A6 timer rank to include
+live paired-device `custos.cards.subscribe` connections, with symmetric
+last-subscriber disconnect resolving orphaned pending approvals
+`denied:disconnected` under internal source `device`, confined to `hub`
+on the audit wire per SURFACE-SPEC A8, while preserving S6/V6b
+fail-closed creation); updated §7.3 bullets and companion-spec amendment
+count (eight in §7.4: A1–A7 and A9; A8 is ratified directly in
+SURFACE-SPEC §6).
 
 **v8.** Specification refinement: `/pair` replay routing unified with §3 —
 once paired, a replayed redacted `/pair` answers `already paired`/non-owner

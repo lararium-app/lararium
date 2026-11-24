@@ -130,6 +130,9 @@ func (s *Server) SetApprovalHub(h *ApprovalHub) {
 	defer s.custosMu.Unlock()
 	s.approvals = h
 	if h != nil {
+		// NUNTIUS-SPEC §7.3 / A9: install paired-device custody presence
+		// probe so headless turns can mint approvals for live devices.
+		h.SetDeviceLive(s.DeviceApproverLive)
 		s.alwaysMu.RLock()
 		hook := s.connectorTrustHook
 		s.alwaysMu.RUnlock()

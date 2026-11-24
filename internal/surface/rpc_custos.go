@@ -104,21 +104,52 @@ func (sub *custosRPCSub) stop() {
 	})
 }
 
+// DeviceApproverLive reports whether at least one authenticated RPC
+// connection holds a live custos.cards.subscribe subscription
+// (NUNTIUS-SPEC §7.3, A9). Wired as ApprovalHub's deviceLive probe via
+// Server.SetApprovalHub; connections without an active custody
+// subscription do not count.
+func (s *Server) DeviceApproverLive() bool {
+	s.rpcCustosMu.Lock()
+	defer s.rpcCustosMu.Unlock()
+	return len(s.rpcCustosSubs) > 0
+}
+
 func (s *Server) removeCustosRPCSub(conn *RPCConn, sub *custosRPCSub) {
 	s.rpcCustosMu.Lock()
+	lost := false
 	if s.rpcCustosSubs[conn] == sub {
 		delete(s.rpcCustosSubs, conn)
+		lost = len(s.rpcCustosSubs) == 0
 	}
 	s.rpcCustosMu.Unlock()
+	// NUNTIUS-SPEC §7.4 A9: notify the hub OUTSIDE rpcCustosMu (hub settle
+	// fans out to observers) when the last custody subscriber detaches.
+	if lost {
+		if hub := s.approvalsViaRegistry(); hub != nil {
+			hub.DeviceChannelLost()
+		}
+	}
 }
 
 func (s *Server) unsubscribeCustosRPCConn(conn *RPCConn) {
 	s.rpcCustosMu.Lock()
 	sub := s.rpcCustosSubs[conn]
-	delete(s.rpcCustosSubs, conn)
+	lost := false
+	if sub != nil {
+		delete(s.rpcCustosSubs, conn)
+		lost = len(s.rpcCustosSubs) == 0
+	}
 	s.rpcCustosMu.Unlock()
 	if sub != nil {
 		sub.stop()
+	}
+	// NUNTIUS-SPEC §7.4 A9: notify the hub OUTSIDE rpcCustosMu when the
+	// last custody subscriber detaches.
+	if lost {
+		if hub := s.approvalsViaRegistry(); hub != nil {
+			hub.DeviceChannelLost()
+		}
 	}
 }
 

@@ -24,14 +24,15 @@ const (
 )
 
 // ChannelSet is the live approver-channel set at approval creation
-// (NUNTIUS-SPEC §7.3, A6): the timeout is chosen at creation from this
-// set and never re-attributed. Web wins ties.
+// (NUNTIUS-SPEC §7.3, A6/A9): the timeout is chosen at creation from this
+// set and never re-attributed. Timeout rank is web > device > telegram.
 type ChannelSet uint8
 
 // Approver channels tracked at approval creation.
 const (
 	ChannelWeb      ChannelSet = 1 << iota // an SSE listener is attached
 	ChannelTelegram                        // the nuntius bridge is polling
+	ChannelDevice                          // a paired device holds a live custos.cards.subscribe connection (A9)
 )
 
 // ApprovalFanout receives hub transition events so the same approval
@@ -80,10 +81,11 @@ type StaleVerdictHook func(id, sessionID, cred, cell, reason string)
 type FastiVerdictHook func(id string, allow, timedOut bool, source, via string)
 
 // ApprovalHub tracks pending tool approvals across sessions: one
-// pending approval per (session, id), resolved by the HTTP approver or
-// the Telegram bridge, auto-denied on timeout, or denied when no live
-// approver channel remains (spec §5 approval state machine plus
-// NUNTIUS-SPEC §7 amendments A1/A5/A6/A7: first-wins, mutex-guarded).
+// pending approval per (session, id), resolved by the HTTP approver,
+// a paired device on the custody card stream, or the Telegram bridge,
+// auto-denied on timeout, or denied when no live approver channel
+// remains (spec §5 approval state machine plus NUNTIUS-SPEC §7
+// amendments A1/A5/A6/A7/A9: first-wins, mutex-guarded).
 type ApprovalHub struct {
 	mu                       sync.Mutex
 	closed                   bool
@@ -94,6 +96,7 @@ type ApprovalHub struct {
 	clock                    loop.Clock
 	fanout                   ApprovalFanout
 	bridgeLive               func() bool
+	deviceLive               func() bool
 	staleVerdictHook         StaleVerdictHook
 	fastiVerdictHook         FastiVerdictHook
 	obsMu                    sync.Mutex
@@ -272,6 +275,16 @@ func (h *ApprovalHub) SetBridgeLive(f func() bool) {
 	h.bridgeLive = f
 }
 
+// SetDeviceLive installs the paired-device presence probe (NUNTIUS-SPEC
+// §7.3, A9): true while at least one authenticated RPC connection holds a
+// live custos.cards.subscribe subscription. nil means no device channel —
+// behavior is then identical to pre-A9.
+func (h *ApprovalHub) SetDeviceLive(f func() bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.deviceLive = f
+}
+
 // SetStaleVerdictHook installs a callback invoked when an Allow arrives for a settled/dead approval.
 func (h *ApprovalHub) SetStaleVerdictHook(hook StaleVerdictHook) {
 	h.mu.Lock()
@@ -412,12 +425,12 @@ func (h *ApprovalHub) Register(sessionID, name, argsSummary string, onEvent func
 }
 
 // RegisterOn creates a pending approval with webLive stating whether
-// an SSE listener is attached; the Telegram bit is added from the
-// bridge presence probe (§7.3 presence rule). Timeout: web live →
-// serve.approval_timeout (web wins ties, A6); Telegram-only →
-// nuntius.approval_timeout. Neither channel live violates the presence
-// rule: the approval resolves immediately denied:disconnected
-// (S6/V6b), decision channel already fed.
+// an SSE listener is attached; the Telegram and paired-device bits are
+// added from the presence probes (NUNTIUS-SPEC §7.3, A1/A9). Timeout
+// rank is web > device > telegram (A6/A9): web or device live →
+// serve.approval_timeout; Telegram-only → nuntius.approval_timeout.
+// No channel live violates the presence rule: the approval resolves
+// immediately denied:disconnected (S6/V6b), decision channel already fed.
 func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bool, onEvent func(approvalID string)) (id string, decision <-chan bool) {
 	var channels ChannelSet
 	if webLive {
@@ -430,6 +443,11 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 	}
 	if h.bridgeLive != nil && h.bridgeLive() {
 		channels |= ChannelTelegram
+	}
+	// NUNTIUS-SPEC §7.3 / A9: a live paired-device custody subscription
+	// counts as an interactive approver channel.
+	if h.deviceLive != nil && h.deviceLive() {
+		channels |= ChannelDevice
 	}
 	id = generateApprovalID()
 	ch := make(chan bool, 1)
@@ -457,8 +475,11 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 	}
 	ap.channels = channels
 
+	// A6/A9 timeout rank (web > device > telegram): both web and device
+	// are interactive class and use serve.approval_timeout; Telegram-only
+	// keeps nuntius.approval_timeout.
 	timeout := h.bridgeTimeout
-	if channels&ChannelWeb != 0 {
+	if channels&(ChannelWeb|ChannelDevice) != 0 {
 		timeout = h.timeout
 	}
 	ap.expiresAt = ap.createdAt.Add(timeout)
@@ -934,23 +955,25 @@ func (h *ApprovalHub) denyAllFor(sessionID, reason, source string, release bool)
 	}
 }
 
-// DisconnectFor applies the web-listener disconnect (A1 presence,
+// DisconnectFor applies the web-listener disconnect (A1/A9 presence,
 // §7.6(c)): the web channel dies for the session's approvals; each
-// pending approval survives only if a live bridge still holds a live
-// card for it (bridge live AND card not dead). Approvals with no live
-// approver resolve denied:disconnected immediately — never a freeze.
+// pending approval survives only if another live approver remains — a
+// live bridge with a live card (bridge live AND card not dead) OR a
+// live paired-device custody subscription (deviceUp). Approvals with no
+// live approver resolve denied:disconnected immediately — never a freeze.
 func (h *ApprovalHub) DisconnectFor(sessionID string) {
 	h.mu.Lock()
 	now := h.nowLocked()
 	bridgeUp := h.bridgeLive != nil && h.bridgeLive()
+	deviceUp := h.deviceLive != nil && h.deviceLive()
 	var fired [][3]string
 	for _, ap := range h.bySession[sessionID] {
 		if ap.state != "pending" {
 			continue
 		}
 		ap.webLive = false
-		if bridgeUp && !ap.cardDead {
-			continue // the Telegram card is the live approver for this one
+		if (bridgeUp && !ap.cardDead) || deviceUp {
+			continue // another live approver (Telegram card or paired device) covers this one (A1/A9)
 		}
 		if ap.settle("denied", "disconnected", "web", now) {
 			fired = append(fired, [3]string{ap.id, "denied", "disconnected"})
@@ -962,12 +985,56 @@ func (h *ApprovalHub) DisconnectFor(sessionID string) {
 	}
 }
 
+// DeviceChannelLost applies the symmetric disconnect rule when the last
+// paired-device custody subscription detaches (NUNTIUS-SPEC §7.3, A9):
+// every pending approval across all sessions without another live
+// approver (an attached web SSE listener, or a live Telegram bridge
+// whose card is not dead) settles denied:disconnected with internal
+// source "device" (confined to "hub" on the §6 audit wire per A8) —
+// never a freeze. A1 survival is evaluated live regardless of creation
+// channel bits.
+func (h *ApprovalHub) DeviceChannelLost() {
+	h.mu.Lock()
+	// TOCTOU guard (A1 evaluated live): the detach event may have been
+	// computed against the subscription map before another device (re)
+	// attached. If a custody subscription is live right now, the device
+	// channel has not been lost — a later detach that truly empties the
+	// map fires this rule again.
+	if h.deviceLive != nil && h.deviceLive() {
+		h.mu.Unlock()
+		return
+	}
+	now := h.nowLocked()
+	bridgeUp := h.bridgeLive != nil && h.bridgeLive()
+	var fired [][4]string
+	for sid, session := range h.bySession {
+		for _, ap := range session {
+			if ap.state != "pending" {
+				continue
+			}
+			if ap.webLive || (bridgeUp && !ap.cardDead) {
+				continue // another live approver (web SSE or Telegram card) covers this one (A1/A9)
+			}
+			if ap.settle("denied", "disconnected", "device", now) {
+				fired = append(fired, [4]string{ap.id, sid, ap.state, "disconnected"})
+			}
+		}
+	}
+	h.mu.Unlock()
+	for _, f := range fired {
+		h.fanTerminal(f[0], f[1], f[2], f[3], "device")
+	}
+}
+
 // MarkUndeliverable is the inbound undeliverable signal from the
 // in-process bridge (A7): if Telegram is the sole live approver
 // channel for this approval it resolves immediately
 // denied:undeliverable (source "hub"); otherwise the per-approval
 // card_dead flag is set — the bridge stops counting as an approver
 // FOR THIS APPROVAL (A1 refinement) and the timer keeps running.
+// Under A9 a live paired-device custody subscription also counts as
+// another live approver: the card goes card_dead, never denied, while
+// a device still holds it (evaluated live, like every A1 survival).
 func (h *ApprovalHub) MarkUndeliverable(id string) {
 	h.mu.Lock()
 	ap, ok := h.findLocked(id)
@@ -975,7 +1042,7 @@ func (h *ApprovalHub) MarkUndeliverable(id string) {
 		h.mu.Unlock()
 		return
 	}
-	if ap.channels&ChannelWeb != 0 && ap.webLive {
+	if (ap.channels&ChannelWeb != 0 && ap.webLive) || (h.deviceLive != nil && h.deviceLive()) {
 		ap.cardDead = true
 		h.mu.Unlock()
 		return
