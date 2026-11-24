@@ -1,69 +1,14 @@
-# osv-scanner baseline — tracked exceptions, reviewed expiry.
+# osv-scanner configuration.
 #
-# Every entry below is a DEVELOPMENT-ONLY advisory in the web build
-# toolchain (vite/esbuild/braces/postcss). None of this code ships: the
-# web UI is committed to artifacts as prebuilt static assets, and the
-# dev server never leaves localhost. Go-module and action dependencies
-# carry no exceptions.
+# No advisories are currently ignored: the lockfile and go.mod scans are
+# clean without exceptions. The file stays because CI passes it to every
+# scan via --config, and the scanner fails if it is missing.
 #
-# Removing this file should be the definition of "done" for the
-# toolchain-upgrade task; entries fail the scan once expired.
-
-[[IgnoredVulns]]
-id = "GHSA-vfj7-8cjw-p6xm"  # braces 3.0.3 (dev, transitive)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-67mh-4wv8-2f99"  # esbuild 0.21.5 -> 0.25.0 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-rj75-hqrm-r3gf"  # postcss-selector-parser 6.1.4 -> 7.1.6 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-4w7w-66w2-5vf9"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-587h-7wmj-h5pm"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-698v-4r3x-3vcv"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-9jrq-w75r-8gcw"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-fx2h-pf6j-xcff"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-r825-w8mm-5pxw"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-rq7h-c2jc-7f22"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-v6wh-96g9-6wx3"  # vite 5.4.21 (dev)
-reason = "Dev-only build dependency; no shipped code path. Closed by the web toolchain upgrade (tracking issue, review by 2026-12-31)."
-
-
-[[IgnoredVulns]]
-id = "GHSA-fc5q-39xc-vjpf"  # picomatch 2.3.2 / 4.0.7 (dev, transitive via vite toolchain)
-reason = "Dev-only build dependency; no shipped code path. Upstream has NO patched release yet (worst case through 4.0.7, fix unmerged upstream), so nothing to bump to. Review by 2026-12-31 together with the web toolchain upgrade."
+# To record an exception, add an entry with a reason and an expiry so it
+# fails the scan once it is due for review, and delete it as soon as the
+# dependency is upgraded (the scanner reports ignores that no longer match):
+#
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"  # package version, why it is not reachable
+# ignoreUntil = 2027-01-31
+# reason = "short justification"
