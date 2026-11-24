@@ -176,6 +176,21 @@ func (s *Server) unsubscribeRPCSession(sessionID string, conn *RPCConn) {
 	}
 }
 
+// dropRPCSubsFor withdraws every sessions.subscribe registration on session
+// id, whichever connection holds it. A deleted session keeps no live
+// subscribers: without this a client's stale subscription would satisfy the
+// sessions.send gate for an id that no longer exists. Each registration is
+// closed after it leaves the map, never with rpcSubsMu held.
+func (s *Server) dropRPCSubsFor(id string) {
+	s.rpcSubsMu.Lock()
+	conns := s.rpcSubs[id]
+	delete(s.rpcSubs, id)
+	s.rpcSubsMu.Unlock()
+	for _, sub := range conns {
+		sub.close()
+	}
+}
+
 func (s *Server) unsubscribeAllRPCConn(conn *RPCConn) {
 	s.rpcSubsMu.Lock()
 	for sid, conns := range s.rpcSubs {
@@ -427,7 +442,13 @@ func (s *Server) rpcSessionsSend(connCtx context.Context, conn *RPCConn, req *RP
 		_ = conn.SendError(*req.ID, "invalid request body", "invalid_request_body", nil)
 		return
 	}
-	if !ValidSessionID(params.ID) || !s.sessionVisibleTo(conn.caller, params.ID) {
+	// One reply for a malformed, hidden or unknown id, ahead of every
+	// parameter and subscription check, so those later replies cannot tell
+	// a caller which ids exist (SURFACE-SPEC §4b). main is exempt from the
+	// existence half: a fresh hearth has no main directory until its first
+	// turn.
+	if !ValidSessionID(params.ID) || !s.sessionVisibleTo(conn.caller, params.ID) ||
+		(params.ID != "main" && !s.sessionExists(params.ID)) {
 		_ = conn.SendError(*req.ID, "not found", "not_found", nil)
 		return
 	}

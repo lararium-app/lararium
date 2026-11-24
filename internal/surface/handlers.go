@@ -404,7 +404,14 @@ func (s *Server) deleteSessionExclusive(id string) error {
 	} else if s.Hub != nil && s.Hub.InFlight(id) {
 		return errSessionBusy
 	}
-	return s.Sessions.Delete(id)
+	err := s.Sessions.Delete(id)
+	if err == nil || errors.Is(err, ErrNoSession) {
+		// Runs while the delete claim is held and after the removal: a
+		// subscribe that registered before the removal is dropped here, one
+		// that registers later finds no session and unregisters itself.
+		s.dropRPCSubsFor(id)
+	}
+	return err
 }
 
 // deleteSessionHandler removes a side chat (DELETE /v1/sessions/{id}).
