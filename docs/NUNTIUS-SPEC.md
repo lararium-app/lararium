@@ -157,6 +157,9 @@ P5. **The daemon sits behind NAT; the channel dials out.** Long polling
   atomically (temp+rename), preventing lost updates.
 - Mint: `hearthd pair create` prints `pair1_<20 base62>` once and appends
   a code with `expires = created + pair_code_ttl` (default 15 min; §4).
+  Per-device enrollment codes minted via `hearthd pair create --device`
+  (`dev1_…`) live in the DEVICE-RAILS-SPEC v4 D-ENROLL lane
+  (`<hearth>/custos/enroll.json`), not `owners.json`.
   No listing of live codes. CLI `pair status` reports owners and
   pending-code expiry only — the store holds hashes, so no code
   material is listable by construction. `pair create` refuses to mint

@@ -371,3 +371,84 @@ func TestDeviceDoorWiringAutoApproveInHearthd(t *testing.T) {
 		t.Fatalf("approvalHub should not be consulted, got %d calls", approvalHub.RegisterCustosNamedCalls())
 	}
 }
+
+func TestDeviceEnrollEndToEndWiringInHearthd(t *testing.T) {
+	home := t.TempDir()
+	store, err := surface.OpenTokenStore(home + "/tokens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollStore, err := devices.NewEnrollStore(home+"/custos", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &surface.Server{
+		Store:             store,
+		Enroll:            enrollStore,
+		Cfg:               surface.ServeConfig{AllowedHosts: []string{"localhost", "127.0.0.1"}},
+		DeviceAutoApprove: true,
+	}
+	wireDevices(home, nil, nil, nil, srv)
+	h := surface.NewServer(srv)
+
+	code, err := enrollStore.MintCode(time.Now(), devices.DefaultEnrollTTL)
+	if err != nil {
+		t.Fatalf("MintCode: %v", err)
+	}
+
+	// 1. Redeem dev1_ code via POST /v1/pair on the wired surface.
+	enrollReq := httptest.NewRequest(http.MethodPost, "/v1/pair", strings.NewReader(`{"code":"`+code+`","device_name":"Pixel 9","platform":"android","app_version":"1.0.0"}`))
+	enrollReq.Host = "127.0.0.1:7717"
+	enrollW := httptest.NewRecorder()
+	h.ServeHTTP(enrollW, enrollReq)
+	if enrollW.Code != http.StatusOK {
+		t.Fatalf("enroll status = %d, want 200: %s", enrollW.Code, enrollW.Body.String())
+	}
+	var enr struct {
+		Token    string `json:"token"`
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal(enrollW.Body.Bytes(), &enr); err != nil {
+		t.Fatalf("unmarshal enroll: %v", err)
+	}
+	if enr.DeviceID != "pixel-9" || !strings.HasPrefix(enr.Token, "lar1_") {
+		t.Fatalf("unexpected enroll response: %+v", enr)
+	}
+
+	// 2. Restart devices.Manager from disk: enrolled empty-rails device MUST survive reload.
+	mgrReloaded, err := devices.NewManager(home)
+	if err != nil {
+		t.Fatalf("NewManager reload: %v", err)
+	}
+	if _, err := mgrReloaded.Get(enr.DeviceID); err != nil {
+		t.Fatalf("reloaded manager missing enrolled device %q: %v", enr.DeviceID, err)
+	}
+
+	// 3. Bound device token registers rails via POST /v1/devices/register -> 200 (no 409).
+	regReq := httptest.NewRequest(http.MethodPost, "/v1/devices/register", strings.NewReader(`{"device_id":"pixel-9","display_name":"Pixel 9","rails_declared":[{"name":"calendar","read_only":true}]}`))
+	regReq.Host = "127.0.0.1:7717"
+	regReq.Header.Set("Authorization", "Bearer "+enr.Token)
+	regW := httptest.NewRecorder()
+	h.ServeHTTP(regW, regReq)
+	if regW.Code != http.StatusOK {
+		t.Fatalf("bound register status = %d, want 200: %s", regW.Code, regW.Body.String())
+	}
+
+	// 4. DELETE /v1/devices/pixel-9 sweeps the bound token.
+	adminTok, err := store.Create("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delReq := httptest.NewRequest(http.MethodDelete, "/v1/devices/pixel-9", nil)
+	delReq.Host = "127.0.0.1:7717"
+	delReq.Header.Set("Authorization", "Bearer "+adminTok)
+	delW := httptest.NewRecorder()
+	h.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204: %s", delW.Code, delW.Body.String())
+	}
+	if store.Verify(enr.Token) {
+		t.Fatal("enrolled device token still verified after DELETE")
+	}
+}

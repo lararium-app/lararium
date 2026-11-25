@@ -245,10 +245,21 @@ func (s *Server) deviceRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		req.DisplayName = req.DeviceID
 	}
 
-	// 3. Duplicate check against current committed store
-	if _, err := door.Get(req.DeviceID); err == nil {
-		writeJSONAny(w, http.StatusConflict, map[string]string{"error": "device already exists", "reason": "duplicate_name"})
+	// Bound device credentials may only register their own device_id (DEVICE-RAILS-SPEC D-ENROLL).
+	boundDeviceID := callerDeviceIDFrom(r.Context())
+	if boundDeviceID != "" && boundDeviceID != req.DeviceID {
+		writeJSONAny(w, http.StatusForbidden, map[string]string{"error": "forbidden", "reason": "forbidden"})
 		return
+	}
+
+	// 3. Duplicate check against current committed store.
+	// Skipped when the caller's credential is bound to this exact device_id so
+	// enrolled devices can declare/update their rails cleanly.
+	if boundDeviceID == "" {
+		if _, err := door.Get(req.DeviceID); err == nil {
+			writeJSONAny(w, http.StatusConflict, map[string]string{"error": "device already exists", "reason": "duplicate_name"})
+			return
+		}
 	}
 
 	// 4. Pending registration reservation
@@ -590,6 +601,14 @@ func (s *Server) deviceDeleteHandler(w http.ResponseWriter, _ *http.Request, id 
 	if err := door.Forget(id); err != nil {
 		s.error(w, "forget failed: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if s.Store != nil {
+		if revoked, rerr := s.Store.RevokeDevice(id); rerr != nil {
+			log.Printf("surface: failed to revoke tokens bound to device %s: %v", logSanitize(id), rerr) //nolint:gosec // logSanitize neutralizes control chars
+		} else {
+			log.Printf("surface: revoked %d token(s) bound to device %s", revoked, logSanitize(id))
+		}
 	}
 
 	if s.devicesBroker != nil {

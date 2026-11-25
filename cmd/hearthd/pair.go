@@ -8,16 +8,16 @@ import (
 	"time"
 
 	"github.com/lararium-app/lararium/internal/custos"
+	"github.com/lararium-app/lararium/internal/devices"
 	"github.com/lararium-app/lararium/internal/nuntius"
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
-// `hearthd pair create|revoke|status|unpair` (NUNTIUS-SPEC §3). The CLI talks
-// directly to <hearth.home>/nuntius/owners.json; under the freshness
-// doctrine (§3) the running daemon re-reads the file on every poll
-// iteration, so no IPC, SIGHUP, or daemon restart is required.
+// `hearthd pair create|revoke|status|unpair` (NUNTIUS-SPEC §3, DEVICE-RAILS-SPEC D-ENROLL).
+// Owner codes live in <hearth.home>/nuntius/owners.json; per-device enrollment codes live in
+// <hearth.home>/custos/enroll.json. Both stores are re-read from disk on demand (no SIGHUP).
 
-const pairUsage = "usage: hearthd pair create|revoke --all|status|unpair <user_id>"
+const pairUsage = "usage: hearthd pair create [--device] [--stdout]|revoke --all|status|unpair <user_id>"
 
 func pairCmd(cfgPath string, args []string) {
 	if len(args) == 0 {
@@ -25,14 +25,27 @@ func pairCmd(cfgPath string, args []string) {
 		os.Exit(2)
 	}
 
-	var stdoutFlag bool
+	var stdoutFlag, deviceFlag bool
 	switch args[0] {
 	case "create":
-		if len(args) == 2 && args[1] == "--stdout" {
-			stdoutFlag = true
-		} else if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--stdout]")
-			os.Exit(2)
+		for _, a := range args[1:] {
+			switch a {
+			case "--stdout":
+				if stdoutFlag {
+					fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--device] [--stdout]")
+					os.Exit(2)
+				}
+				stdoutFlag = true
+			case "--device":
+				if deviceFlag {
+					fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--device] [--stdout]")
+					os.Exit(2)
+				}
+				deviceFlag = true
+			default:
+				fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--device] [--stdout]")
+				os.Exit(2)
+			}
 		}
 	case "revoke":
 		if len(args) != 2 || args[1] != "--all" {
@@ -61,6 +74,16 @@ func pairCmd(cfgPath string, args []string) {
 	}
 	cfg.Hearth.Home = custos.ResolveHearthHome("", cfg.Hearth.Home)
 
+	if args[0] == "create" && deviceFlag {
+		enrollStore, err := devices.NewEnrollStore(filepath.Join(cfg.Hearth.Home, "custos"), nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		pairCreateDevice(enrollStore, stdoutFlag)
+		return
+	}
+
 	store, err := nuntius.NewPairStore(filepath.Join(cfg.Hearth.Home, "nuntius"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -71,9 +94,19 @@ func pairCmd(cfgPath string, args []string) {
 	case "create":
 		pairCreate(cfg, store, stdoutFlag)
 	case "revoke":
-		pairRevokeAll(store)
+		enrollStore, err := devices.NewEnrollStore(filepath.Join(cfg.Hearth.Home, "custos"), nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		pairRevokeAll(store, enrollStore)
 	case "status":
-		pairStatus(store)
+		enrollStore, err := devices.NewEnrollStore(filepath.Join(cfg.Hearth.Home, "custos"), nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		pairStatus(store, enrollStore)
 	case "unpair":
 		pairUnpair(cfg, store, args[1])
 	}
@@ -114,19 +147,51 @@ func pairCreate(cfg *Config, store *nuntius.PairStore, stdoutOnly bool) {
 	}
 }
 
-// pairRevokeAll clears all pending pairing codes (§3).
-func pairRevokeAll(store *nuntius.PairStore) {
+// pairCreateDevice mints a one-time per-device enrollment code valid for
+// devices.DefaultEnrollTTL (24h). No owner-exists gate applies: devices can be
+// enrolled regardless of owner pairing state (DEVICE-RAILS-SPEC D-ENROLL).
+func pairCreateDevice(enrollStore *devices.EnrollStore, stdoutOnly bool) {
+	code, err := enrollStore.MintCode(time.Now(), devices.DefaultEnrollTTL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(code)
+	if !stdoutOnly {
+		fmt.Fprintf(os.Stderr, "device enrollment code: %s (expires in %s)\nredeem via POST /v1/pair with {\"code\":%q,\"device_name\":\"<name>\"}\n", code, devices.DefaultEnrollTTL, code)
+	}
+}
+
+// pairRevokeAll clears all pending pairing and device enrollment codes (§3, D-ENROLL).
+func pairRevokeAll(store *nuntius.PairStore, enrollStore *devices.EnrollStore) {
+	now := time.Now()
+	o, err := store.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	ownerCount := 0
+	for _, c := range o.Codes {
+		if now.Unix() < c.Expires {
+			ownerCount++
+		}
+	}
 	if err := store.RevokeAll(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Println("pending codes cleared")
+	deviceCount, err := enrollStore.RevokeAll(now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("pending codes cleared (owner: %d, device: %d)\n", ownerCount, deviceCount)
 }
 
-// pairStatus reports owners and pending-code expiry without a daemon (§3).
-// Missing owners.json reports unpaired state with exit code 0.
-// No code material or hash is ever printed.
-func pairStatus(store *nuntius.PairStore) {
+// pairStatus reports owners, pending owner-code expiry, and pending device
+// enrollment codes without a daemon (§3, D-ENROLL). Missing files report
+// empty state with exit code 0. No code material or hash is ever printed.
+func pairStatus(store *nuntius.PairStore, enrollStore *devices.EnrollStore) {
 	o, err := store.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -142,6 +207,7 @@ func pairStatus(store *nuntius.PairStore) {
 		}
 	}
 
+	now := time.Now()
 	if len(o.Codes) == 0 {
 		fmt.Println("pending codes: none")
 	} else {
@@ -150,7 +216,6 @@ func pairStatus(store *nuntius.PairStore) {
 		sort.SliceStable(codes, func(i, j int) bool {
 			return codes[i].Created < codes[j].Created
 		})
-		now := time.Now()
 		for _, c := range codes {
 			rem := time.Until(time.Unix(c.Expires, 0)).Round(time.Second)
 			if rem <= 0 || now.Unix() >= c.Expires {
@@ -158,6 +223,21 @@ func pairStatus(store *nuntius.PairStore) {
 			} else {
 				fmt.Printf("  expires in %s\n", rem)
 			}
+		}
+	}
+
+	pendingEnroll, err := enrollStore.Pending(now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("device enrollment codes: %d\n", len(pendingEnroll))
+	for _, exp := range pendingEnroll {
+		rem := time.Until(exp).Round(time.Second)
+		if rem <= 0 {
+			fmt.Println("  expired")
+		} else {
+			fmt.Printf("  expires in %s\n", rem)
 		}
 	}
 }

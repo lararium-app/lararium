@@ -139,12 +139,21 @@ type KindVerifier interface {
 	VerifyKind(token string) (caller string, kind string, ok bool)
 }
 
+// BindingVerifier is a KindVerifier that also reports the device_id a
+// per-device credential is bound to (TokenStore implements it). BearerAuth
+// checks BindingVerifier before KindVerifier and binds caller, kind, and
+// device_id into the request context (DEVICE-RAILS-SPEC D-ENROLL).
+type BindingVerifier interface {
+	VerifyBinding(token string) (caller, kind, deviceID string, ok bool)
+}
+
 // BearerAuth gates /v1/ behind a bearer token verified by v (the
 // TokenStore). Static routes are registered outside this middleware
 // (spec §4: the page itself carries no secret).
 func BearerAuth(v Verifier) func(http.Handler) http.Handler {
-	iv, _ := v.(IdentityVerifier)
+	bv, _ := v.(BindingVerifier)
 	kv, _ := v.(KindVerifier)
+	iv, _ := v.(IdentityVerifier)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -160,6 +169,16 @@ func BearerAuth(v Verifier) func(http.Handler) http.Handler {
 			}
 
 			token := auth[len(prefix):]
+			if bv != nil {
+				caller, kind, deviceID, ok := bv.VerifyBinding(token)
+				if !ok {
+					writeJSONBody(w, http.StatusUnauthorized, `{"error":"unauthorized"}`)
+					return
+				}
+				ctx := withCallerDevice(withCallerKind(withCaller(r.Context(), caller), kind), deviceID)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			if kv != nil {
 				caller, kind, ok := kv.VerifyKind(token)
 				if !ok {

@@ -35,6 +35,13 @@ type tokenEntry struct {
 	// text is operator-supplied and must never drive a value that lands
 	// in the tamper-evident audit ledger.
 	Kind string `json:"kind,omitempty"`
+	// DeviceID, DeviceName, Platform, and AppVersion are additive binding
+	// metadata set only by per-device enrollment (DEVICE-RAILS-SPEC D-ENROLL).
+	// Absent on legacy, admin, web, and owner-paired credentials.
+	DeviceID   string `json:"device_id,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+	Platform   string `json:"platform,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
 }
 
 // TokenKindDevice marks a credential minted by redeeming a pairing code,
@@ -122,7 +129,14 @@ func (s *TokenStore) Create(label string) (string, error) {
 // client it is issuing to — notably redeeming a pairing code. Operator
 // mint paths must keep using Create, which leaves the kind empty.
 func (s *TokenStore) CreateKind(label, kind string) (string, error) {
-	return s.createExpiringKind(label, kind, 0)
+	return s.createEntry(label, kind, 0, "", "", "", "")
+}
+
+// CreateDeviceToken appends a non-expiring hashed token tagged with
+// TokenKindDevice and bound to deviceID, returning the plaintext once.
+// Reserved for the per-device enrollment lane (DEVICE-RAILS-SPEC D-ENROLL).
+func (s *TokenStore) CreateDeviceToken(label, deviceID, deviceName, platform, appVersion string) (string, error) {
+	return s.createEntry(label, TokenKindDevice, 0, deviceID, deviceName, platform, appVersion)
 }
 
 // CreateExpiring appends a hashed token under label with an optional TTL.
@@ -130,10 +144,10 @@ func (s *TokenStore) CreateKind(label, kind string) (string, error) {
 // if ttl <= 0, Expires is left empty. While holding the exclusive lock,
 // CreateExpiring drops entries already past their expiry (opportunistic GC).
 func (s *TokenStore) CreateExpiring(label string, ttl time.Duration) (string, error) {
-	return s.createExpiringKind(label, "", ttl)
+	return s.createEntry(label, "", ttl, "", "", "", "")
 }
 
-func (s *TokenStore) createExpiringKind(label, kind string, ttl time.Duration) (string, error) {
+func (s *TokenStore) createEntry(label, kind string, ttl time.Duration, deviceID, deviceName, platform, appVersion string) (string, error) {
 	unlock, err := s.lock(syscall.LOCK_EX)
 	if err != nil {
 		return "", err
@@ -162,10 +176,14 @@ func (s *TokenStore) createExpiringKind(label, kind string, ttl time.Duration) (
 	plaintext := NewToken()
 	hash := sha256.Sum256([]byte(plaintext))
 	entry := tokenEntry{
-		Hash:    hex.EncodeToString(hash[:]),
-		Label:   label,
-		Created: now.Format(time.RFC3339),
-		Kind:    kind,
+		Hash:       hex.EncodeToString(hash[:]),
+		Label:      label,
+		Created:    now.Format(time.RFC3339),
+		Kind:       kind,
+		DeviceID:   deviceID,
+		DeviceName: deviceName,
+		Platform:   platform,
+		AppVersion: appVersion,
 	}
 	if ttl > 0 {
 		entry.Expires = now.Add(ttl).Format(time.RFC3339)
@@ -195,6 +213,45 @@ func (s *TokenStore) RevokeLabel(label string) (int, error) {
 	newEntries := make([]tokenEntry, 0, len(entries))
 	for _, e := range entries {
 		if e.Label == label {
+			removed++
+		} else {
+			newEntries = append(newEntries, e)
+		}
+	}
+
+	if removed == 0 {
+		return 0, nil
+	}
+
+	if err := s.writeEntries(newEntries); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// RevokeDevice drops every entry bound to deviceID and returns the number of
+// entries removed. An empty deviceID is a no-op so unbound credentials are
+// never swept accidentally.
+func (s *TokenStore) RevokeDevice(deviceID string) (int, error) {
+	if deviceID == "" {
+		return 0, nil
+	}
+
+	unlock, err := s.lock(syscall.LOCK_EX)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+
+	entries, err := s.readEntries()
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	newEntries := make([]tokenEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.DeviceID == deviceID {
 			removed++
 		} else {
 			newEntries = append(newEntries, e)
@@ -288,9 +345,17 @@ func (s *TokenStore) VerifyIdentity(token string) (string, bool) {
 // minted before the field existed reports — so callers must treat "" as
 // the web channel rather than as unknown.
 func (s *TokenStore) VerifyKind(token string) (string, string, bool) {
+	caller, kind, _, ok := s.VerifyBinding(token)
+	return caller, kind, ok
+}
+
+// VerifyBinding checks token like VerifyKind and additionally reports the
+// bound device_id recorded on the matching entry, or "" for unbound
+// credentials (admin/web/legacy/owner-paired).
+func (s *TokenStore) VerifyBinding(token string) (callerID, kind, deviceID string, ok bool) {
 	entries, err := s.readEntries()
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	candidateHash := sha256.Sum256([]byte(token))
@@ -311,11 +376,11 @@ func (s *TokenStore) VerifyKind(token string) (string, string, bool) {
 			continue
 		}
 		if subtle.ConstantTimeCompare(candidateBytes, storedBytes) == 1 {
-			return "t_" + hex.EncodeToString(storedBytes)[:tokenIDHexLen], e.Kind, true
+			return "t_" + hex.EncodeToString(storedBytes)[:tokenIDHexLen], e.Kind, e.DeviceID, true
 		}
 	}
 
-	return "", "", false
+	return "", "", "", false
 }
 
 func (s *TokenStore) readEntries() ([]tokenEntry, error) {
@@ -376,11 +441,12 @@ func (s *TokenStore) writeEntries(entries []tokenEntry) error {
 // The prefix comes from the one-way hash, never the plaintext, so
 // listing tokens cannot leak credentials (L-7).
 type TokenInfo struct {
-	Label   string
-	Created string
-	Prefix  string
-	Expires string `json:"expires,omitempty"`
-	Expired bool   `json:"expired"`
+	Label    string
+	Created  string
+	Prefix   string
+	Expires  string `json:"expires,omitempty"`
+	Expired  bool   `json:"expired"`
+	DeviceID string `json:"device_id,omitempty"`
 }
 
 // List returns every live token sorted by label (L-7, audit 2026-10-23):
@@ -414,11 +480,12 @@ func (s *TokenStore) List() ([]TokenInfo, error) {
 			}
 		}
 		infos = append(infos, TokenInfo{
-			Label:   e.Label,
-			Created: e.Created,
-			Prefix:  prefix,
-			Expires: e.Expires,
-			Expired: expired,
+			Label:    e.Label,
+			Created:  e.Created,
+			Prefix:   prefix,
+			Expires:  e.Expires,
+			Expired:  expired,
+			DeviceID: e.DeviceID,
 		})
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Label < infos[j].Label })

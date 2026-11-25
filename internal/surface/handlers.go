@@ -117,7 +117,9 @@ type Server struct {
 	BackupCheck func() error
 
 	// PairStore is the optional pairing storage dependency (issue #184).
-	PairStore   PairStore
+	PairStore PairStore
+	// Enroll is the optional per-device enrollment code store (DEVICE-RAILS-SPEC D-ENROLL).
+	Enroll      EnrollStore
 	pairMu      sync.Mutex
 	pairLimiter *pairLimiter
 

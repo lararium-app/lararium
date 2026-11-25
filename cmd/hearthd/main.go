@@ -20,6 +20,7 @@ import (
 
 	"github.com/lararium-app/lararium/internal/backup"
 	"github.com/lararium-app/lararium/internal/custos"
+	"github.com/lararium-app/lararium/internal/devices"
 	"github.com/lararium-app/lararium/internal/fasti"
 	"github.com/lararium-app/lararium/internal/loop"
 	"github.com/lararium-app/lararium/internal/nuntius"
@@ -543,6 +544,9 @@ func tokenCmd(cfgPath string, args []string) {
 				expStr = t.Expires
 			}
 			line := fmt.Sprintf("%-24s %s…  created %s  expires %s", t.Label, t.Prefix, t.Created, expStr)
+			if t.DeviceID != "" {
+				line += "  device " + t.DeviceID
+			}
 			if t.Expired {
 				line += "  EXPIRED"
 			}
@@ -675,6 +679,7 @@ func serve(cfgPath string) {
 		Sessions:          sessions,
 		Hub:               hub,
 		PairStore:         newPairStoreAdapter(openPairStore(home)),
+		Enroll:            openEnrollStore(home),
 		DeviceAutoApprove: cfg.Devices.IsAutoApprove(),
 		HearthName:        cfg.Hearth.Name,
 	}
@@ -887,7 +892,7 @@ func keysHelp(args []string) {
 
 func pairHelp(args []string) {
 	if hasSubverb(args, "create") {
-		fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--stdout]")
+		fmt.Fprintln(os.Stderr, "usage: hearthd pair create [--device] [--stdout]")
 		os.Exit(0)
 	}
 	if hasSubverb(args, "revoke") {
@@ -902,7 +907,7 @@ func pairHelp(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: hearthd pair unpair <user_id>")
 		os.Exit(0)
 	}
-	fmt.Fprintln(os.Stderr, "usage: hearthd pair create|revoke --all|status|unpair <user_id>")
+	fmt.Fprintln(os.Stderr, pairUsage)
 	os.Exit(0)
 }
 
@@ -1061,4 +1066,15 @@ func openPairStore(home string) *nuntius.PairStore {
 		os.Exit(1)
 	}
 	return ps
+}
+
+// openEnrollStore opens the per-device enrollment code store for the surface
+// (DEVICE-RAILS-SPEC D-ENROLL). Same fatal serve-time fault policy as openPairStore.
+func openEnrollStore(home string) *devices.EnrollStore {
+	es, err := devices.NewEnrollStore(filepath.Join(home, "custos"), nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return es
 }

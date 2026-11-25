@@ -23,6 +23,10 @@ var (
 	ipPattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 )
 
+// AuditKindDeviceEnrolled is the device audit kind recorded when a device
+// completes per-device enrollment via POST /v1/pair (DEVICE-RAILS-SPEC D-ENROLL).
+const AuditKindDeviceEnrolled = "device_enrolled"
+
 // DeviceAuditPayload contains fields allowed for device rails audit logging per DEVICE-RAILS-SPEC D8 / R5.
 // Emitters may only record device_id, display_name, rail names, fingerprint, credential NAME —
 // never tokens, phone numbers, addresses, or rail payload data.
@@ -31,18 +35,21 @@ type DeviceAuditPayload struct {
 	DisplayName string
 	Fingerprint string
 	CredName    string
+	Platform    string
+	AppVersion  string
 	RailNames   []string
 	Actor       string
 	Via         string
 	Reason      string
 }
 
-// closedAuditKinds lists the 4 closed device audit kinds.
+// closedAuditKinds lists the closed device audit kinds.
 var closedAuditKinds = map[string]bool{
 	custos.AuditKindDeviceRegistered:         true,
 	custos.AuditKindDeviceForgotten:          true,
 	custos.AuditKindDeviceRailToggled:        true,
 	custos.AuditKindDeviceRegistrationDenied: true,
+	AuditKindDeviceEnrolled:                  true,
 }
 
 // BuildDeviceAuditRecord constructs a validated custos.AuditRecord.
@@ -64,10 +71,12 @@ func BuildDeviceAuditRecord(kind string, p DeviceAuditPayload) (custos.AuditReco
 		}
 	}
 
-	// Reject canary tokens, phone numbers, addresses, or JSON payload fragments in display name, cred name, or reason
+	// Reject canary tokens, phone numbers, addresses, or JSON payload fragments in display name, cred name, platform, app version, or reason
 	for label, text := range map[string]string{
 		"display_name": p.DisplayName,
 		"cred_name":    p.CredName,
+		"platform":     p.Platform,
+		"app_version":  p.AppVersion,
 		"reason":       p.Reason,
 	} {
 		if text == "" {
@@ -92,6 +101,15 @@ func BuildDeviceAuditRecord(kind string, p DeviceAuditPayload) (custos.AuditReco
 		actor = "surface"
 	}
 
+	reason := p.Reason
+	if kind == AuditKindDeviceEnrolled && reason == "" {
+		if p.Platform != "" && p.AppVersion != "" {
+			reason = fmt.Sprintf("platform=%s app_version=%s", p.Platform, p.AppVersion)
+		} else if p.Platform != "" {
+			reason = fmt.Sprintf("platform=%s", p.Platform)
+		}
+	}
+
 	return custos.AuditRecord{
 		Kind:        kind,
 		DeviceID:    p.DeviceID,
@@ -101,7 +119,7 @@ func BuildDeviceAuditRecord(kind string, p DeviceAuditPayload) (custos.AuditReco
 		Names:       p.RailNames,
 		Actor:       actor,
 		Via:         p.Via,
-		Reason:      p.Reason,
+		Reason:      reason,
 	}, nil
 }
 
@@ -129,6 +147,8 @@ func ScrubDeviceAuditPayload(p DeviceAuditPayload) DeviceAuditPayload {
 		DisplayName: scrub(p.DisplayName),
 		Fingerprint: p.Fingerprint,
 		CredName:    scrub(p.CredName),
+		Platform:    scrub(p.Platform),
+		AppVersion:  scrub(p.AppVersion),
 		RailNames:   safeRails,
 		Actor:       p.Actor,
 		Via:         p.Via,
