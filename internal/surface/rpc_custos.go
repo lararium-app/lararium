@@ -288,6 +288,11 @@ func (s *Server) runCustosRPCPump(ctx context.Context, conn *RPCConn, sub *custo
 
 // rpcCustosCardsResolve implements custos.cards.resolve (RPC-SPEC §4) by
 // delegating to the shared resolveCustosCard core in custos_cards.go.
+//
+// Declared known limit (CUSTOS-SPEC §6.4b amendment v15): conn.callerDeviceID
+// is bound once at auth.hello; a device forgotten while its WS session is live
+// continues to approve until reconnect (stamping its DeviceID with an empty
+// DisplayName because the devices door reports it forgotten/tombstoned).
 func (s *Server) rpcCustosCardsResolve(_ context.Context, conn *RPCConn, req *RPCRequest) {
 	trimmed := bytes.TrimSpace(req.Params)
 	var params struct {
@@ -299,7 +304,8 @@ func (s *Server) rpcCustosCardsResolve(_ context.Context, conn *RPCConn, req *RP
 		return
 	}
 
-	out := s.resolveCustosCard(params.ID, params.Verdict, viaForKind(conn.callerKind))
+	attr := s.resolveAttribution(conn.callerDeviceID, conn.upgradeUserAgent)
+	out := s.resolveCustosCard(params.ID, params.Verdict, viaForKind(conn.callerKind), attr)
 	if out.status != http.StatusOK {
 		reason := strings.ReplaceAll(out.reason, " ", "_")
 		_ = conn.SendError(*req.ID, out.reason, reason, nil)

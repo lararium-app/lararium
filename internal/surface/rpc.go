@@ -302,6 +302,10 @@ type RPCConn struct {
 	// (TokenStore.VerifyBinding), set once by auth.hello alongside caller
 	// and read-only afterwards. "" for admin/web/owner-paired credentials.
 	callerDeviceID string
+	// upgradeUserAgent is the HTTP User-Agent header observed server-side
+	// on the WebSocket upgrade request, captured at handshake and read-only
+	// afterwards. Never populated from client RPC parameters.
+	upgradeUserAgent string
 }
 
 func newRPCConn(conn net.Conn, br *bufio.Reader, bw *bufio.Writer) *RPCConn {
@@ -612,7 +616,9 @@ func upgradeWebSocket(w http.ResponseWriter, r *http.Request) (*RPCConn, error) 
 		return nil, err
 	}
 
-	return newRPCConn(conn, rw.Reader, rw.Writer), nil
+	rc := newRPCConn(conn, rw.Reader, rw.Writer)
+	rc.upgradeUserAgent = r.Header.Get("User-Agent")
+	return rc, nil
 }
 
 // wsHandler handles GET /v1/ws (RPC-SPEC §2, §3).

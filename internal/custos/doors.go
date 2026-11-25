@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,7 +27,22 @@ import (
 	"github.com/lararium-app/lararium/internal/surface"
 )
 
-var nameRegex = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+var (
+	nameRegex    = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+	deviceSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+)
+
+const (
+	maxWireB64Bytes     = 512
+	auditDisplayNameCap = 64
+	auditUserAgentCap   = 200
+)
+
+type doorAttribution struct {
+	deviceID    string
+	displayName string
+	userAgent   string
+}
 
 // DoorPaths returns the paths to doors.sock and door.token in stateDir.
 func DoorPaths(stateDir string) (sockPath string, tokenPath string) {
@@ -588,8 +604,8 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 
 	switch fields[0] {
 	case "APPROVE":
-		// APPROVE <id> once|always via web|telegram|device
-		if len(fields) != 5 || fields[3] != "via" {
+		// APPROVE <id> once|always via web|telegram|device [dev <slug> [dn <b64>]] [ua <b64>]
+		if len(fields) < 5 || fields[3] != "via" {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
@@ -599,12 +615,17 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
+		attr, ok := parseVerdictTail(via, fields[5:])
+		if !ok {
+			_ = client.writeRaw([]byte("ERR bad_request\n"))
+			return
+		}
 		cardID := fields[1]
-		s.handleApprove(client, cardID, mode == "always", via)
+		s.handleApprove(client, cardID, mode == "always", via, attr)
 
 	case "DENY":
-		// DENY <id> via web|telegram|device
-		if len(fields) != 4 || fields[2] != "via" {
+		// DENY <id> via web|telegram|device [dev <slug> [dn <b64>]] [ua <b64>]
+		if len(fields) < 4 || fields[2] != "via" {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
@@ -613,12 +634,99 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
+		attr, ok := parseVerdictTail(via, fields[4:])
+		if !ok {
+			_ = client.writeRaw([]byte("ERR bad_request\n"))
+			return
+		}
 		cardID := fields[1]
-		s.handleDeny(client, cardID, via)
+		s.handleDeny(client, cardID, via, attr)
 
 	default:
 		_ = client.writeRaw([]byte("ERR bad_source\n"))
 	}
+}
+
+// parseVerdictTail parses the closed optional v15 attribution tail on APPROVE/DENY:
+//
+//	[dev <slug> [dn <b64>]] [ua <b64>]
+//
+// Keys are parsed strictly pairwise in fixed order (dev < dn < ua). Any unknown key,
+// missing value, duplicate/reordered key, via-illegal key, invalid slug, invalid/padded
+// base64url, or encoded value > 512 bytes returns ok=false (ERR bad_request).
+func parseVerdictTail(via string, tail []string) (doorAttribution, bool) {
+	if len(tail) == 0 {
+		return doorAttribution{}, true
+	}
+	if len(tail)%2 != 0 {
+		return doorAttribution{}, false
+	}
+
+	var attr doorAttribution
+	lastRank := 0
+	hasDev := false
+
+	for i := 0; i < len(tail); i += 2 {
+		key, val := tail[i], tail[i+1]
+		var rank int
+		switch key {
+		case "dev":
+			rank = 1
+		case "dn":
+			rank = 2
+		case "ua":
+			rank = 3
+		default:
+			return doorAttribution{}, false
+		}
+		if rank <= lastRank {
+			return doorAttribution{}, false
+		}
+		lastRank = rank
+
+		switch key {
+		case "dev":
+			if via != "device" || !deviceSlugRe.MatchString(val) {
+				return doorAttribution{}, false
+			}
+			attr.deviceID = val
+			hasDev = true
+		case "dn":
+			if via != "device" || !hasDev {
+				return doorAttribution{}, false
+			}
+			decoded, ok := decodeWireBase64URL(val)
+			if !ok {
+				return doorAttribution{}, false
+			}
+			attr.displayName = decoded
+		case "ua":
+			if via != "web" && via != "device" {
+				return doorAttribution{}, false
+			}
+			decoded, ok := decodeWireBase64URL(val)
+			if !ok {
+				return doorAttribution{}, false
+			}
+			attr.userAgent = decoded
+		}
+	}
+
+	return attr, true
+}
+
+func decodeWireBase64URL(raw string) (string, bool) {
+	if len(raw) == 0 || len(raw) > maxWireB64Bytes {
+		return "", false
+	}
+	if strings.ContainsAny(raw, "+/=") {
+		return "", false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 // validDoorVia reports whether via is a member of the frozen channel enum
@@ -635,7 +743,14 @@ func validDoorVia(via string) bool {
 	}
 }
 
-func (s *DoorServer) handleApprove(client *doorClient, cardID string, always bool, via string) {
+// handleApprove settles an approval card via the fan-out door channel.
+//
+// Declared known limits (CUSTOS-SPEC §6.4b amendment v15):
+//   - If findSessionAndCred yields cred == "", no audit line is written (pre-existing behavior).
+//   - always verdicts mint the standing rule via storeAlwaysRule with actor "surface"; the
+//     standing rule line carries no device identity — device identity lives on the
+//     approval_answered verdict line only.
+func (s *DoorServer) handleApprove(client *doorClient, cardID string, always bool, via string, attr doorAttribution) {
 	v := s.vaultInstance()
 	if v != nil && !v.IsUnlocked() {
 		_ = client.writeRaw([]byte("ERR locked\n"))
@@ -662,7 +777,9 @@ func (s *DoorServer) handleApprove(client *doorClient, cardID string, always boo
 			s.storeAlwaysRule(cardID, "surface")
 		}
 		if cred != "" && v != nil && v.Audit() != nil {
-			_ = v.Audit().AppendApprovalAnsweredVia(cred, "ok", "surface", via)
+			dn := sanitizeAuditFreeText(attr.displayName, auditDisplayNameCap)
+			ua := sanitizeAuditFreeText(attr.userAgent, auditUserAgentCap)
+			_ = v.Audit().AppendApprovalAnsweredAttributed(cred, "ok", "surface", via, attr.deviceID, dn, ua)
 		}
 		_ = client.writeRaw([]byte("OK\n"))
 	case 410:
@@ -679,7 +796,7 @@ func (s *DoorServer) handleApprove(client *doorClient, cardID string, always boo
 	}
 }
 
-func (s *DoorServer) handleDeny(client *doorClient, cardID string, via string) {
+func (s *DoorServer) handleDeny(client *doorClient, cardID string, via string, attr doorAttribution) {
 	v := s.vaultInstance()
 	if v != nil && !v.IsUnlocked() {
 		_ = client.writeRaw([]byte("ERR locked\n"))
@@ -697,7 +814,9 @@ func (s *DoorServer) handleDeny(client *doorClient, cardID string, via string) {
 	switch status {
 	case 200:
 		if cred != "" && v != nil && v.Audit() != nil {
-			_ = v.Audit().AppendApprovalAnsweredVia(cred, "denied", "surface", via)
+			dn := sanitizeAuditFreeText(attr.displayName, auditDisplayNameCap)
+			ua := sanitizeAuditFreeText(attr.userAgent, auditUserAgentCap)
+			_ = v.Audit().AppendApprovalAnsweredAttributed(cred, "denied", "surface", via, attr.deviceID, dn, ua)
 		}
 		_ = client.writeRaw([]byte("OK\n"))
 	case 410:

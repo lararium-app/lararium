@@ -1,6 +1,6 @@
 # CUSTOS-SPEC — the security envelope: vault, surrogation, policy, audit
 
-Status: **FROZEN (v7), approved 2026-10-05; amended through v13
+Status: **FROZEN (v7), approved 2026-10-05; amended through v15
 (below).** All six design questions are decided (§12). Base suite
 V1–V26; amendments extend it through V29.
 **Amendment v8 (approved 2026-10-07).** Adds §6.4a (the
@@ -87,6 +87,44 @@ touched**: `device` remains outside them and continues to fold to
 `source` stay distinct fields answering distinct questions — which
 channel a human decided on, versus what caused the transition.
 Everything else: unchanged.
+
+**Amendment v15 (2026-11-25, #339 per-device verdict attribution +
+web User-Agent).** Adds an optional, closed, fixed-order attribution
+tail to the §6.4b `APPROVE` and `DENY` verbs:
+`APPROVE <id> once|always via <via> [dev <slug> [dn <b64>]] [ua <b64>]`
+and `DENY <id> via <via> [dev <slug> [dn <b64>]] [ua <b64>]`. Keys are
+parsed strictly pairwise in fixed order (`dev`, then `dn`, then `ua`);
+`dev`/`dn` are legal only when `via == device` (`dn` only after `dev`),
+`ua` is legal only when `via == web` or `via == device`, and any tail
+on `via == telegram`, duplicate/reordered/unknown key, missing value,
+invalid `<slug>` (`^[a-z0-9][a-z0-9_-]{0,31}$`), invalid/padded
+unpadded-base64url (`base64.RawURLEncoding`, rejecting `+`, `/`, `=`),
+or encoded value exceeding 512 bytes is rejected with `ERR bad_request`
+(explicitly added to the §6.4b verdict error set; the `via` enum gate
+still runs first and remains `ERR bad_source`-only). Tail-less commands
+parse identically to pre-v15. `AuditRecord` (§8.1) gains the additive
+`user_agent` (`json:"user_agent,omitempty"`) field alongside the D8
+`device_id` and `display_name` fields; `dn` (64-rune cap) and `ua`
+(200-rune cap) are scrubbed server-side (invalid UTF-8 replaced,
+Unicode `Cc`/`Cf`/`Zl`/`Zp` stripped, emails/IPv4/IPv6/≥32-char opaque
+runs/`Bearer <token>` redacted) before writing. **Stamping rules and
+empty-not-fabricated doctrine:** `via == device` stamps `dev`, optional
+`dn` (may be empty if the device was forgotten mid-verdict), and
+optional `ua`; `via == web` stamps `ua` only (device fields forbidden);
+`via == telegram` carries no tail; tail-less `via == device` verdicts
+(pre-v15 peers or legacy device-kind tokens carrying no bound id) leave
+device fields **empty** — never a token fingerprint, never a
+placeholder. `user_agent` is **advisory, client-asserted telemetry**
+observed server-side from the HTTP/WS request header and must **never**
+be used as an attribution key. All tail fields record **attribution as
+asserted by the authenticated door peer**. `device_id` is **unique per
+device lifetime** (forgetting a device clears the tombstone on
+re-enrollment; `device_forgotten`/`device_enrolled` lines bracket
+lifetimes). **Deployment note:** upgrade `custosd` before `hearthd`;
+if a v15 door client sends a tailed verdict to a pre-v15 `custosd` and
+receives `ERR bad_source`, it retries once with the tail-less verb so
+attribution degrades to empty and no verdict is lost. Everything else:
+unchanged.
 
 Specifies `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
@@ -1041,11 +1079,11 @@ like every other denial path.
          -> OK <json array: current pending cards, §6.4a wire shape>
          -> ERR bad_token            (connection closes after this line)
          -> ERR bad_name             (connection closes after this line)
-    C→S  APPROVE <id> once|always via web|telegram|device
-    C→S  DENY <id> via web|telegram|device
+    C→S  APPROVE <id> once|always via web|telegram|device [dev <slug> [dn <b64>]] [ua <b64>]
+    C→S  DENY <id> via web|telegram|device [dev <slug> [dn <b64>]] [ua <b64>]
          -> OK | ERR already_answered | ERR no_such_card
-            | ERR locked | ERR bad_source | ERR stale_verdict
-            | ERR ip_ask_only          (synchronous, §6.4a parity)
+            | ERR locked | ERR bad_source | ERR bad_request
+            | ERR stale_verdict | ERR ip_ask_only (synchronous, §6.4a parity; bad_request added v15)
     S→C  CARD <json>                 (after HELLO; §6.4a wire shape)
     S→C  GONE <json>                 {id, state, reason}
 
@@ -1200,7 +1238,7 @@ and crash-tail rule, separate file family. Kinds (frozen):
 `credential_removed`, `surrogate_created`, `surrogate_revoked`,
 `surrogate_rejected`, `registry_reconciled`, `vault_mutation_intent`,
 `vault_mutation`, `vault_mutation_recovered`,
-`approval_answered` (amendment v8: a ctl-door verdict settled, §6.4a; amendment v9: door verdicts carry `via: web|telegram` — closed enum, actor stays `surface`; amendment v14 adds `device` to that enum),
+`approval_answered` (amendment v8: a ctl-door verdict settled, §6.4a; amendment v9: door verdicts carry `via: web|telegram` — closed enum, actor stays `surface`; amendment v14 adds `device` to that enum; amendment v15 adds optional `device_id`, `display_name`, and `user_agent` attribution fields as asserted by the authenticated door peer),
 `vault_mutation_aborted` (emitted when a §4.2 mutation is refused
 after its intent line — `reason: lock_timeout` or a failed
 encrypt/write — **or by first-unlock recovery for an intent that

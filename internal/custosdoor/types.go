@@ -92,6 +92,15 @@ type Registry interface {
 	Attach() (cards []Card, cancel func(), events <-chan Event)
 }
 
+// Attribution carries optional per-device identity and server-observed
+// User-Agent across the door wire (CUSTOS-SPEC §6.4b amendment v15).
+// All fields are optional; zero value emits the pre-v15 tail-less verb.
+type Attribution struct {
+	DeviceID    string
+	DisplayName string
+	UserAgent   string
+}
+
 // Sentinels mapped from the door's synchronous acks. Alias to the
 // surface sentinels once slice 3 merges.
 var (
@@ -100,6 +109,7 @@ var (
 	ErrLocked       = errors.New("credential custody locked")
 	ErrNoSuchCard   = errors.New("no such custos card")
 	ErrIPAskOnly    = errors.New("custos card is allow-once only (ip destination)")
+	ErrBadRequest   = errors.New("custos door bad request")
 
 	// ErrDoorDown: no live door connection to carry the verb.
 	ErrDoorDown = errors.New("custos door not connected")
@@ -112,6 +122,8 @@ var (
 	// idRe keeps card ids inert on the wire: no whitespace or newline,
 	// so a verb can never be split into a second frame.
 	idRe = regexp.MustCompile(`^[0-9A-Za-z_.:-]{1,128}$`)
+	// deviceSlugRe mirrors internal/devices' closed slug grammar.
+	deviceSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 )
 
 // ValidName reports whether s satisfies the HELLO name grammar.

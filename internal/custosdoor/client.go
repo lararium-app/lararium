@@ -3,6 +3,7 @@ package custosdoor
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Reconnect and timing defaults (§6.4b: capped exponential backoff,
@@ -549,23 +552,65 @@ func (c *Client) Resolve(id, verdict string) (string, error) {
 
 // ResolveVia settles a card, attributing via ("web", "telegram" or
 // "device"). It returns the synchronous door ack mapped to a state or
-// sentinel.
+// sentinel. Wire bytes are unchanged from pre-v15 (zero Attribution).
 func (c *Client) ResolveVia(id, verdict, via string) (string, error) {
+	return c.ResolveAttributed(id, verdict, via, Attribution{})
+}
+
+const (
+	clientDisplayNameCap = 64
+	clientUserAgentCap   = 200
+	// maxWireDecodedBytes guarantees base64.RawURLEncoding length <= 512 bytes.
+	maxWireDecodedBytes = 384
+)
+
+// ResolveAttributed settles a card with optional v15 attribution metadata
+// (CUSTOS-SPEC §6.4b amendment v15). DeviceID is validated before building
+// the verb, and free-text fields are control-stripped and capped client-side
+// before base64url encoding (defense in depth; the server re-sanitizes).
+//
+// Mixed-version downgrade: if the tailed verb receives ERR bad_source (a
+// pre-v15 custosd rejecting the optional tail without applying the verdict),
+// the client retries ONCE with the tail-less verb so the verdict still lands.
+func (c *Client) ResolveAttributed(id, verdict, via string, attr Attribution) (string, error) {
 	if via != ViaWeb && via != ViaTelegram && via != ViaDevice {
 		return "", fmt.Errorf("custos: unknown via %q", via)
 	}
 	if !idRe.MatchString(id) {
 		return "", ErrNoSuchCard
 	}
-	var verb, state string
+	if attr.DeviceID != "" && !deviceSlugRe.MatchString(attr.DeviceID) {
+		return "", fmt.Errorf("%w: invalid device_id", ErrBadRequest)
+	}
+
+	var baseVerb, state string
 	switch verdict {
 	case VerdictOnce, VerdictAlways:
-		verb, state = "APPROVE "+id+" "+verdict+" via "+via+"\n", StateApproved
+		baseVerb, state = "APPROVE "+id+" "+verdict+" via "+via, StateApproved
 	case VerdictDeny:
-		verb, state = "DENY "+id+" via "+via+"\n", StateDenied
+		baseVerb, state = "DENY "+id+" via "+via, StateDenied
 	default:
 		return "", fmt.Errorf("custos: unknown verdict %q", verdict)
 	}
+
+	var tail strings.Builder
+	if via == ViaDevice && attr.DeviceID != "" {
+		tail.WriteString(" dev ")
+		tail.WriteString(attr.DeviceID)
+		if dn := sanitizeClientFreeText(attr.DisplayName, clientDisplayNameCap); dn != "" {
+			tail.WriteString(" dn ")
+			tail.WriteString(base64.RawURLEncoding.EncodeToString([]byte(dn)))
+		}
+	}
+	if via == ViaWeb || via == ViaDevice {
+		if ua := sanitizeClientFreeText(attr.UserAgent, clientUserAgentCap); ua != "" {
+			tail.WriteString(" ua ")
+			tail.WriteString(base64.RawURLEncoding.EncodeToString([]byte(ua)))
+		}
+	}
+
+	hasTail := tail.Len() > 0
+	verb := baseVerb + tail.String() + "\n"
 
 	c.cmdMu.Lock()
 	defer c.cmdMu.Unlock()
@@ -575,6 +620,23 @@ func (c *Client) ResolveVia(id, verdict, via string) (string, error) {
 	if s == nil {
 		return "", ErrDoorDown
 	}
+
+	line, err := c.sendVerb(s, verb)
+	if err != nil {
+		return "", err
+	}
+	if hasTail && line == "ERR bad_source" {
+		// Pre-v15 custosd rejects tailed verbs with ERR bad_source before
+		// applying the verdict; retry once without the tail.
+		line, err = c.sendVerb(s, baseVerb+"\n")
+		if err != nil {
+			return "", err
+		}
+	}
+	return mapAck(line, state)
+}
+
+func (c *Client) sendVerb(s *session, verb string) (string, error) {
 	select { // discard any stray ack from an earlier exchange
 	case <-s.ack:
 	default:
@@ -588,7 +650,7 @@ func (c *Client) ResolveVia(id, verdict, via string) (string, error) {
 	defer t.Stop()
 	select {
 	case line := <-s.ack:
-		return mapAck(line, state)
+		return line, nil
 	case <-s.dead:
 		return "", ErrDoorDown
 	case <-t.C:
@@ -597,6 +659,29 @@ func (c *Client) ResolveVia(id, verdict, via string) (string, error) {
 		s.conn.Close()
 		return "", errors.New("custos: door ack timed out")
 	}
+}
+
+func sanitizeClientFreeText(s string, capRunes int) string {
+	if s == "" || capRunes <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	runes := 0
+	for _, r := range strings.ToValidUTF8(s, "\uFFFD") {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			continue
+		}
+		if runes >= capRunes {
+			break
+		}
+		rLen := utf8.RuneLen(r)
+		if b.Len()+rLen > maxWireDecodedBytes {
+			break
+		}
+		b.WriteRune(r)
+		runes++
+	}
+	return b.String()
 }
 
 func mapAck(line, okState string) (string, error) {
@@ -614,6 +699,8 @@ func mapAck(line, okState string) (string, error) {
 		return "", ErrNoSuchCard
 	case "ip_ask_only":
 		return "", ErrIPAskOnly
+	case "bad_request":
+		return "", ErrBadRequest
 	case "bad_source":
 		return "", errors.New("custos: door refused verb source (bad_source)")
 	}
