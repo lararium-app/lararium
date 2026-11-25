@@ -100,6 +100,22 @@ func (a *CustosWebAdapter) ResolveVia(id, verdict, via string) (string, error) {
 	return state, mapDoorError(err)
 }
 
+var _ surface.CustosRegistryAttributed = (*CustosWebAdapter)(nil)
+
+// ResolveAttributed settles a custody card with optional v15 per-device
+// attribution and server-observed User-Agent (CUSTOS-SPEC §6.4b amendment v15).
+func (a *CustosWebAdapter) ResolveAttributed(id, verdict, via string, attr surface.CustosAttribution) (string, error) {
+	if a == nil || a.client == nil {
+		return "", custosdoor.ErrDoorDown
+	}
+	state, err := a.client.ResolveAttributed(id, verdict, via, custosdoor.Attribution{
+		DeviceID:    attr.DeviceID,
+		DisplayName: attr.DisplayName,
+		UserAgent:   attr.UserAgent,
+	})
+	return state, mapDoorError(err)
+}
+
 // Attach delegates to the door client Attach and maps events to surface types.
 func (a *CustosWebAdapter) Attach() ([]surface.CustosCard, func(), <-chan surface.CustosEvent) {
 	if a == nil || a.client == nil {
@@ -200,6 +216,8 @@ func mapDoorError(err error) error {
 		return surface.ErrLocked
 	case errors.Is(err, custosdoor.ErrIPAskOnly):
 		return surface.ErrIPAskOnly
+	case errors.Is(err, custosdoor.ErrBadRequest):
+		return surface.ErrBadRequest
 	default:
 		return err
 	}

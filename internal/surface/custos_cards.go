@@ -88,6 +88,7 @@ var (
 	ErrNoSuchCard   = errors.New("no_such_card")
 	ErrIPAskOnly    = errors.New("ip_ask_only")
 	ErrBadSource    = errors.New("bad_source")
+	ErrBadRequest   = errors.New("bad_request")
 )
 
 // CustosRegistry is the interface connecting the web surface to the door client
@@ -114,6 +115,25 @@ type CustosRegistry interface {
 type CustosRegistryVia interface {
 	CustosRegistry
 	ResolveVia(id, verdict, via string) (state string, err error)
+}
+
+// CustosAttribution carries optional per-device identity and server-observed
+// User-Agent across the custody door wire (CUSTOS-SPEC §6.4b amendment v15).
+// Declared locally so surface never imports internal/custosdoor.
+type CustosAttribution struct {
+	DeviceID    string
+	DisplayName string
+	UserAgent   string
+}
+
+// CustosRegistryAttributed is an optional extension of CustosRegistry that
+// forwards per-device identity and server-observed User-Agent across the
+// door wire (CUSTOS-SPEC §6.4b amendment v15). Discovered via type assertion
+// (same optional pattern as BindingVerifier over KindVerifier) so existing
+// registries and test doubles remain compatible.
+type CustosRegistryAttributed interface {
+	CustosRegistry
+	ResolveAttributed(id, verdict, via string, attr CustosAttribution) (state string, err error)
 }
 
 // SetCustosRegistry attaches a CustosRegistry to the server.
@@ -257,12 +277,34 @@ func (s *Server) custosResolveHandler(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	out := s.resolveCustosCard(id, req.Verdict, viaForKind(callerKindFrom(r.Context())))
+	// User-Agent is strictly server-observed from the HTTP request header;
+	// any body field named user_agent is ignored by the request struct above.
+	attr := s.resolveAttribution(callerDeviceIDFrom(r.Context()), r.Header.Get("User-Agent"))
+	out := s.resolveCustosCard(id, req.Verdict, viaForKind(callerKindFrom(r.Context())), attr)
 	if out.status != http.StatusOK {
 		s.error(w, out.reason, out.status)
 		return
 	}
 	writeJSONAny(w, http.StatusOK, map[string]string{"state": out.state})
+}
+
+// resolveAttribution assembles the server-observed attribution metadata for a
+// verdict. DisplayName is fetched synchronously from the devices door when
+// deviceID is non-empty; a nil door, unknown device, or forgotten (tombstoned)
+// device preserves DeviceID with an empty DisplayName.
+func (s *Server) resolveAttribution(deviceID, userAgent string) CustosAttribution {
+	attr := CustosAttribution{
+		DeviceID:  deviceID,
+		UserAgent: userAgent,
+	}
+	if deviceID != "" {
+		if door := s.getDeviceDoor(); door != nil {
+			if card, err := door.Get(deviceID); err == nil {
+				attr.DisplayName = card.DisplayName
+			}
+		}
+	}
+	return attr
 }
 
 // custosResolveOutcome is the transport-neutral result of resolving a custody
@@ -284,7 +326,7 @@ type custosResolveOutcome struct {
 // kind of credential the caller authenticated with, never from anything
 // the caller sends in the request, and is stamped on both the door wire
 // and the hub fallback so the audit ledger names the real channel.
-func (s *Server) resolveCustosCard(id, verdict, via string) custosResolveOutcome {
+func (s *Server) resolveCustosCard(id, verdict, via string, attr CustosAttribution) custosResolveOutcome {
 	if !ValidApprovalID(id) {
 		return custosResolveOutcome{status: http.StatusNotFound, reason: "not found"}
 	}
@@ -296,7 +338,9 @@ func (s *Server) resolveCustosCard(id, verdict, via string) custosResolveOutcome
 	if reg != nil {
 		var state string
 		var err error
-		if rv, ok := reg.(CustosRegistryVia); ok {
+		if ra, ok := reg.(CustosRegistryAttributed); ok {
+			state, err = ra.ResolveAttributed(id, verdict, via, attr)
+		} else if rv, ok := reg.(CustosRegistryVia); ok {
 			state, err = rv.ResolveVia(id, verdict, via)
 		} else {
 			state, err = reg.Resolve(id, verdict)
@@ -319,6 +363,8 @@ func (s *Server) resolveCustosCard(id, verdict, via string) custosResolveOutcome
 			return custosResolveOutcome{status: http.StatusBadRequest, reason: "ip_ask_only"}
 		case errors.Is(err, ErrBadSource) || err.Error() == "bad_source":
 			return custosResolveOutcome{status: http.StatusBadRequest, reason: "bad_source"}
+		case errors.Is(err, ErrBadRequest) || err.Error() == "bad_request":
+			return custosResolveOutcome{status: http.StatusBadRequest, reason: "bad_request"}
 		default:
 			// An unknown registry error still falls through when the hub
 			// owns the id; otherwise it is ours to report.
@@ -336,6 +382,8 @@ func (s *Server) resolveCustosCard(id, verdict, via string) custosResolveOutcome
 
 	// Turn-approval fallback: ids the door registry never saw (web/MCP
 	// rail approvals). Settles the live turn via the hub, source custos.
+	// Attribution (attr) is intentionally ignored here: hub lines are
+	// turn-approval records, not custody ledger lines.
 	if hub := s.approvalsViaRegistry(); hub != nil {
 		// Issue #132: capture the tool name BEFORE settling so the
 		// mint sees the card's own tool even if terminal entries are

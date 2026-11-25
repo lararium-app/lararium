@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // AuditRecord represents one event in the hash-chained audit log per CUSTOS-SPEC §8.1.
@@ -36,10 +38,16 @@ type AuditRecord struct {
 	// Fingerprint is the connector catalog snapshot fingerprint carried by
 	// the connector lifecycle kinds (CONNECTOR-LIFE-SPEC D9). Additive.
 	Fingerprint string `json:"fingerprint,omitempty"`
-	// DeviceID is the device identifier carried by device rails audit kinds (DEVICE-RAILS-SPEC D8). Additive.
+	// DeviceID is the device identifier carried by device rails audit kinds (DEVICE-RAILS-SPEC D8)
+	// and attributed approval_answered records (CUSTOS-SPEC §6.4b amendment v15). Additive.
 	DeviceID string `json:"device_id,omitempty"`
-	// DisplayName is the device display name carried by device rails audit kinds (DEVICE-RAILS-SPEC D8). Additive.
+	// DisplayName is the device display name carried by device rails audit kinds (DEVICE-RAILS-SPEC D8)
+	// and attributed approval_answered records (CUSTOS-SPEC §6.4b amendment v15). Additive.
 	DisplayName string `json:"display_name,omitempty"`
+	// UserAgent is the server-observed HTTP/WS User-Agent carried by attributed approval_answered
+	// records (CUSTOS-SPEC §6.4b amendment v15). Advisory client-asserted telemetry only; never
+	// an attribution key. Additive.
+	UserAgent string `json:"user_agent,omitempty"`
 }
 
 // AuditEntry is an alias for AuditRecord per CUSTOS-SPEC §8.1 / amendment v9.
@@ -261,6 +269,67 @@ func (a *AuditLogger) AppendApprovalAnsweredVia(cred, reason, actor, via string)
 		Via:    via,
 		Reason: reason,
 	})
+}
+
+// AppendApprovalAnsweredAttributed records an approval resolution from an external door channel
+// with optional per-device attribution and server-observed User-Agent per CUSTOS-SPEC §6.4b
+// amendment v15. Empty optional fields are omitted via omitempty so non-attributed records
+// stay byte-identical to pre-v15 lines.
+func (a *AuditLogger) AppendApprovalAnsweredAttributed(cred, reason, actor, via, deviceID, displayName, userAgent string) error {
+	return a.Append(AuditRecord{
+		Kind:        AuditKindApprovalAnswered,
+		Cred:        cred,
+		Actor:       actor,
+		Via:         via,
+		Reason:      reason,
+		DeviceID:    deviceID,
+		DisplayName: displayName,
+		UserAgent:   userAgent,
+	})
+}
+
+var (
+	auditBearerRe = regexp.MustCompile(`(?i)\bbearer\s+\S+`)
+	auditEmailRe  = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	auditIPv6Re   = regexp.MustCompile(`(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|::(?:[fF]{4}:)?(?:\d{1,3}\.){3}\d{1,3}|(?:[0-9a-fA-F]{1,4}:){1,6}(?::[0-9a-fA-F]{1,4}){1,6}|(?:[0-9a-fA-F]{1,4}:){1,7}:|:(?::[0-9a-fA-F]{1,4}){1,7}`)
+	auditIPv4Re   = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	auditOpaqueRe = regexp.MustCompile(`\S{32,}`)
+)
+
+// sanitizeAuditFreeText scrubs free-text attribution fields (display_name, user_agent)
+// before writing them into the custody audit chain (CUSTOS-SPEC §6.4b amendment v15,
+// mirroring the D8 scrub doctrine without importing internal/devices).
+//
+// Steps in strict order:
+//  1. Replace invalid UTF-8 sequences and strip Unicode categories Cc, Cf, Zl, Zp
+//     (covers CR/LF/NUL, bidi overrides such as U+202E, and line/paragraph separators U+2028/U+2029).
+//  2. Redact Bearer tokens, email addresses, IPv6/IPv4 literals, and opaque runs of >=32
+//     unbroken non-space characters with "[redacted]".
+//  3. Truncate to capRunes runes LAST.
+func sanitizeAuditFreeText(s string, capRunes int) string {
+	if s == "" || capRunes <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToValidUTF8(s, "\uFFFD") {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	clean := b.String()
+	clean = auditBearerRe.ReplaceAllString(clean, "[redacted]")
+	clean = auditEmailRe.ReplaceAllString(clean, "[redacted]")
+	clean = auditIPv6Re.ReplaceAllString(clean, "[redacted]")
+	clean = auditIPv4Re.ReplaceAllString(clean, "[redacted]")
+	clean = auditOpaqueRe.ReplaceAllString(clean, "[redacted]")
+
+	runes := []rune(clean)
+	if len(runes) > capRunes {
+		clean = string(runes[:capRunes])
+	}
+	return clean
 }
 
 // ComputeAnchorMAC computes HMAC-SHA256 over "file:line:hash" under HKDF(vault.key, "custos-anchor").
