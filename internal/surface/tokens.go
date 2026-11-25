@@ -27,7 +27,22 @@ type tokenEntry struct {
 	Label   string `json:"label"`
 	Created string `json:"created"`
 	Expires string `json:"expires,omitempty"`
+	// Kind marks what sort of client the credential was minted for.
+	// Additive and optional: entries written before this field existed
+	// carry no kind, and an absent kind means an ordinary API/web
+	// credential. Only the pairing handler sets TokenKindDevice, so a
+	// device attribution cannot be forged by choosing a label — label
+	// text is operator-supplied and must never drive a value that lands
+	// in the tamper-evident audit ledger.
+	Kind string `json:"kind,omitempty"`
 }
+
+// TokenKindDevice marks a credential minted by redeeming a pairing code,
+// i.e. one held by a paired device rather than by the dashboard or an API
+// client. It is the only honest signal the daemon has for distinguishing
+// the two at decision time: both present the same bearer credential on
+// the same routes (CUSTOS-SPEC §6.4b amendment v14).
+const TokenKindDevice = "device"
 
 // TokenStore is the bearer-token registry on disk: JSON of SHA-256
 // hashes (never plaintext), file mode 0600, re-read on every Verify so
@@ -101,11 +116,24 @@ func (s *TokenStore) Create(label string) (string, error) {
 	return s.CreateExpiring(label, 0)
 }
 
+// CreateKind appends a non-expiring hashed token under label, tagged with
+// kind (see TokenKindDevice), and returns the plaintext exactly once.
+// Reserved for mint paths where the daemon itself knows what kind of
+// client it is issuing to — notably redeeming a pairing code. Operator
+// mint paths must keep using Create, which leaves the kind empty.
+func (s *TokenStore) CreateKind(label, kind string) (string, error) {
+	return s.createExpiringKind(label, kind, 0)
+}
+
 // CreateExpiring appends a hashed token under label with an optional TTL.
 // If ttl > 0, Expires is set to time.Now().UTC().Add(ttl).Format(time.RFC3339);
 // if ttl <= 0, Expires is left empty. While holding the exclusive lock,
 // CreateExpiring drops entries already past their expiry (opportunistic GC).
 func (s *TokenStore) CreateExpiring(label string, ttl time.Duration) (string, error) {
+	return s.createExpiringKind(label, "", ttl)
+}
+
+func (s *TokenStore) createExpiringKind(label, kind string, ttl time.Duration) (string, error) {
 	unlock, err := s.lock(syscall.LOCK_EX)
 	if err != nil {
 		return "", err
@@ -137,6 +165,7 @@ func (s *TokenStore) CreateExpiring(label string, ttl time.Duration) (string, er
 		Hash:    hex.EncodeToString(hash[:]),
 		Label:   label,
 		Created: now.Format(time.RFC3339),
+		Kind:    kind,
 	}
 	if ttl > 0 {
 		entry.Expires = now.Add(ttl).Format(time.RFC3339)
@@ -249,9 +278,19 @@ const tokenIDHexLen = 10
 // (re-pairing mints a new one). It is used for session audience checks and
 // is never returned in any response body.
 func (s *TokenStore) VerifyIdentity(token string) (string, bool) {
+	caller, _, ok := s.VerifyKind(token)
+	return caller, ok
+}
+
+// VerifyKind checks token like VerifyIdentity and additionally reports the
+// kind recorded on the matching entry (see TokenKindDevice). An empty kind
+// means an ordinary API/web credential, which is also what every entry
+// minted before the field existed reports — so callers must treat "" as
+// the web channel rather than as unknown.
+func (s *TokenStore) VerifyKind(token string) (string, string, bool) {
 	entries, err := s.readEntries()
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 
 	candidateHash := sha256.Sum256([]byte(token))
@@ -272,11 +311,11 @@ func (s *TokenStore) VerifyIdentity(token string) (string, bool) {
 			continue
 		}
 		if subtle.ConstantTimeCompare(candidateBytes, storedBytes) == 1 {
-			return "t_" + hex.EncodeToString(storedBytes)[:tokenIDHexLen], true
+			return "t_" + hex.EncodeToString(storedBytes)[:tokenIDHexLen], e.Kind, true
 		}
 	}
 
-	return "", false
+	return "", "", false
 }
 
 func (s *TokenStore) readEntries() ([]tokenEntry, error) {

@@ -128,11 +128,23 @@ type IdentityVerifier interface {
 	VerifyIdentity(token string) (string, bool)
 }
 
+// KindVerifier is an IdentityVerifier that also reports what kind of
+// client the credential was minted for (TokenStore implements it).
+// BearerAuth binds that kind into the request context so a verdict can be
+// attributed to the channel it actually came from instead of being
+// recorded as the web dashboard (CUSTOS-SPEC §6.4b amendment v14). A
+// verifier that does not implement this leaves the kind empty, which
+// means the web channel.
+type KindVerifier interface {
+	VerifyKind(token string) (caller string, kind string, ok bool)
+}
+
 // BearerAuth gates /v1/ behind a bearer token verified by v (the
 // TokenStore). Static routes are registered outside this middleware
 // (spec §4: the page itself carries no secret).
 func BearerAuth(v Verifier) func(http.Handler) http.Handler {
 	iv, _ := v.(IdentityVerifier)
+	kv, _ := v.(KindVerifier)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -148,6 +160,16 @@ func BearerAuth(v Verifier) func(http.Handler) http.Handler {
 			}
 
 			token := auth[len(prefix):]
+			if kv != nil {
+				caller, kind, ok := kv.VerifyKind(token)
+				if !ok {
+					writeJSONBody(w, http.StatusUnauthorized, `{"error":"unauthorized"}`)
+					return
+				}
+				ctx := withCallerKind(withCaller(r.Context(), caller), kind)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			if iv != nil {
 				caller, ok := iv.VerifyIdentity(token)
 				if !ok {

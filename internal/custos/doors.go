@@ -588,14 +588,14 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 
 	switch fields[0] {
 	case "APPROVE":
-		// APPROVE <id> once|always via web|telegram
+		// APPROVE <id> once|always via web|telegram|device
 		if len(fields) != 5 || fields[3] != "via" {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
 		mode := fields[2]
 		via := fields[4]
-		if (mode != "once" && mode != "always") || (via != "web" && via != "telegram") {
+		if (mode != "once" && mode != "always") || !validDoorVia(via) {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
@@ -603,13 +603,13 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 		s.handleApprove(client, cardID, mode == "always", via)
 
 	case "DENY":
-		// DENY <id> via web|telegram
+		// DENY <id> via web|telegram|device
 		if len(fields) != 4 || fields[2] != "via" {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
 		via := fields[3]
-		if via != "web" && via != "telegram" {
+		if !validDoorVia(via) {
 			_ = client.writeRaw([]byte("ERR bad_source\n"))
 			return
 		}
@@ -618,6 +618,20 @@ func (s *DoorServer) handleClientCommand(client *doorClient, line string) {
 
 	default:
 		_ = client.writeRaw([]byte("ERR bad_source\n"))
+	}
+}
+
+// validDoorVia reports whether via is a member of the frozen channel enum
+// accepted on the door wire (CUSTOS-SPEC §6.4b, amendment v14 adds
+// "device"). The enum stays closed: anything else is ERR bad_source, and
+// an empty or missing value never falls back to a default, because a
+// silent default was previously a spoof path for verdict attribution.
+func validDoorVia(via string) bool {
+	switch via {
+	case "web", "telegram", "device":
+		return true
+	default:
+		return false
 	}
 }
 

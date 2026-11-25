@@ -85,6 +85,21 @@ func (a *CustosWebAdapter) Resolve(id, verdict string) (string, error) {
 	return state, mapDoorError(err)
 }
 
+var _ surface.CustosRegistryVia = (*CustosWebAdapter)(nil)
+
+// ResolveVia settles a custody card attributed to the channel the verdict
+// actually arrived on (CUSTOS-SPEC §6.4b: "web", "telegram" or "device").
+// Without this method the surface layer falls back to Resolve, which
+// hard-codes web attribution, so the door — and therefore the audit
+// ledger — would keep recording every device verdict as a dashboard one.
+func (a *CustosWebAdapter) ResolveVia(id, verdict, via string) (string, error) {
+	if a == nil || a.client == nil {
+		return "", custosdoor.ErrDoorDown
+	}
+	state, err := a.client.ResolveVia(id, verdict, via)
+	return state, mapDoorError(err)
+}
+
 // Attach delegates to the door client Attach and maps events to surface types.
 func (a *CustosWebAdapter) Attach() ([]surface.CustosCard, func(), <-chan surface.CustosEvent) {
 	if a == nil || a.client == nil {

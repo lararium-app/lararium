@@ -402,7 +402,11 @@ func TestDisconnectForBridgeDeadDeniesDisconnected(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("decision channel did not yield after disconnect with dead bridge")
 	}
-	if r, s := ap.Reason("s1", id), ap.Source("s1", id); r != "disconnected" || s != "web" {
-		t.Fatalf("reason/source = %q/%q, want disconnected/web", r, s)
+	// A connection-loss denial is machine-caused: the source must name the
+	// cause, not a human channel, or the ledger reads as if the dashboard
+	// user pressed Deny (#338). "listener_closed" folds to hub on the
+	// frozen §6 audit wire, matching its A9 device-channel-loss twin.
+	if r, s := ap.Reason("s1", id), ap.Source("s1", id); r != "disconnected" || s != "listener_closed" {
+		t.Fatalf("reason/source = %q/%q, want disconnected/listener_closed", r, s)
 	}
 }
