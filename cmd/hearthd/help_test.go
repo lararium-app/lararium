@@ -97,6 +97,7 @@ func TestHearthdHelpNeverMutates(t *testing.T) {
 		{"keys list", []string{"keys", "list", "--help"}},
 		{"pair", []string{"pair", "--help"}},
 		{"pair create", []string{"pair", "create", "--help"}},
+		{"pair create --device", []string{"pair", "create", "--device", "--help"}},
 		{"pair revoke", []string{"pair", "revoke", "--help"}},
 		{"pair status", []string{"pair", "status", "--help"}},
 		{"pair unpair", []string{"pair", "unpair", "--help"}},
@@ -157,10 +158,14 @@ func TestHearthdHelpNeverMutates(t *testing.T) {
 				t.Fatalf("keys.json was created during help invocation %v", tc.args)
 			}
 
-			// 3. nuntius owners must NOT exist
+			// 3. nuntius owners and custos enroll must NOT exist
 			ownersPath := filepath.Join(home, "nuntius", "owners.json")
 			if _, err := os.Stat(ownersPath); err == nil {
 				t.Fatalf("owners.json was created during help invocation %v", tc.args)
+			}
+			enrollPath := filepath.Join(home, "custos", "enroll.json")
+			if _, err := os.Stat(enrollPath); err == nil {
+				t.Fatalf("enroll.json was created during help invocation %v", tc.args)
 			}
 		})
 	}

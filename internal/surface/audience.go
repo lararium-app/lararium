@@ -88,6 +88,22 @@ func callerKindFrom(ctx context.Context) string {
 	return kind
 }
 
+type callerDeviceKey struct{}
+
+// withCallerDevice binds the enrolled device_id associated with the request's
+// credential into ctx, alongside caller identity and kind (DEVICE-RAILS-SPEC D-ENROLL).
+func withCallerDevice(ctx context.Context, deviceID string) context.Context {
+	return context.WithValue(ctx, callerDeviceKey{}, deviceID)
+}
+
+// callerDeviceIDFrom returns the device_id bound by BearerAuth, or "" for
+// unbound credentials (admin/web/legacy/owner-paired) or verifiers that do
+// not implement BindingVerifier.
+func callerDeviceIDFrom(ctx context.Context) string {
+	devID, _ := ctx.Value(callerDeviceKey{}).(string)
+	return devID
+}
+
 // Channel names on the verdict wire (CUSTOS-SPEC §6.4b). Declared here
 // rather than imported from the door client so the surface layer does not
 // depend on it for two string constants.

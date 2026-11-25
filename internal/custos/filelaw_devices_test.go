@@ -29,6 +29,24 @@ func TestCheckFileLawAllowsDevicesJSON(t *testing.T) {
 	}
 }
 
+func TestCheckFileLawAllowsEnrollFiles(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "enroll.json"), []byte(`{"codes":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "enroll.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	v := custos.NewVault(stateDir, 5*time.Second)
+	if err := v.CheckFileLaw(); err != nil {
+		t.Fatalf("CheckFileLaw rejected enroll.json/enroll.lock (DEVICE-RAILS D-ENROLL files): %v", err)
+	}
+}
+
 func TestCheckFileLawStillRejectsUnknownFiles(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := os.Chmod(stateDir, 0o700); err != nil {

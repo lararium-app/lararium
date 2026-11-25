@@ -298,6 +298,10 @@ type RPCConn struct {
 	// and read-only afterwards. "" means an ordinary API/web credential,
 	// which is what every operator-minted credential reports.
 	callerKind string
+	// callerDeviceID is the device_id bound to a per-device credential
+	// (TokenStore.VerifyBinding), set once by auth.hello alongside caller
+	// and read-only afterwards. "" for admin/web/owner-paired credentials.
+	callerDeviceID string
 }
 
 func newRPCConn(conn net.Conn, br *bufio.Reader, bw *bufio.Writer) *RPCConn {
@@ -672,13 +676,14 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 		_ = rc.CloseWithCode(WSCloseUnauthorized, WSReasonUnauthorized)
 		return
 	}
-	caller, kind, ok := s.Store.VerifyKind(helloParams.Token)
+	caller, kind, deviceID, ok := s.Store.VerifyBinding(helloParams.Token)
 	if !ok {
 		_ = rc.CloseWithCode(WSCloseUnauthorized, WSReasonUnauthorized)
 		return
 	}
 	rc.caller = caller
 	rc.callerKind = kind
+	rc.callerDeviceID = deviceID
 
 	// Handshake succeeded: reply {"jsonrpc":"2.0","id":<id>,"result":{"ok":true,"version":"1.0.0-beta12"}}
 	if err := rc.SendResult(*req.ID, map[string]any{

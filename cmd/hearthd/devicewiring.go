@@ -218,6 +218,8 @@ func (a *deviceDoorAdapter) Audit(kind string, payload surface.DeviceAuditPayloa
 		DisplayName: payload.DisplayName,
 		Fingerprint: payload.Fingerprint,
 		CredName:    payload.CredName,
+		Platform:    payload.Platform,
+		AppVersion:  payload.AppVersion,
 		RailNames:   payload.RailNames,
 		Actor:       payload.Actor,
 		Via:         payload.Via,

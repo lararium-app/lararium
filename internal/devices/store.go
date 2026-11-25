@@ -138,7 +138,7 @@ func (m *Manager) loadStore() error {
 			m.tombstones[dev.DeviceID] = true
 			continue
 		}
-		if ValidateRails(dev.RailsDeclared) != nil {
+		if len(dev.RailsDeclared) > 0 && ValidateRails(dev.RailsDeclared) != nil {
 			continue
 		}
 		m.devices[dev.DeviceID] = dev
@@ -190,8 +190,10 @@ func (m *Manager) Register(dev Device) error {
 	if err := ValidateDeviceID(dev.DeviceID); err != nil {
 		return err
 	}
-	if err := ValidateRails(dev.RailsDeclared); err != nil {
-		return err
+	if len(dev.RailsDeclared) > 0 {
+		if err := ValidateRails(dev.RailsDeclared); err != nil {
+			return err
+		}
 	}
 
 	m.mu.Lock()

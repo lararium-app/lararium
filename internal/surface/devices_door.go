@@ -44,18 +44,21 @@ type DeviceAuditPayload struct {
 	DisplayName string
 	Fingerprint string
 	CredName    string
+	Platform    string
+	AppVersion  string
 	RailNames   []string
 	Actor       string
 	Via         string
 	Reason      string
 }
 
-// Device audit kind constants per DEVICE-RAILS-SPEC D8 / R5.
+// Device audit kind constants per DEVICE-RAILS-SPEC D8 / R5 / D-ENROLL.
 const (
 	AuditKindDeviceRegistered         = "device_registered"
 	AuditKindDeviceForgotten          = "device_forgotten"
 	AuditKindDeviceRailToggled        = "device_rail_toggled"
 	AuditKindDeviceRegistrationDenied = "device_registration_denied"
+	AuditKindDeviceEnrolled           = "device_enrolled"
 )
 
 // Sentinels and typed errors for device rails on surface.

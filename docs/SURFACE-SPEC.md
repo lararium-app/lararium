@@ -122,6 +122,18 @@ P4. **Single trust domain, zero trust transport.** One owner, but the wire
   labeled `<user_id>` (the pairing convention) is revoked outright, and
   every surviving token is printed — unpair must never leave API
   credentials live silently.
+- **Per-device credential binding (amendment D-ENROLL, 2026-11-25):**
+  `tokens.json` entries carry optional additive fields `device_id`,
+  `device_name`, `platform`, and `app_version` (omitted on legacy, web,
+  admin, and owner-paired tokens; older files load unchanged). Minted
+  only when redeeming a one-time `dev1_` enrollment code created via
+  `hearthd pair create --device [--stdout]` at `POST /v1/pair`
+  (DEVICE-RAILS-SPEC v4 D-ENROLL). `BearerAuth` prefers `BindingVerifier`
+  over `KindVerifier` and `IdentityVerifier`, binding caller, kind, and
+  `device_id` into request context (and `auth.hello` captures the same
+  binding on `RPCConn` without changing the handshake reply). `hearthd
+  token list` displays the `device <id>` binding when present; `DELETE
+  /v1/devices/<id>` revokes all tokens bound to that device.
 - The embedded page reads its token from the URL fragment once
   (`/#lar1_…`), immediately strips it from the address bar via
   `history.replaceState`, and keeps it in `sessionStorage` — tab-scoped,
@@ -606,6 +618,18 @@ Q4. Approval auto-deny timeout **5 minutes** (`serve.approval_timeout`,
 ---
 
 ## Changelog
+
+**v5.8 (amendment D-ENROLL, 2026-11-25).** Per-device credentials
+(DEVICE-RAILS-SPEC v4 D-ENROLL): `POST /v1/pair` adds a `dev1_`
+enrollment branch ahead of the unchanged `pair1_` owner lane (accepting
+`code`, `device_name`, `platform`, `app_version` and returning
+`{"token","device_id"}` with a daemon-generated `device_id`), `tokens.json`
+gains optional additive binding fields (`device_id`, `device_name`,
+`platform`, `app_version`) surfaced in `hearthd token list`, `BearerAuth`
+and WebSocket `auth.hello` prefer `BindingVerifier` to bind `device_id`
+into request/connection state without altering response shapes, and
+`hearthd pair create --device [--stdout]` mints 24h one-time enrollment
+codes (`pair revoke --all` clears both stores; `pair status` reports both).
 
 **v5.7 (amendment A9, 2026-11-24).** §5 approval state machine extended
 for the device approver channel (NUNTIUS-SPEC §7.4 A9): a live

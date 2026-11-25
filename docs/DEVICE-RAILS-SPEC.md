@@ -98,7 +98,7 @@ action calls fail fast with `device_offline`; reconnecting restores `online` wit
 is accepted, though Android foreground services maintain streaming in practice; push notifications succeed because the phone
 initiates push on event arrival.
 **D8 — Audit kinds.** Closed audit kind set (`internal/custos/mcp_catalog.go:25-42`; `internal/custos/types.go:76-115`) appends:
-`device_registered`, `device_forgotten`, `device_rail_toggled`, `device_registration_denied`. Payloads record `device_id`,
+`device_registered`, `device_forgotten`, `device_rail_toggled`, `device_registration_denied`, `device_enrolled` (v4 D-ENROLL). Payloads record `device_id`,
 display name, fingerprint, rail names, and credential NAME only — never tokens, addresses, or phone numbers. Data-plane calls
 for connectors are NOT audited in the tree (`cmd/hearthd/mcpwiring.go:183`); push sync and stream dispatch mirror this precedent
 and omit data-plane audit lines. Policy gating records standard `worker_call_allowed` / `worker_call_denied`.
@@ -170,8 +170,17 @@ flavor); multi-phone fleets; cross-hearth roaming; notification action-on-phone 
 disk-level or user-passphrase encryption evaluated for v3); reverse gateway processes or Tailscale dialing (rejected by PO
 directive 2026-11-01); non-first-party device registration; TLS interception (permanent V10 doctrine); altering pairing flow.
 
+**Amendment v4 (2026-11-25, per-device credentials D-ENROLL)**
+
+- **Enrollment code store:** one-time per-device enrollment codes live in `<hearth>/custos/enroll.json` (mode `0600`, dir `0700`, sibling `enroll.lock` created `0600` under `flock`, atomic temp+rename+fsync, read-back verified on redeem). Grammar: `^dev1_[0-9A-Za-z]{20}$` (uniform base62 via rejection sampling), fixed TTL `24h` (`DefaultEnrollTTL`, no config knob), SHA-256 hex hashed at rest, constant-time compared across all stored entries, deleted on first valid redeem. Minted via `hearthd pair create --device [--stdout]` with no owner-exists gate; `hearthd pair revoke --all` clears both owner and device enrollment stores; `hearthd pair status` reports pending enrollment code count and expiries without exposing codes or hashes.
+- **POST `/v1/pair` enrollment branch:** codes prefixed `dev1_` route to the enrollment lane ahead of the `pair1_` owner lane (owner pairing remains unchanged). Closed request field set: `code`, `device_name` (control chars stripped, trimmed, capped at 64 runes, empty → `device`), `platform` ∈ `{android, ios}` (anything else or absent → `other`), `app_version` (control chars stripped, trimmed, capped at 32 runes). Bad shape or invalid/expired code returns generic `401 {"error":"invalid or expired pairing code"}` and increments the shared per-IP pairing rate limiter (`429` after 10 failures/min). Unavailable `EnrollStore` or `DeviceDoor` answers `503` without consuming the code. Success returns `200 {"token":"lar1_…","device_id":"…"}` only (no `user_id`).
+- **Daemon-generated identity:** `device_id` is derived daemon-side from `device_name` (lowercased, non-`[a-z0-9]` runs collapsed to `-`, trimmed, truncated to 28 chars, fallback `device`, validated against `^[a-z0-9][a-z0-9_-]{0,31}$`). On collision with an existing device, the daemon appends `-` + 4 lowercase hex chars from `crypto/rand` (capping the base prefix at 27 chars so total length ≤ 32; up to 5 attempts before `500 store_error`). Caller-asserted identity is never accepted on this lane.
+- **Empty-rails record & bound re-registration:** enrollment persists an empty-rails device record (`rails_declared: []`) and mints a `kind=device` bearer token bound to `device_id` (plus `device_name`, `platform`, `app_version`) in `tokens.json`. When a bound credential calls `POST /v1/devices/register` for its own `device_id`, the `409 duplicate_name` gate is skipped and the normal registration flow upserts its declared rails (`device_registered` still audited). A bound credential attempting to register a different `device_id` is rejected with `403 {"error":"forbidden","reason":"forbidden"}`. Unbound callers keep existing `409 duplicate_name` behavior unchanged.
+- **Revocation on forget & audit:** `DELETE /v1/devices/<id>` (`device_gone`) revokes every token in `tokens.json` bound to that `device_id` and logs the revocation count. Enrollment emits audit kind `device_enrolled` (appended to the D8 closed device audit kind set) with `device_id`, `display_name`, `platform`, `app_version`, and `actor: "surface"`.
+
 ## Changelog
 
+- v4 (2026-11-25, D-ENROLL): per-device credentials — one-time `dev1_` enrollment codes in `<hearth>/custos/enroll.json`, `POST /v1/pair` enrollment branch, daemon-generated `device_id` with collision suffix, empty-rails record at enroll, bound re-registration merge (`403` on foreign claim), token revocation on device forget, and audit kind `device_enrolled`.
 - Rev 3 — auto-approve registration (PO directive 2026-11-02): registration no longer raises a consent card; bearer authorization is sufficient.
 - v2 (2026-11-01): transport reversed to phone-push per PO directive; v1 never merged.
 - v1 (2026-11-01): initial freeze text per issue #217 (rejected: tailnet pull transport).

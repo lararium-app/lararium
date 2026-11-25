@@ -173,13 +173,13 @@ func TestPairRevokeAll(t *testing.T) {
 		t.Fatalf("revoke with bad arg: code=%d stderr=%q", code, stderr)
 	}
 
-	// Revoke all: clears pending codes and prints exact line.
+	// Revoke all: clears pending codes in both stores and prints both counts.
 	stdout, stderr, code := runPairCLI(t, bin, cfgPath, "revoke", "--all")
 	if code != 0 || stderr != "" {
 		t.Fatalf("revoke --all failed: code=%d stderr=%q", code, stderr)
 	}
-	if stdout != "pending codes cleared\n" {
-		t.Fatalf("revoke --all stdout = %q, want %q", stdout, "pending codes cleared\n")
+	if stdout != "pending codes cleared (owner: 2, device: 0)\n" {
+		t.Fatalf("revoke --all stdout = %q, want %q", stdout, "pending codes cleared (owner: 2, device: 0)\n")
 	}
 
 	// Verify file is valid JSON with empty codes.
@@ -373,8 +373,8 @@ func TestPairSubcommandRegistrationAndUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("unknown subcmd code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "usage: hearthd pair create|revoke --all|status|unpair <user_id>") {
-		t.Fatalf("stderr = %q, want pair usage line", stderr)
+	if !strings.Contains(stderr, pairUsage) {
+		t.Fatalf("stderr = %q, want pair usage line %q", stderr, pairUsage)
 	}
 
 	// Bogus subcommand prints usage and exits 2 (§3).
@@ -382,8 +382,8 @@ func TestPairSubcommandRegistrationAndUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("bogus subcmd code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "usage: hearthd pair create|revoke --all|status|unpair <user_id>") {
-		t.Fatalf("stderr = %q, want pair usage line", stderr)
+	if !strings.Contains(stderr, pairUsage) {
+		t.Fatalf("stderr = %q, want pair usage line %q", stderr, pairUsage)
 	}
 
 	// No pair subcommand prints usage and exits 2.
@@ -391,8 +391,8 @@ func TestPairSubcommandRegistrationAndUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("missing subcmd code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "usage: hearthd pair create|revoke --all|status|unpair <user_id>") {
-		t.Fatalf("stderr = %q, want pair usage line", stderr)
+	if !strings.Contains(stderr, pairUsage) {
+		t.Fatalf("stderr = %q, want pair usage line %q", stderr, pairUsage)
 	}
 
 	// create with extra arg exits 2.
@@ -424,7 +424,7 @@ func TestPairStatusUnpairedFileAbsent(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("status failed: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	want := "owners: none\npending codes: none\n"
+	want := "owners: none\npending codes: none\ndevice enrollment codes: 0\n"
 	if stdout != want {
 		t.Fatalf("status stdout = %q, want %q", stdout, want)
 	}
@@ -547,8 +547,11 @@ func TestPairStatusOldestFirst(t *testing.T) {
 		t.Fatalf("status failed: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 lines, got %d: %q", len(lines), lines)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), lines)
+	}
+	if lines[3] != "device enrollment codes: 0" {
+		t.Fatalf("line 3 = %q, want device enrollment codes: 0", lines[3])
 	}
 	if !strings.Contains(lines[1], "expires in") || !strings.Contains(lines[2], "expires in") {
 		t.Fatalf("expected code expiry lines, got %v", lines)
