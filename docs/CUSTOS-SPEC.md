@@ -154,6 +154,16 @@ never denies one on the door wire. Token-level revocation of
 **non**-device credentials and live sessions is unchanged by this
 amendment. Everything else: unchanged.
 
+**Amendment v17 (2026-11-26, #348 approval fatigue): in-turn exact-repeat
+suppression.** Adds §6.4d: an engine turn re-emitting the identical tool
+call cannot mint a second custody card — the repeat joins a pending card,
+resolves `auto_allowed` after an allow, or `repeat_denied` after any
+terminal non-approval (fail-closed). Turn-scoped only: the §6.4/#291
+per-turn re-approval invariant, the frozen verdict enum, and every
+ledger-verdict path are untouched; callers without turn scope behave
+exactly as pre-v17. Implemented `surface.ApprovalHub.RegisterTurn`.
+Everything else: unchanged.
+
 Specifies `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
@@ -1158,6 +1168,26 @@ builds its client with the matching client-side timeout
 (`NewCtlClient(stateDir, timeout)` — the frozen 5 s default, applied at
 construction, would otherwise abort the very request this amendment
 extends on the server). Verb semantics and output columns: MCP-SPEC §9.
+
+**6.4d — In-turn exact-repeat suppression (amendment v17, #348).** A
+single engine turn emitting the **identical** tool call (same name, same
+args summary) twice never mints a second card. The turn's first such call
+registers under a cache key embedding `(session, turn, name, args)`; any
+later identical call in the SAME turn resolves from the card it already
+has: pending → **join** the existing card and share its single decision
+(the approver answers once, both waiters wake); already **approved** →
+allowed immediately with audit reason `auto_allowed`; already terminal
+non-approval (denied, timed out, cancelled, shutdown) → denied
+immediately with audit reason `repeat_denied` — fail-closed, so a model
+looping after a timeout cannot stack cards. Repeat hits carry a fresh
+correlation id (per-call `tool_start`/`tool_done` keys stay unique), fire
+no `approval_request`, and touch no ledger verdict: the ledger keeps one
+verdict per real card. **Scope law:** the key embeds the turn id — the
+next turn re-mints and re-approves exactly as before (the §6.4/#291
+per-turn invariant is untouched), and callers with no turn scope keep
+pre-v17 behavior. **Fail-open direction:** cache pressure may drop
+entries; the worst outcome is a re-minted card (pre-v17), never a silent
+allow.
 
 **6.5 — Always rules.** Frozen button set: **Allow once / Always /
 Deny**. Always writes the canonical exact-match form of *this request*

@@ -760,7 +760,7 @@ func (h *Hub) executeTurn(
 		// The decision is awaited from ANY channel; reqCtx no longer
 		// short-circuits it.
 		webLive := !ts.quiet && reqCtx.Err() == nil
-		id, decisionCh := h.ap.RegisterOn(sessionID, name, argsSummary, webLive, func(approvalID string) {
+		id, decisionCh := h.ap.RegisterTurn(sessionID, t.id, name, argsSummary, webLive, func(approvalID string) {
 			ts.writeEvent("approval_request", payloadJSON(approvalPayload{
 				ApprovalID:  approvalID,
 				Name:        name,

@@ -322,6 +322,14 @@ event is `event: <type>` + `data: <json>`. Types (frozen):
   the hook by which dead clients are noticed; server-side disconnect
   detection is the request context's cancellation (mandated, not left to
   chance).
+- **Exact-repeat suppression (#348, CUSTOS-SPEC §6.4d):** within one
+  turn, a tool call identical to one already carded (same `name` and
+  `args_summary`) emits no second `approval_request` — it joins the
+  pending card, resolves allowed immediately (audit `auto_allowed`)
+  after an allow, or denied immediately (audit `repeat_denied`) after
+  any terminal non-approval. The repeat keeps its own
+  `tool_start`/`tool_done` `call_id`. Next turns re-emit normally
+  (§6.4/#291 untouched).
 - **Global custody-card stream (CA-6, CUSTOS-SPEC §6.4b):** the frozen
   table above covers turn streams only. Custody cards are daemon-wide,
   so they ride a **global** SSE stream —
