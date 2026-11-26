@@ -126,6 +126,34 @@ receives `ERR bad_source`, it retries once with the tail-less verb so
 attribution degrades to empty and no verdict is lost. Everything else:
 unchanged.
 
+**Amendment v16 (2026-11-26, #344 forgotten devices hold no live
+authority).** Governs verdict **admissibility** (v15 governs stamping
+shape; the v15 parenthetical "`dn` may be empty if the device was
+forgotten mid-verdict" survives only for verdicts committed before the
+forget landed — later ones are refused outright). A device-bound
+credential carries verdict authority **only while the daemon's own
+devices door lists the device**. The single decision path shared by
+REST resolve and `custos.cards.resolve` evaluates the bound device's
+liveness **before** the card-id and verdict gates: devices door reports
+not-found, or the door is unavailable so enrollment cannot be proven
+(fail-closed by doctrine — no proof, no authority), the verdict is
+refused with HTTP 403 / RPC error reason `device_forgotten` (added to
+the §6.4b verdict error set). Nothing reaches the door wire and no
+ledger line is written: a refusal is not a verdict. **Forget is a
+session event:** `DELETE /v1/devices/<id>` MUST also terminate every
+live RPC session authenticated with a credential bound to that device
+(close code `4003`, reason `device_forgotten`; RPC-SPEC §2), because
+credential binding is otherwise captured once at `auth.hello`.
+**Race doctrine (explicit choice):** verdicts committed before the
+forget commit stand — the audit ledger is append-only and verdicts are
+never retroactively voided; verdicts arriving after the forget commit
+are refused, closing stale authority to commit granularity. Cards left
+pending for a forgotten device settle under the existing fail-closed
+rules (timeout / undeliverable); a forget never resolves a card and
+never denies one on the door wire. Token-level revocation of
+**non**-device credentials and live sessions is unchanged by this
+amendment. Everything else: unchanged.
+
 Specifies `custosd`, the credential daemon that sits between the agent
 and every secret: an encrypted vault, surrogate tokens instead of real
 credentials, a per-request policy engine sharing the existing approval
