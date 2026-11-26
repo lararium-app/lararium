@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -245,5 +246,75 @@ func TestChainError_ShortReasonAndProviderErrorReason(t *testing.T) {
 	// Non-provider error
 	if _, ok := ProviderErrorReason(errors.New("something else")); ok {
 		t.Fatal("ProviderErrorReason returned true for non-provider error")
+	}
+}
+
+// ---- #345: honest cancellation ---------------------------------------------
+
+// cancelFake replies with exactly what net/http surfaces when the
+// caller's context is cancelled: a url.Error wrapping context.Canceled
+// (the real shape providers return, previously laundered into a fake
+// "all chain targets failed" outage).
+type cancelFake struct {
+	err  error
+	hits *int32
+}
+
+func (f cancelFake) Complete(ctx context.Context, msgs []Message, opts Options) (*Completion, error) {
+	if f.hits != nil {
+		atomic.AddInt32(f.hits, 1)
+	}
+	return nil, &url.Error{Op: "Post", URL: "https://example.invalid/v1/chat/completions", Err: f.err}
+}
+
+func (f cancelFake) Capabilities(ctx context.Context) (Caps, error) {
+	return Caps{Source: "fake"}, nil
+}
+func (f cancelFake) Name() string { return "cancel-fake" }
+
+// TestCancellationIsNotAChainOutage pins #345: a cancelled caller aborts
+// the whole chain with the cancellation itself — no failover legs, no
+// ChainError, and never a provider-failure classification.
+func TestCancellationIsNotAChainOutage(t *testing.T) {
+	var hit2 int32
+	r := NewRouter(Profile{Chain: []Target{
+		{Provider: cancelFake{err: context.Canceled}, Model: "m"},
+		{Provider: cancelFake{err: context.Canceled, hits: &hit2}, Model: "m2"},
+	}})
+	_, err := r.Complete(context.Background(), "chat", nil, Options{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %T: %v", err, err)
+	}
+	var ce *ChainError
+	if errors.As(err, &ce) {
+		t.Fatalf("cancellation laundered into ChainError: %v", ce)
+	}
+	if atomic.LoadInt32(&hit2) != 0 {
+		t.Fatal("failover must not follow a cancellation")
+	}
+	if reason, ok := ProviderErrorReason(err); ok {
+		t.Fatalf("ProviderErrorReason must not classify a cancellation: %q", reason)
+	}
+}
+
+// TestDeadlineExceededKeepsChainErrorSemantics: a deadline is an
+// operation timeout, not a caller cancellation — the existing
+// retry/failover semantics (ChainError recording every leg) stay intact.
+func TestDeadlineExceededKeepsChainErrorSemantics(t *testing.T) {
+	var hit1, hit2 int32
+	r := NewRouter(Profile{Chain: []Target{
+		{Provider: cancelFake{err: context.DeadlineExceeded, hits: &hit1}, Model: "m"},
+		{Provider: cancelFake{err: context.DeadlineExceeded, hits: &hit2}, Model: "m2"},
+	}})
+	_, err := r.Complete(context.Background(), "chat", nil, Options{})
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *ChainError for deadline, got %T: %v", err, err)
+	}
+	if atomic.LoadInt32(&hit1) == 0 || atomic.LoadInt32(&hit2) == 0 {
+		t.Fatal("deadline must keep retry/failover: both targets must be tried")
+	}
+	if _, ok := ProviderErrorReason(err); !ok {
+		t.Fatal("deadline ChainError must still classify as a provider failure")
 	}
 }

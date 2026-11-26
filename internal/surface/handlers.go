@@ -49,6 +49,11 @@ type SessionSource interface {
 // for catch-up (spec §5) and POST /cancel.
 type TurnHub interface {
 	InFlight(sessionID string) bool
+	// CancelTurn cancels the running turn; a non-empty turnID (learned
+	// from turn_start) cancels only the turn bearing that id, an empty
+	// one keeps the legacy session-scoped behaviour (#345).
+	CancelTurn(sessionID, turnID string) bool
+	// Cancel is the legacy session-scoped form of CancelTurn.
 	Cancel(sessionID string) bool
 	// Shutdown resolves every pending approval denied:shutdown and
 	// cancels every running turn (V12).
@@ -505,7 +510,22 @@ func (s *Server) cancelHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Hub.Cancel(id) {
+	// #345: optional turn scope. With turn_id present only the turn
+	// bearing that id is cancelled — a stale cancel for a previous turn
+	// answers the same 404 as "nothing running" and never kills a
+	// newly-acquired turn. An absent/empty turn_id keeps the legacy
+	// session-scoped cancel for old clients.
+	var body struct {
+		TurnID string `json:"turn_id"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			s.error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if s.Hub.CancelTurn(id, body.TurnID) {
 		writeJSONBody(w, http.StatusOK, `{"cancelled":true}`)
 		return
 	}

@@ -70,6 +70,9 @@ func (f *fakeSessionSource) Events(id string, afterSeq int64, limit int) ([]json
 type fakeHub struct {
 	inFlight map[string]bool
 	cancel   map[string]bool
+	// turnIDs seeds the #345 cancel scope test: CancelTurn matches only
+	// against the seeded id for that session.
+	turnIDs map[string]string
 }
 
 func (f *fakeHub) InFlight(id string) bool {
@@ -82,6 +85,17 @@ func (f *fakeHub) Cancel(id string) bool {
 		return true
 	}
 	return false
+}
+
+// CancelTurn mirrors the real hub's #345 scope rule: a non-empty turnID
+// cancels only a matching turn. The fake keys cancellation by session
+// only, so it treats any non-empty turnID as "no match" unless the test
+// seeds turnIDs[id].
+func (f *fakeHub) CancelTurn(id, turnID string) bool {
+	if turnID != "" && f.turnIDs[id] != turnID {
+		return false
+	}
+	return f.Cancel(id)
 }
 
 func (f *fakeHub) Shutdown() {}
@@ -345,6 +359,42 @@ func TestDeleteSessionRoute(t *testing.T) {
 			t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 		}
 	})
+}
+
+// TestCancelHandlerTurnScope (#345): POST /cancel accepts an optional
+// {"turn_id"}. A mismatch answers the same 404 as "nothing running" and
+// leaves the running turn untouched; an absent/empty turn_id (old
+// clients) keeps the legacy session-scoped cancel.
+func TestCancelHandlerTurnScope(t *testing.T) {
+	store, _ := OpenTokenStore(t.TempDir() + "/tokens.json")
+	newSrv := func() *Server {
+		return &Server{Store: store, Sessions: &fakeSessionSource{}, Hub: &fakeHub{
+			inFlight: map[string]bool{"main": true},
+			cancel:   map[string]bool{"main": true},
+			turnIDs:  map[string]string{"main": "t_real"},
+		}}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/cancel", strings.NewReader(`{"turn_id":"t_stale"}`))
+	w := httptest.NewRecorder()
+	newSrv().cancelHandler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("mismatched turn_id: code = %d, want 404", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/main/cancel", strings.NewReader(`{"turn_id":"t_real"}`))
+	w = httptest.NewRecorder()
+	newSrv().cancelHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("matching turn_id: code = %d, want 200", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/main/cancel", strings.NewReader(`{}`))
+	w = httptest.NewRecorder()
+	newSrv().cancelHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("legacy empty body: code = %d, want 200", w.Code)
+	}
 }
 
 func TestHealthHandler_Name(t *testing.T) {

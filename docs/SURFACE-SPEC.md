@@ -188,7 +188,7 @@ must amend, not creep.
 | POST | /v1/sessions | create side chat `{title?, model_pin?, private?}` → header (`private`: §4b) |
 | GET  | /v1/sessions/{id}/events?after_seq=N&limit=M | `{"events":[…], "in_flight":bool}` (§5 catch-up); default M=200, hard cap M=1000 (clamp); invalid limit/after_seq → 400 |
 | POST | /v1/sessions/{id}/messages | `{text}` → SSE stream (§5); 404 `{"error":"not found"}` for an id that names no session (`main` excepted: its first turn creates it), before any turn starts or SSE byte is written |
-| POST | /v1/sessions/{id}/cancel | abort the in-flight turn: engine stops, gate released, NO assistant event persisted; 404 if none in flight |
+| POST | /v1/sessions/{id}/cancel | abort the in-flight turn: engine stops, gate released, NO assistant event persisted; 404 if none in flight. Optional body `{"turn_id":…}` (from that stream's `turn_start`) scopes the abort to exactly that turn — a stale id 404s and touches nothing; an absent body keeps session scope (K-A5, #345) |
 | POST | /v1/sessions/{id}/approvals/{approval_id} | `{decision:"allow"|"deny"}` → 200; 410 if already resolved/expired |
 | GET  | /v1/keys | `[{"name","status","sha256_8"}]` — provider-key inventory; names = config ∪ keys.json computed at request time (K-A1, KEYS-SPEC K4) |
 | PUT  | /v1/keys/{name} | `{"key":"…"}` → 204; 404 unknown provider unless `?force=true`; body ≤ 4 KiB; `{name}` gate per S4, 404 `{"error":"invalid provider name"}` (K-A1, KEYS-SPEC K4) |
@@ -308,6 +308,7 @@ event is `event: <type>` + `data: <json>`. Types (frozen):
 
 | event | data | when |
 |---|---|---|
+| `turn_start` | `{"turn_id":…}` | first event of every turn stream: opaque id of this turn, used to scope cancellation (§4, #345); stream-only, NOT persisted |
 | `delta` | `{"text":…}` | each streamed chunk (NOT persisted) |
 | `tool_start` | `{"call_id", "name", "args_summary"}` | dispatch begins |
 | `approval_request` | `{"approval_id", "name", "args_summary"}` | untrusted tool awaits decision |
@@ -364,6 +365,14 @@ event is `event: <type>` + `data: <json>`. Types (frozen):
   and the absence of a tool_result IS the record. An approval whose turn
   no longer exists is meaningless; leaving it pending would invite a late
   click to authorize a tool call for a dead turn.
+- **A cancellation stays honest (A5 amendment, #345):** when a turn is
+  cancelled while a provider call is in flight, the surfaced failure is
+  the cancellation itself — a `context.Canceled` wrapped in a chain
+  error must never be laundered into "all chain targets failed", and a
+  cancelled turn commits no `provider failed` assistant event. The
+  anti-resend invariant: what the user cancelled must never look like a
+  provider outage worth resending (a resend re-mints custody cards —
+  #348). Deadlines keep their existing chain/retry semantics unchanged.
 - **MarkUndeliverable (A7):** `MarkUndeliverable(approval_id)` —
   in-process bridge call — either resolves `pending → denied` with
   `source:"hub"`, `reason:"undeliverable"` when no other live approver

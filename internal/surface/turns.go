@@ -2,6 +2,8 @@ package surface
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	stdlog "log"
@@ -42,7 +44,22 @@ const runawayCapBytes = 4 << 20
 // turn is a running engine loop for one session. Only the cancel func is
 // stored: the contexts themselves live in the handler's scope.
 type turn struct {
+	// id is the opaque per-turn identity surfaced on the wire as the
+	// turn_start event (#345) and matched by turn-scoped cancel.
+	id     string
 	cancel context.CancelFunc
+}
+
+// newTurnID mints the opaque turn identity ("t_" + 8 hex). crypto/rand
+// failing is unrecoverable on any supported platform; if it ever did, an
+// empty id simply makes turn-scoped cancels decline (fail-closed) while
+// legacy session-scoped cancels keep working.
+func newTurnID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return "t_" + hex.EncodeToString(b[:])
 }
 
 // Hub runs HTTP-initiated turns through the frozen loop engine, one turn
@@ -300,13 +317,26 @@ func (h *Hub) Shutdown() {
 	}
 }
 
-// Cancel aborts the running turn for the session, if any. Per
-// SURFACE-SPEC §5 (A5): every approval still pending on that turn
+// Cancel aborts the running turn for the session, if any. This is the
+// legacy session-scoped form; wire callers learned of turn identity use
+// CancelTurn with the id from turn_start (#345).
+func (h *Hub) Cancel(sessionID string) bool {
+	return h.CancelTurn(sessionID, "")
+}
+
+// CancelTurn is Cancel with an optional turn identity (#345). With a
+// non-empty turnID, only the running turn bearing that id is cancelled —
+// a stale cancel from a previous turn answers false and can never kill a
+// newly-acquired turn (the duplicate-card cascade of #345/#348 starts
+// here). An empty turnID keeps the legacy session-scoped behaviour for
+// clients that predate turn_start.
+//
+// Per SURFACE-SPEC §5 (A5): every approval still pending on that turn
 // resolves to denied (internal cause "cancelled") BEFORE the turn's own
 // cancellation, so no approval can outlive its turn and a late decision
 // POST answers 410. Like every cancelled turn no audit record is written
 // — the tool never ran, and the absence of a tool_result IS the record.
-func (h *Hub) Cancel(sessionID string) bool {
+func (h *Hub) CancelTurn(sessionID, turnID string) bool {
 	// The turn handle is snapshotted under h.mu, but the fan-out and
 	// cancellation run OUTSIDE it: CancelAllFor fires the bridge's
 	// terminal hook, whose Telegram card edit can take ~15 s — holding
@@ -315,6 +345,13 @@ func (h *Hub) Cancel(sessionID string) bool {
 	// funcs are idempotent, CancelAllFor sees nothing pending).
 	h.mu.Lock()
 	t, ok := h.running[sessionID]
+	if ok && turnID != "" && t.id != turnID {
+		// A cancel for a turn that is not the running one: the caller's
+		// view is stale. Same answer as "nothing in flight" — the
+		// running turn is left untouched.
+		h.mu.Unlock()
+		return false
+	}
 	h.mu.Unlock()
 	if !ok {
 		return false
@@ -564,7 +601,7 @@ func (h *Hub) HandleMessageGated(w http.ResponseWriter, r *http.Request, session
 	// r.Context(). The WRITER/approvals side dies with the request.
 	engineCtx, cancelEngine := context.WithTimeout(context.Background(), h.cfg.TurnTimeout)
 	reqCtx, cancelReq := context.WithCancel(r.Context())
-	t := &turn{cancel: func() { cancelReq(); cancelEngine() }}
+	t := &turn{id: newTurnID(), cancel: func() { cancelReq(); cancelEngine() }}
 	switch err := h.acquire(sessionID, t, exists); {
 	case errors.Is(err, ErrSessionGone):
 		cancelEngine()
@@ -633,7 +670,7 @@ func (h *Hub) RunHeadlessTurn(ctx context.Context, sessionID, text, channel stri
 	defer cancelEngine()
 
 	reqCtx := engineCtx
-	t := &turn{cancel: cancelEngine}
+	t := &turn{id: newTurnID(), cancel: cancelEngine}
 
 	// No existence gate: a headless turn creates its own session directory
 	// on demand (cron-<id>, goal-<id>), and those ids are never deletable.
@@ -668,7 +705,7 @@ func (h *Hub) StartRPCTurnGated(connCtx context.Context, sessionID, text string,
 	}
 	engineCtx, cancelEngine := context.WithTimeout(context.Background(), timeout)
 	reqCtx, cancelReq := context.WithCancel(connCtx)
-	t := &turn{cancel: func() { cancelReq(); cancelEngine() }}
+	t := &turn{id: newTurnID(), cancel: func() { cancelReq(); cancelEngine() }}
 
 	if err := h.acquire(sessionID, t, exists); err != nil {
 		cancelEngine()
@@ -825,6 +862,11 @@ func (h *Hub) executeTurn(
 	if isScheduledChannel(srcChannel) {
 		h.maybeCompact(engineCtx, sess, sessionID)
 	}
+	// #345: turn identity on the wire. The client must be able to cancel
+	// THIS turn — emitted before the engine runs so it is always the
+	// first event of a turn stream (SSE and RPC alike).
+	ts.writeEvent("turn_start", payloadJSON(map[string]string{"turn_id": t.id}))
+
 	_, err = sess.RunTurnTools(engineCtx, text, onDelta, h.currentTools(), approver)
 	if err != nil {
 		if reason, ok := router.ProviderErrorReason(err); ok {

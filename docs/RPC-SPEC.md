@@ -124,7 +124,7 @@ table does not re-derive rules already frozen in SURFACE-SPEC v1 history.
 | POST /v1/sessions | `sessions.create` | `{title?, model_pin?, private?}` | session header | same validation as v1 (incl. the model_pin 400 fix from #301); `private` per SURFACE-SPEC §4b, reason `private_requires_identity` when the connection's token names no caller |
 | GET /v1/sessions/{id}/events + implicit SSE | `sessions.subscribe` | `{id, after_seq?, limit?}` | `{"events":[…],"in_flight":bool}` then live `session.event` notifications `{"session_id","event":{…}}` | collapses catch-up GET and the open-ended SSE stream into one call; default/cap M=200/1000 unchanged. Ordering: no `session.event` for that id is written to the connection before the subscribe result. Events emitted while the call is between registering and replying are held and written right after the result, in emit order, so none is lost and none arrives first. Live events can overlap the catch-up array (a turn whose persisted message is already in it may still be streaming); `turn_done.seq` names that persisted message |
 | POST /v1/sessions/{id}/messages | `sessions.send` | `{id, text}` | `{"accepted":true}` immediately | turn output arrives as `session.event` notifications on the id's existing `sessions.subscribe`, not inline in the response — a session must be subscribed before `sessions.send`, else 409 `not_subscribed` |
-| POST /v1/sessions/{id}/cancel | `sessions.cancel` | `{id}` | `{"ok":true}` | 404 `no_turn_in_flight` unchanged |
+| POST /v1/sessions/{id}/cancel | `sessions.cancel` | `{id, turn_id?}` | `{"ok":true}` | Turn scope (#345): `turn_id` (from the stream's `turn_start`) names the turn to abort; a mismatch returns the same 404 `no_turn_in_flight` and mutates nothing (a stale id can never kill a later turn). Absent/empty `turn_id` (old clients) keeps legacy session scope. Result unchanged — an ok answer to a scoped request already pins WHICH turn died |
 | POST /v1/sessions/{id}/approvals/{approval_id} | `sessions.approvals.resolve` | `{session_id, approval_id, decision, scope?}` | `{"ok":true}` | 410 `already_resolved` unchanged; `scope` (only valid value `"connector"`) is only accepted when `decision:"allow"` — same validation as v1, the v1 table row above omitted the existing `scope` param, corrected here (closes a spec-table omission found during S-RPC-2 source grounding, not a new feature) |
 | DELETE /v1/sessions/{id} | `sessions.delete` | `{id}` | `{"ok":true}` | **Added 2026-11-20: v1 route existed in SURFACE-SPEC v1 but was missing entirely from this table — an omission, not a deliberate exclusion. Found during S-RPC-2 source grounding (hard rule: wire contracts come from handler source, not planning docs). Mechanical 1:1 port, zero open design question: 404 `no_such_session` (unknown id), 403 `session_is_protected` (the main session can't be deleted), 409 `session_busy` (turn in flight) — exact same three-way switch `deleteSessionHandler` already implements.** |
 | GET /v1/keys | `keys.list` | `{}` | `[{"name","status","sha256_8"}]` | unchanged |
@@ -209,3 +209,13 @@ All four decided by following the leaning proposal as drafted — no overrides.
    wire-breaking change for every existing client, and a major bump makes
    every `v1.0.0-betaN` tag unambiguously mean "REST". Applied at S-RPC-7
    (§6), the hard-cutover slice, not at spec-ratification time.
+5. **Response before events — RATIFIED hold-back.** The response frame of
+   the request that starts a turn (`sessions.send`) is never overtaken by
+   that turn's `session.event` frames on the sending connection: the
+   server holds back deliveries to that (connection, session) pair from
+   turn start until the response or error frame is written, then drains
+   in emit order (the mechanism `sessions.subscribe` results already use
+   for their catch-up window). Notifications for other sessions on the
+   same connection still interleave freely — clients match frames by shape
+   (id present → response, `method` present → notification) and MUST NOT
+   assume 1:1 frame pairing.
