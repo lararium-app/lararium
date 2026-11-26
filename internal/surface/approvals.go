@@ -53,6 +53,7 @@ type ApprovalTerminalVia interface {
 type approval struct {
 	id          string
 	ch          chan bool
+	followers   []chan bool // #348: joined waiters sharing this card's decision
 	state       string
 	sessionID   string
 	name        string
@@ -104,6 +105,7 @@ type ApprovalHub struct {
 	obsSeq                   int64
 	connectorTrustHook       func(toolName string) error
 	registerCustosNamedCalls int
+	repeatCalls              map[string]*approval // #348: (session,turn,tool,args) → card
 }
 
 // SetConnectorTrustHook registers the minter hook called when an approval card
@@ -491,6 +493,96 @@ func (h *ApprovalHub) RegisterOn(sessionID, name, argsSummary string, webLive bo
 	return id, ch
 }
 
+// Exact in-turn repeat verdicts (issue #348, CUSTOS-SPEC §6.4d).
+const (
+	RepeatAutoAllowed = "auto_allowed"
+	RepeatDenied      = "repeat_denied"
+	// repeatCacheCap bounds the per-hub repeat cache; past it, terminal
+	// entries are dropped first (worst case: a repeat re-mints a card —
+	// the pre-#348 behaviour, never a false allow).
+	repeatCacheCap = 8192
+)
+
+// RegisterTurn is RegisterOn with exact-repeat suppression scoped to one
+// engine turn (issue #348). A turn re-emitting the identical tool call
+// (same name and argsSummary) never mints a second card:
+//
+//   - the turn already ALLOWED the call → the new call is allowed
+//     immediately (audit reason auto_allowed);
+//   - the turn already DENIED it (any terminal non-approval: denied,
+//     timed_out, cancelled, shutdown) → the new call is denied
+//     immediately (audit reason repeat_denied) — fail-closed, no card
+//     storm after a timeout either;
+//   - the call is still PENDING → the new call joins the existing card
+//     and shares its single decision (the approver answers once).
+//
+// Repeat hits return a fresh correlation id (so per-call tool_start/
+// tool_done keys stay unique) and fire no approval_request. Cache keys
+// embed the turn id, so the next turn re-mints exactly as before — the
+// #291 per-turn re-approval invariant is untouched. An empty turnID
+// (callers with no turn scope) keeps plain RegisterOn semantics.
+func (h *ApprovalHub) RegisterTurn(sessionID, turnID, name, argsSummary string, webLive bool, onEvent func(approvalID string)) (id string, decision <-chan bool) {
+	if turnID == "" {
+		return h.RegisterOn(sessionID, name, argsSummary, webLive, onEvent)
+	}
+	key := sessionID + "\x00" + turnID + "\x00" + name + "\x00" + argsSummary
+	h.mu.Lock()
+	if prev, seen := h.repeatCalls[key]; seen {
+		switch prev.state {
+		case "pending":
+			ch := make(chan bool, 1)
+			prev.followers = append(prev.followers, ch)
+			h.mu.Unlock()
+			return generateApprovalID(), ch
+		case "approved":
+			ch := make(chan bool, 1)
+			ch <- true
+			h.mu.Unlock()
+			id = generateApprovalID()
+			h.fanTerminal(id, sessionID, "approved", RepeatAutoAllowed, "hub")
+			return id, ch
+		default:
+			ch := make(chan bool, 1)
+			ch <- false
+			h.mu.Unlock()
+			id = generateApprovalID()
+			h.fanTerminal(id, sessionID, "denied", RepeatDenied, "hub")
+			return id, ch
+		}
+	}
+	h.mu.Unlock()
+
+	id, decision = h.RegisterOn(sessionID, name, argsSummary, webLive, onEvent)
+
+	h.mu.Lock()
+	if h.repeatCalls == nil {
+		h.repeatCalls = make(map[string]*approval)
+	}
+	if len(h.repeatCalls) >= repeatCacheCap {
+		h.pruneRepeatLocked()
+	}
+	if ap, ok := h.findLocked(id); ok {
+		h.repeatCalls[key] = ap
+	}
+	h.mu.Unlock()
+	return id, decision
+}
+
+// pruneRepeatLocked frees the repeat cache: terminal entries first, then
+// everything, so a long-lived hub cannot grow the map without bound.
+// Dropping entries only costs the next repeat its suppression — the
+// fail-open direction is a re-minted card, never a silent allow.
+func (h *ApprovalHub) pruneRepeatLocked() {
+	for k, ap := range h.repeatCalls {
+		if ap.state != "pending" {
+			delete(h.repeatCalls, k)
+		}
+	}
+	if len(h.repeatCalls) >= repeatCacheCap {
+		h.repeatCalls = make(map[string]*approval)
+	}
+}
+
 // fan* fire outside the mutex; the fanout field is snapshotted under it.
 func (h *ApprovalHub) fanPending(id, sessionID, name, argsSummary string) {
 	h.mu.Lock()
@@ -543,12 +635,25 @@ func (ap *approval) settle(state, reason, source string, now time.Time) bool {
 	if !ap.stamp(state, reason, source, now) {
 		return false
 	}
-	allow := state == "approved"
+	ap.deliver(state == "approved")
+	return true
+}
+
+// deliver pushes the terminal decision to the parked waiter and to every
+// joined follower (issue #348: an exact in-turn repeat parks on the same
+// card instead of minting a second one). Each channel is buffered and
+// receives at most once.
+func (ap *approval) deliver(allow bool) {
 	select {
 	case ap.ch <- allow:
 	default:
 	}
-	return true
+	for _, f := range ap.followers {
+		select {
+		case f <- allow:
+		default:
+		}
+	}
 }
 
 // stamp marks a resolution WITHOUT releasing the parked waiter: the
@@ -774,10 +879,7 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 			// would park a waiter and re-arm a timer on a closed hub.
 			ap.minting = false
 			ap.state, ap.reason, ap.source, ap.via, ap.settledAt = "denied", "shutdown", "shutdown", "", h.nowLocked()
-			select {
-			case ap.ch <- false:
-			default:
-			}
+			ap.deliver(false)
 			h.mu.Unlock()
 			h.fanTerminal(id, sessionID, "denied", "shutdown", "shutdown")
 			return 500, fmt.Errorf("failed to mint connector trust rule: %w", err)
@@ -800,10 +902,7 @@ func (h *ApprovalHub) ResolveScopeVia(sessionID, id string, allow bool, source, 
 		// terminal record becomes real now, so retention and audit order
 		// by commit time.
 		ap.settledAt = h.nowLocked()
-		select {
-		case ap.ch <- true:
-		default:
-		}
+		ap.deliver(true)
 		h.mu.Unlock()
 		h.fanTerminalVia(id, sessionID, state, reason, source, via)
 		return 200, nil
