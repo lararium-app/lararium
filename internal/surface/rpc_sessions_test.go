@@ -43,18 +43,27 @@ func (c *testWSClient) callRPC(t *testing.T, id int64, method string, params any
 		t.Fatalf("EncodeRPCRequest(%s): %v", method, err)
 	}
 	c.writeMaskedText(t, req)
-	op, payload := c.readServerFrame(t)
-	if op != wsOpText {
-		t.Fatalf("response opcode for %s = %d, want text", method, op)
+	for {
+		op, payload := c.readServerFrame(t)
+		if op != wsOpText {
+			t.Fatalf("response opcode for %s = %d, want text", method, op)
+		}
+		// Unsolicited notifications (session.event frames from an in-flight
+		// turn) interleave with responses on a live connection: the wire
+		// law (RPC-SPEC §5 item 5) is 1:1 only for the response itself, so
+		// skip past notifications as any real client does.
+		if _, nerr := DecodeRPCNotification(payload); nerr == nil {
+			continue
+		}
+		resp, err := DecodeRPCResponse(payload)
+		if err != nil {
+			t.Fatalf("DecodeRPCResponse(%s): %v (raw=%s)", method, err, string(payload))
+		}
+		if resp.ID != id {
+			t.Fatalf("response id for %s = %d, want %d", method, resp.ID, id)
+		}
+		return resp
 	}
-	resp, err := DecodeRPCResponse(payload)
-	if err != nil {
-		t.Fatalf("DecodeRPCResponse(%s): %v (raw=%s)", method, err, string(payload))
-	}
-	if resp.ID != id {
-		t.Fatalf("response id for %s = %d, want %d", method, resp.ID, id)
-	}
-	return resp
 }
 
 func assertRPCErrorReason(t *testing.T, resp *RPCResponse, wantReason string) {

@@ -100,6 +100,26 @@ func rpcSessionEventParams(sessionID string, event json.RawMessage) map[string]a
 	}
 }
 
+// rpcSessionWindow opens one hold-back window on conn's EXISTING
+// subscription for sessionID, without registering anything. RPC-SPEC §5
+// ratified item 5: the response of the request that starts a turn
+// (sessions.send) must never be overtaken by that turn's session.event
+// frames on the sending connection. Returns nil when conn is not
+// subscribed; every non-nil return must be paired with exactly one
+// endSubscribe (called after the response/error frame is written).
+func (s *Server) rpcSessionWindow(sessionID string, conn *RPCConn) *rpcSessionSub {
+	s.rpcSubsMu.Lock()
+	defer s.rpcSubsMu.Unlock()
+	sub := s.rpcSubs[sessionID][conn]
+	if sub == nil {
+		return nil
+	}
+	sub.mu.Lock()
+	sub.pending++
+	sub.mu.Unlock()
+	return sub
+}
+
 // beginRPCSessionSubscribe registers conn for live events on sessionID and
 // opens one hold-back window on that subscription. Every call must be paired
 // with exactly one endSubscribe on the returned subscription.
@@ -472,6 +492,12 @@ func (s *Server) rpcSessionsSend(connCtx context.Context, conn *RPCConn, req *RP
 	}
 
 	sessionID := params.ID
+	// Hold back this connection's session events until the response frame
+	// below is written (RPC-SPEC §5 ratified item 5): a turn's turn_start
+	// must never overtake the send response.
+	if sub := s.rpcSessionWindow(sessionID, conn); sub != nil {
+		defer sub.endSubscribe(conn, sessionID)
+	}
 	// A turn creates its session directory on demand, so a session deleted
 	// since this connection subscribed must not be revived by a send. main
 	// is exempt: the first turn on a fresh hearth creates it.

@@ -265,8 +265,10 @@ func TestHub_SSEOrderWithApproval(t *testing.T) {
 	frames := parseSSEFrames(w.Body.String())
 
 	// Check event order - actual order from frozen loop package:
-	// delta (from first completion text), approval_request, tool_start, tool_done, delta (from second completion), turn_done
-	expectedEvents := []string{"delta", "approval_request", "tool_start", "tool_done", "delta", "turn_done"}
+	// turn_start (#345 A1), then delta (from first completion text),
+	// approval_request, tool_start, tool_done, delta (from second
+	// completion), turn_done
+	expectedEvents := []string{"turn_start", "delta", "approval_request", "tool_start", "tool_done", "delta", "turn_done"}
 	var seenEvents []string
 	for _, f := range frames {
 		ev, _ := f["event"].(string)

@@ -209,3 +209,13 @@ All four decided by following the leaning proposal as drafted — no overrides.
    wire-breaking change for every existing client, and a major bump makes
    every `v1.0.0-betaN` tag unambiguously mean "REST". Applied at S-RPC-7
    (§6), the hard-cutover slice, not at spec-ratification time.
+5. **Response before events — RATIFIED hold-back.** The response frame of
+   the request that starts a turn (`sessions.send`) is never overtaken by
+   that turn's `session.event` frames on the sending connection: the
+   server holds back deliveries to that (connection, session) pair from
+   turn start until the response or error frame is written, then drains
+   in emit order (the mechanism `sessions.subscribe` results already use
+   for their catch-up window). Notifications for other sessions on the
+   same connection still interleave freely — clients match frames by shape
+   (id present → response, `method` present → notification) and MUST NOT
+   assume 1:1 frame pairing.
