@@ -615,6 +615,13 @@ func (s *Server) deviceDeleteHandler(w http.ResponseWriter, _ *http.Request, id 
 		s.devicesBroker.CloseStream(id)
 	}
 
+	// CUSTOS-SPEC amendment v16 (issue #344): forget revokes live authority.
+	// Terminate every RPC session that auth.hello'd with a credential bound
+	// to this device; sockets are closed with the registry lock released.
+	if n := s.closeDeviceConns(id); n > 0 {
+		log.Printf("surface: terminated %d live session(s) for forgotten device %s", n, logSanitize(id))
+	}
+
 	s.devicePendingMu.Lock()
 	delete(s.devicePending, id)
 	s.devicePendingMu.Unlock()

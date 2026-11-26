@@ -318,8 +318,9 @@ type custosResolveOutcome struct {
 
 // resolveCustosCard is the single decision path behind POST
 // /v1/custos/cards/{id}/resolve and the custos.cards.resolve RPC method.
-// Order is frozen: id gate, verdict gate, door registry first, then the
-// turn-approval hub fallback for ids the registry never saw (issue #128).
+// Order is frozen: device liveness gate (amendment v16), id gate, verdict
+// gate, door registry first, then the turn-approval hub fallback for ids
+// the registry never saw (issue #128).
 //
 // via is the channel the verdict arrived on (CUSTOS-SPEC §6.4b: "web",
 // "telegram" or, since amendment v14, "device"). It is derived from the
@@ -327,6 +328,20 @@ type custosResolveOutcome struct {
 // the caller sends in the request, and is stamped on both the door wire
 // and the hub fallback so the audit ledger names the real channel.
 func (s *Server) resolveCustosCard(id, verdict, via string, attr CustosAttribution) custosResolveOutcome {
+	// CUSTOS-SPEC amendment v16 (issue #344): a verdict carried by a
+	// device-bound credential is admissible only while the devices door
+	// still lists the device. An unavailable door cannot prove enrollment,
+	// so it refuses too. The gate runs ahead of the id and verdict gates so
+	// a forgotten device cannot even probe whether a card exists.
+	if attr.DeviceID != "" {
+		door := s.getDeviceDoor()
+		if door == nil {
+			return custosResolveOutcome{status: http.StatusForbidden, reason: "device_forgotten"}
+		}
+		if _, err := door.Get(attr.DeviceID); err != nil {
+			return custosResolveOutcome{status: http.StatusForbidden, reason: "device_forgotten"}
+		}
+	}
 	if !ValidApprovalID(id) {
 		return custosResolveOutcome{status: http.StatusNotFound, reason: "not found"}
 	}

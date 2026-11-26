@@ -48,6 +48,10 @@ const (
 	WSReasonAlreadyAuthenticated = "already_authenticated"
 	// WSReasonUnauthorized is the close reason string paired with WSCloseUnauthorized.
 	WSReasonUnauthorized = "unauthorized"
+	// WSReasonDeviceForgotten is the close reason string paired with
+	// WSCloseUnauthorized when a session is terminated because the device
+	// its credential is bound to was forgotten (CUSTOS-SPEC amendment v16).
+	WSReasonDeviceForgotten = "device_forgotten"
 
 	// DefaultWSAuthTimeout is the 5s deadline for the initial auth.hello frame (RPC-SPEC §2).
 	DefaultWSAuthTimeout = 5 * time.Second
@@ -705,6 +709,14 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 		s.unsubscribeAllRPCConn(rc)
 	}()
 
+	// CUSTOS-SPEC amendment v16 (issue #344): index device-bound sessions so
+	// DELETE /v1/devices/<id> can terminate them; the unregistration rides
+	// the same teardown path as the subscription cleanup.
+	if deviceID != "" {
+		s.registerDeviceConn(deviceID, rc)
+		defer s.unregisterDeviceConn(deviceID, rc)
+	}
+
 	var reqWg sync.WaitGroup
 	defer reqWg.Wait()
 
@@ -742,4 +754,64 @@ func (s *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 			h(ctx, rc, rReq)
 		}(rpcReq, handler)
 	}
+}
+
+// registerDeviceConn indexes an authenticated connection under the device id
+// its credential is bound to, so forgetting that device can terminate the
+// session (CUSTOS-SPEC amendment v16, issue #344). Only device-bound
+// credentials are indexed; every other kind has no device to revoke.
+func (s *Server) registerDeviceConn(deviceID string, rc *RPCConn) {
+	if deviceID == "" {
+		return
+	}
+	s.rpcDeviceMu.Lock()
+	defer s.rpcDeviceMu.Unlock()
+	if s.rpcDeviceConns == nil {
+		s.rpcDeviceConns = make(map[string]map[*RPCConn]struct{})
+	}
+	set, ok := s.rpcDeviceConns[deviceID]
+	if !ok {
+		set = make(map[*RPCConn]struct{})
+		s.rpcDeviceConns[deviceID] = set
+	}
+	set[rc] = struct{}{}
+}
+
+// unregisterDeviceConn drops a closed connection from the device index. A
+// missing entry is a no-op: closeDeviceConns may have cleared the whole set
+// before the socket's teardown defer ran.
+func (s *Server) unregisterDeviceConn(deviceID string, rc *RPCConn) {
+	if deviceID == "" {
+		return
+	}
+	s.rpcDeviceMu.Lock()
+	defer s.rpcDeviceMu.Unlock()
+	set, ok := s.rpcDeviceConns[deviceID]
+	if !ok {
+		return
+	}
+	delete(set, rc)
+	if len(set) == 0 {
+		delete(s.rpcDeviceConns, deviceID)
+	}
+}
+
+// closeDeviceConns terminates every live RPC session bound to deviceID with
+// close code 4003 (reason device_forgotten) and returns how many were
+// closed. The registry entry is swapped out under the lock and the sockets
+// are closed after releasing it: CloseWithCode carries a write deadline and
+// must never run while holding a lock shared with auth or teardown paths.
+// A socket closed here runs its own teardown defer (unsubscribe plus
+// unregister no-op), so no state survives this call.
+func (s *Server) closeDeviceConns(deviceID string) int {
+	s.rpcDeviceMu.Lock()
+	victims, ok := s.rpcDeviceConns[deviceID]
+	if ok {
+		delete(s.rpcDeviceConns, deviceID)
+	}
+	s.rpcDeviceMu.Unlock()
+	for rc := range victims {
+		_ = rc.CloseWithCode(WSCloseUnauthorized, WSReasonDeviceForgotten)
+	}
+	return len(victims)
 }

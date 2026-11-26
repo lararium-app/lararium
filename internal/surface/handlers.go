@@ -154,6 +154,12 @@ type Server struct {
 	rpcCustosMu    sync.Mutex
 	rpcCustosSubs  map[*RPCConn]*custosRPCSub
 
+	// rpcDeviceConns indexes live RPC connections by bound device id so
+	// forgetting a device can terminate its sessions (CUSTOS-SPEC
+	// amendment v16, issue #344).
+	rpcDeviceMu    sync.Mutex
+	rpcDeviceConns map[string]map[*RPCConn]struct{}
+
 	verdictWg sync.WaitGroup
 }
 

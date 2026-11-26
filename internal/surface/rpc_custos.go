@@ -289,10 +289,11 @@ func (s *Server) runCustosRPCPump(ctx context.Context, conn *RPCConn, sub *custo
 // rpcCustosCardsResolve implements custos.cards.resolve (RPC-SPEC §4) by
 // delegating to the shared resolveCustosCard core in custos_cards.go.
 //
-// Declared known limit (CUSTOS-SPEC §6.4b amendment v15): conn.callerDeviceID
-// is bound once at auth.hello; a device forgotten while its WS session is live
-// continues to approve until reconnect (stamping its DeviceID with an empty
-// DisplayName because the devices door reports it forgotten/tombstoned).
+// CUSTOS-SPEC amendment v16 (issue #344): conn.callerDeviceID is bound once
+// at auth.hello, but a forgotten device holds no authority on a live socket.
+// The shared core refuses its verdicts with device_forgotten, and
+// DELETE /v1/devices/<id> terminates bound sessions with close code 4003
+// (reason device_forgotten).
 func (s *Server) rpcCustosCardsResolve(_ context.Context, conn *RPCConn, req *RPCRequest) {
 	trimmed := bytes.TrimSpace(req.Params)
 	var params struct {
