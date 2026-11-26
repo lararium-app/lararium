@@ -160,6 +160,13 @@ func TestHub_GateConcurrentRequests(t *testing.T) {
 	// the suite on slower schedulers (seen on the ARM runner).
 	started := make(chan struct{}, 4)
 	releases := make(chan struct{})
+	// The loser's 409 is the only observable proof that it reached the gate
+	// while the holder was parked. Under full-suite CPU pressure a starved
+	// goroutine can reach the gate AFTER the holder has already been
+	// released (both 200s — the historical load-dependent flake, same class
+	// as the ARM note above), so release on the conflict signal, not on a
+	// fixed point after the holder started.
+	conflicted := make(chan struct{}, 2)
 
 	sp := &stubProvider{
 		name: "slow",
@@ -191,12 +198,24 @@ func TestHub_GateConcurrentRequests(t *testing.T) {
 			hub.HandleMessage(w, req, "main")
 			codes[idx] = w.Code
 			bodies[idx] = w.Body.String()
+			if w.Code == http.StatusConflict {
+				select {
+				case conflicted <- struct{}{}:
+				default:
+				}
+			}
 		}(i)
 	}
 
-	// Wait for the first request to start (acquire gate and call provider),
-	// then release it — close() broadcasts so every stub call returns.
+	// Wait for the first request to start (acquire gate and call provider)
+	// and for the loser to record its 409, THEN release — close()
+	// broadcasts so every stub call returns. The timeout only bounds the
+	// safety net; the counts below still fail loudly on any misorder.
 	<-started
+	select {
+	case <-conflicted:
+	case <-time.After(10 * time.Second):
+	}
 	close(releases)
 
 	wg.Wait()
