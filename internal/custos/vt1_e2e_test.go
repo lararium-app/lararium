@@ -188,7 +188,10 @@ type vt1Hub struct{}
 
 func (vt1Hub) InFlight(string) bool { return false }
 func (vt1Hub) Cancel(string) bool   { return false }
-func (vt1Hub) Shutdown()            {}
+func (vt1Hub) CancelTurn(string, string) bool {
+	return false
+}
+func (vt1Hub) Shutdown() {}
 
 func newVT1World(t *testing.T) *vt1World {
 	t.Helper()

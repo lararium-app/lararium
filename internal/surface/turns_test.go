@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -1181,7 +1182,8 @@ func TestHub_Commit(t *testing.T) {
 			events = append(events, ev)
 		}
 	}
-	expected := []string{"delta", "turn_done"}
+	// turn_start leads every turn stream since #345 (turn-scoped cancel).
+	expected := []string{"turn_start", "delta", "turn_done"}
 	if len(events) != len(expected) {
 		t.Fatalf("events = %v, want %v", events, expected)
 	}
@@ -1472,5 +1474,161 @@ func TestHub_HandleMessage_EmptyTextValidation(t *testing.T) {
 				t.Fatal("session should not be in flight after HandleMessage finishes")
 			}
 		})
+	}
+}
+
+// ---- #345: turn-scoped cancel + honest cancellation ------------------------
+
+// TestTurnStartCarriesTurnID: every turn stream now leads with a
+// turn_start event bearing the opaque id that scopes cancellation to
+// this exact turn (SURFACE-SPEC §5, #345).
+func TestTurnStartCarriesTurnID(t *testing.T) {
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			return &router.Completion{Text: "pong", Model: "stub"}, nil
+		},
+	}
+	hub := setupHub(t, sp)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	hub.HandleMessage(w, req, "main")
+
+	var turnID string
+	for _, f := range parseSSEFrames(w.Body.String()) {
+		ev, _ := f["event"].(string)
+		if ev == "ping" {
+			continue
+		}
+		if ev != "turn_start" {
+			t.Fatalf("first turn event = %q, want turn_start", ev)
+		}
+		data, _ := f["data"].(map[string]any)
+		turnID, _ = data["turn_id"].(string)
+		break
+	}
+	if !strings.HasPrefix(turnID, "t_") {
+		t.Fatalf("turn_start carried no opaque turn id: %q", turnID)
+	}
+}
+
+// TestCancelTurnScopeRejectsStaleID: CancelTurn with a stale id (the id
+// of a previous turn, or a forged one) is refused — the newly-acquired
+// turn must survive, which is what stops the #345/#348 cascade where a
+// late cancel killed the turn that replaced the user's resend.
+func TestCancelTurnScopeRejectsStaleID(t *testing.T) {
+	block := make(chan struct{})
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: true, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			<-block
+			return nil, context.Canceled
+		},
+	}
+	hub := setupHub(t, sp)
+
+	done := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+		req.Header.Set("Content-Type", "application/json")
+		hub.HandleMessage(httptest.NewRecorder(), req, "main")
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !hub.InFlight("main") {
+		if time.Now().After(deadline) {
+			t.Fatal("turn never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	hub.mu.Lock()
+	id := hub.running["main"].id
+	hub.mu.Unlock()
+	if id == "" {
+		t.Fatal("running turn carries no id")
+	}
+
+	if hub.CancelTurn("main", "t_stale0000") {
+		t.Fatal("cancel with stale turn id must return false")
+	}
+	if !hub.InFlight("main") {
+		t.Fatal("stale cancel must leave the running turn untouched")
+	}
+	if !hub.CancelTurn("main", id) {
+		t.Fatal("cancel with matching turn id must succeed")
+	}
+
+	close(block)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not finish after cancel")
+	}
+}
+
+// TestCancelledTurnCommitsNoProviderFailure (#345 A1): a provider call
+// killed by cancellation surfaces as a url.Error around context.Canceled
+// — exactly the shape the live failure showed. The router reports the
+// cancellation itself, so executeTurn must commit NO "provider failed"
+// assistant event. Laundering it as an outage is what made the client
+// resend and re-mint custody cards (#348).
+func TestCancelledTurnCommitsNoProviderFailure(t *testing.T) {
+	block := make(chan struct{})
+	sp := &stubProvider{
+		name: "stub",
+		caps: router.Caps{SupportsTools: true, ContextLength: 100000, Source: "stub"},
+		replies: func(n int, msgs []router.Message) (*router.Completion, error) {
+			<-block
+			return nil, &url.Error{
+				Op:  "Post",
+				URL: "https://example.invalid/v1/chat/completions",
+				Err: context.Canceled,
+			}
+		},
+	}
+	hub := setupHub(t, sp)
+
+	done := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/main/messages", strings.NewReader(`{"text":"hello"}`))
+		req.Header.Set("Content-Type", "application/json")
+		hub.HandleMessage(httptest.NewRecorder(), req, "main")
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !hub.InFlight("main") {
+		if time.Now().After(deadline) {
+			t.Fatal("turn never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !hub.Cancel("main") {
+		t.Fatal("session-scoped cancel should hit the running turn")
+	}
+	close(block)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not finish after cancel")
+	}
+
+	data, err := os.ReadFile(hub.hearthHome + "/sessions/main/events.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "provider failed") {
+		t.Fatalf("cancelled turn committed a provider-failure event:\n%s", data)
+	}
+	// setupHub seeds exactly one assistant event (the system prompt);
+	// a cancelled turn commits nothing else (A5).
+	if got := strings.Count(string(data), `"role":"assistant"`); got != 1 {
+		t.Fatalf("assistant events = %d, want 1 (the seeded prompt):\n%s", got, data)
 	}
 }

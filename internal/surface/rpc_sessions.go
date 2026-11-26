@@ -505,6 +505,9 @@ func (s *Server) rpcSessionsSend(connCtx context.Context, conn *RPCConn, req *RP
 func (s *Server) rpcSessionsCancel(_ context.Context, conn *RPCConn, req *RPCRequest) {
 	var params struct {
 		ID string `json:"id"`
+		// TurnID (#345): cancel only the turn bearing this id (learned
+		// from the turn_start frame). Empty = legacy session-scoped cancel.
+		TurnID string `json:"turn_id"`
 	}
 	if len(req.Params) == 0 || json.Unmarshal(req.Params, &params) != nil {
 		_ = conn.SendError(*req.ID, "invalid request body", "invalid_request", nil)
@@ -518,7 +521,7 @@ func (s *Server) rpcSessionsCancel(_ context.Context, conn *RPCConn, req *RPCReq
 		_ = conn.SendError(*req.ID, "no turn in flight", "no_turn_in_flight", nil)
 		return
 	}
-	if s.Hub != nil && s.Hub.Cancel(params.ID) {
+	if s.Hub != nil && s.Hub.CancelTurn(params.ID, params.TurnID) {
 		_ = conn.SendResult(*req.ID, map[string]any{"ok": true})
 		return
 	}

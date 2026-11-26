@@ -80,6 +80,12 @@ func ProviderErrorReason(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
+	// A cancellation is never a provider failure (#345). Belt-and-suspenders
+	// below the executeChain fix: even a ChainError that wraps a cancellation
+	// must not report as an outage.
+	if errors.Is(err, context.Canceled) {
+		return "", false
+	}
 	var ce *ChainError
 	if errors.As(err, &ce) {
 		return "provider failed: " + ce.ShortReason(), true
@@ -233,6 +239,13 @@ func (r *Router) executeChain(ctx context.Context, chain []Target, msgs []Messag
 				select {
 				case <-ctx.Done():
 					// Caller cancellation — abort immediately, no failover.
+					// Cancellation is never a provider failure (#345): a
+					// cancelled context surfaces as the cancellation itself,
+					// never as a (mis)diagnosed chain outage. A deadline
+					// keeps the per-leg ChainError record.
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return nil, context.Canceled
+					}
 					legs = append(legs, ChainLeg{Provider: providerName, Model: model, Err: ctx.Err()})
 					return nil, &ChainError{Legs: legs}
 				default:
@@ -244,6 +257,9 @@ func (r *Router) executeChain(ctx context.Context, chain []Target, msgs []Messag
 				select {
 				case <-ctx.Done():
 					timer.Stop()
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return nil, context.Canceled
+					}
 					legs = append(legs, ChainLeg{Provider: providerName, Model: model, Err: ctx.Err()})
 					return nil, &ChainError{Legs: legs}
 				case <-timer.C:
@@ -270,6 +286,17 @@ func (r *Router) executeChain(ctx context.Context, chain []Target, msgs []Messag
 				// retry/fallback must NOT re-stream from scratch. Stop and surface
 				// a clean stream-error termination instead of replaying.
 				return nil, fmt.Errorf("stream error: %w", err)
+			}
+
+			// Honest cancellation (#345): a caller cancellation — however the
+			// provider reports it (bare, url.Error-wrapped, or already visible
+			// on ctx) — aborts the WHOLE chain with the cancellation itself.
+			// Laundering it into a ChainError made every following leg die
+			// instantly on the dead context and surface a fake "all chain
+			// targets failed" outage, breaking the A5/V7 cancelled-turn
+			// invariant (commit nothing) downstream.
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				return nil, context.Canceled
 			}
 
 			leg := ChainLeg{Provider: providerName, Model: model, Err: err}

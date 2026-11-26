@@ -821,8 +821,10 @@ func TestRPCSessionsMultiplexingInterleave(t *testing.T) {
 	}
 
 	// Verify exact notification sequence for the turn:
-	// delta -> approval_request -> tool_start -> tool_done -> delta -> turn_done
-	wantSeq := []string{"delta", "approval_request", "tool_start", "tool_done", "delta", "turn_done"}
+	// turn_start -> delta -> approval_request -> tool_start -> tool_done -> delta -> turn_done
+	// (turn_start leads since #345: the client must learn the turn id
+	// before it can scope a cancel to this exact turn.)
+	wantSeq := []string{"turn_start", "delta", "approval_request", "tool_start", "tool_done", "delta", "turn_done"}
 	if len(seenEvents) != len(wantSeq) {
 		t.Fatalf("seenEvents = %v, want %v", seenEvents, wantSeq)
 	}
