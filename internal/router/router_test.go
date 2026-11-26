@@ -266,6 +266,7 @@ func (f cancelFake) Complete(ctx context.Context, msgs []Message, opts Options) 
 	}
 	return nil, &url.Error{Op: "Post", URL: "https://example.invalid/v1/chat/completions", Err: f.err}
 }
+
 func (f cancelFake) Capabilities(ctx context.Context) (Caps, error) {
 	return Caps{Source: "fake"}, nil
 }
